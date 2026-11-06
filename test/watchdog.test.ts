@@ -53,6 +53,7 @@ async function world(options: { resumeFails?: boolean } = {}) {
   const queued = new Map<string, QueuedRow[]>();
   const events = new Map<string, { createdAt: number }[]>();
   const calls = { suspend: [] as string[], resume: [] as string[], updates: [] as { queuedMessageId: string; input: unknown[] }[] };
+  let failSuspend: () => boolean = () => false;
   const bb = {
     pluginId: "boat",
     sdk: {
@@ -61,6 +62,7 @@ async function world(options: { resumeFails?: boolean } = {}) {
         get: async () => ({ ...host, machineProviderId: "boat-sandbox" }),
         experimental_suspend: async ({ hostId }: { hostId: string }) => {
           calls.suspend.push(hostId);
+          if (failSuspend()) throw new Error("the machine's daemon is gone");
           host.lifecycle = { phase: "suspended", suspendedAt: at };
           host.status = "disconnected";
         },
@@ -112,6 +114,7 @@ async function world(options: { resumeFails?: boolean } = {}) {
     now,
     setRow: (next: Record<string, unknown>) => void (row = { ...row, ...next }),
     handover: (on: boolean) => void (handingOver = on),
+    setFailSuspend: (fails: () => boolean) => void (failSuspend = fails),
     /** boat stops the sandbox behind bb's back (its auto-stop): bb loses the daemon, keeps the machine active. */
     boatStops() {
       sandbox.state = "stopped";
@@ -263,6 +266,7 @@ test("a failed resume is said as such", async () => {
   w.sandbox.state = "stopped";
   w.setRow({ queuedWork: "waiting" });
   w.queued.set(w.task.threadId!, [{ id: "q1", threadId: w.task.threadId!, content: [], createdAt: w.now(), updatedAt: w.now(), state: "waiting", waitingOn: { kind: "provisioning" } }]);
+  await dog.tick();
   w.advance(4 * MINUTE);
   await dog.tick();
   assert.equal(w.told.length, 1);
@@ -286,6 +290,73 @@ test("messages held for later on purpose don't wake a machine: a retry at a limi
   }
   assert.deepEqual(w.calls.resume, []);
   assert.equal(w.told.length, 0);
+});
+
+test("an orchestrator's follow-up waiting on a stopped worker machine resumes it; the watchdog's own notices don't", async () => {
+  const w = await world();
+  const dog = w.watchdog();
+  w.host.lifecycle = { phase: "suspended", suspendedAt: w.now() };
+  w.host.status = "disconnected";
+  w.sandbox.state = "stopped";
+  w.setRow({ queuedWork: "waiting" });
+  const followup = { id: "q1", threadId: w.task.threadId!, content: [{ type: "text", text: "Follow-up from the orchestrator" }], createdAt: w.now(), updatedAt: w.now(), state: "waiting", waitingOn: { kind: "host-offline" }, originPluginId: "boat" };
+  w.queued.set(w.task.threadId!, [followup]);
+  await dog.tick();
+  w.advance(MINUTE);
+  await dog.tick();
+  assert.deepEqual(w.calls.resume, [w.host.id]);
+
+  const own = await world();
+  const watch = own.watchdog();
+  own.host.lifecycle = { phase: "suspended", suspendedAt: own.now() };
+  own.host.status = "disconnected";
+  own.sandbox.state = "stopped";
+  own.setRow({ queuedWork: "waiting" });
+  own.queued.set(own.task.threadId!, [{ ...followup, threadId: own.task.threadId!, content: [{ type: "text", text: "[boat] Watchdog: Your own sandbox stopped" }] }]);
+  await watch.tick();
+  own.advance(5 * MINUTE);
+  await watch.tick();
+  assert.deepEqual(own.calls.resume, []);
+  assert.equal(own.told.length, 0);
+});
+
+test("a message scheduled for later waits from when it came due, and bb gets its moment to resume the machine", async () => {
+  const w = await world();
+  const dog = w.watchdog();
+  const created = w.now();
+  // Due 4 hours after it was written (a retry at a limit's reset); it comes due now.
+  w.advance(4 * 3_600_000);
+  w.host.lifecycle = { phase: "suspended", suspendedAt: created };
+  w.host.status = "disconnected";
+  w.sandbox.state = "stopped";
+  w.setRow({ queuedWork: "waiting" });
+  w.queued.set(w.task.threadId!, [{ id: "q1", threadId: w.task.threadId!, content: [], createdAt: created, sendAt: w.now(), updatedAt: w.now(), state: "waiting", waitingOn: { kind: "provisioning" } }]);
+  await dog.tick();
+  assert.deepEqual(w.calls.resume, [], "bb gets 45 seconds to resume it itself");
+  assert.equal(w.told.length, 0, "it hasn't waited 4 hours");
+});
+
+test("a failed suspend is tried again, but reported and noted once", async () => {
+  const w = await world();
+  let fail = true;
+  const dog = w.watchdog();
+  w.setRow({ activity: WORKFLOW });
+  await dog.tick();
+  w.boatStops();
+  // The first suspend fails; bb keeps listing the machine's (stale) workflow.
+  w.setFailSuspend(() => fail);
+  w.advance(MINUTE);
+  await dog.tick();
+  assert.equal(w.told.length, 1);
+  // The worker takes the note.
+  await dog.queued({ id: "q1", threadId: w.task.threadId!, content: [{ type: "text", text: "Hi" }], updatedAt: 1, editable: true });
+  assert.equal(await dog.noteFor(w.task.id), null);
+  fail = false;
+  w.advance(5 * MINUTE);
+  await dog.tick();
+  assert.equal(w.told.length, 1, "no second notice");
+  assert.equal(await dog.noteFor(w.task.id), null, "the note isn't armed again");
+  assert.equal(w.env.store.events(w.task.id, 50).filter((event) => event.text.startsWith("The sandbox stopped while")).length, 1);
 });
 
 test("while bb resumes the machine itself, the notice waits 10 minutes", async () => {
@@ -417,4 +488,28 @@ test("in the plugin: the dispatch hook answers at once, and a message queued for
   assert.deepEqual(decision instanceof Promise ? await decision : decision, { action: "proceed" });
   const queued = await harness.emitThreadEvent("message.queued", { entry: makeQueueEntry({ waitingOn: { kind: "host-offline", hostName: "Boat bx_1 (abc123)" } }) });
   assert.deepEqual(queued.errors, []);
+});
+
+test("after a suspend through bb, an orchestrator on that machine hears of it once the machine is up again (the notice doesn't wake it)", async () => {
+  const w = await world();
+  w.env.store.addOrchestrator("thr_cloud");
+  w.setRow({ id: "thr_cloud", activity: WORKFLOW });
+  const dog = w.watchdog();
+  await dog.tick();
+  // Someone suspends the machine from bb's menu while the workflow runs.
+  w.host.lifecycle = { phase: "suspended", suspendedAt: w.now() };
+  w.host.status = "disconnected";
+  w.sandbox.state = "stopped";
+  w.advance(MINUTE);
+  await dog.tick();
+  assert.deepEqual(w.told.map((entry) => entry.threadId), ["thr_orch"], "the task's orchestrator hears now; the one on the machine doesn't yet");
+  // The next message resumes it: then the orchestrator there hears of it.
+  w.host.lifecycle = { phase: "active", suspendedAt: null };
+  w.host.status = "connected";
+  w.sandbox.state = "idle";
+  w.setRow({ activity: { ...WORKFLOW, activeWorkflowCount: 0 } });
+  w.advance(MINUTE);
+  await dog.tick();
+  assert.deepEqual(w.told.map((entry) => entry.threadId), ["thr_orch", "thr_cloud"]);
+  assert.match(w.told[1]!.text, /^\[boat\] Watchdog: Your own sandbox/);
 });

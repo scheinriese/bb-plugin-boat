@@ -23,7 +23,7 @@ import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { KEEP_LIMIT_MS, NO_WORK, addWork, describeWork, hasWork, messagesWaiting, rowWork, threadsOnMachine, type BackgroundWork, type ThreadRow } from "./activity.ts";
 import { ACTIVE_STATES, type BoatApi, type Sandbox } from "./boat-api.ts";
-import { RESUME_NOTE_PREFIX, quietNotice, resumeNoteText, stoppedNotice, waitingNotice, type NoticeSubject } from "./format.ts";
+import { RESUME_NOTE_PREFIX, WATCHDOG_PREFIX, quietNotice, resumeNoteText, stoppedNotice, waitingNotice, type NoticeSubject } from "./format.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import { OPEN_STATUSES, type Task, type TaskStore } from "./store.ts";
 
@@ -193,8 +193,12 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   const atLimit = new Set<string>();
   /** Host id → up and connected at the last look. */
   const upNow = new Map<string, boolean>();
-  /** Thread id → since when its messages wait on a down machine. */
-  const waiting = new Map<string, number>();
+  /**
+   * Thread id → its messages waiting on a down machine: since when they're
+   * due (the notice's clock), and since when the watchdog has seen them wait
+   * (bb gets that long to resume the machine itself).
+   */
+  const waiting = new Map<string, { since: number; seen: number }>();
   /** Task id → the turn the watchdog watches: since when, and when it last looked. */
   const turns = new Map<string, { key: string; since: number; checked: number }>();
   /** Thread id → its pending note (the kv copy survives restarts). */
@@ -354,7 +358,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   }
 
   /** The machine stopped while background work ran there: tell everyone concerned, once. */
-  async function stoppedUnderWork(hostId: string, sandboxId: string, rows: ThreadRow[], stoppedAt: number, cause: string, did: string): Promise<void> {
+  async function stoppedUnderWork(hostId: string, sandboxId: string, rows: ThreadRow[], stoppedAt: number, cause: string, did: string, byBoat: boolean): Promise<void> {
     const last = seen.get(hostId);
     seen.delete(hostId);
     if (last === undefined || stoppedAt - last.at > SEEN_FRESH_MS) return;
@@ -384,9 +388,10 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         incident,
         subject: `stopped:${sandboxId}`,
         text: stoppedNotice({ subject: { kind: "own", sandboxId }, work: ownWork, stoppedAt, cause, did, now: now(), capped }),
-        // A boat stop: the notice itself resumes the orchestrator to rerun what it needs.
-        // At the limit: it waits until something else wakes the machine (no loop).
-        ...(capped ? { hostUp: hostId } : {}),
+        // boat's stop: the notice itself resumes the orchestrator to rerun what it needs.
+        // A suspend through bb (someone meant it), or one at the limit: it waits until
+        // something else wakes the machine (no loop).
+        ...(capped || !byBoat ? { hostUp: hostId } : {}),
       });
     }
   }
@@ -426,7 +431,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
    * reset, a slot under bb's limits, an answer the agent waits for) doesn't
    * count, nor do the plugin's own notices.
    */
-  async function waitingSince(threadId: string, at: number): Promise<number | null> {
+  async function waitingSince(threadId: string, at: number): Promise<{ since: number; seen: number } | null> {
     let rows: QueuedRow[];
     try {
       rows = rowsOf(await bb.sdk.threads.queuedMessages.list({ threadId } as never));
@@ -438,16 +443,25 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         (row.state === "queued" || row.state === "waiting") &&
         (row.sendAt === null || row.sendAt === undefined || row.sendAt <= at) &&
         MACHINE_WAITS.has(row.waitingOn?.kind ?? "") &&
-        (row as { originPluginId?: string | null }).originPluginId !== bb.pluginId,
+        !isNotice(row.content),
     );
     if (onMachine.length === 0) {
       waiting.delete(threadId);
       return null;
     }
-    const oldest = Math.min(at, ...onMachine.map((row) => (typeof row.createdAt === "number" ? row.createdAt : at)));
-    const since = Math.min(oldest, waiting.get(threadId) ?? oldest);
-    waiting.set(threadId, since);
-    return since;
+    // A message scheduled for later waits from when it came due.
+    const due = (row: QueuedRow) => Math.min(at, Math.max(typeof row.createdAt === "number" ? row.createdAt : at, row.sendAt ?? 0));
+    const oldest = Math.min(...onMachine.map(due));
+    const known = waiting.get(threadId);
+    const entry = { since: Math.min(oldest, known?.since ?? oldest), seen: known?.seen ?? at };
+    waiting.set(threadId, entry);
+    return entry;
+  }
+
+  /** The watchdog's own notice (it never wakes a machine for itself). */
+  function isNotice(content: unknown[]): boolean {
+    const first = content[0] as { type?: string; text?: string } | undefined;
+    return first?.type === "text" && typeof first.text === "string" && first.text.startsWith(WATCHDOG_PREFIX);
   }
 
   function subjectFor(threadId: string, sandboxId: string): { subject: NoticeSubject; to: string | null; task: Task | null } | null {
@@ -505,40 +519,42 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         const count = attempt?.episode === stoppedAt ? attempt.count : 0;
         if ((retryAt.get(host.id) ?? 0) <= at && count < RECONCILE_TRIES) {
           tries.set(host.id, { episode: stoppedAt, count: count + 1 });
+          // Reported once per stop: a retry of a failed suspend only tries again.
+          const first = count === 0;
           // Not seen up since a restart of the plugin: what bb last knew runs there.
-          if (!seen.has(host.id)) remember(host.id, rows, stoppedAt);
-          const hadWork = seen.has(host.id);
+          if (first && !seen.has(host.id)) remember(host.id, rows, stoppedAt);
+          const hadWork = first && seen.has(host.id);
           const done = await reconcile(host, sandboxId, at);
           const cause = "boat stopped it (its auto-stop, a crash or the boat.dev dashboard), not bb.";
           if (done.ok && !hadWork) {
             const tasks = audience(sandboxId, rows).tasks.filter((task) => task.runner === "chat");
             event(tasks, "boat stopped the sandbox (its auto-stop, a crash or the boat.dev dashboard); the plugin suspended its bb machine to match, and bb resumes it on the next message.");
           }
-          await stoppedUnderWork(host.id, sandboxId, rows, stoppedAt, cause, done.did);
+          if (first) await stoppedUnderWork(host.id, sandboxId, rows, stoppedAt, cause, done.did, true);
         }
       } else if ((phase === "suspended" || phase === "suspending") && seen.has(host.id)) {
         // Suspended under background work: by the plugin at its limit, or by bb or someone's click.
         const stoppedAt = host.lifecycle?.suspendedAt ?? at;
         const cause = atLimit.delete(host.id) ? "The plugin suspended it: that's the most it keeps a sandbox on for background work." : "bb suspended the machine.";
-        await stoppedUnderWork(host.id, sandboxId, rows, stoppedAt, cause, "bb resumes it on the next message.");
+        await stoppedUnderWork(host.id, sandboxId, rows, stoppedAt, cause, "bb resumes it on the next message.", false);
       }
 
       // Messages waiting for the machine while it's down.
       const down = !running;
       for (const row of rows) if (row.id !== undefined && (!down || !messagesWaiting(row))) waiting.delete(row.id);
       if (!down) continue;
-      const waitingRows: { row: ThreadRow; since: number }[] = [];
+      const waitingRows: { row: ThreadRow; since: number; seen: number }[] = [];
       for (const row of rows.filter(messagesWaiting)) {
-        const since = row.id === undefined ? null : await waitingSince(row.id, at);
-        if (since !== null) waitingRows.push({ row, since });
+        const entry = row.id === undefined ? null : await waitingSince(row.id, at);
+        if (entry !== null) waitingRows.push({ row, ...entry });
       }
       if (waitingRows.length === 0) continue;
-      const oldest = Math.min(...waitingRows.map((entry) => entry.since));
+      const watched = Math.min(...waitingRows.map((entry) => entry.seen));
       // Read bb's record again right before acting on it (the suspend above, or bb's own resume).
       const fresh = (await bb.sdk.hosts.get({ hostId: host.id } as never).catch(() => null)) as unknown as HostRow | null;
       const phaseNow = fresh?.lifecycle?.phase ?? phase;
       const last = resumed.get(host.id);
-      if (phaseNow === "suspended" && at - oldest >= RESUME_AFTER_MS && (retryAt.get(host.id) ?? 0) <= at && !(last?.ok === true && at - last.at < RESUME_AGAIN_MS) && resumes < RESUMES_PER_PASS) {
+      if (phaseNow === "suspended" && at - watched >= RESUME_AFTER_MS && (retryAt.get(host.id) ?? 0) <= at && !(last?.ok === true && at - last.at < RESUME_AGAIN_MS) && resumes < RESUMES_PER_PASS) {
         // bb resumes a suspended machine for a new message itself; one queued before the stop it may not.
         resumes += 1;
         await resume(host.id, at);
