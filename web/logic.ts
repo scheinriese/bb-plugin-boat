@@ -668,6 +668,17 @@ export function accessNotes(access: {
   return notes;
 }
 
+/**
+ * A setup fix's command as typed into a terminal: every `boat` it runs (the
+ * fix may chain several with &&) uses the boat CLI the plugin found, in case
+ * the shell's PATH doesn't have it.
+ */
+export function withBoatPath(command: string, cliPath: string | null): string {
+  if (cliPath === null) return command;
+  const quoted = "'" + cliPath.replace(/'/g, "'\\''") + "'";
+  return command.replace(/(^|&&\s*|\|\|\s*|;\s*)boat(?=\s|$)/g, (_match, lead: string) => lead + quoted);
+}
+
 /** "paid add-on, about $1 a day plus $1 per 1,000 requests", or just "paid add-on" when boat didn't price it. */
 export function aiProxyCost(price: string | null): string {
   return price ? `paid add-on, ${price}` : "paid add-on";
