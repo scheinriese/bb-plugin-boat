@@ -12,11 +12,11 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { useOrchestratorCardHidden, useSandboxSizes, useSettingRows } from "./hooks";
-import { EVIDENCE_VARIABLES, evidenceMode, type EvidenceMode } from "./logic";
+import { useOrchestratorCardHidden, useOrchestrators, useSandboxSizes, useSettingRows } from "./hooks";
+import { EVIDENCE_VARIABLES, ORCHESTRATOR_CARD_RULE, cardShownToast, evidenceMode, type EvidenceMode } from "./logic";
 import { ModelPresetsEditor, ProtocolEditor } from "./protocol-settings";
 import { SetupChecklist } from "./setup";
-import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, showError } from "./ui";
+import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, focusNeighbour, showError } from "./ui";
 
 type SettingValue = string | number | boolean;
 
@@ -460,18 +460,26 @@ export function OrchestratorsSettings() {
 /** Only while the Cloud agents page's orchestrator card is hidden (its ×): brings it back, on every device. */
 function OrchestratorCardRow() {
   const [hidden, setHidden] = useOrchestratorCardHidden();
+  const orchestrators = useOrchestrators(hidden === true);
   if (hidden !== true) return null;
+  // Not known yet: say nothing the page might not show.
+  const hasOrchestrator = orchestrators.data?.orchestrators.some((entry) => !entry.archived) ?? true;
   return (
     <SettingField
       label="Orchestrator card"
-      description="Hidden on the Cloud agents page. It says what an orchestrator does and sets one up."
+      description={`Hidden. ${ORCHESTRATOR_CARD_RULE}`}
       control={
         <Button
           variant="outline"
           size="sm"
           className="h-7"
-          onClick={() => {
-            setHidden(false).then(() => toast.success("The orchestrator card is back on the Cloud agents page"), showError);
+          onClick={(event) => {
+            // The row goes at once: keep keyboard focus nearby.
+            focusNeighbour(event.currentTarget);
+            setHidden(false).then(() => {
+              const { title, description } = cardShownToast(hasOrchestrator);
+              toast.success(title, description ? { description } : undefined);
+            }, showError);
           }}
         >
           Show the orchestrator card again

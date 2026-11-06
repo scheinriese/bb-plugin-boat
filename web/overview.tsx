@@ -48,9 +48,9 @@ import {
   useSandboxes,
   useSetup,
 } from "./hooks";
-import { pageState, sandboxUseLabel, statusLine, usageSummary, type PageState } from "./logic";
+import { cardHiddenToast, pageState, sandboxUseLabel, statusLine, usageSummary, type PageState } from "./logic";
 import { SetupCard, SetupWarnings } from "./setup";
-import { Disclosure, EmptyBox, IconButton, InlineAlert, ListPanel, RichText, Section, StatusDot, ThreadName, showError } from "./ui";
+import { Disclosure, EmptyBox, IconButton, InlineAlert, ListPanel, RichText, Section, StatusDot, ThreadName, focusNeighbour, showError } from "./ui";
 
 const COLUMN = "mx-auto box-border w-full max-w-4xl px-4 pb-10 pt-3 md:px-5 md:pt-4";
 
@@ -400,14 +400,13 @@ function StepUpCard() {
               label="Hide this card"
               icon="X"
               className="-mr-2 -mt-1.5"
-              onClick={() => {
-                setHidden(true).then(
-                  () =>
-                    toast("Hidden. New orchestrator stays in the ⋯ menu at the top.", {
-                      description: "Show it again in Settings → Plugins → Boat Cloud Agents → Orchestrators.",
-                    }),
-                  showError,
-                );
+              onClick={(event) => {
+                // The card goes at once: keep keyboard focus nearby.
+                focusNeighbour(event.currentTarget.closest("section"));
+                setHidden(true).then(() => {
+                  const { title, description } = cardHiddenToast();
+                  toast(title, { description });
+                }, showError);
               }}
             />
           </div>

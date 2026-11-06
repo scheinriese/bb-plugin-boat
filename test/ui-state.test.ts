@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import plugin from "../server.ts";
 import { UI_TAG } from "../contract.ts";
 import { UI_STATE_KEY, readUiState, saveUiState } from "../src/ui-state.ts";
+import { cardHiddenToast, cardShownToast } from "../web/logic.ts";
 import { createTestHost } from "./fakes.ts";
 
 function memoryKv(initial: Record<string, unknown> = {}) {
@@ -72,4 +73,16 @@ test("Hide and Show again go through the RPC, refresh open pages, and stay out o
   // Show the orchestrator card again (Settings → Orchestrators).
   assert.deepEqual(await harness.callRpc("saveUiState", { hideOrchestratorCard: false }), { hideOrchestratorCard: false });
   assert.deepEqual(await harness.callRpc("uiState", null), { hideOrchestratorCard: false });
+});
+
+test("the card's toasts name the card and the Settings button, and promise it on the page only when it shows there", () => {
+  // After ×: what was hidden, and the Settings button in its own words.
+  const hidden = cardHiddenToast();
+  assert.match(hidden.title, /^Orchestrator card hidden\./);
+  assert.equal(hidden.description, "Show the orchestrator card again in Settings → Plugins → Boat Cloud Agents → Orchestrators.");
+  // After Show again: back on the page only with no orchestrator (the page shows it only then).
+  assert.deepEqual(cardShownToast(false), { title: "The orchestrator card is back on the Cloud agents page", description: null });
+  const withOne = cardShownToast(true);
+  assert.doesNotMatch(withOne.title, /back on the Cloud agents page/);
+  assert.equal(withOne.description, "The Cloud agents page shows it while you have no orchestrator.");
 });

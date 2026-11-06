@@ -522,3 +522,26 @@ export function shipOutcome(input: { status: TaskDto["status"]; sandbox: Sandbox
   if (input.sandbox === "kept") return input.keptBecause ? `The task is closed; its sandbox is kept: ${input.keptBecause}.` : "The task is closed; its sandbox is kept.";
   return "The task is closed.";
 }
+
+// ------------------------------------------------------------------ The orchestrator card
+
+/** When the Cloud agents page shows the orchestrator card (unless it's hidden). */
+export const ORCHESTRATOR_CARD_RULE = "The Cloud agents page shows it while you have no orchestrator.";
+
+/** After the card's ×: what was hidden, and the Settings button that brings it back (in its own words). */
+export function cardHiddenToast(): { title: string; description: string } {
+  return {
+    title: "Orchestrator card hidden. New orchestrator stays in the ⋯ menu at the top.",
+    description: "Show the orchestrator card again in Settings → Plugins → Boat Cloud Agents → Orchestrators.",
+  };
+}
+
+/**
+ * After Show the orchestrator card again: "back on the page" only when it
+ * is (no orchestrator yet; unknown counts as having one).
+ */
+export function cardShownToast(hasOrchestrator: boolean): { title: string; description: string | null } {
+  return hasOrchestrator
+    ? { title: "The orchestrator card is shown again", description: ORCHESTRATOR_CARD_RULE }
+    : { title: "The orchestrator card is back on the Cloud agents page", description: null };
+}
