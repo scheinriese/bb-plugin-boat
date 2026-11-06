@@ -1,0 +1,154 @@
+{
+  "environments": [
+    {
+      "access": {
+        "members": [],
+        "restricted": false
+      },
+      "credentialProfileId": null,
+      "effective": {
+        "passAgentsCredentials": true,
+        "passGithub": true,
+        "passSandboxCredentials": true,
+        "passSecrets": true
+      },
+      "envContents": "EXAMPLE_TOKEN=fake_value_123\n",
+      "id": "env_0",
+      "isDefault": true,
+      "latestVersionId": "ver_0",
+      "latestVersionNumber": 3,
+      "name": "base",
+      "passAgentsCredentials": true,
+      "passGithub": true,
+      "passSandboxCredentials": true,
+      "passSecrets": true,
+      "proxyAiCredentials": false,
+      "safeForThirdParties": false,
+      "safetyAnsweredAt": "2026-01-01T00:00:00.000Z",
+      "secretFiles": [],
+      "selectedRepositories": [],
+      "versions": [
+        {
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "id": "ver_0",
+          "sandboxCount": 0,
+          "versionNumber": 1
+        }
+      ]
+    },
+    {
+      "access": {
+        "members": [],
+        "restricted": false
+      },
+      "credentialProfileId": null,
+      "effective": {
+        "passAgentsCredentials": true,
+        "passGithub": true,
+        "passSandboxCredentials": true,
+        "passSecrets": true
+      },
+      "envContents": "EXAMPLE_TOKEN=fake_value_123\n",
+      "id": "env_1",
+      "isDefault": false,
+      "latestVersionId": "ver_1",
+      "latestVersionNumber": 4,
+      "name": "web",
+      "passAgentsCredentials": true,
+      "passGithub": true,
+      "passSandboxCredentials": true,
+      "passSecrets": true,
+      "proxyAiCredentials": false,
+      "safeForThirdParties": false,
+      "safetyAnsweredAt": "2026-01-01T00:00:00.000Z",
+      "secretFiles": [],
+      "selectedRepositories": [
+        {
+          "fullName": "acme/web",
+          "permissions": "write",
+          "baseBranch": "main"
+        }
+      ],
+      "versions": [
+        {
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "id": "ver_1",
+          "sandboxCount": 0,
+          "versionNumber": 1
+        }
+      ]
+    },
+    {
+      "access": {
+        "members": [],
+        "restricted": false
+      },
+      "credentialProfileId": null,
+      "effective": {
+        "passAgentsCredentials": true,
+        "passGithub": true,
+        "passSandboxCredentials": true,
+        "passSecrets": true
+      },
+      "envContents": "EXAMPLE_TOKEN=fake_value_123\n",
+      "id": "env_2",
+      "isDefault": false,
+      "latestVersionId": "ver_2",
+      "latestVersionNumber": 5,
+      "name": "docs",
+      "passAgentsCredentials": true,
+      "passGithub": true,
+      "passSandboxCredentials": true,
+      "passSecrets": true,
+      "proxyAiCredentials": false,
+      "safeForThirdParties": false,
+      "safetyAnsweredAt": "2026-01-01T00:00:00.000Z",
+      "secretFiles": [],
+      "selectedRepositories": [],
+      "versions": [
+        {
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "id": "ver_2",
+          "sandboxCount": 0,
+          "versionNumber": 1
+        }
+      ]
+    },
+    {
+      "access": {
+        "members": [],
+        "restricted": false
+      },
+      "credentialProfileId": null,
+      "effective": {
+        "passAgentsCredentials": true,
+        "passGithub": true,
+        "passSandboxCredentials": true,
+        "passSecrets": true
+      },
+      "envContents": "EXAMPLE_TOKEN=fake_value_123\n",
+      "id": "env_3",
+      "isDefault": false,
+      "latestVersionId": "ver_3",
+      "latestVersionNumber": 5,
+      "name": "api",
+      "passAgentsCredentials": true,
+      "passGithub": true,
+      "passSandboxCredentials": true,
+      "passSecrets": true,
+      "proxyAiCredentials": false,
+      "safeForThirdParties": false,
+      "safetyAnsweredAt": "2026-01-01T00:00:00.000Z",
+      "secretFiles": [],
+      "selectedRepositories": [],
+      "versions": [
+        {
+          "createdAt": "2026-01-01T00:00:00.000Z",
+          "id": "ver_3",
+          "sandboxCount": 0,
+          "versionNumber": 1
+        }
+      ]
+    }
+  ]
+}

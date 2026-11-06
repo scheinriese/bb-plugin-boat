@@ -1,0 +1,28 @@
+{
+  "profiles": [
+    {
+      "access": {
+        "members": [],
+        "restricted": false
+      },
+      "accounts": {},
+      "canManage": true,
+      "connected": [
+        "claude-subscription",
+        "chatgpt-subscription"
+      ],
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "customApis": [],
+      "id": "prof_default",
+      "isDefault": true,
+      "name": "default",
+      "owner": {
+        "aiProxyEnabled": false,
+        "id": "user_1",
+        "kind": "personal",
+        "name": "you@example.com"
+      },
+      "updatedAt": "2026-01-01T00:05:00.000Z"
+    }
+  ]
+}

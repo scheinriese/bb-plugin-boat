@@ -1,0 +1,45 @@
+{
+  "id": "boat",
+  "displayName": "Boat Cloud Agents",
+  "description": "Send coding tasks from any chat to Claude Code or Codex in boat.dev cloud sandboxes, then review the pull requests they open. A Cloud agents page shows every task with its transcript, report, pull request and private preview link. The other model can review each change before it lands as a draft pull request, or ships to the base branch after you approve it. An optional orchestrator chat plans a project's work, starts the tasks and brings you only decisions and finished results. Requires a boat.dev account and plan, the boat CLI (macOS or Linux) on the bb machine, GitHub connected on boat.dev, and a Claude or ChatGPT subscription connected in boat.dev; task chats, chats on a Boat sandbox and cloud orchestrators also need bb Connect.",
+  "icon": {
+    "url": "./icons/boat-474dbab3.svg"
+  },
+  "screenshots": [
+    "./screenshots/boat/overview.png",
+    "./screenshots/boat/setup.png",
+    "./screenshots/boat/new-task.png",
+    "./screenshots/boat/task.png",
+    "./screenshots/boat/orchestrators.png",
+    "./screenshots/boat/projects.png"
+  ],
+  "overview": "./overview/boat.md",
+  "tags": [
+    "sandboxes",
+    "orchestration",
+    "code-review",
+    "claude-code",
+    "codex",
+    "pull-requests",
+    "parallel-agents",
+    "remote-development",
+    "previews",
+    "delegation"
+  ],
+  "author": {
+    "name": "scheinriese",
+    "github": "scheinriese",
+    "url": "https://github.com/scheinriese"
+  },
+  "category": "cloud-and-remote",
+  "secondaryCategories": [
+    "agents-and-providers",
+    "tasks-and-workflows"
+  ],
+  "source": {
+    "git": {
+      "url": "https://github.com/scheinriese/bb-plugin-boat.git",
+      "range": ">=0.1.0 <1.0.0"
+    }
+  }
+}

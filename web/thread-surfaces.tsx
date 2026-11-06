@@ -1,0 +1,394 @@
+// Surfaces outside the Cloud agents page: the context row segment above a
+// thread's composer, the Info tab section, the context card section, the
+// thread side-panel tab, the `::boat-task{id=…}` message card, and the
+// homepage card. All of them mount once per visible thread, so state lives
+// in components only.
+import { useState } from "react";
+import {
+  experimental_InfoList as InfoList,
+  experimental_InfoListRow as InfoListRow,
+  experimental_InfoSection as InfoSection,
+  experimental_ThreadContextCardRow as ThreadContextCardRow,
+  experimental_useAppPanel,
+  experimental_useThreadContextKind,
+  type ExperimentalThreadContextCardProps,
+  type ExperimentalThreadContextSegmentInput,
+  type ExperimentalThreadContextSegmentProps,
+  type ExperimentalThreadInfoProps,
+  type ExperimentalThreadTabProps,
+  type PluginHomepageSectionProps,
+  type PluginMessageDirectiveProps,
+} from "@get-bb/plugin-sdk/app";
+import type { DecisionDto, TaskDto } from "../contract";
+import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
+import { cn } from "@/lib/utils";
+import { Board } from "./board";
+import { NewOrchestratorDialog, NewTaskDialog } from "./dialogs";
+import {
+  PHASE_DOT,
+  ROLE_ICON,
+  TASK_ID_PATTERN,
+  agentWords,
+  plural,
+  prLabel,
+  shortRepo,
+  summarizeBoard,
+  workerChatId,
+} from "./format";
+import { useBoard, useCloudAgentsNavigation, useOrchestrators, useOverview, useTask, useThreadTasks } from "./hooks";
+import { taskPhaseLabel } from "./logic";
+import {
+  AgentBadge,
+  IconButton,
+  ThreadName,
+  OpenChatButton,
+  PhasePill,
+  PrLink,
+  ReportChip,
+  RoleIcon,
+  StatusDot,
+} from "./ui";
+
+/** This plugin's thread side-panel tab (registered in app.tsx). */
+const AGENTS_TAB = { id: "cloud-agents", context: { kind: "thread" }, availability: "fixed" } as const;
+
+// ------------------------------------------------------------ context segment
+
+/** Whether a thread has board content: tasks it dispatched, or open decisions. */
+function useThreadHasBoard(threadId: string): boolean {
+  const tasks = useThreadTasks(threadId);
+  const { data } = useBoard(threadId);
+  return tasks.length > 0 || (data?.needsYou.length ?? 0) > 0;
+}
+
+/** Banner mode only (the context card shows the same tasks in card mode). */
+export function useSegmentVisible({ threadId }: ExperimentalThreadContextSegmentInput): boolean {
+  const kind = experimental_useThreadContextKind();
+  const visible = useThreadHasBoard(threadId);
+  return kind === "banner" && visible;
+}
+
+export function useThreadHasTasks({ threadId }: { threadId: string }): boolean {
+  return useThreadHasBoard(threadId);
+}
+
+export function ThreadSegmentSummary({ threadId, isExpanded, onToggle }: ExperimentalThreadContextSegmentProps) {
+  const { data } = useBoard(threadId);
+  const needsYou = (data?.needsYou.length ?? 0) > 0;
+  const anyRunning = data?.running.some((task) => task.phase === "working" || task.phase === "starting") ?? false;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={isExpanded}
+      className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <Icon name="ComputerCloud" className="size-3.5 shrink-0" aria-hidden />
+      {needsYou ? (
+        <StatusDot className="bg-warning" />
+      ) : anyRunning ? (
+        <StatusDot className="bg-success animate-pulse" />
+      ) : null}
+      <span className="truncate">
+        <span className="sr-only">Cloud agents: </span>
+        {data ? summarizeBoard(data) : "…"}
+      </span>
+      <Icon
+        name="ChevronDown"
+        className={cn("size-3 shrink-0 transition-transform duration-150", isExpanded && "rotate-180")}
+        aria-hidden
+      />
+    </button>
+  );
+}
+
+export function ThreadSegmentDetails({ threadId, isExpanded }: ExperimentalThreadContextSegmentProps) {
+  const { data } = useBoard(threadId);
+  if (!isExpanded || data === undefined) return null;
+  const tasks = [...data.ready, ...data.running, ...data.done];
+  if (data.needsYou.length === 0 && tasks.length === 0) return null;
+  return (
+    <ul aria-label="Cloud agents" className="max-h-64 space-y-px overflow-y-auto py-1">
+      {data.needsYou.map((decision) => (
+        <CompactDecisionRow key={decision.id} decision={decision} threadId={threadId} />
+      ))}
+      {tasks.map((task) => (
+        <CompactTaskRow key={task.id} task={task} />
+      ))}
+    </ul>
+  );
+}
+
+/** Decisions are answered in the Cloud agents tab, else on the orchestrator's page. */
+function useOpenDecisions(threadId: string): () => void {
+  const panel = experimental_useAppPanel();
+  const { openOrchestrator } = useCloudAgentsNavigation();
+  return () => {
+    if (!panel.openTab({ tab: AGENTS_TAB })) openOrchestrator(threadId);
+  };
+}
+
+function CompactDecisionRow({ decision, threadId }: { decision: DecisionDto; threadId: string }) {
+  const open = useOpenDecisions(threadId);
+  return (
+    <li className="relative flex min-w-0 items-center gap-2 rounded-md px-2 py-1 hover:bg-state-hover">
+      <StatusDot className="bg-warning" />
+      <button
+        type="button"
+        onClick={open}
+        className="min-w-0 flex-1 truncate text-left text-sm text-foreground after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-1 focus-visible:after:ring-ring"
+      >
+        {decision.question}
+      </button>
+      <span className="shrink-0 text-xs text-warning-text">Needs you</span>
+    </li>
+  );
+}
+
+function CompactTaskRow({ task }: { task: TaskDto }) {
+  const { openTask } = useCloudAgentsNavigation();
+  return (
+    <li className="relative flex min-w-0 items-center gap-2 rounded-md px-2 py-1 hover:bg-state-hover">
+      <StatusDot className={PHASE_DOT[task.phase]} label={taskPhaseLabel(task)} />
+      <RoleIcon role={task.role} className="size-3.5" />
+      <button
+        type="button"
+        onClick={() => openTask(task.id)}
+        className="min-w-0 flex-1 truncate text-left text-sm text-foreground after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-1 focus-visible:after:ring-ring"
+      >
+        {task.title}
+      </button>
+      <ReportChip task={task} />
+      {task.prUrl ? <PrLink url={task.prUrl} /> : null}
+      <span className="shrink-0 text-xs text-muted-foreground">{taskPhaseLabel(task)}</span>
+      <OpenChatButton task={task} className="-my-0.5 size-6" />
+    </li>
+  );
+}
+
+// ------------------------------------------------------------------ info tab
+
+export function ThreadInfoSection({ threadId }: ExperimentalThreadInfoProps) {
+  const tasks = useThreadTasks(threadId);
+  const { openTask } = useCloudAgentsNavigation();
+  if (tasks.length === 0) return null;
+  return (
+    <InfoSection label="Cloud agents" count={tasks.length}>
+      <InfoList
+        items={tasks}
+        getKey={(task) => task.id}
+        renderItem={(task) => (
+          <InfoListRow
+            leading={<StatusDot className={PHASE_DOT[task.phase]} />}
+            leadingLabel={taskPhaseLabel(task)}
+            name={task.title}
+            title={`${task.title} · ${taskPhaseLabel(task)}`}
+            context={task.repo ? shortRepo(task.repo) : undefined}
+            trailing={
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {task.prUrl ? prLabel(task.prUrl) : taskPhaseLabel(task)}
+              </span>
+            }
+            onSelect={() => openTask(task.id)}
+          />
+        )}
+      />
+    </InfoSection>
+  );
+}
+
+// -------------------------------------------------------------- context card
+
+export function ThreadCardSection({ threadId }: ExperimentalThreadContextCardProps) {
+  const tasks = useThreadTasks(threadId);
+  const decisions = useBoard(threadId).data?.needsYou.length ?? 0;
+  const { openTask } = useCloudAgentsNavigation();
+  const openDecisions = useOpenDecisions(threadId);
+  if (tasks.length === 0 && decisions === 0) return null;
+  const decisionsLabel = `${plural(decisions, "decision")} ${decisions === 1 ? "needs" : "need"} you`;
+  return (
+    <>
+      {decisions > 0 ? (
+        <ThreadContextCardRow
+          icon="ComputerCloud"
+          label={decisionsLabel}
+          title={decisionsLabel}
+          trailing={<StatusDot className="bg-warning" />}
+          onClick={openDecisions}
+        />
+      ) : null}
+      {tasks.map((task) => (
+        <ThreadContextCardRow
+          key={task.id}
+          icon={ROLE_ICON[task.role]}
+          label={task.title}
+          title={`${task.title} · ${taskPhaseLabel(task)}`}
+          trailing={<StatusDot className={PHASE_DOT[task.phase]} label={taskPhaseLabel(task)} />}
+          action={workerChatId(task) ? <OpenChatButton task={task} className="size-6" /> : undefined}
+          onClick={() => openTask(task.id)}
+        />
+      ))}
+    </>
+  );
+}
+
+// ---------------------------------------------------------- side-panel tab
+
+/** The orchestrator's board: decisions, work to review, running and done. */
+export function ThreadAgentsTab({ threadId }: ExperimentalThreadTabProps) {
+  const { data } = useBoard(threadId);
+  const { openOrchestrator } = useCloudAgentsNavigation();
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Icon name="boat-sail" fallback="ComputerCloud" className="size-3.5" aria-hidden />
+        <span className="min-w-0 flex-1 truncate">{data ? summarizeBoard(data) : "…"} · via boat.dev</span>
+        <IconButton
+          label="Open in Cloud agents"
+          icon="ArrowUpRight"
+          className="-my-1"
+          onClick={() => openOrchestrator(threadId)}
+        />
+      </div>
+      <Board threadId={threadId} />
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ message card
+
+/** `::boat-task{id="t_…"}` in an assistant message → a live task card. */
+export function TaskDirective({ attributes, source }: PluginMessageDirectiveProps) {
+  const raw = typeof attributes.id === "string" ? attributes.id.trim() : "";
+  const id = TASK_ID_PATTERN.test(raw) ? raw : null;
+  const { data, error } = useTask(id);
+  const { openTask } = useCloudAgentsNavigation();
+
+  if (id === null) {
+    return <code className="rounded bg-secondary px-1 py-0.5 font-mono text-xs text-muted-foreground">{source}</code>;
+  }
+  const task = data?.task;
+  if (!task) {
+    return (
+      <div className="my-2 flex max-w-xl items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+        <Icon name="ComputerCloud" className="size-3.5" aria-hidden />
+        {data?.task === null ? (
+          <span>
+            Task <span className="font-mono">{id}</span> not found
+          </span>
+        ) : error ? (
+          <span>{error.message}</span>
+        ) : (
+          <span>
+            Loading task <span className="font-mono">{id}</span>…
+          </span>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="relative my-2 flex max-w-xl items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5 hover:bg-state-hover">
+      <RoleIcon role={task.role} />
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openTask(task.id)}
+            className="min-w-0 truncate text-left text-sm font-medium text-foreground after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none focus-visible:after:ring-1 focus-visible:after:ring-ring"
+          >
+            {task.title}
+          </button>
+          <ReportChip task={task} />
+        </div>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs text-muted-foreground">
+          <AgentBadge provider={task.provider} model={task.model} />
+          {task.prUrl ? <PrLink url={task.prUrl} /> : null}
+          <span className="tabular-nums">{plural(task.turns, "turn")}</span>
+          <span className="font-mono">{task.id}</span>
+        </div>
+      </div>
+      <PhasePill task={task} />
+      <OpenChatButton task={task} />
+      <IconButton
+        label="Open task"
+        icon="ArrowUpRight"
+        className="relative z-10"
+        onClick={() => openTask(task.id)}
+      />
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ homepage card
+
+/**
+ * "Hand a task to a cloud agent" with New task, and a way into orchestrators.
+ * Once you have orchestrators, the ones that need you are listed with Open.
+ */
+export function HomepageCard({ projectId }: PluginHomepageSectionProps) {
+  const [creating, setCreating] = useState(false);
+  const [orchestrating, setOrchestrating] = useState(false);
+  const { openOverview, openOrchestrator } = useCloudAgentsNavigation();
+  const orchestrators = (useOrchestrators().data?.orchestrators ?? []).filter((entry) => !entry.archived);
+  const onlyAgent = useOverview().data?.defaults.onlyAgent ?? null;
+  const board = useBoard(null).data;
+  const needs = new Map<string, number>();
+  for (const decision of board?.needsYou ?? []) {
+    if (decision.orchestratorThreadId) needs.set(decision.orchestratorThreadId, (needs.get(decision.orchestratorThreadId) ?? 0) + 1);
+  }
+  const waiting = orchestrators.filter((entry) => (needs.get(entry.threadId) ?? 0) > 0).slice(0, 3);
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-card">
+      <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-secondary text-secondary-foreground">
+          <Icon name="ComputerCloud" className="size-4" aria-hidden />
+        </div>
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="text-sm font-medium text-foreground">Hand a task to a cloud agent</div>
+          <p className="text-xs text-pretty text-muted-foreground">
+            {agentWords(onlyAgent)} works in a boat.dev sandbox and comes back with a PR.{" "}
+            {orchestrators.length === 0 ? (
+              <button
+                type="button"
+                onClick={() => setOrchestrating(true)}
+                className="rounded-sm underline underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                Or coordinate this project with an orchestrator
+              </button>
+            ) : null}
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <Button variant="ghost" size="sm" onClick={openOverview}>
+            Open Cloud agents
+          </Button>
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Icon name="Plus" /> New task
+          </Button>
+        </div>
+      </div>
+      {waiting.length > 0 ? (
+        <ul aria-label="Orchestrators that need you" className="divide-y divide-border border-t border-border">
+          {waiting.map((entry) => {
+            const count = needs.get(entry.threadId) ?? 0;
+            return (
+              <li key={entry.threadId} className="flex items-center gap-3 px-4 py-2">
+                <Icon name="Workflow" className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                  <ThreadName threadId={entry.threadId} fallback={entry.title} />
+                  <span className="text-warning-text"> · {count} {count === 1 ? "needs" : "need"} you</span>
+                </span>
+                <Button variant="outline" size="sm" className="h-7 shrink-0" onClick={() => openOrchestrator(entry.threadId)}>
+                  Open
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      <NewTaskDialog open={creating} onOpenChange={setCreating} />
+      <NewOrchestratorDialog open={orchestrating} onOpenChange={setOrchestrating} projectId={projectId} />
+    </div>
+  );
+}

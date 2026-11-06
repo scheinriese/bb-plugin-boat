@@ -1,0 +1,53 @@
+# gitleaks configuration (https://github.com/gitleaks/gitleaks), gitleaks 8.25 or later.
+# The default rules, plus links and tokens this plugin handles.
+# Test fixtures must stay obviously fake (example-…, fake_…, tok_${id}).
+
+title = "bb-plugin-boat"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "boat-preview-token"
+description = "Token in a private boat preview link (?_token=…)"
+regex = '''[?&]_token=([A-Za-z0-9_-]{16,})'''
+secretGroup = 1
+keywords = ["_token="]
+
+[[rules.allowlists]]
+description = "Obviously fake values"
+stopwords = ["example", "fake", "dummy", "placeholder", "redacted"]
+
+[[rules]]
+id = "presigned-link-credential"
+description = "Credential or signature in a presigned S3 or R2 link"
+regex = '''X-Amz-(?:Credential|Signature)=([A-Za-z0-9%/_.+-]{16,})'''
+secretGroup = 1
+keywords = ["x-amz-credential", "x-amz-signature"]
+
+[[rules.allowlists]]
+description = "Obviously fake values and the public AWS SigV4 documentation example"
+stopwords = ["example", "fake", "dummy", "placeholder", "redacted"]
+regexes = ['''^aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404$''']
+
+[[rules]]
+id = "bb-connect-host"
+description = "Personal bb Connect host name (<name>.getbb.app)"
+regex = '''\b[a-z0-9][a-z0-9-]*\.getbb\.app\b'''
+keywords = [".getbb.app"]
+
+[[rules.allowlists]]
+description = "Public getbb.app hosts"
+regexTarget = "match"
+regexes = ['''^(?:www|docs|cdn|api)\.getbb\.app$''']
+
+[[rules]]
+id = "github-user-token"
+description = "GitHub App user token (ghu_…), as boat puts into sandboxes"
+regex = '''\b(ghu_[A-Za-z0-9]{20,})\b'''
+secretGroup = 1
+keywords = ["ghu_"]
+
+[[rules.allowlists]]
+description = "Obviously fake values"
+stopwords = ["example", "fake", "dummy", "placeholder", "redacted"]

@@ -1,0 +1,22 @@
+{
+  "account": {
+    "identifier": "you@example.com",
+    "loginState": "active",
+    "plan": "Standard",
+    "signedIn": true,
+    "status": "active",
+    "suspension": null
+  },
+  "api": {
+    "error": null,
+    "healthy": true,
+    "status": "healthy",
+    "url": "https://boat.dev"
+  },
+  "config": {
+    "apiUrl": "https://boat.dev",
+    "binary": "/home/you/.ascii/bin/boat",
+    "channel": "prod",
+    "path": "/home/you/.config/ascii/boat/config.json"
+  }
+}

@@ -1,0 +1,225 @@
+{
+  "accessTier": "trial",
+  "accountPlan": "user",
+  "activeSandboxPlanKey": "box_20",
+  "activeSandboxes": 0,
+  "activeStates": [
+    "provisioned",
+    "cloning",
+    "ready",
+    "idle",
+    "running"
+  ],
+  "billingStatus": "active",
+  "blockedReason": null,
+  "canStart": true,
+  "checkoutRequired": false,
+  "contactMessage": "Move to a bigger plan for higher limits.",
+  "creditBalanceHours": 550,
+  "creditBalanceSeconds": 1980000,
+  "creditPurchasedSeconds": 0,
+  "creditSecondsPerDollar": 100000,
+  "creditUsedSeconds": 20000,
+  "currentLimits": {
+    "activeSandboxes": 2,
+    "creationRatePerMinute": 5,
+    "creationRequestsPerDay": 75,
+    "creationRequestsPerHour": 25
+  },
+  "giftLimit": null,
+  "hasPaymentHistory": false,
+  "hasSeatPlan": true,
+  "hasSubscription": true,
+  "keepGoing": {
+    "available": true,
+    "capDollars": 80,
+    "capReached": false,
+    "command": "boat billing extra-starts on",
+    "enabled": false,
+    "enabledAt": null,
+    "summary": [
+      "When you use all your included starts and your wallet is empty, new sandboxes still start.",
+      "Each extra start costs $0.03 to $0.07. Boat adds it to your next invoice.",
+      "You never pay more than $80 a month for extra starts.",
+      "You can turn this off at any time: boat billing extra-starts off"
+    ],
+    "terms": "When your wallet is empty and a start goes past a plan limit, Boat lets the start run and bills it to the default payment method of your subscription. Each such start costs $0.03 up to 1.5 times the limit, $0.05 up to 2 times, $0.07 up to 6 times (3 times per minute). Boat adds the total to your next subscription invoice and charges it on that invoice date. If your subscription ends first, your wallet pays what is left, and can go negative. The total stops at $80 per billing month. This limit is the upgrade price of your plan and changes with your plan and seats. Turn this off at any time with this command: boat billing extra-starts off",
+    "usedDollars": 0,
+    "usedUnits": 0
+  },
+  "last24hUsageSeconds": 20000,
+  "liveUsageSeconds": 0,
+  "machineTypes": [
+    {
+      "available": true,
+      "reason": null,
+      "type": "small"
+    },
+    {
+      "available": true,
+      "reason": null,
+      "type": "default"
+    },
+    {
+      "available": false,
+      "reason": "not during the free trial; the first payment unlocks it",
+      "type": "large"
+    },
+    {
+      "available": false,
+      "reason": "needs the $100/month plan or higher",
+      "type": "xlarge"
+    }
+  ],
+  "maxActiveSandboxes": 2,
+  "maxCreationRequestsPerDay": 75,
+  "maxCreationRequestsPerMinute": 5,
+  "nextStartDollars": 0,
+  "overagePrices": {
+    "savedSnapshotDayDollars": 0.056,
+    "startBrackets": [
+      {
+        "aboveMultiple": 1,
+        "dollars": 0.03,
+        "upToMultiple": 1.5
+      },
+      {
+        "aboveMultiple": 1.5,
+        "dollars": 0.05,
+        "upToMultiple": 2
+      },
+      {
+        "aboveMultiple": 2,
+        "dollars": 0.07,
+        "upToMultiple": 6
+      }
+    ],
+    "startLimitMultiplier": 6,
+    "startMinuteLimitMultiplier": 3,
+    "vmHourDollars": 0.036
+  },
+  "packBalanceDollars": 0,
+  "packBalanceHours": 0,
+  "packBalanceSeconds": 0,
+  "plan": null,
+  "planIncluded": {
+    "periodEnd": "2026-02-01T12:00:00.000Z",
+    "vmHours": 555.56,
+    "vmHoursRemaining": 550
+  },
+  "planName": null,
+  "planNudge": null,
+  "sandboxPlanDollars": 20,
+  "sandboxPlanKey": "box_20",
+  "sandboxPlanTiers": [
+    {
+      "displayPrice": "$20/mo",
+      "dollars": 20,
+      "includedSeconds": 2000000,
+      "key": "box_20",
+      "maxActiveSandboxes": 100,
+      "purchasable": true,
+      "startsPerDay": 200,
+      "startsPerHour": 60,
+      "startsPerMinute": 12
+    },
+    {
+      "displayPrice": "$100/mo",
+      "dollars": 100,
+      "includedSeconds": 10000000,
+      "key": "box_100",
+      "maxActiveSandboxes": 300,
+      "purchasable": true,
+      "startsPerDay": 840,
+      "startsPerHour": 210,
+      "startsPerMinute": 30
+    },
+    {
+      "displayPrice": "$500/mo",
+      "dollars": 500,
+      "includedSeconds": 50000000,
+      "key": "box_500",
+      "maxActiveSandboxes": 1000,
+      "purchasable": true,
+      "startsPerDay": 1680,
+      "startsPerHour": 420,
+      "startsPerMinute": 65
+    },
+    {
+      "displayPrice": "$2000/mo",
+      "dollars": 2000,
+      "includedSeconds": 200000000,
+      "key": "box_2000",
+      "maxActiveSandboxes": 2000,
+      "purchasable": true,
+      "startsPerDay": 2400,
+      "startsPerHour": 600,
+      "startsPerMinute": 90
+    }
+  ],
+  "serviceAccount": false,
+  "standardLimits": {
+    "activeSandboxes": 100,
+    "creationRatePerMinute": 12,
+    "creationRequestsPerDay": 200,
+    "creationRequestsPerHour": 60
+  },
+  "startBlockedReason": null,
+  "startLimits": {
+    "perDay": 75,
+    "perHour": 25,
+    "perMinute": 5
+  },
+  "startLimitsWithWallet": null,
+  "startWindowFull": null,
+  "starts": {
+    "day": {
+      "limit": 75,
+      "remaining": 75,
+      "used": 0
+    },
+    "hour": {
+      "limit": 25,
+      "remaining": 25,
+      "used": 0
+    },
+    "minute": {
+      "limit": 5,
+      "remaining": 5,
+      "used": 0
+    },
+    "unlimited": false
+  },
+  "subscriptionCancelAtPeriodEnd": false,
+  "subscriptionCurrentPeriodEnd": "2026-02-01T12:00:00.000Z",
+  "subscriptionQuotaSeconds": 2000000,
+  "subscriptionRemainingSeconds": 1980000,
+  "subscriptionStatus": "trialing",
+  "subscriptionTrialEndsAt": "2026-01-08T12:00:00.000Z",
+  "trialComputeCapSeconds": 90000,
+  "trialComputeUsedSeconds": 0,
+  "trialLimits": {
+    "activeSandboxes": 2,
+    "creationRatePerMinute": 5,
+    "creationRequestsPerDay": 75,
+    "creationRequestsPerHour": 25
+  },
+  "trialLine": "2 boxes, 75 new/day, 25h of 25h compute left, auto-stop max 2h, no large or xlarge types",
+  "unlimited": false,
+  "upgradeEffects": {
+    "endTrialOrFirstPayment": {
+      "activeSandboxes": 100,
+      "creationRequestsPerDay": 200,
+      "note": "First payment moves the account to standard limits."
+    },
+    "startTrial": {
+      "activeSandboxes": 2,
+      "canCreate": true,
+      "creationRequestsPerDay": 75,
+      "note": "Starts the 7 day trial and unlocks usage, but keeps trial limits until the first payment."
+    }
+  },
+  "wallet": {
+    "balanceDollars": 0
+  }
+}
