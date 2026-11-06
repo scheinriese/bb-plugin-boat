@@ -80,7 +80,8 @@ export function orchestratorAgentChoice(settings: OrchestratorSettings, effortSe
   return {
     providerId: CHAT_PROVIDER_ID[provider],
     provider,
-    model: model ?? orchestratorModel(settings, provider),
+    // boat's opus-5-5 is bb's claude-opus-5-5, like the preset's.
+    model: model !== null ? (bbModelId(provider, model) ?? model) : orchestratorModel(settings, provider),
     effort: effort ?? effortSetting,
   };
 }

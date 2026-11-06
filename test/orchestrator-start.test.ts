@@ -68,6 +68,9 @@ test("model and effort: the Build preset's model for the agent and Effort for or
   // A named model brings its agent along, and keeps the effort setting.
   assert.deepEqual(orchestratorAgentChoice(settings, "high", { model: "gpt-6-astra" }), { providerId: "codex", provider: "codex", model: "gpt-6-astra", effort: "high" });
   assert.deepEqual(orchestratorAgentChoice(preferring("codex"), "high", { model: "claude-fable-5-1" }).providerId, "claude-code");
+  // boat's id for a Claude model (what `bb boat task start --model` takes) becomes bb's.
+  assert.deepEqual(orchestratorAgentChoice(preferring("codex"), "high", { model: "opus-5-5" }), { providerId: "claude-code", provider: "claude", model: "claude-opus-5-5", effort: "high" });
+  assert.equal(orchestratorAgentChoice(settings, "high", { providerId: "claude", model: "fable-5-1" }).model, "claude-fable-5-1");
   // A model id that doesn't say: the default agent.
   assert.equal(orchestratorAgentChoice(settings, "high", { model: "house-model" }).providerId, "claude-code");
   // Named effort wins.
@@ -175,6 +178,8 @@ test("bb boat orchestrator new: --provider, --model and --effort win over the se
   assert.deepEqual(await run("--provider", "claude-code", "--model", "claude-fable-5-1"), { providerId: "claude-code", model: "claude-fable-5-1", reasoningLevel: "medium" });
   // A model alone brings its agent.
   assert.deepEqual(await run("--model", "gpt-6-astra"), { providerId: "codex", model: "gpt-6-astra", reasoningLevel: "medium" });
+  // boat's id for a Claude model (as `task start --model` takes it) reaches bb as bb's id.
+  assert.deepEqual(await run("--model", "opus-5-5"), { providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "medium" });
   assert.deepEqual(await run("--reasoning-effort", "xhigh"), { providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "xhigh" });
   // Another bb agent gets only what was named.
   assert.deepEqual(await run("--provider", "pi"), { providerId: "pi", model: undefined, reasoningLevel: undefined });
