@@ -104,9 +104,10 @@ pay for:
   includes about 555 hours of Default sandbox time a month (about $0.036 an
   hour). A stopped sandbox uses no sandbox time, and waking it counts as a
   start. The trial lasts 7 days (card required) and allows 2 sandboxes at
-  once, 75 starts a day and an auto-stop of at most 2 hours. The plugin
-  reads that cap from `boat limits` and keeps every sandbox it starts,
-  resumes or extends within it. `boat limits` shows what's left.
+  once, Small and Default sizes, 75 starts a day and an auto-stop of at
+  most 2 hours. The plugin reads that cap from `boat limits` and keeps
+  every sandbox it starts, resumes or extends within it. `boat limits`
+  shows what's left.
 - **Agent usage on your Claude or ChatGPT subscription**, from the same
   usage limits you use everywhere else.
 
@@ -115,6 +116,10 @@ What the plugin does to keep that down:
 - At most 3 sandboxes run at once (**Sandboxes at once**; 0 means your
   plan's limit). Agents using the plugin ask you before they start more
   than 3 tasks at once.
+- New sandboxes use the **Default sandbox size** (Default) unless a
+  project or a task picks another. Agents need your OK for a larger
+  sandbox, except one size up after it ran out of memory or came close
+  ([sandbox sizes](docs/features.md#sandbox-sizes-and-memory)).
 - A sandbox stops once its agent has waited 30 minutes (**Stop idle
   sandboxes after**). The task picks up again on your next message. Closing
   a task deletes its sandbox.
@@ -164,7 +169,7 @@ and what it stores.
 - [**New task**](docs/features.md#new-task) with starters: check a repo runs
   in a sandbox, fix a bug, explore and plan.
 - [**Projects**](docs/features.md#projects): repos with their base branches,
-  boat environment, snapshot and instructions, set once.
+  boat environment, snapshot, sandbox size and instructions, set once.
 - [**Task chats**](docs/features.md#how-tasks-run-in-boat-or-as-task-chats):
   open a task as a bb chat and type into it: per project, one task at a
   time (**Run as a chat**), or a headless task later (**Continue as a
@@ -178,6 +183,9 @@ and what it stores.
   never push to.
 - [**Previews**](docs/features.md#previews): private links to the app
   running in the sandbox, with Wake, Extend and Stop.
+- [**Sandbox sizes and memory**](docs/features.md#sandbox-sizes-and-memory):
+  a size per project, a plain message when a sandbox runs out of memory,
+  **Continue on a larger sandbox**, and a measured recommendation.
 - [**Snapshots**](docs/features.md#snapshots): start sandboxes with your
   repo already set up.
 - [**Secrets by name

@@ -170,7 +170,7 @@ function decideMove(
       return {
         kind: "request-handoff",
         to: settings.preferred,
-        reason: `${AGENT_NAME[settings.preferred]} has room again (${Math.round(preferred.usedPercent)}% of its ${preferred.window.toLowerCase()})`,
+        reason: `${AGENT_NAME[settings.preferred]} has room again (${Math.round(preferred.usedPercent)}% of its ${preferred.window.toLowerCase()} used)`,
       };
     }
   }

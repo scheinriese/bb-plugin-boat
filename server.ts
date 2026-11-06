@@ -256,6 +256,11 @@ export default async function plugin(bb: BbPluginApi) {
     quotas,
     connect,
     preflight: (input) => setup.preflight(input),
+    // Sandbox sizes: the projects' sizes, the plan's sizes (never waiting unless fresh), and plain messages to chats.
+    projects: () => projects.list(),
+    sizePlan: async (options) => (await setup.reading({ force: options?.fresh === true }).catch(() => null))?.plan?.machineTypes ?? null,
+    sizePlanNow: () => setup.peek()?.facts.plan?.machineTypes ?? null,
+    tell: (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(),
     evidence: createEvidenceSource(readRepoFile, undefined, (error, at) =>
       bb.log.warn(`evidence uploader: GitHub refresh failed (${error instanceof Error ? error.message : String(error)}); installing the copy from ${new Date(at).toISOString()}`),
     ),

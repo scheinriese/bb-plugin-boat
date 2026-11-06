@@ -743,3 +743,10 @@ test("two moves at once: exactly one runs; something else holding the sandbox (a
   release();
   assert.equal((await move(made, other.id)).task.runner, "chat");
 });
+
+test("the move's first message tells the chat its sandbox's size and to run heavy suites one at a time", async () => {
+  const made = env();
+  const task = await headless(made);
+  await move(made, task.id);
+  assert.match(made.chat.spawns[0]!.prompt, /Run heavy test suites \(browser tests, full builds\) one at a time/);
+});

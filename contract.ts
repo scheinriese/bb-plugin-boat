@@ -6,6 +6,9 @@
 // is an identity function.
 import type { defineRpcContract as DefineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { sizeRpcMethods, taskMemorySchema } from "./contract-size.ts";
+
+export { SIZE_VALUES, taskMemorySchema, resizeInfoSchema, type TaskMemoryDto, type ResizeInfoDto } from "./contract-size.ts";
 
 const defineRpcContract = ((contract: unknown) => contract) as typeof DefineRpcContract;
 
@@ -178,6 +181,8 @@ export const projectSchema = z.object({
   protectedBranches: z.array(z.string()),
   /** Added to the brief of every task of this project ("" for none). */
   instructions: z.string(),
+  /** Size of its new task sandboxes (null: the Default sandbox size setting). */
+  machineType: machineTypeSchema.nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -200,6 +205,8 @@ export const projectInputSchema = z.object({
   protectedBranches: z.union([z.array(z.string().max(200)).max(50), z.string().max(2000)]).optional(),
   /** absent: unchanged. */
   instructions: z.string().max(10_000).optional(),
+  /** null: the Default sandbox size setting; absent: unchanged. */
+  machineType: machineTypeSchema.nullable().optional(),
 });
 export type ProjectInputDto = z.infer<typeof projectInputSchema>;
 
@@ -312,6 +319,8 @@ export const taskDetailSchema = taskSchema.extend({
   result: z.string().nullable(),
   events: z.array(z.object({ at: z.string(), kind: z.string(), text: z.string() })),
   dashboardUrl: z.string().nullable(),
+  /** Its sandbox's size, out-of-memory kills, peak memory and moves (null: couldn't read). */
+  memory: taskMemorySchema.nullable(),
 });
 export type TaskDetailDto = z.infer<typeof taskDetailSchema>;
 
@@ -504,6 +513,8 @@ export const sandboxSizeSchema = z.object({
 export type SandboxSizeDto = z.infer<typeof sandboxSizeSchema>;
 
 export const rpcContract = defineRpcContract({
+  // Sandbox sizes and memory (contract-size.ts).
+  ...sizeRpcMethods,
   // ------------------------------------------------------------- reads
   overview: {
     input: z.null(),
@@ -690,6 +701,8 @@ export const rpcContract = defineRpcContract({
        * ([] for a task with no repo); null or absent: no warning confirmed.
        */
       confirmUntrustedChat: z.array(z.string().trim().max(200)).max(20).nullable().optional(),
+      /** Measure the first turn's peak memory and recommend a size (Check this repo runs in a sandbox). */
+      measureMemory: z.boolean().optional(),
     }),
     output: launchResult,
   },

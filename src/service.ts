@@ -67,6 +67,8 @@ import { AGENT_NAME, agentWithRoom, effectiveRelay, onlyAgent, otherAgent, type 
 import type { ConnectCheck } from "./connect.ts";
 import { renderBoatTranscript, transcriptDir, transcriptPath } from "./transcript.ts";
 import type { PreflightInput } from "./setup.ts";
+import type { PlanSize, SizedProject } from "./memory.ts";
+import { SandboxSizes } from "./sandbox-size.ts";
 
 export interface BoatSettings {
   boatPath: string;
@@ -188,6 +190,16 @@ export interface ServiceHooks {
    * login): throws a setup_required TaskError with the fix. Absent: not checked.
    */
   preflight?(input: PreflightInput): Promise<void>;
+  /** Stored projects (a project's sandbox size); absent: none. */
+  projects?(): SizedProject[];
+  /** The plan's sandbox sizes from `boat limits` (fresh: read boat now); null: unknown, boat decides. */
+  sizePlan?(options?: { fresh?: boolean }): Promise<PlanSize[] | null>;
+  /** The same from the newest reading, never waiting (null: none yet). */
+  sizePlanNow?(): PlanSize[] | null;
+  /** Post a plain message into a chat (a move that ended after its caller stopped waiting). */
+  tell?(threadId: string, text: string): Promise<void>;
+  /** Tests: the memory check's cap and the move's poll interval and waits (ms). */
+  sizeTiming?: { checkMs?: number; pollMs?: number; stopMs?: number; startMs?: number; reconnectMs?: number };
 }
 
 export interface StartTaskInput {
@@ -232,6 +244,8 @@ export interface StartTaskInput {
   confirmUntrustedChat?: string[] | null;
   /** false: no evidence uploader in the sandbox (the test task); default: as the settings say. */
   evidence?: boolean;
+  /** Measure the first turn's peak memory and recommend a size (the repo check, the test task). */
+  measureMemory?: boolean;
   signal?: AbortSignal;
 }
 
@@ -573,11 +587,28 @@ export class BoatService {
   readonly boat: BoatApi;
   readonly store: TaskStore;
   private readonly hooks: ServiceHooks;
+  /** Sandbox sizes and memory (src/sandbox-size.ts). */
+  readonly sizes: SandboxSizes;
 
   constructor(boat: BoatApi, store: TaskStore, hooks: ServiceHooks) {
     this.boat = boat;
     this.store = store;
     this.hooks = hooks;
+    this.sizes = new SandboxSizes({
+      boat,
+      store,
+      hooks,
+      settings: () => this.settings(),
+      claim: (sandboxId) => this.claim(sandboxId),
+      // A move to a task chat holds the sandbox too (bb is being installed there).
+      claimed: (sandboxId) => this.claims.has(sandboxId) || this.isMovingSandbox(sandboxId),
+      bringUp: (sandboxId, signal) => this.ensureRunning(sandboxId, signal),
+      markSuspended: (hostId) => this.suspendedHosts.add(hostId),
+      markResumed: (hostId) => this.suspendedHosts.delete(hostId),
+      followup: (id, message, options) => this.followup(id, message, options),
+      refresh: (id) => this.refreshChatTask(id),
+      deliverPending: () => this.deliverPending(),
+    });
   }
 
   settings(): Promise<BoatSettings> {
@@ -605,7 +636,7 @@ export class BoatService {
   // -------------------------------------------------------------------------
   // Capacity
 
-  async capacity(signal?: AbortSignal): Promise<{
+  async capacity(signal?: AbortSignal, forSandbox?: string): Promise<{
     limits: Limits | null;
     active: Sandbox[];
     cap: number | null;
@@ -622,7 +653,8 @@ export class BoatService {
     const cap =
       planCap === null ? userCap : userCap === null ? planCap : Math.min(planCap, userCap);
     // boat's own count also covers sandboxes the list can miss while they provision.
-    const used = Math.max(active.length, limits?.activeSandboxes ?? 0);
+    // A sandbox stopped for a move to another size keeps its slot (sizes).
+    const used = Math.max(active.length, limits?.activeSandboxes ?? 0) + this.sizes.reservedSlots(active, forSandbox);
     return { limits, active, cap, free: cap === null ? null : Math.max(0, cap - used) };
   }
 
@@ -631,9 +663,9 @@ export class BoatService {
    * least recently used plugin-created sandbox whose tasks are all waiting
    * (their conversations survive the stop and resume on follow-up).
    */
-  private async ensureSlot(signal?: AbortSignal): Promise<{ limits: Limits | null; stopped: string | null }> {
+  private async ensureSlot(signal?: AbortSignal, forSandbox?: string): Promise<{ limits: Limits | null; stopped: string | null }> {
     const settings = await this.settings();
-    const { limits, active, cap, free } = await this.capacity(signal);
+    const { limits, active, cap, free } = await this.capacity(signal, forSandbox);
     if (limits?.checkoutRequired) {
       throw new TaskError(
         "Your boat.dev account has no plan yet, so it can't start sandboxes.",
@@ -781,8 +813,15 @@ export class BoatService {
           if (current === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
           if (ACTIVE_STATES.has(current.state)) return current;
           if (current.state !== "stopped" && current.state !== "archived") return null;
-          const { limits } = await this.ensureSlot(signal);
-          await withinAutoStopCap(ttlSeconds(await this.settings(), limits), (ttl) => this.boat.resume(sandboxId, ttl, signal));
+          const { limits } = await this.ensureSlot(signal, sandboxId);
+          // A move to another size resumes onto it, whoever resumes (sizes).
+          const type = this.sizes.pendingType(sandboxId);
+          try {
+            await withinAutoStopCap(ttlSeconds(await this.settings(), limits), (ttl) => this.boat.resume(sandboxId, ttl, signal, type));
+          } catch (error) {
+            if (type !== null) this.sizes.resumeFailed(sandboxId, error);
+            throw error;
+          }
           this.store.resetPreviewHealthForSandbox(sandboxId);
           return (await this.boat.findInfo(sandboxId, signal)) ?? current;
         });
@@ -1014,6 +1053,18 @@ export class BoatService {
     const reasoningEffort = agentEffort(runner, provider, explicitEffort || choice?.effort || settings.reasoningEffort.trim() || null);
     assertFrontierAllowed(settings.modelTiers, tier, model, reasoningEffort, input.userApproved === true);
     const reason = input.reason?.trim() ? clip(input.reason.trim().replace(/\s+/g, " "), 300) : null;
+    // The new sandbox's size: asked for, the project's, or the setting (sizes).
+    const sandboxChoice = (input.sandbox ?? "").trim();
+    const sizing = await this.sizes.resolveNewType({
+      requested: input.machineType ?? null,
+      checkPlan: sandboxChoice === "" || sandboxChoice === "new" || sandboxChoice === "auto",
+      projectId: boatProject,
+      repo,
+      parent,
+      role: input.role,
+      settings,
+      userApproved: input.userApproved === true,
+    });
     const id = newTaskId();
     const now = new Date().toISOString();
 
@@ -1100,6 +1151,7 @@ export class BoatService {
       unshipped: null,
     });
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
+    if (input.measureMemory) this.sizes.watch(id); // sizes
     if (agentNote !== null) this.store.addEvent(id, "agent", agentNote);
     if (relayNote !== null) this.store.addEvent(id, "relay", relayNote);
     if (untrusted) {
@@ -1140,7 +1192,7 @@ export class BoatService {
     // The project's own instructions for its tasks (a project given, else the parent's or the repo's).
     const projectNotes =
       project !== null ? (project.instructions?.trim() ? [project.instructions.trim()] : []) : (this.hooks.projectInstructions?.(boatProject, repo) ?? []);
-    const run = () => this.runTask(task, input, controller, { parent, repo, checkout, provider, model, settings, protect, projectNotes });
+    const run = () => this.runTask(task, input, controller, { parent, repo, checkout, provider, model, settings, protect, projectNotes, sizing });
     return { task, run };
   }
 
@@ -1388,9 +1440,11 @@ export class BoatService {
       protect: string[];
       /** The project's instructions, added after the standing ones. */
       projectNotes: string[];
+      /** A new sandbox's size, and the history note on where it came from. */
+      sizing: { type: MachineType; note: string | null };
     },
   ): Promise<Task> {
-    const { parent, repo, checkout, provider, model, settings, protect, projectNotes } = plan;
+    const { parent, repo, checkout, provider, model, settings, protect, projectNotes, sizing } = plan;
     const id = initial.id;
     const onOuterAbort = () => controller.abort();
     input.signal?.addEventListener("abort", onOuterAbort, { once: true });
@@ -1408,6 +1462,7 @@ export class BoatService {
       // 1. Sandbox: reuse or create.
       const reuse = await this.pickSandbox(input, parent, settings, signal);
       stillWanted();
+      this.sizes.assertSandboxNotResizing(reuse, "Start the task once the move is done, or in a new sandbox."); // sizes
       let sandbox: Sandbox;
       if (reuse !== null) {
         release = this.claim(reuse);
@@ -1417,7 +1472,7 @@ export class BoatService {
       } else {
         sandbox = await this.createSandbox({
           name: `bb ${id} ${slug(task.title)}`,
-          type: input.machineType ?? null,
+          type: sizing.type,
           environment: task.environment,
           snapshot: task.snapshot,
           signal,
@@ -1426,6 +1481,7 @@ export class BoatService {
         release = this.claim(sandbox.id);
         task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: true }) ?? task;
         this.store.addEvent(id, "sandbox", `Created sandbox ${sandbox.id}${task.snapshot ? ` from snapshot ${task.snapshot}` : ""}`);
+        if (sizing.note !== null) this.store.addEvent(id, "sandbox-size", sizing.note); // sizes
       }
       this.hooks.changed([id]);
       stillWanted();
@@ -1519,6 +1575,9 @@ export class BoatService {
         task = this.store.update(id, { runner: "boat", model: boatModelId(provider, task.model), reasoningEffort: boatEffort(task.reasoningEffort) }) ?? task;
         this.store.addEvent(id, "runner", `Sandbox ${reuse} has no bb machine; running headless in boat`);
       }
+      // What the sandbox is (new or reused), for the prompt (sizes).
+      const sandboxLine = await this.sizes.atDispatch(task, sandbox, { created: createdSandbox !== null, requested: sizing.type, signal });
+      stillWanted();
 
       // 3. Dispatch the agent.
       const prompt = composeInitialPrompt({
@@ -1542,6 +1601,7 @@ export class BoatService {
         tier: task.tier,
         provider,
         evidence,
+        sandboxLine,
         extraInstructions: [
           settings.workerInstructions,
           ...projectNotes,
@@ -1800,6 +1860,8 @@ export class BoatService {
       userApproved?: boolean;
       /** Only ask for uploads: same agent and model, and the task keeps its review and ready state. */
       evidenceOnly?: boolean;
+      /** Only run the checks, send nothing (a move to another size checks its follow-up first; sizes). */
+      dryRun?: boolean;
       signal?: AbortSignal;
     } = {},
   ): Promise<Task> {
@@ -1807,6 +1869,7 @@ export class BoatService {
     // A chat that just finished may not be recorded yet.
     const task = await this.refreshChatTask(idOrPrefix);
     if (message.trim() === "") throw new TaskError("The follow-up message is empty.", "invalid_task");
+    this.sizes.assertCanFollowup(task); // sizes
     if (options.evidenceOnly) return this.evidenceFollowup(task, message, options);
     if (task.status === "starting") {
       throw new TaskError(
@@ -1856,7 +1919,7 @@ export class BoatService {
     // Pushing a branch or posting on a PR needs the sandbox's GitHub login.
     const needsGithub = task.delivery === "pr" && task.repo !== null;
     // A worker chat's machine is woken by the follow-up anyway: wake it now to check its login.
-    if (needsGithub) await this.assertGithubLogin(task, { signal: options.signal, resume: task.runner === "chat" });
+    if (needsGithub && options.dryRun !== true) await this.assertGithubLogin(task, { signal: options.signal, resume: task.runner === "chat" });
     // With one agent (Coding agents), the follow-up runs on it, with a note.
     const only = onlyAgent(settings.agents);
     // An agent at its switch point hands the follow-up to the other one (when
@@ -1901,6 +1964,7 @@ export class BoatService {
       reasoningEffort === task.reasoningEffort &&
       this.store.latestEvent(task.id, "approval") !== null;
     assertFrontierAllowed(settings.modelTiers, tier, model, reasoningEffort, options.userApproved === true || keepsApproval);
+    if (options.dryRun === true) return task;
     const newlyApproved =
       options.userApproved === true && !keepsApproval && needsFrontierApproval(settings.modelTiers, tier, model, reasoningEffort);
     const reason = options.reason?.trim()
@@ -1936,6 +2000,7 @@ export class BoatService {
     }
     const release = this.claim(task.sandboxId!);
     try {
+      this.sizes.assertCanFollowup(task); // sizes
       await this.ensureRunning(task.sandboxId!, options.signal);
       // Now that the sandbox is up, its login can be asked directly.
       if (needsGithub) await this.assertGithubLogin(task, { signal: options.signal });
@@ -1943,7 +2008,13 @@ export class BoatService {
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
         // A new agent on a Deep task gets the working mode for its own tools.
-        prompt: composeFollowupPrompt(task.role, message, { enteringDeep, provider, evidence: this.hasEvidence(task.id), delivery: task.delivery }),
+        prompt: composeFollowupPrompt(task.role, message, {
+          enteringDeep,
+          provider,
+          evidence: this.hasEvidence(task.id),
+          delivery: task.delivery,
+          sandboxNote: this.sizes.followupNote(task),
+        }),
         provider,
         model,
         reasoningEffort,
@@ -1974,6 +2045,7 @@ export class BoatService {
         await this.boat.interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       }
+      this.sizes.noteSent(task.id); // sizes
       if (newlyApproved) this.store.addEvent(task.id, "approval", "Frontier at max effort, approved by the user (follow-up)");
       this.markChangedSinceReview(task);
       if (agentNote !== null) this.store.addEvent(task.id, "agent", agentNote);
@@ -2042,6 +2114,7 @@ export class BoatService {
     const running = { status: "running" as const, turns: task.turns + 1, error: null, finishedAt: null, notifiedAt: null };
     if (isChat) {
       const marker = chatTurnMarker();
+      this.sizes.assertCanFollowup(task); // sizes
       const claimed = this.store.transition(task.id, ["idle", "failed"], { ...running, promptId: marker });
       if (claimed === null) throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       if (task.hostId !== null) this.suspendedHosts.delete(task.hostId);
@@ -2062,6 +2135,7 @@ export class BoatService {
     }
     const release = this.claim(task.sandboxId!);
     try {
+      this.sizes.assertCanFollowup(task); // sizes
       await this.ensureRunning(task.sandboxId!, options.signal);
       const dispatch = await this.boat.prompt({
         sandboxId: task.sandboxId!,
@@ -2102,6 +2176,7 @@ export class BoatService {
     const chat = this.hooks.chat!;
     // Claim the turn first, so the monitor treats what follows as this turn.
     const marker = chatTurnMarker();
+    this.sizes.assertCanFollowup(task); // sizes
     const claimed = this.store.transition(task.id, ["idle", "failed"], {
       status: "running",
       promptId: marker,
@@ -2123,6 +2198,8 @@ export class BoatService {
     try {
       if (next.provider !== task.provider) {
         const threadId = await this.openHandoverChat(task, { ...next, why: "switch", message });
+        // The handover names the sandbox's size (sizes).
+        this.sizes.noteSent(task.id);
         await chat.stop(task.threadId!).catch(() => undefined);
         return this.store.update(task.id, { threadId }) ?? claimed;
       }
@@ -2135,9 +2212,11 @@ export class BoatService {
           effort: next.reasoningEffort,
           evidence: this.hasEvidence(task.id),
           delivery: task.delivery,
+          sandboxNote: this.sizes.followupNote(task),
         }),
         { steer: false, ...(next.changesModel ? { model: next.model, effort: next.reasoningEffort } : {}) },
       );
+      this.sizes.noteSent(task.id); // sizes
       return claimed;
     } catch (error) {
       // Nothing was sent: put the task back as it was.
@@ -2163,6 +2242,21 @@ export class BoatService {
       );
       throw error;
     }
+  }
+
+  /**
+   * No turn has ended since the plugin opened the task's current chat (its
+   * "chat" event): the chat has no earlier answer to compare with.
+   */
+  private firstTurnInChat(task: Task): boolean {
+    if (task.threadId === null) return false;
+    const events = this.store.events(task.id, 200);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!;
+      if (event.kind === "finished") return false;
+      if (event.kind === "chat" && event.text === task.threadId) return true;
+    }
+    return false;
   }
 
   /** bb chats keep one agent: a handover opens a new chat in the task's workspace. */
@@ -2215,6 +2309,7 @@ export class BoatService {
         provider: next.provider,
         effort: next.reasoningEffort,
         evidence: this.hasEvidence(task.id),
+        sandboxLine: this.sizes.lineFor(task, "chat"),
       }),
       provider: next.provider,
       model: next.model,
@@ -2368,6 +2463,7 @@ export class BoatService {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(name)) {
       throw new TaskError(`"${name}" isn't a snapshot name.`, "invalid_value", "Use letters, digits, dots, dashes and underscores (up to 80).");
     }
+    this.sizes.assertSandboxNotResizing(sandboxId); // sizes
     // A bb machine's disk holds bb's login for this server: a snapshot of it would
     // carry that into every sandbox started from it, untrusted repos' included.
     if (await this.sandboxHasBb(sandboxId)) {
@@ -2396,6 +2492,7 @@ export class BoatService {
     if (this.isMovingSandbox(sandboxId)) {
       throw new TaskError(`A task is moving to a task chat in sandbox ${sandboxId}.`, "task_busy", "Try again once the chat is open (in about a minute).");
     }
+    this.sizes.assertSandboxNotResizing(sandboxId); // sizes
     const hostId = this.hooks.chat === undefined ? null : this.store.hostForSandbox(sandboxId);
     if (hostId === null) {
       if (action === "stop") await this.boat.stop(sandboxId, signal);
@@ -2678,6 +2775,12 @@ export class BoatService {
     if (this.moves.has(task.id)) return new TaskError(`Task ${task.id} is moving to a task chat.`, "task_busy", "It's open in about a minute.");
     if ((this.sending.get(task.id) ?? 0) > 0) return new TaskError("A follow-up is being sent to this task.", "task_busy", "Try again in a moment.");
     const sandboxId = task.sandboxId!;
+    try {
+      this.sizes.assertSandboxNotResizing(sandboxId, "Continue as a chat once the move to the new size is done."); // sizes
+    } catch (error) {
+      if (error instanceof TaskError) return error;
+      throw error;
+    }
     if (this.claims.has(sandboxId)) {
       return new TaskError("Something is using the task's sandbox right now (a ship, a preview or a follow-up).", "task_busy", "Try again in a moment.");
     }
@@ -2984,6 +3087,7 @@ export class BoatService {
         transcriptPath: path,
         latestReport: initial.result ? clipResult(initial.result, 8_000) : null,
         extraInstructions: standing,
+        sandboxLine: this.sizes.lineFor(initial, "chat"),
       });
 
       // 7. The chat, in the task's checkout on the machine.
@@ -3359,6 +3463,7 @@ export class BoatService {
   async extendPreview(id: string, hours: number, signal?: AbortSignal): Promise<PreviewView & { hours: number }> {
     const { preview, task } = this.mustGetPreview(id);
     if (!Number.isFinite(hours) || hours <= 0 || hours > 24) throw new TaskError("Extend by 1 to 24 hours.", "invalid_value");
+    this.sizes.assertSandboxNotResizing(preview.sandboxId); // sizes
     const limits = await this.boat.limits(signal).catch(() => null);
     const wanted = Math.round(Math.min(hours, limits?.autoStopCapHours ?? hours) * 3600);
     const ttl = await withinAutoStopCap(wanted, async (seconds) => {
@@ -3466,6 +3571,7 @@ export class BoatService {
     if (task.sandboxId === null || task.repoPath === null || task.baseBranch === null) {
       throw new TaskError(`Task ${task.id} has no checkout to ship.`, "not_shippable");
     }
+    this.sizes.assertNotResizing(task, "ship"); // sizes
     const release = this.claim(task.sandboxId);
     let result: ShipResult;
     try {
@@ -3520,6 +3626,7 @@ export class BoatService {
   ): Promise<{ task: Task; sandbox: "deleted" | "kept" | "gone" | "none" }> {
     const settings = await this.settings();
     let task = this.mustGet(idOrPrefix);
+    this.sizes.assertNotResizing(task, "close"); // sizes
     // A move to a chat in flight stops (and rolls back) first; then the row is current.
     const move = this.moves.get(task.id);
     if (move !== undefined) {
@@ -3810,6 +3917,7 @@ export class BoatService {
           );
           if (failed === null) continue;
           this.store.addEvent(task.id, "failed", reason);
+          this.sizes.afterTurn(failed, { failed: true, sandbox }); // sizes
           changed.push(task.id);
           continue;
         }
@@ -3900,7 +4008,10 @@ export class BoatService {
     }
     // bb's output is the chat's last answer: the same text as before means
     // this turn ended without a new one (stopped, interrupted).
-    const fresh = text.trim() !== "" && text.trim() !== (task.result ?? "").trim();
+    // A chat the plugin just opened (a move to a chat, a handover to the other
+    // agent) has no answer of its own yet: its first one is new even when it
+    // repeats the latest report.
+    const fresh = text.trim() !== "" && (this.firstTurnInChat(task) || text.trim() !== (task.result ?? "").trim());
     const guard = { promptId: task.promptId };
     if (state.status === "error" || hint?.kind === "failed") {
       const reason = hint?.error?.trim() || (fresh ? text.trim().split("\n").at(-1) ?? "" : "");
@@ -3915,6 +4026,7 @@ export class BoatService {
       if (failed === null) return false;
       if (fresh) this.recordEvidence(task.id, text);
       this.store.addEvent(task.id, "failed", error);
+      this.sizes.afterTurn(failed, { failed: true }); // sizes
       await this.noteUnshipped(failed);
       return true;
     }
@@ -3953,6 +4065,8 @@ export class BoatService {
     if (task.role === "review" && task.parentTaskId !== null && report.verdict !== null) {
       this.store.addEvent(task.parentTaskId, "review", `Review ${task.id}: ${report.verdict}`);
     }
+    // A turn that ended without a new message may have been cut short (sizes).
+    this.sizes.afterTurn(done, { failed: !fresh });
     await this.noteUnshipped(done);
     return true;
   }
@@ -4065,6 +4179,7 @@ export class BoatService {
       if (updated === null) return false;
       if (text !== "") this.recordEvidence(task.id, text);
       this.store.addEvent(task.id, "failed", reason);
+      this.sizes.afterTurn(updated, { failed: true, sandbox }); // sizes
       await this.noteUnshipped(updated, sandbox);
       return true;
     }
@@ -4101,6 +4216,7 @@ export class BoatService {
     if (task.role === "review" && task.parentTaskId !== null && report.verdict !== null) {
       this.store.addEvent(task.parentTaskId, "review", `Review ${task.id}: ${report.verdict}`);
     }
+    this.sizes.afterTurn(updated, { failed: cutOff, interrupted: status === "interrupted", sandbox }); // sizes
     await this.noteUnshipped(updated, sandbox);
     return true;
   }
@@ -4179,8 +4295,8 @@ export class BoatService {
       byThread.set(task.orchestratorThreadId!, list);
     }
     for (const [threadId, all] of byThread) {
-      // A preview still being hosted: its notice goes out with the link, on the next pass.
-      const list = all.filter((task) => !this.hostingPreviews.has(task.id));
+      // A preview still being hosted, or a memory check: the notice goes out with them, on the next pass.
+      const list = all.filter((task) => !this.hostingPreviews.has(task.id) && !this.sizes.holds(task.id));
       if (list.length === 0) continue;
       try {
         await this.hooks.notify({ threadId, tasks: list });

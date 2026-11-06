@@ -59,6 +59,9 @@ shows under Ready to review on the Cloud agents page.
 Idle sandboxes stop on their own, and resume on the next follow-up; their
 files and the agent's conversation survive.
 
+When a turn ran out of memory, the `[boat]` message says so and names the
+next size up (see Sandbox sizes).
+
 ## Task chats and headless tasks
 
 - `--headless` on `task start` works everywhere (quick checks nobody opens),
@@ -99,6 +102,28 @@ subscription. Ask the user before you start more than 3 tasks at once,
 unless they asked for more. "Sandboxes at once" (`maxActiveSandboxes`,
 default 3) caps how many run; `bb boat status` shows the room left.
 
+## Sandbox sizes
+
+Small (2 vCPU, 4 GB, half rate), Default (4 vCPU, 8 GB), Large (8 vCPU,
+16 GB, double rate) and XLarge (16 vCPU, 32 GB, needs a bigger boat plan).
+New sandboxes use the project's size, else the "Default sandbox size"
+setting (`machineType`); pass `--type` only when the work needs another
+size. Agents are told their sandbox's size.
+
+- Out of memory: continue on the size the `[boat]` message names with
+  `bb boat task followup <id> --type <size> --message "…"`. It moves the
+  sandbox and continues: files stay, running processes and previews stop,
+  other open tasks on it move too. Or ask the agent to run fewer tests at
+  once. Tell the user a larger size costs more per hour.
+- From a chat, `task followup --type` and `sandbox resize` move a sandbox
+  only one size up, and only after its task's latest turn ran out of
+  memory or came near the limit. Anything else (a smaller size, two sizes
+  up, a sandbox another chat's tasks share) needs the user's OK first,
+  then `--user-approved`.
+- XLarge always needs the user's OK (`--user-approved`):
+  `task start --type xlarge`, a move to XLarge, and
+  `project add|set --size xlarge`.
+
 ## Commands
 
 | Command | Use |
@@ -109,7 +134,7 @@ default 3) caps how many run; `bb boat status` shows the room left.
 | `bb boat task start --title "…" --brief "…" --tier build --reason "…"` | Start a task on this chat's project (repo, base branch, environment come from it). The model preset (`light`, `review`, `build`, `deep`, `frontier`) picks model and effort for the agent. Add `--project <id>`, `--repo owner/name`, `--agent codex`, `--effort`, `--model`, `--branch`, `--base`, `--role review`, `--sandbox <id>`, `--type small`, `--context-from t_…`, `--headless` (or `--chat`, see Task chats) |
 | `bb boat task start … --brief-file brief.md` | Long briefs from a file on your machine |
 | `bb boat task review <id>` | Independent review of a task's work, by the other agent by default |
-| `bb boat task followup <id> --message "…"` | Next turn in the same conversation (`--agent codex` switches to the other agent at the same preset, `--tier deep` changes the preset, `--steer` redirects a running turn, `--evidence-only` only asks for uploads and needs no message) |
+| `bb boat task followup <id> --message "…"` | Next turn in the same conversation (`--agent codex` switches to the other agent at the same preset, `--tier deep` changes the preset, `--steer` redirects a running turn, `--evidence-only` only asks for uploads and needs no message, `--type large` moves its sandbox to another size first; see Sandbox sizes) |
 | `bb boat task show <id>` | Status, pull request, branch, sandbox, the agent's report, history |
 | `bb boat task transcript <id>` | What the agent did step by step |
 | `bb boat task list [--mine] [--all]` | Tasks |
@@ -119,11 +144,12 @@ default 3) caps how many run; `bb boat status` shows the room left.
 | `bb boat task ship <id>` | Projects that ship after approval: push the task's commits to its base branch. Only from the task's orchestrator chat, after the user said so there |
 | `bb boat preview list` / `preview wake\|extend\|stop <id>` | Previews agents left running (private links), and bringing a sleeping one back |
 | `bb boat sandbox list [--all]` / `sandbox new [--repo …]` / `sandbox info\|stop\|resume\|delete <id>` | Sandboxes |
+| `bb boat sandbox resize <id> --type <size>` | Move a task's sandbox to another size without a follow-up (see Sandbox sizes) |
 | `bb boat sandbox exec <id> -- <command>` | Run a shell command in a sandbox |
 | `bb boat sandbox snapshot <id> <name>` / `sandbox snapshots` | Save a sandbox as a snapshot; list saved ones (`--snapshot <name>` on task start starts from one) |
 | `bb boat project list [--local]` | Projects (and local bb projects as `local:<id>`) |
-| `bb boat project add --name "Web app" --repo acme/web@main` | Add a project (repeat `--repo` for more repos; `--environment`, `--snapshot`, `--protocol`, `--workers`, `--delivery`, `--protected-branches "release, develop"`, `--instructions` or `--instructions-file`) |
-| `bb boat project set <id> --delivery pr\|push` | Change a project: how work lands (draft pull requests, or ship after approval), and the same options as `add` (`none` clears protected branches or instructions) |
+| `bb boat project add --name "Web app" --repo acme/web@main` | Add a project (repeat `--repo` for more repos; `--environment`, `--snapshot`, `--protocol`, `--workers`, `--delivery`, `--protected-branches "release, develop"`, `--instructions` or `--instructions-file`, `--size large` for its sandboxes) |
+| `bb boat project set <id> --delivery pr\|push` | Change a project: how work lands (draft pull requests, or ship after approval), and the same options as `add` (`none` clears protected branches, instructions or the size) |
 | `bb boat orchestrator new --project <id> --prompt "…"` | Start an orchestrator for a project (`--local` on this computer, `--cloud` in a new small boat sandbox, which needs bb Connect; without either, the cloud when bb Connect is set up; `--take-over <thread>` continues a previous one) |
 | `bb boat orchestrator on` / `off` | Make the current chat an orchestrator, or stop (tools load on its next session) |
 | `bb boat protocol show [--project <id>]` | The orchestrator protocol: shared rules, model presets, then the project's rules file |

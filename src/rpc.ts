@@ -22,6 +22,8 @@ import { explainBoatError, sandboxSizes, testTaskInput, type ExplainedError } fr
 import { SettingsError, settingRows } from "./settings-store.ts";
 import { SETTING_SECTIONS } from "./settings.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
+import { HIDDEN_EVENT_KINDS } from "./memory.ts";
+import { sizeHandlers } from "./rpc-size.ts";
 
 /** Chats that are or were orchestrators (store.orchestratorThreadIds). */
 export interface OrchestratorSets {
@@ -171,7 +173,7 @@ export function refusal(code: "conflict" | "forbidden" | "invalid" | "not_found"
 }
 
 /** Expected failures become RPC refusals the UI can show as-is. */
-async function refuse<T>(fn: () => Promise<T>): Promise<T> {
+export async function refuse<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
@@ -304,6 +306,8 @@ export function registerRpc(runtime: Runtime): void {
   }
 
   bb.rpc.register(rpcContract, {
+    // Sandbox sizes and memory (src/rpc-size.ts).
+    ...sizeHandlers(runtime, refuse),
     overview: async () => {
       const settings = await service.settings();
       const only = onlyAgent(settings.agents);
@@ -378,10 +382,11 @@ export function registerRpc(runtime: Runtime): void {
         result: task.result,
         events: service.store
           .events(task.id, 150)
-          .filter((event) => event.kind !== "chat-info")
+          .filter((event) => !HIDDEN_EVENT_KINDS.has(event.kind))
           .slice(-100)
           .map(({ at, kind, text }) => ({ at, kind, text })),
         dashboardUrl: task.sandboxId ? dashboardUrl(task.sandboxId) : null,
+        memory: await service.sizes.view(task),
       };
       return { task: detail };
     },
@@ -542,6 +547,7 @@ export function registerRpc(runtime: Runtime): void {
             runner: input.runner ?? null,
             // Like Ship: the user's click past the warning is the confirm.
             confirmUntrustedChat: input.confirmUntrustedChat ?? null,
+            measureMemory: input.measureMemory === true,
           },
           runtime.launchWaitMs,
         );

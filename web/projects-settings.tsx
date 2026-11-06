@@ -23,8 +23,9 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "./dialogs";
-import { environmentLabel, errorMessage, plural, repoAtBase, shortRepo } from "./format";
+import { MACHINE_LABEL, environmentLabel, errorMessage, plural, repoAtBase, shortRepo } from "./format";
 import { useProjects } from "./hooks";
+import { ProjectSizeField } from "./sandbox-size";
 import { Disclosure, EmptyBox, Field, IconButton, InlineAlert, ListPanel, SUGGEST_INPUT, showError } from "./ui";
 
 /** The contract allows up to 8 repos per project. */
@@ -142,6 +143,7 @@ function ProjectRow({ project, onEdit }: { project: ProjectDto; onEdit: () => vo
               <span className="truncate font-mono">{project.protocolPath}</span>
             </span>
           ) : null}
+          {project.machineType ? <span title="The size of its new task sandboxes">{MACHINE_LABEL[project.machineType].split(" · ")[0]} sandboxes</span> : null}
           {project.workerMode === "boat" ? <span title="Its tasks always run headless in boat, with no access to your bb">tasks in boat only</span> : null}
           {project.delivery === "push" ? (
             <span title="No pull requests: tasks commit, and you ship approved work to the base branch">ships after approval</span>
@@ -245,6 +247,7 @@ function ProjectForm({
   const [delivery, setDelivery] = useState<Delivery>(project?.delivery ?? "pr");
   const [protectedText, setProtectedText] = useState((project?.protectedBranches ?? []).join(", "));
   const [instructions, setInstructions] = useState(project?.instructions ?? "");
+  const [machineType, setMachineType] = useState<ProjectDto["machineType"]>(project?.machineType ?? null);
   const workers = useSettings().values?.workers;
   const snapshots = experimental_useRpcQuery({ contract: rpcContract, method: "snapshots", input: null });
   const [failure, setFailure] = useState<string | null>(null);
@@ -293,6 +296,7 @@ function ProjectForm({
         delivery,
         protectedBranches: protectedText,
         instructions: instructions.trim(),
+        machineType,
       });
       toast.success(project ? `Saved ${saved.name}` : `Added ${saved.name}`);
       onSaved?.(saved);
@@ -422,6 +426,7 @@ function ProjectForm({
           </datalist>
         </Field>
       </div>
+      <ProjectSizeField value={machineType} onChange={setMachineType} />
       <label htmlFor="ca-project-chats" className="flex items-start gap-2 text-sm">
         <Checkbox
           id="ca-project-chats"

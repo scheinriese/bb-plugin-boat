@@ -63,7 +63,7 @@ switch (command) {
     break;
   case "limits":
     if (state.limitsFail) fail("boat_timeout", "boat.dev didn't answer");
-    print({ accessTier: state.accessTier ?? "trial", trialLine: "trialLine" in state ? state.trialLine : "2 boxes, 75 new/day, 25h of 25h compute left, auto-stop max 2h, no large or xlarge types", activeSandboxes: Object.values(state.sandboxes).filter((s) => s.state !== "stopped").length, maxActiveSandboxes: state.maxActive ?? 2, currentLimits: { activeSandboxes: state.maxActive ?? 2 }, canStart: state.checkoutRequired !== true, checkoutRequired: state.checkoutRequired === true, starts: { day: { remaining: 70, limit: 75 }, hour: { remaining: 20 } }, machineTypes: [{ type: "small", available: true, reason: null }, { type: "default", available: true, reason: null }, { type: "large", available: false, reason: "needs a paid plan" }, { type: "xlarge", available: false, reason: "needs the $100/month plan or higher" }] });
+    print({ accessTier: state.accessTier ?? "trial", trialLine: "trialLine" in state ? state.trialLine : "2 boxes, 75 new/day, 25h of 25h compute left, auto-stop max 2h, no large or xlarge types", activeSandboxes: Object.values(state.sandboxes).filter((s) => s.state !== "stopped").length, maxActiveSandboxes: state.maxActive ?? 2, currentLimits: { activeSandboxes: state.maxActive ?? 2 }, canStart: state.checkoutRequired !== true, checkoutRequired: state.checkoutRequired === true, starts: { day: { remaining: 70, limit: 75 }, hour: { remaining: 20 } }, machineTypes: state.machineTypes ?? [{ type: "small", available: true, reason: null }, { type: "default", available: true, reason: null }, { type: "large", available: false, reason: "needs a paid plan" }, { type: "xlarge", available: false, reason: "needs the $100/month plan or higher" }] });
     break;
   case "list": {
     const all = rest.includes("--all");
@@ -85,7 +85,7 @@ switch (command) {
       fail("trial_auto_stop_required", `Free-trial auto-stop is ${state.autoStopCapSeconds / 3600} hours maximum. Set a TTL of ${state.autoStopCapSeconds / 3600} hours or less, or end the trial (first payment) to lift it.`, 400);
     }
     const id = `bx_test${state.next++}`;
-    state.sandboxes[id] = { id, name: flag("--name"), state: "idle", health: "ok", createdAt: new Date().toISOString(), ttlSeconds: Number(flag("--ttl")), from };
+    state.sandboxes[id] = { id, name: flag("--name"), state: "idle", health: "ok", createdAt: new Date().toISOString(), ttlSeconds: Number(flag("--ttl")), from, type: flag("--type") ?? "default" };
     print({ event: "created", id });
     print({ event: "state", id, state: "ready" });
     print({ event: "ready", id, state: "ready", url: `https://${id}.on.boat.dev` });
@@ -96,6 +96,21 @@ switch (command) {
     if (rest.includes("--detach")) {
       (state.detached ??= []).push({ id: rest[0], command: script });
       print({ success: true, pid: 4242, processId: 4242, command: script });
+      break;
+    }
+    if (script.includes("BOAT_MEM_PROBE")) {
+      // The memory probe (src/memory.ts): the size of the sandbox's type, and state.probe's facts.
+      const specs = { small: [2, 4065972], default: [4, 8131944], large: [8, 16263888], xlarge: [16, 32527776] };
+      const [cpus, memTotal] = specs[state.sandboxes[rest[0]]?.type ?? "default"] ?? specs.default;
+      const probe = { oomKills: 0, kernel: [], ...(state.probe ?? {}) };
+      const lines = ["BOAT_MEM_PROBE 1", `NOW ${Math.floor(Date.now() / 1000)}`, "BOOT 0f3c1d2e-aaaa-bbbb-cccc-123456789abc 1700000000", `CPUS ${cpus}`, `MEM ${memTotal} ${Math.round(memTotal * 0.7)} 2097148 2097148`, `OOM ${probe.oomKills}`];
+      if (script.includes("/tmp/boat-memory/")) lines.push(`PEAK ${probe.peak ?? "-"}`);
+      if (script.includes("journalctl")) {
+        lines.push("KLOG journal");
+        for (const line of probe.kernel) lines.push(`K ${line}`);
+      }
+      lines.push("END");
+      print({ exitCode: 0, stdout: `${lines.join("\n")}\n`, stderr: "" });
       break;
     }
     if (script.includes("BOAT_SHIP_DONE")) {
@@ -155,6 +170,8 @@ switch (command) {
     break;
   case "resume":
     state.sandboxes[rest[0]].state = "idle";
+    // Like boat: --type moves it to another size; without it, it keeps its size.
+    if (flag("--type")) state.sandboxes[rest[0]].type = flag("--type");
     print({ event: "ready", id: rest[0] });
     break;
   case "host": {

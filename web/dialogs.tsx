@@ -76,7 +76,7 @@ import {
   useSettingRows,
   useStoredFlag,
 } from "./hooks";
-import { STARTERS, chatChoice, chatControl, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
+import { STARTERS, chatChoice, chatControl, projectSizeOnPlan, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
 import { Disclosure, Field, IconButton, InlineAlert, Kbd, RichText, SUGGEST_INPUT, ThreadName, showError } from "./ui";
 
@@ -130,14 +130,16 @@ function MachineSelect({
   value: MachineType;
   onChange: (value: MachineType) => void;
 }) {
-  const sizes = useSandboxSizes().data?.sizes ?? null;
+  const sizes = useSandboxSizes().data?.sizes ?? MACHINE_TYPE_VALUES.map((type) => ({ type, label: MACHINE_LABEL[type], detail: "", available: true, reason: null }));
+  const current = sizes.find((size) => size.type === value) ?? null;
   return (
     <Select value={value} onValueChange={(next) => onChange(next as MachineType)}>
       <SelectTrigger id={id}>
-        <SelectValue />
+        {/* Only the name: a size the plan lacks would bring its reason into the trigger. */}
+        <SelectValue>{current ? (current.detail ? `${current.label} · ${current.detail}` : current.label) : null}</SelectValue>
       </SelectTrigger>
       <SelectContent>
-        {(sizes ?? MACHINE_TYPE_VALUES.map((type) => ({ type, label: MACHINE_LABEL[type], detail: "", available: true, reason: null }))).map((size) => (
+        {sizes.map((size) => (
           <SelectItem key={size.type} value={size.type} disabled={!size.available && size.type !== value} textValue={size.label}>
             <OptionLabel
               name={size.detail ? `${size.label} · ${size.detail}` : size.label}
@@ -263,7 +265,6 @@ export function NewTaskForm({
   const onlyAgent = defaults?.onlyAgent ?? null;
   const roleDefault = role === "review" ? defaults?.reviewProvider : defaults?.implementProvider;
   const effectiveProvider: Provider = provider ?? roleDefault ?? "claude";
-  const effectiveMachine: MachineType = machineType ?? (starter === "test" ? "small" : (defaults?.machineType ?? "default"));
   const activeSandboxes = (sandboxes.data?.sandboxes ?? []).filter(
     (entry) => isSandboxActive(entry.state) && !entry.uses.some((use) => use.open && use.kind !== "task"),
   );
@@ -273,6 +274,13 @@ export function NewTaskForm({
   const repoOwner =
     typedRepo === "" ? null : (projectList.find((entry) => entry.repos.some((each) => shortRepo(each.repo).toLowerCase() === typedRepo)) ?? null);
   const project = (chosenProject === null ? repoOwner : projectList.find((entry) => entry.id === chosenProject)) ?? null;
+  // A project's size, else the setting; the server applies it unless a size is picked here
+  // (a project size the plan lacks falls back, as on the server, and says so).
+  const planSizes = useSandboxSizes().data?.sizes ?? null;
+  const projectSize = projectSizeOnPlan(project?.machineType ?? null, defaults?.machineType ?? "default", planSizes);
+  const effectiveMachine: MachineType = machineType ?? (starter === "test" ? "small" : projectSize.type);
+  const blockedSize = machineType === null && starter !== "test" && project !== null ? projectSize.blocked : null;
+  const sizeName = (type: MachineType) => MACHINE_LABEL[type].split(" · ")[0];
   // With a project, an empty repo means its main repo, and a project repo gets its own base branch.
   const projectRepo =
     project === null
@@ -368,6 +376,8 @@ export function NewTaskForm({
         projectId: project?.id ?? null,
         runner: chat.runner,
         confirmUntrustedChat: chat.confirmUntrustedChat,
+        // The repo check measures its peak memory and recommends a size.
+        measureMemory: starter === "check-repo",
       });
       toast.success(pending ? `${task.title}: starting` : `${task.title}: started`);
       onStarted?.();
@@ -610,7 +620,18 @@ export function NewTaskForm({
                 </Select>
               </Field>
               {sandbox === NEW_SANDBOX ? (
-                <Field label="Size" htmlFor={`${uid}-machine`}>
+                <Field
+                  label="Size"
+                  htmlFor={`${uid}-machine`}
+                  hint={
+                    blockedSize !== null && project !== null ? (
+                      <span className="text-warning-text">
+                        {project.name} uses {sizeName(blockedSize.type)} sandboxes, but your boat plan doesn't include {sizeName(blockedSize.type)}
+                        {blockedSize.reason ? ` (${blockedSize.reason.replace(/[.\s]+$/, "")})` : ""}. This task starts on {sizeName(effectiveMachine)}.
+                      </span>
+                    ) : null
+                  }
+                >
                   <MachineSelect id={`${uid}-machine`} value={effectiveMachine} onChange={setMachineType} />
                 </Field>
               ) : null}
@@ -1260,7 +1281,7 @@ function CloudOrchestratorNote({ overview, fullAccess }: { overview: OverviewDat
 }
 
 /** A select option with a muted second line (the trigger shows only the name). */
-function OptionLabel({ name, detail }: { name: ReactNode; detail: ReactNode }) {
+export function OptionLabel({ name, detail }: { name: ReactNode; detail: ReactNode }) {
   return (
     <span className="flex min-w-0 flex-col py-0.5">
       <span className="break-words">{name}</span>

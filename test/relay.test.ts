@@ -126,7 +126,7 @@ test("back to the preferred agent once it has room, when the chat has been quiet
   const back = decideRelay(onCodex, quotas(30, 60), null, SETTINGS, NOW);
   assert.equal(back.kind, "request-handoff");
   assert.equal(back.kind === "request-handoff" && back.to, "claude");
-  assert.match(back.kind === "request-handoff" ? back.reason : "", /Claude has room again \(30% of its weekly limit\)/);
+  assert.match(back.kind === "request-handoff" ? back.reason : "", /Claude has room again \(30% of its weekly limit used\)/);
   // Not yet below the hand-back mark, busy, recently active, or just switched: stay.
   assert.deepEqual(decideRelay(onCodex, quotas(60, 60), null, SETTINGS, NOW), { kind: "none" });
   assert.deepEqual(decideRelay(view({ provider: "codex", status: "active" }), quotas(30, 60), null, SETTINGS, NOW), { kind: "none" });
@@ -364,7 +364,7 @@ test("the plugin hands an orchestrator to Codex: note first, then a successor in
   assert.equal(task.provider, "codex");
 
   const status = await harness.runCli(["relay", "status"]);
-  assert.match(status.stdout, /Claude: 93% of the weekly limit/);
+  assert.match(status.stdout, /Claude: 93% of the weekly limit used/);
   assert.match(status.stdout, /@thread:thr_old Storefront — Claude · moves to Codex at the next check/);
 
   // First the note.

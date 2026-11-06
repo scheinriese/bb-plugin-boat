@@ -69,7 +69,7 @@ export const SETTINGS = {
   machineType: {
     type: "select",
     label: "Default sandbox size",
-    description: "For new task sandboxes; you can pick another size per task. Small runs at half rate and Large at double; XLarge needs a bigger boat plan.",
+    description: "For new task sandboxes; a project or a task can pick another size. Small runs at half rate and Large at double; XLarge needs a bigger boat plan.",
     options: [...MACHINE_TYPES],
     experimental_optionLabels: SIZE_LABELS,
     default: "default",

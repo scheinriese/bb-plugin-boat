@@ -13,7 +13,7 @@ any of them. (`bb plugin config boat set` only reaches bb's list.)
 | Coding agents | `agents` | `auto` | Auto-detect (`auto`) from boat.dev, or Claude and Codex (`both`), Only Claude (`claude`), Only Codex (`codex`). With one agent, every task and review runs on it |
 | How tasks run | `workers` | `boat` | In boat (`boat`), As chats for projects (`projects`) or As chats everywhere (`all`). Chats need bb Connect |
 | Boat environment | `environment` | empty | The boat environment new sandboxes start from; empty is your boat default. A project can pick its own |
-| Default sandbox size | `machineType` | `default` | `small` (2 vCPU, 4 GB), `default` (4 vCPU, 8 GB), `large` (8 vCPU, 16 GB), `xlarge` (16 vCPU, 32 GB). You can pick another per task |
+| Default sandbox size | `machineType` | `default` | For new task sandboxes: `small`, `default`, `large` or `xlarge` ([sizes](features.md#sandbox-sizes-and-memory)). A project or a task can pick another |
 | Sandboxes at once | `maxActiveSandboxes` | `3` | The most sandboxes running at the same time; 0 is your plan's limit |
 | Agent for tasks | `implementProvider` | `claude` | For tasks that don't name an agent. With one agent connected, it runs everything |
 | Agent for reviews | `reviewProvider` | `codex` | When a task already ran on this agent, its review uses the other one. With one agent connected, it reviews too |
@@ -28,8 +28,8 @@ In this order:
 1. **Setup:** the same checklist as on the Cloud agents page, plus
    **Screenshots and recordings**, and **boat CLI location** when the boat
    CLI isn't found.
-2. **Projects:** your projects, with their repos, environment, protected
-   branches, instructions and GitHub access.
+2. **Projects:** your projects, with their repos, environment, sandbox
+   size, protected branches, instructions and GitHub access.
 3. **Usage limits:** what happens near a usage limit. The rows that need
    both agents are greyed out with one.
 4. **Models:** the model presets, and models for tasks without one.
@@ -91,7 +91,8 @@ bb boat config import boat-config.json
   added, updated or removed, presets, protocol). Run it with `--dry-run`
   first to see the changes without applying them. Setting keys it doesn't
   know are reported and skipped; a file with an invalid value or project is
-  refused as a whole, in a dry run too.
+  refused as a whole, in a dry run too. A project without a sandbox size in
+  the file (a backup from before projects had one) keeps the size it has.
 - `--replace-projects` also removes projects that aren't in the file. It
   refuses to remove a project with open tasks or a running orchestrator.
 - Settings → **Back up and restore** does the same: Export downloads the

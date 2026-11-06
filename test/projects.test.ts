@@ -480,3 +480,81 @@ test("the sandbox-wide protected list is main, master and the extra branches", a
   await api.prepareRepo("bx_1", "acme/web", { kind: "default-branch", base: "main" });
   assert.match(scripts[1]!, /printf '%s\\n' 'main' 'master'; \}/);
 });
+
+test("a project's sandbox size: kept, cleared, unchanged when omitted, checked; older projects have none", () => {
+  const store = projectStore();
+  const saved = store.save({ name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }], machineType: "large" });
+  assert.equal(saved.machineType, "large");
+  // Omitted: unchanged.
+  assert.equal(store.save({ id: saved.id, name: "Web app", repos: saved.repos, instructions: "x" }).machineType, "large");
+  // null: back to the setting.
+  assert.equal(store.save({ id: saved.id, name: "Web app", repos: saved.repos, machineType: null }).machineType, null);
+  assert.throws(() => normalizeProject({ name: "x", repos: [{ repo: "a/b", baseBranch: "main" }], machineType: "huge" as never }));
+  // Saved before the field existed.
+  const legacy = normalizeProject({ name: "Old", repos: [{ repo: "a/b", baseBranch: "main" }] }) as unknown as Record<string, unknown>;
+  delete legacy.machineType;
+  const db = new DatabaseSync(":memory:");
+  for (const statement of TaskStore.migrations()) db.exec(statement);
+  db.prepare("INSERT INTO projects (id, data, created_at, updated_at) VALUES (?, ?, ?, ?)").run("old", JSON.stringify(legacy), "x", "x");
+  assert.equal(new ProjectStore(() => db as unknown as Database.Database).get("old")?.machineType, null);
+});
+
+test("new sandboxes take their project's size; an explicit size wins; reviews and repo matches follow it", async () => {
+  const projects = [{ id: "web", name: "Web app", repos: [{ repo: "acme/web" }], machineType: "large" as const }];
+  const env = makeService({ projects });
+  env.boat.limitsValue = { ...env.boat.limitsValue, maxActiveSandboxes: 10 };
+  const project = { ...toOrchestratorProject(normalizeProject({ id: "web", name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }] })) };
+  const { task } = await env.service.launchTask({ title: "A", role: "implement", brief: "x", project }, 5_000);
+  assert.equal(env.boat.created[0]!.type, "large");
+  assert.ok(env.store.events(task.id).some((event) => event.kind === "sandbox-size" && event.text === "Large sandbox, from project Web app"));
+
+  await env.service.launchTask({ title: "B", role: "implement", brief: "x", project, machineType: "small" }, 5_000);
+  assert.equal(env.boat.created[1]!.type, "small");
+
+  // A review in a new sandbox: the project's size.
+  env.boat.finish(task.conversationId!, "=== REPORT ===\nSTATUS: done\n=== END REPORT ===");
+  await env.service.sweep();
+  env.setSettings({ reviewSandbox: "new" });
+  await env.service.launchTask(await env.service.reviewInput(task.id), 5_000);
+  assert.equal(env.boat.created[2]!.type, "large");
+
+  // No project given, but its main repo: that project.
+  await env.service.launchTask({ title: "C", role: "implement", brief: "x", repo: "acme/web" }, 5_000);
+  assert.equal(env.boat.created[3]!.type, "large");
+  // A repo no project has as its main one: the setting.
+  await env.service.launchTask({ title: "D", role: "implement", brief: "x", repo: "acme/other" }, 5_000);
+  assert.equal(env.boat.created[4]!.type, "default");
+});
+
+test("a size the plan doesn't have: refused when asked for, the setting with a note when it's the project's", async () => {
+  const trial = [
+    { type: "small", available: true, reason: null },
+    { type: "default", available: true, reason: null },
+    { type: "large", available: false, reason: "not during the free trial; the first payment unlocks it" },
+    { type: "xlarge", available: false, reason: "needs the $100/month plan or higher" },
+  ];
+  const env = makeService({ plan: trial, projects: [{ id: "web", name: "Web app", repos: [{ repo: "acme/web" }], machineType: "large" }] });
+  const { task } = await env.service.launchTask({ title: "A", role: "implement", brief: "x", repo: "acme/web" }, 5_000);
+  assert.equal(env.boat.created[0]!.type, "default");
+  assert.ok(
+    env.store
+      .events(task.id)
+      .some((event) => event.text === "Web app uses Large sandboxes, but your boat plan doesn't include Large (not during the free trial; the first payment unlocks it). This sandbox is Default."),
+  );
+  await assert.rejects(
+    env.service.launchTask({ title: "B", role: "implement", brief: "x", repo: "acme/web", machineType: "large" }, 5_000),
+    (error: unknown) => error instanceof TaskError && error.code === "size_not_on_plan" && /doesn't include Large sandboxes/.test(error.message),
+  );
+  assert.equal(env.boat.created.length, 1, "nothing started for the refused one");
+  assert.equal(env.store.list({ limit: 10 }).length, 1, "no task record either");
+});
+
+test("a review in a new sandbox gets at least its task's current size", async () => {
+  const env = makeService({ settings: { reviewSandbox: "new" } });
+  const { task } = await env.service.launchTask({ title: "A", role: "implement", brief: "x", repo: "acme/web", machineType: "large" }, 5_000);
+  env.boat.finish(task.conversationId!, "=== REPORT ===\nSTATUS: done\n=== END REPORT ===");
+  await env.service.sweep();
+  const review = await env.service.launchTask(await env.service.reviewInput(task.id), 5_000);
+  assert.equal(env.boat.created[1]!.type, "large");
+  assert.ok(env.store.events(review.task.id).some((event) => event.text === `Large sandbox, like task ${task.id}'s. Large costs twice as much per hour as Default.`));
+});

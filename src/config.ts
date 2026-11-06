@@ -8,7 +8,7 @@
 // ignored, and settings that moved to the plugin's own storage go there.
 import type { PluginSettingDescriptor, PluginSettingValue } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { normalizeProject, projectInputSchema, slugify, type BoatProject, type ProjectStore } from "./projects.ts";
+import { normalizeProject, projectInputSchema, slugify, type BoatProject, type ProjectInput, type ProjectStore } from "./projects.ts";
 import { MAX_PROTOCOL_CHARS, type ProtocolFile } from "./protocol.ts";
 import {
   LEGACY_WORKER_SETTINGS,
@@ -104,6 +104,8 @@ export function exportFileName(now = new Date()): string {
 const importedProjectSchema = projectInputSchema.extend({
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
+  // Checked per project (normalizeProject), so a size this version doesn't know is that project's problem, not the file's.
+  machineType: z.unknown().optional(),
 });
 type ImportedProject = z.infer<typeof importedProjectSchema>;
 
@@ -185,7 +187,7 @@ export interface ImportPlan {
   };
   projects: {
     /** In the file's order. */
-    save: { input: ImportedProject & { id: string }; change: "added" | "updated" | "unchanged"; fields: string[] }[];
+    save: { input: ProjectInput & { id: string }; change: "added" | "updated" | "unchanged"; fields: string[] }[];
     removed: ProjectChange[];
     /** --replace-projects couldn't remove these. */
     blocked: (ProjectChange & { reason: string })[];
@@ -199,7 +201,7 @@ export interface ImportPlan {
   replaceProjects: boolean;
 }
 
-const PROJECT_FIELDS = ["name", "repos", "environment", "snapshot", "protocolPath", "workerMode", "delivery", "protectedBranches", "instructions"] as const;
+const PROJECT_FIELDS = ["name", "repos", "environment", "snapshot", "protocolPath", "workerMode", "delivery", "protectedBranches", "instructions", "machineType"] as const;
 
 /**
  * A file's settings by today's keys. Older files: workerMode and
@@ -321,14 +323,14 @@ export async function planImport(deps: ConfigDeps, text: string, options: { repl
     const before = deps.projects.get(id);
     let normalized: BoatProject;
     try {
-      normalized = normalizeProject({ ...entry, id }, before);
+      normalized = normalizeProject({ ...entry, id } as ProjectInput, before);
     } catch (error) {
       const reason = error instanceof z.ZodError ? issueLines(error).join("; ") : error instanceof Error ? error.message : String(error);
       problems.push(`${label}: ${reason}`);
       continue;
     }
     const fields = before === null ? [] : PROJECT_FIELDS.filter((field) => !sameValue(before[field], normalized[field]));
-    save.push({ input: { ...entry, id }, change: before === null ? "added" : fields.length > 0 ? "updated" : "unchanged", fields });
+    save.push({ input: { ...entry, id } as ProjectInput & { id: string }, change: before === null ? "added" : fields.length > 0 ? "updated" : "unchanged", fields });
   }
   const removed: ProjectChange[] = [];
   const blocked: (ProjectChange & { reason: string })[] = [];

@@ -155,6 +155,7 @@ const PROJECTS = [
     delivery: "push",
     protectedBranches: ["release", "staging"],
     instructions: "Use pnpm, not npm.",
+    machineType: "large",
     createdAt: "2026-10-01T09:00:00.000Z",
     updatedAt: "2026-10-20T09:00:00.000Z",
   },
@@ -172,6 +173,7 @@ const PROJECTS = [
     delivery: "pr",
     protectedBranches: [],
     instructions: "",
+    machineType: null,
     createdAt: "2026-10-02T09:00:00.000Z",
     updatedAt: "2026-10-02T09:00:00.000Z",
   },
@@ -186,6 +188,7 @@ const PROJECTS = [
     delivery: "pr",
     protectedBranches: [],
     instructions: "",
+    machineType: null,
     createdAt: "2026-10-03T09:00:00.000Z",
     updatedAt: "2026-10-03T09:00:00.000Z",
   },
@@ -557,4 +560,32 @@ test("parseConfigText: a byte-order mark is fine; problems are listed one per li
     () => parseConfigText(JSON.stringify({ format: CONFIG_FORMAT, version: 1, protocol: { text: "x".repeat(100_001) } })),
     (error: unknown) => error instanceof ConfigError && /protocol\.text: The protocol is longer than 100,000 characters\./.test(error.message),
   );
+});
+
+test("a project's sandbox size: exported, kept by older files, listed when it changes, refused per project when invalid", async (t) => {
+  const { harness, exported, importFile } = await setup();
+  t.after(() => harness.lifecycle.dispose());
+  assert.equal((await importFile(ownerFile())).exitCode, 0);
+  const file = await exported();
+  assert.equal(file.version, 2);
+  assert.equal(file.projects.find((project) => project.id === "web")?.machineType, "large");
+
+  // An older backup has no size: the project keeps the one it has.
+  const older = PROJECTS.map(({ machineType: _size, ...rest }) => rest);
+  const kept = await importFile({ format: CONFIG_FORMAT, version: 2, projects: older }, ["--dry-run"]);
+  assert.equal(kept.exitCode, 0, kept.stderr);
+  assert.match(kept.stdout, /Projects: 0 added, 0 updated, 3 unchanged/);
+
+  // A new size is a change of that field.
+  const bigger = PROJECTS.map((project) => (project.id === "docs" ? { ...project, machineType: "small" } : project));
+  const changed = await importFile({ format: CONFIG_FORMAT, version: 2, projects: bigger });
+  assert.equal(changed.exitCode, 0, changed.stderr);
+  assert.match(changed.stdout, /Update docs \(Docs\): machineType/);
+  assert.equal((await exported()).projects.find((project) => project.id === "docs")?.machineType, "small");
+
+  // A size this version doesn't know is that project's problem, said plainly; nothing is imported.
+  const bad = await importFile({ format: CONFIG_FORMAT, version: 2, projects: [{ ...PROJECTS[0], machineType: "huge" }] });
+  assert.notEqual(bad.exitCode, 0);
+  assert.match(bad.stderr, /Project "Web app": machineType: /);
+  assert.equal((await exported()).projects.find((project) => project.id === "web")?.machineType, "large");
 });

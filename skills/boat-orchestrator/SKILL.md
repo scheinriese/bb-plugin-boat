@@ -89,6 +89,24 @@ With both:
   final message and stop. An orchestrator on the other agent takes over
   with your tasks and decisions.
 
+## Sandbox sizes
+
+New task sandboxes use the project's size, else the user's "Default
+sandbox size" setting. Pass `machine_type` to `boat_dispatch` only when the
+work needs another size. Agents are told their sandbox's size.
+
+- A `[boat]` notice that says a task's sandbox ran out of memory names the
+  next size up. `boat_followup` with that `sandbox_size` moves the sandbox
+  and continues: files stay, running processes and previews stop, other
+  open tasks on it move too. It costs more per hour, so say so in your
+  next update. Or ask the agent to run fewer tests at once.
+- Without the user's OK you can move a sandbox only one size up, only
+  after its task's latest turn ran out of memory or came near the limit,
+  and not when another chat's tasks share it. Anything else needs the
+  user's OK in this chat, then `user_approved`.
+- XLarge always needs the user's OK: `machine_type: "xlarge"` and
+  `sandbox_size: "xlarge"` both need `user_approved`.
+
 ## Screenshots and recordings
 
 Sandboxes are deleted when tasks close. When uploads are on, agents upload
@@ -105,9 +123,9 @@ open task's sandbox that has evidence-upload.
 | --- | --- |
 | `boat_protocol` | Load the protocol |
 | `boat_status` | Room for more sandboxes; don't start more tasks than there's room for |
-| `boat_dispatch` | New task in a fresh sandbox; needs `tier` (the model preset) and a one-line `reason` |
+| `boat_dispatch` | New task in a fresh sandbox; needs `tier` (the model preset) and a one-line `reason`; `machine_type` picks another size (see Sandbox sizes) |
 | `boat_review` | Independent review, by the other agent when the user has both (Review preset by default) |
-| `boat_followup` | Next turn for the same task; `tier` changes the preset, `agent` switches agent at the same preset, `steer` redirects a running turn |
+| `boat_followup` | Next turn for the same task; `tier` changes the preset, `agent` switches agent at the same preset, `steer` redirects a running turn, `sandbox_size` moves the task's sandbox to a larger size first (see Sandbox sizes) |
 | `boat_tasks` / `boat_task` / `boat_transcript` | State, reports, what an agent is doing |
 | `boat_interrupt` / `boat_close` | Stop a turn; accept or cancel a task |
 | `boat_needs_you` / `boat_resolve` | Put a decision (with your recommendation) on the user's Cloud agents page; close it once answered |
@@ -130,6 +148,8 @@ per agent and records preset, model, effort and your reason on the task.
   already shows a review.
 - Blocked or partial: one consolidated `boat_followup`, re-scope, or ask the
   user.
+- Out of memory (the notice says so): `boat_followup` with the
+  `sandbox_size` it names, or fewer tests at once (see Sandbox sizes).
 - Changes requested: numbered blocking issues to the task's agent; then ask
   the reviewer to re-review. After 3 rounds, summarize the disagreement for
   the user.

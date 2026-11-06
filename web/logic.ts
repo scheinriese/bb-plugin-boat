@@ -489,3 +489,103 @@ export function chatChoice(
     note: warn ? "untrusted-chat" : headlessNote ? "untrusted" : otherNote ? "headless-other" : null,
   };
 }
+
+// ------------------------------------------------------------- sandbox sizes
+
+type SizeValue = "small" | "default" | "large" | "xlarge";
+const SIZE_LABELS: Record<SizeValue, string> = { small: "Small", default: "Default", large: "Large", xlarge: "XLarge" };
+const SIZE_SPECS: Record<SizeValue, string> = { small: "2 vCPU, 4 GB", default: "4 vCPU, 8 GB", large: "8 vCPU, 16 GB", xlarge: "16 vCPU, 32 GB" };
+const SIZE_ORDER: readonly SizeValue[] = ["small", "default", "large", "xlarge"];
+
+/** "Large (8 vCPU, 16 GB)" */
+export function sizeName(type: SizeValue): string {
+  return `${SIZE_LABELS[type]} (${SIZE_SPECS[type]})`;
+}
+
+const RATE: Record<SizeValue, number | null> = { small: 0.5, default: 1, large: 2, xlarge: null };
+const TIMES: Record<string, string> = { "0.25": "a quarter as much", "0.5": "half as much", "2": "twice as much", "4": "four times as much" };
+
+/**
+ * What a size costs next to the one it is now (else Default), like the
+ * server's costSentence. boat states no rate for XLarge, so it only "costs
+ * more" (or less).
+ */
+export function costHint(type: SizeValue, from: SizeValue | null = null): string {
+  const base = from ?? "default";
+  if (type === base) return type === "default" ? "Default is the standard rate." : "";
+  const to = RATE[type];
+  const was = RATE[base];
+  if (to === null || was === null) return `${SIZE_LABELS[type]} costs ${isSmaller(type, base) ? "less" : "more"} per hour than ${SIZE_LABELS[base]}.`;
+  const times = TIMES[String(to / was)];
+  return times ? `${SIZE_LABELS[type]} costs ${times} per hour as ${SIZE_LABELS[base]}.` : "";
+}
+
+/** The follow-up the move sends, until the user edits it (`larger`: after running out of memory, onto a larger size). */
+export function resizeMessage(type: SizeValue, larger: boolean): string {
+  return `Continue where you left off. The sandbox is now ${sizeName(type)}.${larger ? " Run heavy test suites one at a time." : ""}`;
+}
+
+/**
+ * The size the dialog preselects: after running out of memory, the next one
+ * up the plan allows (never a smaller one, nothing when there's none);
+ * otherwise nothing, so a move is always the user's pick.
+ */
+export function suggestedSize(
+  current: SizeValue | null,
+  sizes: readonly { type: SizeValue; available: boolean }[],
+  serverSuggestion: SizeValue | null,
+  oom: boolean,
+): SizeValue | null {
+  if (!oom) return null;
+  if (serverSuggestion !== null && (current === null || isSmaller(current, serverSuggestion))) return serverSuggestion;
+  if (current === null) return null;
+  const allowed = (type: SizeValue) => sizes.find((size) => size.type === type)?.available ?? true;
+  return SIZE_ORDER.slice(SIZE_ORDER.indexOf(current) + 1).find(allowed) ?? null;
+}
+
+export function isSmaller(type: SizeValue, than: SizeValue | null): boolean {
+  return than !== null && SIZE_ORDER.indexOf(type) < SIZE_ORDER.indexOf(than);
+}
+
+/**
+ * The size a project's new task gets, as the server decides it: the
+ * project's when the plan has it, else the setting (or the largest size
+ * below the project's the plan has). `blocked`: the project's size and
+ * boat's reason, when it falls back.
+ */
+export function projectSizeOnPlan(
+  wanted: SizeValue | null,
+  setting: SizeValue,
+  sizes: readonly { type: SizeValue; available: boolean; reason: string | null }[] | null,
+): { type: SizeValue; blocked: { type: SizeValue; reason: string | null } | null } {
+  if (wanted === null) return { type: setting, blocked: null };
+  const facts = sizes?.find((size) => size.type === wanted);
+  if (facts === undefined || facts.available) return { type: wanted, blocked: null };
+  const allowed = (type: SizeValue) => sizes?.find((size) => size.type === type)?.available ?? true;
+  const fallback = allowed(setting) ? setting : ([...SIZE_ORDER].reverse().find((type) => isSmaller(type, wanted) && allowed(type)) ?? setting);
+  return { type: fallback, blocked: { type: wanted, reason: facts.reason } };
+}
+
+/** The peak card's sentence after "Peak memory: 6.1 of 8 GB". */
+export function peakSentence(memory: {
+  peak: { shared: boolean; percent: number } | null;
+  recommendation: { type: SizeValue; label: string; current: SizeValue | null; reason: "near-limit" | "out-of-memory" | "fits" | "largest"; allowed: boolean; planReason: string | null } | null;
+  project: { name: string; effective: SizeValue } | null;
+}): string {
+  const rec = memory.recommendation;
+  if (rec === null) return "Its size isn't known, so there's no recommendation.";
+  const parts = [
+    rec.reason === "largest"
+      ? "XLarge is the largest size. Run fewer tests at once."
+      : rec.reason === "out-of-memory"
+        ? `Recommended size: ${rec.label}. The sandbox ran out of memory during the check.`
+        : rec.reason === "near-limit"
+          ? `Recommended size: ${rec.label}. The sandbox used ${memory.peak ? `${memory.peak.percent}%` : "over 75%"} of its memory during the check.`
+          : `Recommended size: ${rec.label}. The check fits with room to spare.`,
+  ];
+  if (!rec.allowed) parts.push(`Your boat plan doesn't include ${rec.label}: ${rec.planReason?.replace(/[.\s]+$/, "") ?? "not on your plan"}.`);
+  if (memory.peak?.shared) parts.push("Other tasks worked on this sandbox meanwhile, so part of it is theirs.");
+  if (rec.reason !== "largest" && memory.project !== null && memory.project.effective === rec.type) parts.push(`${memory.project.name} already uses ${rec.label} sandboxes.`);
+  else if (rec.reason !== "largest" && memory.project === null && rec.type !== rec.current && rec.allowed) parts.push(`Next time, pick ${rec.label} under More options in New task.`);
+  return parts.join(" ");
+}
