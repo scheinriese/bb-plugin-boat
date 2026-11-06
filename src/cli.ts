@@ -23,6 +23,8 @@ import { OPEN_STATUSES, PROVIDERS, TASK_ROLES, TASK_STATUSES, type Provider, typ
 import { EFFORTS, TIERS, type Tier } from "./tiers.ts";
 import { quotaLine } from "./quota.ts";
 import { AGENT_NAME, effectiveRelay, onlyAgent, otherAgent, relayNote } from "./relay.ts";
+import { SIZE_SPECS } from "./memory.ts";
+import { resizeText } from "./sandbox-size.ts";
 import { doctorText, explainBoatError, testTaskInput, type SetupStatus } from "./setup.ts";
 import { ALL_SETTINGS, parseSettingText, type SettingKey } from "./settings.ts";
 import { SettingsError, settingRows, settingsText, type SettingRow } from "./settings-store.ts";
@@ -347,6 +349,44 @@ export function buildCli(runtime: Runtime) {
           });
         },
       }),
+      "sandbox resize": cliCommand({
+        summary: "Move a task's sandbox to another size (it stops and starts again: files stay, running processes stop)",
+        description:
+          "Every open task on the sandbox moves with it, and its previews stop (Wake starts them again). It uses one boat start. boat refuses to shrink a sandbox whose data doesn't fit. To move and continue in one step, use `bb boat task followup <id> --type <size> --message …`.",
+        positionals: [{ name: "id", description: "Sandbox id (bx_…)", required: true }],
+        options: {
+          type: { type: "enum", values: MACHINE_TYPES, required: true, description: "small, default, large or xlarge (xlarge needs --user-approved)" },
+          "user-approved": { type: "boolean", description: "The user approved an XLarge sandbox" },
+          json,
+        },
+        async run({ positionals, options }, ctx) {
+          return guard(async () => {
+            const open = service.store.liveSandboxTasks(positionals.id);
+            if (open.length === 0) {
+              throw new PluginCliError(`No open task uses sandbox ${positionals.id}.`, {
+                code: "invalid_value",
+                hint: `Resize it with boat: \`boat stop ${positionals.id}\`, then \`boat resume ${positionals.id} --type <size>\`.`,
+              });
+            }
+            const result = await service.sizes.resize({
+              taskId: open[0]!.id,
+              type: options.type as MachineType,
+              message: null,
+              userApproved: options["user-approved"] === true,
+              notifyThreadId: ctx.threadId ?? null,
+              waitMs: runtime.launchWaitMs,
+              by: "cli",
+            });
+            runtime.changed();
+            const label = SIZE_SPECS[result.to].label;
+            return out({ sandboxId: positionals.id, pending: result.pending, from: result.from, to: result.to, moved: result.moved }, options.json, () =>
+              result.pending
+                ? `Moving sandbox ${positionals.id} to ${label} (a few minutes). Check with \`bb boat task show ${result.task.id}\`.`
+                : `Moved sandbox ${positionals.id} to ${label} (${SIZE_SPECS[result.to].cpus} vCPU, ${SIZE_SPECS[result.to].memoryGb} GB). Tasks on it: ${result.moved.join(", ")}.`,
+            );
+          });
+        },
+      }),
       "sandbox delete": cliCommand({
         summary: "Delete a sandbox and all of its data",
         positionals: [{ name: "id", description: "Sandbox id", required: true }],
@@ -619,8 +659,9 @@ export function buildCli(runtime: Runtime) {
             const events = service.store.events(task.id);
             const evidence = service.evidenceLinks(task.id);
             const previews = await service.previews({ taskId: task.id, includeExpired: true });
-            return out({ task, events, evidence, previews: previews.map((view) => ({ ...view.preview, link: view.link, state: view.state })) }, options.json, () =>
-              taskDetail(task, events, { brief: options.brief, evidence, previews }),
+            const memory = options.json ? await service.sizes.view(task) : null;
+            return out({ task, events, evidence, previews: previews.map((view) => ({ ...view.preview, link: view.link, state: view.state })), memory }, options.json, () =>
+              taskDetail(task, events, { brief: options.brief, evidence, previews, memory: service.sizes.lines(task) }),
             );
           });
         },
@@ -671,6 +712,12 @@ export function buildCli(runtime: Runtime) {
             type: "boolean",
             description: "Only ask for screenshot/recording uploads (evidence-upload); keeps the review and ready state. The message is optional",
           },
+          type: {
+            type: "enum",
+            values: MACHINE_TYPES,
+            description:
+              "Move the task's sandbox to this size first, e.g. large after it ran out of memory (it stops and starts again: files stay, running processes stop, other tasks on it move too; boat refuses to shrink one whose data doesn't fit); xlarge needs --user-approved",
+          },
           json,
         },
         constraints: [
@@ -683,6 +730,36 @@ export function buildCli(runtime: Runtime) {
             const message =
               (await textArg(runtime, ctx, options.message, options["message-file"], "message")) ??
               (options["evidence-only"] ? "Upload the screenshots and screen recordings from your work on this task." : "");
+            if (options.type !== undefined) {
+              if (options.steer || options["evidence-only"]) {
+                throw new PluginCliError(options.steer ? "A steer can't change the sandbox size." : "An evidence-only follow-up can't change the sandbox size.", {
+                  code: "invalid_value",
+                  hint: "Send it without --type, or wait for the turn to end and send a follow-up with --type.",
+                });
+              }
+              const result = await service.sizes.resize({
+                taskId: positionals.id,
+                type: options.type as MachineType,
+                message,
+                followup: {
+                  provider: (options.agent as Provider | undefined) ?? null,
+                  model: options.model ?? null,
+                  tier: (options.tier as Tier | undefined) ?? null,
+                  effort: options.effort ?? null,
+                  reason: options.reason ?? null,
+                  userApproved: options["user-approved"] === true,
+                },
+                userApproved: options["user-approved"] === true,
+                notifyThreadId: ctx.threadId ?? null,
+                waitMs: runtime.launchWaitMs,
+                by: "cli",
+              });
+              runtime.wake();
+              const now = service.store.get(result.task.id) ?? result.task;
+              return out({ task: now, pending: result.pending, from: result.from, to: result.to, moved: result.moved, sent: result.sent }, options.json, () =>
+                resizeText({ ...result, task: now }, "cli", agentLine(now)),
+              );
+            }
             const before = service.mustGet(positionals.id);
             const task = await service.followup(positionals.id, message, {
               steer: options.steer,
@@ -1232,6 +1309,11 @@ export function buildCli(runtime: Runtime) {
           },
           instructions: { type: "string", description: "Added to the brief of every task of this project" },
           "instructions-file": { type: "string", description: "Read the instructions from a file (on the machine you run this on)" },
+          size: {
+            type: "enum",
+            values: MACHINE_TYPES,
+            description: "Sandbox size for this project's new tasks and their reviews (small, default, large, xlarge); default: the Default sandbox size setting",
+          },
           json,
         },
         async run({ options }, ctx) {
@@ -1258,12 +1340,15 @@ export function buildCli(runtime: Runtime) {
                 ...(options.delivery ? { delivery: options.delivery as "pr" | "push" } : {}),
                 ...(options["protected-branches"] !== undefined ? { protectedBranches: options["protected-branches"] } : {}),
                 ...(instructions !== undefined ? { instructions } : {}),
+                // Leaving the flag out keeps the project's size.
+                ...(options.size ? { machineType: options.size as MachineType } : {}),
               });
             } catch (error) {
               throw new PluginCliError(error instanceof Error ? error.message : String(error), { code: "invalid_value" });
             }
             runtime.changed();
-            return out(project, options.json, () => `Saved project ${projectLine(project)}`);
+            const sizeNote = await projectSizeNote(runtime, project);
+            return out({ ...project, sizeNote }, options.json, () => `Saved project ${projectLine(project)}${sizeNote ? `\n${sizeNote}` : ""}`);
           });
         },
       }),
@@ -1278,6 +1363,11 @@ export function buildCli(runtime: Runtime) {
           "protected-branches": { type: "string", description: 'Comma-separated branches no task may push to, on top of the base branches ("none" clears them)' },
           instructions: { type: "string", description: 'Added to the brief of every task of this project ("none" clears them)' },
           "instructions-file": { type: "string", description: "Read the instructions from a file (on the machine you run this on)" },
+          size: {
+            type: "enum",
+            values: [...MACHINE_TYPES, "none"],
+            description: 'Sandbox size for its new tasks and their reviews ("none": the Default sandbox size setting)',
+          },
           json,
         },
         async run({ positionals, options }, ctx) {
@@ -1301,12 +1391,14 @@ export function buildCli(runtime: Runtime) {
                   ? { protectedBranches: options["protected-branches"].trim() === "none" ? [] : options["protected-branches"] }
                   : {}),
                 ...(instructions !== undefined ? { instructions: instructions.trim() === "none" ? "" : instructions } : {}),
+                ...(options.size !== undefined ? { machineType: options.size === "none" ? null : (options.size as MachineType) } : {}),
               });
             } catch (error) {
               throw new PluginCliError(error instanceof Error ? error.message : String(error), { code: "invalid_value" });
             }
             runtime.changed();
-            return out(project, options.json, () => `Saved project ${projectLine(project)}`);
+            const sizeNote = await projectSizeNote(runtime, project);
+            return out({ ...project, sizeNote }, options.json, () => `Saved project ${projectLine(project)}${sizeNote ? `\n${sizeNote}` : ""}`);
           });
         },
       }),
@@ -1466,7 +1558,16 @@ export function buildCli(runtime: Runtime) {
 
 function projectLine(project: BoatProject): string {
   const repos = project.repos.map((entry) => `${entry.repo}@${entry.baseBranch}`).join(" + ");
-  return `${project.id}  ${project.name}  ${repos}  env ${project.environment ?? "default"}${project.snapshot ? `  snapshot ${project.snapshot}` : ""}${project.protocolPath ? `  protocol ${project.protocolPath}` : ""}  ${project.workerMode === "boat" ? "tasks in boat only" : "tasks as chats allowed"}  ${project.delivery === "push" ? "ships after approval" : "draft PRs"}${project.protectedBranches.length > 0 ? `  protects ${project.protectedBranches.join(", ")}` : ""}${project.instructions ? "  has instructions" : ""}`;
+  return `${project.id}  ${project.name}  ${repos}  env ${project.environment ?? "default"}${project.snapshot ? `  snapshot ${project.snapshot}` : ""}${project.protocolPath ? `  protocol ${project.protocolPath}` : ""}  ${project.workerMode === "boat" ? "tasks in boat only" : "tasks as chats allowed"}  ${project.delivery === "push" ? "ships after approval" : "draft PRs"}${project.machineType ? `  ${SIZE_SPECS[project.machineType].label.toLowerCase()} sandboxes` : ""}${project.protectedBranches.length > 0 ? `  protects ${project.protectedBranches.join(", ")}` : ""}${project.instructions ? "  has instructions" : ""}`;
+}
+
+/** A project size the plan doesn't allow (yet): what happens until it does. */
+async function projectSizeNote(runtime: Runtime, project: BoatProject): Promise<string | null> {
+  if (project.machineType === null) return null;
+  const verdict = await runtime.service.sizes.projectSizeVerdict(project.machineType);
+  if (verdict.allowed) return null;
+  const label = SIZE_SPECS[project.machineType].label;
+  return `Note: your boat plan doesn't include ${label} right now (${(verdict.reason ?? "").replace(/[.\s]+$/, "")}). Until it does, this project's tasks start on the Default sandbox size setting.`;
 }
 
 /** --instructions or --instructions-file (at most one). */

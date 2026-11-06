@@ -256,11 +256,14 @@ export class FakeBoat {
     const sandbox = this.sandboxes.get(id);
     if (sandbox) sandbox.state = "stopped";
   }
+  /** A resume waits for this. */
+  resumeGate: Promise<void> | null = null;
   /** Refuse a resume (null: allowed); `type` is the size asked for (null: keep it). */
   resumeError: (type: string | null) => Error | null = () => null;
   async resume(id: string, ttl: number | null, _signal?: AbortSignal, type?: string | null): Promise<void> {
     this.calls.push(`resume ${id} ttl=${ttl}${type ? ` type=${type}` : ""}`);
     this.checkAutoStop(ttl);
+    if (this.resumeGate) await this.resumeGate;
     const refused = this.resumeError(type ?? null);
     if (refused) throw refused;
     const sandbox = this.sandboxes.get(id);

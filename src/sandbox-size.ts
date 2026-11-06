@@ -365,17 +365,27 @@ export class SandboxSizes {
     return sandboxLine(this.knownSize(task), runner);
   }
 
+  /** The newest record of a type when no turn started after it (events in order, not by time). */
+  private sinceLastTurn<T extends MemoryData["type"]>(taskId: string, type: T): DataOf<T> | null {
+    const events = this.deps.store.events(taskId, 1000);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!;
+      if (TURN_START_KINDS.has(event.kind)) return null;
+      if (event.kind !== DATA_KIND) continue;
+      const data = decodeData(event.text);
+      if (data?.type === type) return data as DataOf<T>;
+    }
+    return null;
+  }
+
   /**
    * The follow-up's note after the sandbox moved (this task asked, or moved
    * along): once, until the next turn starts.
    */
   followupNote(task: Task): string | null {
-    const moved = this.latest(task.id, "resize");
-    if (moved === null || moved.data.state !== "done") return null;
-    const events = this.deps.store.events(task.id, 1000);
-    const lastStart = [...events].reverse().find((event) => TURN_START_KINDS.has(event.kind));
-    if (lastStart !== undefined && lastStart.at > moved.at) return null;
-    return movedNote(moved.data.from, moved.data.to);
+    const moved = this.sinceLastTurn(task.id, "resize");
+    if (moved === null || moved.state !== "done") return null;
+    return movedNote(moved.from, moved.to);
   }
 
   // ---------------------------------------------------------------- after a turn
@@ -389,9 +399,15 @@ export class SandboxSizes {
     return false;
   }
 
-  /** Every memory check started so far has finished (tests). */
+  /** Every memory check and move started so far has finished (tests). */
   async settled(): Promise<void> {
-    while (this.checks.size > 0) await Promise.allSettled([...this.checks]);
+    for (;;) {
+      const pending = [...this.checks, ...[...this.jobs.values()].map((job) => job.done).filter((done): done is Promise<Outcome> => done !== null)];
+      if (pending.length === 0) return;
+      await Promise.allSettled(pending);
+      // A job's bookkeeping ends in its finally.
+      await new Promise((resolve) => setImmediate(resolve));
+    }
   }
 
   private userInterrupted(task: Task): boolean {
@@ -633,9 +649,11 @@ export class SandboxSizes {
     return below[0] ?? setting;
   }
 
-  /** The plan's verdict on a project's size (for the save's note). */
-  projectSizeVerdict(type: MachineType | null): { allowed: boolean; reason: string | null } {
-    return type === null ? { allowed: true, reason: null } : planVerdict(type, this.planNow());
+  /** The plan's verdict on a project's size (for the save's note); reads boat when there's no reading yet. */
+  async projectSizeVerdict(type: MachineType | null): Promise<{ allowed: boolean; reason: string | null }> {
+    if (type === null) return { allowed: true, reason: null };
+    const plan = this.planNow() ?? (await this.deps.hooks.sizePlan?.().catch(() => null)) ?? null;
+    return planVerdict(type, plan);
   }
 
   // ---------------------------------------------------------------- moving a sandbox
@@ -1214,20 +1232,17 @@ export class SandboxSizes {
       return { state: "failed", from: failure.from, to: failure.to, toSummary: `${LABEL(failure.to)} (${specText(failure.to)})`, step: null, error: failure.error, withMessage: false };
     }
     // A move the plugin lost (it restarted mid-move): it isn't running, whatever the record says.
-    const last = this.latest(task.id, "resize");
-    if (last !== null && last.data.state === "started") {
-      const lastStart = [...this.deps.store.events(task.id, 1000)].reverse().find((event) => TURN_START_KINDS.has(event.kind));
-      if (lastStart === undefined || lastStart.at < last.at) {
-        return {
-          state: "failed",
-          from: last.data.from,
-          to: last.data.to,
-          toSummary: `${LABEL(last.data.to)} (${specText(last.data.to)})`,
-          step: null,
-          error: `The move to ${LABEL(last.data.to)} didn't finish (the plugin restarted). Check the sandbox size, then send a follow-up.`,
-          withMessage: false,
-        };
-      }
+    const last = this.sinceLastTurn(task.id, "resize");
+    if (last !== null && last.state === "started") {
+      return {
+        state: "failed",
+        from: last.from,
+        to: last.to,
+        toSummary: `${LABEL(last.to)} (${specText(last.to)})`,
+        step: null,
+        error: `The move to ${LABEL(last.to)} didn't finish (the plugin restarted). Check the sandbox size, then send a follow-up.`,
+        withMessage: false,
+      };
     }
     return null;
   }

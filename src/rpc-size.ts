@@ -35,7 +35,7 @@ export function sizeHandlers(runtime: Runtime, refuse: Refuse) {
         if (project === null) throw new experimental_PluginRpcRefusal({ code: "not_found", message: `No project "${projectId}".` });
         const saved = runtime.projects.save({ ...project, machineType });
         runtime.changed();
-        const verdict = service.sizes.projectSizeVerdict(saved.machineType);
+        const verdict = await service.sizes.projectSizeVerdict(saved.machineType);
         return { name: saved.name, machineType: saved.machineType, allowed: verdict.allowed, reason: verdict.reason };
       }),
   };

@@ -809,3 +809,70 @@ test("the page's sandboxes say what uses them, and a sandbox can be saved as a s
   assert.ok((state().snapshots as { name: string }[]).some((entry) => entry.name === "web-ready"));
   await assert.rejects(harness.callRpc("saveSnapshot", { sandboxId, name: "no spaces" }), /isn't a snapshot name/);
 });
+
+test("sandbox sizes through the CLI: a project's size, task show, and moving a sandbox", async (t) => {
+  const { harness, state, finishAll } = await setup();
+  t.after(() => harness.lifecycle.dispose());
+  const statePath = process.env.FAKE_BOAT_STATE!;
+  const edit = (change: (current: Record<string, unknown>) => void) => {
+    const current = state();
+    change(current);
+    writeFileSync(statePath, JSON.stringify(current));
+  };
+
+  const added = await harness.runCli(["project", "add", "--name", "Web app", "--repo", "acme/web@main", "--size", "small", "--json"]);
+  assert.equal(added.exitCode, 0, added.stderr);
+  assert.equal(JSON.parse(added.stdout).machineType, "small");
+  // A size the plan doesn't have (the fake trial's Large) saves, with a note.
+  const large = await harness.runCli(["project", "set", "web-app", "--size", "large"]);
+  assert.equal(large.exitCode, 0, large.stderr);
+  assert.match(large.stdout, /large sandboxes/);
+  assert.match(large.stdout, /Note: your boat plan doesn't include Large right now \(needs a paid plan\)\./);
+  const cleared = await harness.runCli(["project", "set", "web-app", "--size", "none", "--json"]);
+  assert.equal(JSON.parse(cleared.stdout).machineType, null);
+  await harness.runCli(["project", "set", "web-app", "--size", "small"]);
+  const list = await harness.runCli(["project", "list"]);
+  assert.match(list.stdout, /web-app {2}Web app .* small sandboxes/);
+
+  // The project's size for its repo's new task, and task show says it.
+  const started = await harness.runCli(["task", "start", "--title", "Dark mode", "--repo", "acme/web", "--brief", "Add it.", "--json"], { threadId: "thr_orch" });
+  assert.equal(started.exitCode, 0, started.stderr || started.stdout);
+  const { task } = JSON.parse(started.stdout) as { task: { id: string; sandboxId: string } };
+  assert.equal(state().sandboxes[task.sandboxId].type, "small");
+  finishAll("Done.\n=== REPORT ===\nSTATUS: done\n=== END REPORT ===");
+  const show = await harness.runCli(["task", "show", task.id, "--refresh"]);
+  assert.match(show.stdout, /Sandbox size: Small \(2 vCPU, 4 GB\)/);
+  assert.match(show.stdout, /Small sandbox, from project Web app/);
+
+  // Steers and evidence-only follow-ups can't move it; Large isn't on the plan.
+  const steer = await harness.runCli(["task", "followup", task.id, "--message", "x", "--steer", "--type", "default"]);
+  assert.notEqual(steer.exitCode, 0);
+  assert.match(steer.stderr, /A steer can't change the sandbox size/);
+  const notOnPlan = await harness.runCli(["task", "followup", task.id, "--message", "x", "--type", "large"]);
+  assert.notEqual(notOnPlan.exitCode, 0);
+  assert.match(notOnPlan.stderr, /Your boat plan doesn't include Large sandboxes: needs a paid plan\./);
+
+  // On a plan with Large: stop, resume --type large, then the follow-up.
+  edit((current) => {
+    current.machineTypes = ["small", "default", "large", "xlarge"].map((type) => ({ type, available: type !== "xlarge", reason: type === "xlarge" ? "needs the $100/month plan or higher" : null }));
+  });
+  const moved = await harness.runCli(["task", "followup", task.id, "--message", "Run the tests again.", "--type", "large"], { threadId: "thr_orch" });
+  assert.equal(moved.exitCode, 0, moved.stderr || moved.stdout);
+  assert.match(moved.stdout, new RegExp(`^Moved task ${task.id}'s sandbox to Large \\(8 vCPU, 16 GB\\) and sent the follow-up`));
+  const calls = state().calls as string[][];
+  assert.ok(calls.some((call) => call[0] === "resume" && call.includes("--type") && call.includes("large")));
+  assert.equal(state().sandboxes[task.sandboxId].type, "large");
+  const prompts = calls.filter((call) => call[0] === "prompt");
+  assert.match(prompts.at(-1)!.at(-1)!, /## Sandbox\nThe sandbox moved to a larger machine: it's now Large/);
+
+  // Back down with sandbox resize, once the turn ended.
+  finishAll("Done again.\n=== REPORT ===\nSTATUS: done\n=== END REPORT ===");
+  await harness.runCli(["task", "show", task.id, "--refresh"]);
+  const resized = await harness.runCli(["sandbox", "resize", task.sandboxId, "--type", "default"]);
+  assert.equal(resized.exitCode, 0, resized.stderr || resized.stdout);
+  assert.match(resized.stdout, new RegExp(`^Moved sandbox ${task.sandboxId} to Default \\(4 vCPU, 8 GB\\)\\. Tasks on it: ${task.id}\\.`));
+  assert.equal(state().sandboxes[task.sandboxId].type, "default");
+  const nobody = await harness.runCli(["sandbox", "resize", "bx_nobody", "--type", "large"]);
+  assert.notEqual(nobody.exitCode, 0);
+  assert.match(nobody.stderr, /No open task uses sandbox bx_nobody/);
+});
