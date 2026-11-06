@@ -391,17 +391,25 @@ test("bb's setup fails after boat resumed the machine onto the new size: measure
 test("a rollback says the size it measured, and records it", async () => {
   const env = makeService();
   const task = await idleTask(env);
-  // The move's resume fails; the plain resume after it lands on Large anyway (boat finished the first one).
+  // The move's resume fails; the sandbox comes back on a size nobody asked for.
   env.boat.resumeError = (type) => (type ? new BoatError("no capacity for large", { code: "no_capacity" }) : null);
-  env.boat.resumeLateError = () => null;
   const original = env.boat.resume.bind(env.boat);
   env.boat.resume = async (id, ttl, signal, type) => {
     await original(id, ttl, signal, type);
-    if (!type) env.boat.sandboxes.get(id)!.machineType = "small";
+    if (!type) Object.assign(env.boat.probe(id), { cpus: 2, memTotalKb: 4_065_972 });
   };
   const error = await refused(env.service.sizes.resize(request(task.id)), "resize_failed");
-  assert.match(error.message, /^Couldn't move the sandbox to Large: no capacity for large\. It's back on Small\./);
+  assert.match(error.message, /^Couldn't move the sandbox to Large: no capacity for large\. It's Small now\./);
   assert.equal(env.service.sizes.knownSize(env.store.get(task.id)!)?.type, "small");
+
+  // A sandbox that doesn't answer: boat's type for it.
+  const quiet = makeService();
+  const other = await idleTask(quiet);
+  quiet.boat.resumeLateError = (type) => (type ? new BoatError("boat call timed out after 180s", { code: "timeout" }) : null);
+  quiet.boat.probeBroken = true;
+  const moved = await quiet.service.sizes.resize(request(other.id));
+  assert.equal(moved.sent, true);
+  assert.equal(quiet.service.sizes.knownSize(quiet.store.get(other.id)!)?.type, "large");
 });
 
 test("the follow-up's own refusals come before the sandbox stops", async () => {

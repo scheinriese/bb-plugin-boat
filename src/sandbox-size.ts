@@ -1070,7 +1070,7 @@ export class SandboxSizes {
       if (!stopped) {
         this.pendingTypes.delete(sandboxId);
         // Something may have started it meanwhile (a message to the task chat): say what it is now.
-        const now = await this.measure(sandboxId);
+        const now = await this.measure(sandboxId, { boat: true });
         if (now.size?.type === to) return await this.finish(job, request, now);
         if (now.size !== null) this.recordSize(job.moved, sandboxId, now.size, "resize", now.probe);
         if (chat !== undefined && hostId !== null && (await chat.machineState(hostId).catch(() => null))?.phase === "suspended") {
@@ -1157,21 +1157,19 @@ export class SandboxSizes {
   }
 
   /**
-   * The sandbox's size as it is now: boat's word for the type when it gives
-   * one (the sandbox's own answer can be faked from inside), the probe's for
-   * CPUs, memory and the out-of-memory baseline. `probe` false: only boat
-   * (a stopped sandbox isn't started to ask it).
+   * The sandbox's size as it is now, by asking it (its memory is what the
+   * work gets), and the probe for the out-of-memory baseline. `boat`: when
+   * the sandbox doesn't answer (or `probe` is false: a stopped sandbox isn't
+   * started to ask it), boat's type for it, if boat names one.
    */
-  private async measure(sandboxId: string, options: { probe?: boolean } = {}): Promise<{ size: KnownSize | null; probe: Probe | null }> {
+  private async measure(sandboxId: string, options: { probe?: boolean; boat?: boolean } = {}): Promise<{ size: KnownSize | null; probe: Probe | null }> {
     const read = options.probe === false ? null : await this.probe(sandboxId, {});
     const probe = read?.probe ?? null;
     const measured = this.sizeFromProbe(probe);
+    if (measured?.type || options.boat !== true) return { size: measured, probe };
     const info = await within(this.deps.boat.findInfo(sandboxId, this.deps.hooks.lifecycle), this.timing.checkMs).catch(() => null);
     const type = info?.machineType ?? null;
-    if (type === null) return { size: measured, probe };
-    // Facts that don't fit boat's type aren't kept.
-    const fits = measured?.type === type;
-    return { size: { type, cpus: fits ? measured!.cpus : null, memTotalKb: fits ? measured!.memTotalKb : null }, probe };
+    return { size: type === null ? measured : { type, cpus: null, memTotalKb: null }, probe };
   }
 
   /** The move happened: every task on the sandbox records it (the next follow-up's note). */
@@ -1267,7 +1265,7 @@ export class SandboxSizes {
     } catch (error) {
       this.deps.hooks.log.warn(`resize rollback ${job.sandboxId}: ${message(error)}`);
     }
-    const now = await this.measure(job.sandboxId, { probe: back });
+    const now = await this.measure(job.sandboxId, { probe: back, boat: true });
     if (back && now.size?.type === job.to) return this.finish(job, request, now);
     if (now.size !== null) this.recordSize(job.moved, job.sandboxId, now.size, "resize", now.probe);
     const head = `Couldn't move the sandbox to ${LABEL(job.to)}: ${trimDot(reason)}.`;
@@ -1277,7 +1275,8 @@ export class SandboxSizes {
       return this.fail(job, request, `${head}${what} ${what ? "it's" : "It's"} stopped; the next follow-up starts it again.`, { moved: now.size?.type === job.to });
     }
     const type = now.size?.type ?? job.from;
-    return this.fail(job, request, `${head} ${type === null ? "It's running again." : `It's back on ${LABEL(type)}.`}`);
+    const where = type === null ? "It's running again." : type === job.from ? `It's back on ${LABEL(type)}.` : `It's ${LABEL(type)} now.`;
+    return this.fail(job, request, `${head} ${where}`);
   }
 
   /**
