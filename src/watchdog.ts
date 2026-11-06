@@ -227,11 +227,31 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
 
   // ---------------------------------------------------------------- notices
 
+  /** The notices sent (and notes armed), read from kv once and kept here; every writer shares it. */
+  let sentCache: Record<string, number> | null = null;
+  let saving: Promise<void> = Promise.resolve();
+
   async function sentLog(): Promise<Record<string, number>> {
+    if (sentCache !== null) return sentCache;
     const raw = await deps.kv.get<unknown>(WATCHDOG_KEY).catch(() => undefined);
     const record = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as { sent?: unknown }).sent : undefined;
-    return record !== null && typeof record === "object" ? (record as Record<string, number>) : {};
+    sentCache ??= record !== null && typeof record === "object" ? { ...(record as Record<string, number>) } : {};
+    return sentCache;
   }
+
+  /** Write the log (one write at a time; entries older than a week go). */
+  function saveSent(): Promise<void> {
+    saving = saving
+      .then(async () => {
+        const sent = await sentLog();
+        const at = now();
+        for (const [key, value] of Object.entries(sent)) if (typeof value !== "number" || at - value >= SENT_TTL_MS) delete sent[key];
+        await deps.kv.set(WATCHDOG_KEY, { sent: { ...sent } });
+      })
+      .catch((error: unknown) => deps.log(`watchdog: ${message(error)}`));
+    return saving;
+  }
+
 
   function post(notice: Omit<Outgoing, "queuedAt">): void {
     if (outbox.some((entry) => entry.incident === notice.incident && entry.threadId === notice.threadId)) return;
@@ -268,10 +288,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       entry.after?.();
     }
     outbox = keep;
-    if (!wrote) return;
-    const next: Record<string, number> = {};
-    for (const [key, value] of Object.entries(sent)) if (typeof value === "number" && at - value < SENT_TTL_MS) next[key] = value;
-    await deps.kv.set(WATCHDOG_KEY, { sent: next }).catch((error: unknown) => deps.log(`watchdog: ${message(error)}`));
+    if (wrote) await saveSent();
   }
 
   function event(tasks: Task[], text: string): void {
@@ -441,7 +458,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       const row = await prependQueued(note, note.threadId!).catch(() => null);
       if (row !== null) await carriedBy(note, row);
     }
-    if (wrote) await deps.kv.set(WATCHDOG_KEY, { sent }).catch((error: unknown) => deps.log(`watchdog: ${message(error)}`));
+    if (wrote) await saveSent();
   }
 
   /** Suspend through bb a machine whose sandbox boat stopped behind bb's back. Returns what the plugin did. */
@@ -640,7 +657,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
           if (sent[`i:${incident}:user`] === undefined && deps.notifyUser !== undefined) {
             await deps.notifyUser("An orchestrator is waiting for its sandbox", text.replace(/^\[boat\] Watchdog: /, "")).catch(() => undefined);
             sent[`i:${incident}:user`] = at;
-            await deps.kv.set(WATCHDOG_KEY, { sent }).catch(() => undefined);
+            await saveSent();
           }
           continue;
         }
