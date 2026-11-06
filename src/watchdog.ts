@@ -363,7 +363,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
     const { tasks, own } = audience(sandboxId, rows);
     const incident = `stopped:${sandboxId}:${Math.floor(stoppedAt / 60_000)}`;
     const work = describeWork(last.work);
-    event(tasks, `The sandbox stopped while ${work} was running in the background. ${cause} ${did}`);
+    event(tasks, `The sandbox stopped while work was running in the background (${work}). ${cause} ${did}`);
     for (const task of tasks) await setNote(task, stoppedAt, work, capped);
     const told = new Set<string>();
     for (const task of tasks) {

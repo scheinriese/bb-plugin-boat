@@ -238,7 +238,7 @@ export function stoppedNotice(input: { subject: NoticeSubject; work: string; sto
     : subject.kind === "own"
       ? "Its background jobs and anything in /tmp are gone: rerun what you still need instead of waiting for their results."
       : `The worker gets a note with its next message that its background jobs and /tmp were lost. Follow up on ${subject.taskId} (boat_followup) if it should rerun them now.`;
-  return `${WATCHDOG_PREFIX} ${subjectText(input.subject)} stopped at ${clockTime(input.stoppedAt, input.now)} while ${input.work || "work"} was running in the background. ${input.cause} ${input.did} ${next}`;
+  return `${WATCHDOG_PREFIX} ${subjectText(input.subject)} stopped at ${clockTime(input.stoppedAt, input.now)} while work was running in the background${input.work ? ` (${input.work})` : ""}. ${input.cause} ${input.did} ${next}`;
 }
 
 /** Messages waited on a stopped or disconnected machine: for how long, and whether the plugin resumed it. */

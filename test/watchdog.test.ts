@@ -151,7 +151,7 @@ test("a stop under background work: one notice naming it, and a note for the wor
   const [notice] = w.told;
   assert.equal(notice!.threadId, "thr_orch");
   assert.ok(notice!.text.startsWith(WATCHDOG_PREFIX), notice!.text);
-  assert.match(notice!.text, new RegExp(`Task ${w.task.id}'s sandbox \\(${w.sandbox.id}, "Deep refactor"\\) stopped at 10:00 UTC while a bb workflow was running in the background`));
+  assert.match(notice!.text, new RegExp(`Task ${w.task.id}'s sandbox \\(${w.sandbox.id}, "Deep refactor"\\) stopped at 10:00 UTC while work was running in the background \\(a bb workflow\\)`));
   assert.match(notice!.text, /boat stopped it \(its auto-stop, a crash or the boat\.dev dashboard\), not bb\. The plugin suspended its bb machine to match/);
   const note = await dog.noteFor(w.task.id);
   assert.ok(note?.startsWith(`${RESUME_NOTE_PREFIX} at 10:00 UTC while work was running in the background (a bb workflow)`), note ?? "");
@@ -224,7 +224,7 @@ test("a stop at the 12-hour limit for background work says it may have been stuc
   w.advance(MINUTE);
   await dog.tick();
   assert.equal(w.told.length, 1);
-  assert.match(w.told[0]!.text, /while a background command was running in the background\. bb suspended the machine\./);
+  assert.match(w.told[0]!.text, /while work was running in the background \(a background command\)\. bb suspended the machine\./);
   assert.match(w.told[0]!.text, /It had run 12 hours, the most the plugin keeps a sandbox on for background work, so it may have been stuck/);
   const note = (await dog.noteFor(w.task.id))!;
   assert.match(note, /Restart a job only if you still need it/);
