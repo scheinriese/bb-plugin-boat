@@ -577,18 +577,38 @@ function whoText(finding: Pick<OomFinding, "kills" | "count">): string {
   return `${labels[0]} and ${others} other ${others === 1 ? "process" : "processes"}`;
 }
 
+/** The advice that offers a larger sandbox (oomAdvice's when the plan has one). */
+export const CONTINUE_ADVICE = "Run fewer tests at once, or continue on a larger sandbox.";
+
 /** What to do about it, given what the plan allows. */
 export function oomAdvice(options: { current: MachineType | null; next: MachineType | null; nextAllowed: boolean }): string {
   if (options.current !== null && options.next === null) return "Run fewer tests at once (XLarge is the largest sandbox).";
   if (options.next !== null && !options.nextAllowed) return "Run fewer tests at once (your boat plan doesn't include a larger sandbox).";
-  return "Run fewer tests at once, or continue on a larger sandbox.";
+  return CONTINUE_ADVICE;
 }
 
-/** "Task t_y also uses this sandbox." */
+/**
+ * A stored out-of-memory message once continuing on a larger sandbox no
+ * longer applies: the sandbox moved since (`movedTo`), or the task is closed.
+ */
+export function settledOomMessage(text: string, options: { movedTo: MachineType | null; closed: boolean }): string {
+  if (!text.includes(CONTINUE_ADVICE)) return text;
+  if (options.movedTo !== null) return text.replace(CONTINUE_ADVICE, `The sandbox is ${SIZE_SPECS[options.movedTo].label} now. Send a follow-up to continue.`);
+  if (options.closed) return text.replace(CONTINUE_ADVICE, "Run fewer tests at once.");
+  return text;
+}
+
+/** "A, B and C" */
+export function listText(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+/** "“Review: Add dark mode” also uses this sandbox." (other tasks by title). */
 export function sharedText(others: readonly string[]): string {
   if (others.length === 0) return "";
-  if (others.length === 1) return `Task ${others[0]} also uses this sandbox.`;
-  return `Tasks ${others.slice(0, -1).join(", ")} and ${others.at(-1)} also use this sandbox.`;
+  const titles = others.map((title) => `“${title.length > 80 ? `${title.slice(0, 79)}…` : title}”`);
+  return `${listText(titles)} also ${titles.length === 1 ? "uses" : "use"} this sandbox.`;
 }
 
 /**
@@ -767,6 +787,8 @@ export interface KillRecord {
 }
 
 export type MemoryData =
+  /** The follow-up that told the agent about the latest move went out. */
+  | { type: "note-sent" }
   | {
       type: "size";
       sandboxId: string;
@@ -837,7 +859,7 @@ export function decodeData(text: string): MemoryData | null {
   try {
     const value = JSON.parse(text) as { type?: unknown } | null;
     if (value === null || typeof value !== "object" || typeof value.type !== "string") return null;
-    if (!["size", "watch", "sampler", "oom", "peak", "resize"].includes(value.type)) return null;
+    if (!["size", "watch", "sampler", "oom", "peak", "resize", "note-sent"].includes(value.type)) return null;
     return value as MemoryData;
   } catch {
     return null;

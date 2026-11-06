@@ -1776,6 +1776,7 @@ export class BoatService {
         await this.boat.interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       }
+      this.sizes.noteSent(task.id); // sizes
       if (newlyApproved) this.store.addEvent(task.id, "approval", "Frontier at max effort, approved by the user (follow-up)");
       this.markChangedSinceReview(task);
       if (agentNote !== null) this.store.addEvent(task.id, "agent", agentNote);
@@ -1928,6 +1929,8 @@ export class BoatService {
     try {
       if (next.provider !== task.provider) {
         const threadId = await this.openHandoverChat(task, { ...next, why: "switch", message });
+        // The handover names the sandbox's size (sizes).
+        this.sizes.noteSent(task.id);
         await chat.stop(task.threadId!).catch(() => undefined);
         return this.store.update(task.id, { threadId }) ?? claimed;
       }
@@ -1944,6 +1947,7 @@ export class BoatService {
         }),
         { steer: false, ...(next.changesModel ? { model: next.model, effort: next.reasoningEffort } : {}) },
       );
+      this.sizes.noteSent(task.id); // sizes
       return claimed;
     } catch (error) {
       // Nothing was sent: put the task back as it was.

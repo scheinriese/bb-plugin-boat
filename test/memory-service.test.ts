@@ -362,7 +362,7 @@ test("the test task measures too; without measuring, no sampler; a lost sampler 
   const after = (await lost.service.sizes.view(lost.store.get(measured.id)!))!;
   assert.equal(after.peak, null);
   assert.ok(after.oom);
-  assert.ok(history(lost, measured.id, "memory").includes("Couldn't measure peak memory during this turn (the sampler stopped early)."));
+  assert.ok(history(lost, measured.id, "memory").includes("Couldn't measure peak memory during this turn (the measurement stopped early)."));
 });
 
 test("the project offer appears only for a stored project whose size differs", async () => {

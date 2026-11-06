@@ -29,7 +29,15 @@ export const taskMemorySchema = z.object({
    * error it replaced.
    */
   oom: z
-    .object({ message: z.string(), original: z.string().nullable(), at: z.string(), cause: z.boolean() })
+    .object({
+      /** What to show: the message (the original error first when the kills weren't why). */
+      message: z.string(),
+      original: z.string().nullable(),
+      at: z.string(),
+      cause: z.boolean(),
+      /** The sandbox moved since (to this size): continuing on a larger one is done with. */
+      movedTo: sizeFactsSchema.extend({ type: sizeSchema }).nullable(),
+    })
     .nullable(),
   /** Measured tasks: the peak of the measured turn. */
   peak: z
@@ -54,7 +62,7 @@ export const taskMemorySchema = z.object({
       planReason: z.string().nullable(),
     })
     .nullable(),
-  /** The next size up from the current one, with the plan's verdict (null: XLarge or unknown). */
+  /** The next size up (from the one that ran out of memory, with an alert; else the current one), with the plan's verdict (null: XLarge or unknown). */
   next: sizeOptionSchema.nullable(),
   /** The stored project whose size applies to this task's new sandboxes. */
   project: z.object({ id: z.string(), name: z.string(), machineType: sizeSchema.nullable(), effective: sizeSchema }).nullable(),

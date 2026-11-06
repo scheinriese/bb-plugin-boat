@@ -23,6 +23,7 @@ import {
   gb,
   governingProject,
   inferType,
+  listText,
   movedNote,
   nextSize,
   oomCausedFailure,
@@ -36,6 +37,7 @@ import {
   recommendSize,
   samplerScript,
   sandboxLine,
+  settledOomMessage,
   sizeDetail,
   sizeSummary,
   specText,
@@ -383,12 +385,42 @@ export class SandboxSizes {
 
   /**
    * The follow-up's note after the sandbox moved (this task asked, or moved
-   * along): once, until the next turn starts.
+   * along), until a prompt carried it (noteSent). A turn without it (an
+   * evidence-only follow-up, the user typing in the task chat) leaves it.
    */
-  followupNote(task: Task): string | null {
-    const moved = this.sinceLastTurn(task.id, "resize");
-    if (moved === null || moved.state !== "done") return null;
-    return movedNote(moved.from, moved.to);
+  followupNote(task: Pick<Task, "id">): string | null {
+    const all = this.data(task.id);
+    for (let index = all.length - 1; index >= 0; index -= 1) {
+      const data = all[index]!.data;
+      if (data.type === "note-sent") return null;
+      if (data.type === "resize" && data.state === "done") return movedNote(data.from, data.to);
+    }
+    return null;
+  }
+
+  /** A prompt with the move's note went out (or one that names the size, a handover's). */
+  noteSent(taskId: string): void {
+    if (this.followupNote({ id: taskId }) !== null) this.record(taskId, { type: "note-sent" });
+  }
+
+  /**
+   * The latest turn's out-of-memory record, and a move done since (resize
+   * only, or one whose follow-up failed): then continuing on a larger
+   * sandbox is done with.
+   */
+  private turnOom(task: Pick<Task, "id" | "turns">): { at: string; data: DataOf<"oom">; moved: DataOf<"resize"> | null } | null {
+    const all = this.data(task.id);
+    let index = all.length - 1;
+    while (index >= 0 && all[index]!.data.type !== "oom") index -= 1;
+    if (index < 0) return null;
+    const { at, data } = all[index] as { at: string; data: DataOf<"oom"> };
+    if (data.turn !== task.turns) return null;
+    const moved = all
+      .slice(index + 1)
+      .map((entry) => entry.data)
+      .filter((entry): entry is DataOf<"resize"> => entry.type === "resize" && entry.state === "done")
+      .at(-1);
+    return { at, data, moved: moved ?? null };
   }
 
   // ---------------------------------------------------------------- after a turn
@@ -515,10 +547,11 @@ export class SandboxSizes {
     if (now === null) return;
     const next = context.current === null ? null : nextSize(context.current);
     const verdict = next === null ? { allowed: false, reason: null } : planVerdict(next, this.planNow());
+    // By title: the page shows it as is.
     const others = this.deps.store
       .liveSandboxTasks(task.sandboxId!)
       .filter((other) => other.id !== task.id)
-      .map((other) => other.id);
+      .map((other) => other.title);
     // The error this turn ended with (a newer turn or a close leaves it alone).
     const sameTurn = now.turns === task.turns && now.promptId === task.promptId;
     const original = sameTurn ? now.error : null;
@@ -554,7 +587,7 @@ export class SandboxSizes {
   private reportPeak(task: Task, probe: Probe, context: { current: MachineType | null; oom: boolean; windowStart: number }): void {
     const peak = probe.peak;
     if (peak === null || peak.samples < 3) {
-      this.say(task.id, MEMORY_KIND, "Couldn't measure peak memory during this turn (the sampler stopped early).");
+      this.say(task.id, MEMORY_KIND, "Couldn't measure peak memory during this turn (the measurement stopped early).");
       return;
     }
     const recommendation = recommendSize({ peakKb: peak.peakKb, memTotalKb: peak.memTotalKb, oom: context.oom, current: context.current, plan: this.planNow() });
@@ -775,8 +808,9 @@ export class SandboxSizes {
 
   /** The latest turn ran out of memory (the kernel's log names it; a counter's "may have" isn't enough), or came near the limit. */
   private ranOutOfRoom(task: Task): boolean {
-    const oom = this.latest(task.id, "oom");
-    if (oom !== null && oom.data.turn === task.turns && oom.data.certain) return true;
+    // A move since then answered it: a further one needs a new finding.
+    const oom = this.turnOom(task);
+    if (oom !== null) return oom.data.certain && oom.moved === null;
     const peak = this.latest(task.id, "peak");
     return peak !== null && peak.data.turn === task.turns && (peak.data.reason === "near-limit" || peak.data.reason === "out-of-memory" || peak.data.reason === "largest");
   }
@@ -869,12 +903,12 @@ export class SandboxSizes {
         break;
       }
     }
-    const oom = this.latest(task.id, "oom");
+    const oom = this.turnOom(task);
     return {
       sandboxId,
       current,
       suggested,
-      oom: oom !== null && oom.data.turn === task.turns && oom.data.certain,
+      oom: oom !== null && oom.data.certain && oom.moved === null,
       others: others.map((other) => ({ id: other.id, title: other.title, status: other.status })),
       previews: sandboxId === null || !facts.active ? 0 : this.livePreviews(sandboxId),
       chat: sandboxId !== null && this.deps.hooks.chat !== undefined && this.deps.store.hostForSandbox(sandboxId) !== null,
@@ -1257,12 +1291,27 @@ export class SandboxSizes {
       const plan = this.planNow();
       const size = this.knownSize(task);
       const running = task.status === "running" || task.status === "starting";
-      const oom = this.latest(task.id, "oom");
+      const closed = task.status === "done" || task.status === "cancelled";
+      const oom = this.turnOom(task);
       const split = splitOomError(task.error);
-      const oomView =
-        oom !== null && oom.data.certain && oom.data.turn === task.turns && !running
-          ? { message: oom.data.message, original: oom.data.cause ? (split?.original ?? null) : null, at: oom.at, cause: oom.data.cause }
-          : null;
+      let oomView: TaskMemoryDto["oom"] = null;
+      if (oom !== null && oom.data.certain && !running) {
+        const movedTo = oom.moved?.to ?? null;
+        const settled = settledOomMessage(oom.data.message, { movedTo, closed });
+        // The kills weren't why it failed: the original error leads, as on the task.
+        const text = oom.data.cause
+          ? settled
+          : task.error?.includes(oom.data.message)
+            ? task.error.replace(oom.data.message, settled)
+            : [task.error, settled].filter(Boolean).join("\n\n");
+        oomView = {
+          message: text,
+          original: oom.data.cause ? (split?.original ?? null) : null,
+          at: oom.at,
+          cause: oom.data.cause,
+          movedTo: movedTo === null ? null : { type: movedTo, label: LABEL(movedTo), summary: specText(movedTo) },
+        };
+      }
       const peak = this.latest(task.id, "peak");
       const peakView =
         peak === null || running
@@ -1289,7 +1338,9 @@ export class SandboxSizes {
                 return { allowed: verdict.allowed, planReason: verdict.reason };
               })(),
             };
-      const next = size?.type ? nextSize(size.type) : null;
+      // With an out-of-memory alert: the size up from the one that ran out (a move since doesn't change it).
+      const from = (oomView !== null ? oom!.data.machineType : null) ?? size?.type ?? null;
+      const next = from !== null ? nextSize(from) : null;
       const project = governingProject<SizedProject>(this.deps.hooks.projects?.() ?? [], task.boatProject, task.repo);
       return {
         size: size === null ? null : { type: size.type, label: size.type ? LABEL(size.type) : "Unknown size", summary: (size.type ? specText(size.type) : sizeSummary(size)) ?? "" },
@@ -1345,11 +1396,19 @@ export class SandboxSizes {
     const size = this.knownSize(task);
     const summary = sizeSummary(size);
     if (summary !== null) lines.push(`Sandbox size: ${summary}`);
-    const oom = this.latest(task.id, "oom");
-    if (oom !== null && oom.data.turn === task.turns && task.status !== "running") {
+    const oom = this.turnOom(task);
+    if (oom !== null && task.status !== "running") {
       if (oom.data.certain) {
         const who = oom.data.kills.map((kill) => kill.label);
-        lines.push(`Out of memory in the last turn: the system stopped ${who.length === 0 ? "a process" : who.join(" and ")}. ${this.continueHint(task, oom.data, style)}`);
+        const closed = task.status === "done" || task.status === "cancelled";
+        // Moved since, or closed: nothing to continue.
+        const after =
+          oom.moved !== null
+            ? ` The sandbox is ${LABEL(oom.moved.to)} now${closed ? "" : style === "tool" ? "; send a follow-up to continue" : `; continue with \`bb boat task followup ${task.id} --message "…"\``}.`
+            : closed
+              ? ""
+              : ` ${this.continueHint(task, oom.data, style)}`;
+        lines.push(`Out of memory in the last turn: the system stopped ${who.length === 0 ? "a process" : listText(who)}.${after}`);
       } else {
         lines.push(oom.data.message);
       }

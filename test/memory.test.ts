@@ -21,6 +21,7 @@ import {
   recommendSize,
   samplerScript,
   sandboxLine,
+  settledOomMessage,
   sizeSummary,
   splitOomError,
   turnWindow,
@@ -180,7 +181,14 @@ test("who was stopped, in plain words", () => {
   assert.match(oomMessage(one, { ...base, current: "xlarge", next: null }), /Run fewer tests at once \(XLarge is the largest sandbox\)\.$/);
   assert.match(oomMessage(one, { ...base, nextAllowed: false }), /Run fewer tests at once \(your boat plan doesn't include a larger sandbox\)\.$/);
   // Other tasks on the sandbox, and a kill that isn't why the turn failed.
-  assert.match(oomMessage(one, { ...base, others: ["t_b", "t_c"] }), / Tasks t_b and t_c also use this sandbox\.$/);
+  assert.match(oomMessage(one, { ...base, others: ["Review: Add dark mode"] }), / “Review: Add dark mode” also uses this sandbox\.$/);
+  assert.match(oomMessage(one, { ...base, others: ["A", "B", "C"] }), / “A”, “B” and “C” also use this sandbox\.$/);
+  // Moved since, or closed: no "continue on a larger sandbox".
+  const text = oomMessage(one, base);
+  assert.match(settledOomMessage(text, { movedTo: "large", closed: false }), /Run fewer|The sandbox is Large now\. Send a follow-up to continue\.$/);
+  assert.doesNotMatch(settledOomMessage(text, { movedTo: "large", closed: false }), /continue on a larger sandbox/);
+  assert.match(settledOomMessage(text, { movedTo: null, closed: true }), /ended the chat's turn\. Run fewer tests at once\.$/);
+  assert.equal(settledOomMessage(text, { movedTo: null, closed: false }), text);
   assert.match(oomMessage(one, { ...base, cause: false, chatRestart: false }), /^The sandbox also ran out of memory during this turn: /);
 
   assert.deepEqual(oomHistory({ ...one, certain: true }), ["Out of memory: the system stopped a 1.4 GB process in the task chat (MainThread)."]);

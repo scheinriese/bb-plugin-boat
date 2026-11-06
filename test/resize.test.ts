@@ -482,3 +482,79 @@ test("the follow-up fails after the move: the size is done, the page offers no s
   await env.service.followup(task.id, "Continue where you left off.");
   assert.match(env.boat.prompts.at(-1)!.text, /## Sandbox\nThe sandbox moved to a larger machine: it's now Large/);
 });
+
+/** An out-of-memory finding in the task's latest turn (what the check records). */
+function oomRecord(env: Env, task: { id: string; turns: number; sandboxId: string | null }, extra: Record<string, unknown> = {}) {
+  const message = "The sandbox ran out of memory: the system stopped Claude Code (1.9 GB). Run fewer tests at once, or continue on a larger sandbox.";
+  env.store.addEvent(
+    task.id,
+    "memory-data",
+    encodeData({ type: "oom", turn: task.turns, sandboxId: task.sandboxId!, machineType: "default", kills: [{ key: "k", process: "claude", label: "Claude Code (1.9 GB)", unit: "agent", rssKb: 2_000_000, at: 1 }], count: 1, source: "journal", certain: true, cause: true, counterKey: null, message, next: "large", nextAllowed: true, nextReason: null, at: Date.now() / 1000, ...extra } as never),
+  );
+  env.store.update(task.id, { status: "failed", error: `${message}\n\nOriginal error: harness exited` });
+}
+
+test("after a move that sent nothing, the out-of-memory alert says it's done, and nothing offers the next size", async () => {
+  const env = makeService({ projects: [{ id: "web", name: "Web app", repos: [{ repo: "acme/web" }], machineType: null }] });
+  const task = await idleTask(env);
+  oomRecord(env, task);
+  let view = (await env.service.sizes.view(env.store.get(task.id)!))!;
+  assert.equal(view.oom?.movedTo, null);
+  assert.match(env.service.sizes.lines(env.store.get(task.id)!).join("\n"), /Continue on a larger sandbox: bb boat task followup .* --type large/);
+  assert.equal((await env.service.sizes.info(task.id)).oom, true);
+
+  await env.service.sizes.resize(request(task.id, { message: null }));
+  const now = env.store.get(task.id)!;
+  view = (await env.service.sizes.view(now))!;
+  assert.deepEqual(view.oom?.movedTo, { type: "large", label: "Large", summary: "8 vCPU, 16 GB" });
+  assert.match(view.oom!.message, /The sandbox is Large now\. Send a follow-up to continue\.$/);
+  assert.doesNotMatch(view.oom!.message, /continue on a larger sandbox/);
+  // The project offer still names the size up from the one that ran out.
+  assert.equal(view.next?.type, "large");
+  assert.equal(view.size?.type, "large");
+  const lines = env.service.sizes.lines(now).join("\n");
+  assert.doesNotMatch(lines, /--type/);
+  assert.match(lines, /The sandbox is Large now; continue with `bb boat task followup/);
+  assert.equal((await env.service.sizes.info(task.id)).oom, false);
+  // An orchestrator needs a new finding for another move up.
+  await refused(env.service.sizes.resize(request(task.id, { type: "xlarge", by: "tool", userApproved: false, notifyThreadId: "thr_orch" })), "size_needs_approval");
+});
+
+test("a closed task's out-of-memory finding offers nothing to continue", async () => {
+  const env = makeService();
+  const task = await idleTask(env);
+  oomRecord(env, task);
+  await env.service.closeTask(task.id, { keepSandbox: true });
+  const closed = env.store.get(task.id)!;
+  assert.doesNotMatch(env.service.sizes.lines(closed).join("\n"), /followup|Continue/);
+  const view = (await env.service.sizes.view(closed))!;
+  assert.match(view.oom!.message, /Run fewer tests at once\.$/);
+});
+
+test("the move's note waits for a prompt that carries it: an evidence-only turn or the user's own chat turn leaves it", async () => {
+  const env = makeService();
+  const task = await idleTask(env);
+  await env.service.sizes.resize(request(task.id, { message: null }));
+  env.store.addEvent(task.id, "evidence", "evidence-upload installed");
+  await env.service.followup(task.id, "Upload the screenshots.", { evidenceOnly: true });
+  assert.doesNotMatch(env.boat.prompts.at(-1)!.text, /## Sandbox/);
+  env.boat.finish(env.store.get(task.id)!.conversationId!, REPORT);
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  await env.service.followup(task.id, "Now the tests.");
+  assert.match(env.boat.prompts.at(-1)!.text, /## Sandbox\nThe sandbox moved to a larger machine: it's now Large/);
+  env.boat.finish(env.store.get(task.id)!.conversationId!, REPORT);
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  await env.service.followup(task.id, "And once more.");
+  assert.doesNotMatch(env.boat.prompts.at(-1)!.text, /## Sandbox/);
+
+  const chat = makeService({ chat: true, linkedMachines: true });
+  const chatTask = await idleTask(chat);
+  await chat.service.sizes.resize(request(chatTask.id, { message: null }));
+  // The user typed in the task chat themselves.
+  chat.store.addEvent(chatTask.id, "turn", "The user wrote in the chat");
+  chat.store.addEvent(chatTask.id, "finished", "Turn finished");
+  await chat.service.followup(chatTask.id, "Continue.");
+  assert.match(chat.chat.sends.at(-1)!.text, /## Sandbox\nThe sandbox moved to a larger machine/);
+});
