@@ -515,8 +515,9 @@ export class SandboxSizes {
     const original = sameTurn ? now.error : null;
     const cause = finding.certain && !context.measuredOk && (oomCausedFailure(finding, original) || original === null || context.interrupted);
     const chatRestart = cause && task.runner === "chat" && finding.kills.some((kill) => kill.unit === "bb");
+    // A measured turn that ended fine still ran out of memory: said plainly, not as "also".
     const text = finding.certain
-      ? oomMessage(finding, { current: context.current, next, nextAllowed: verdict.allowed, cause, chatRestart, others })
+      ? oomMessage(finding, { current: context.current, next, nextAllowed: verdict.allowed, cause: cause || context.measuredOk, chatRestart, others })
       : oomHistory(finding)[0]!;
     this.record(task.id, {
       type: "oom",

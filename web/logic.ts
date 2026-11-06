@@ -362,3 +362,68 @@ export const EVIDENCE_VARIABLES: readonly { name: string; note: string }[] = [
   { name: "EVIDENCE_REGION", note: "optional" },
   { name: "EVIDENCE_LINK_DAYS", note: "optional, 1–7 days (7)" },
 ];
+
+// ------------------------------------------------------------- sandbox sizes
+
+type SizeValue = "small" | "default" | "large" | "xlarge";
+const SIZE_LABELS: Record<SizeValue, string> = { small: "Small", default: "Default", large: "Large", xlarge: "XLarge" };
+const SIZE_SPECS: Record<SizeValue, string> = { small: "2 vCPU, 4 GB", default: "4 vCPU, 8 GB", large: "8 vCPU, 16 GB", xlarge: "16 vCPU, 32 GB" };
+const SIZE_ORDER: readonly SizeValue[] = ["small", "default", "large", "xlarge"];
+
+/** "Large (8 vCPU, 16 GB)" */
+export function sizeName(type: SizeValue): string {
+  return `${SIZE_LABELS[type]} (${SIZE_SPECS[type]})`;
+}
+
+/** What a size costs next to Default (boat states no rate for XLarge, so none is claimed). */
+export function costHint(type: SizeValue): string {
+  if (type === "small") return "Small costs half as much per hour as Default.";
+  if (type === "large") return "Large costs twice as much per hour as Default.";
+  if (type === "xlarge") return "XLarge is the largest size.";
+  return "Default is the standard rate.";
+}
+
+/** The follow-up the move sends, until the user edits it. */
+export function resizeMessage(type: SizeValue, oom: boolean): string {
+  return `Continue where you left off. The sandbox is now ${sizeName(type)}.${oom ? " Run heavy test suites one at a time." : ""}`;
+}
+
+/** The size the dialog preselects: the next one up the plan allows, else any other allowed one. */
+export function suggestedSize(
+  current: SizeValue | null,
+  sizes: readonly { type: SizeValue; available: boolean }[],
+  serverSuggestion: SizeValue | null,
+): SizeValue | null {
+  if (serverSuggestion !== null) return serverSuggestion;
+  const up = current === null ? [] : SIZE_ORDER.slice(SIZE_ORDER.indexOf(current) + 1);
+  const allowed = (type: SizeValue) => type !== current && (sizes.find((size) => size.type === type)?.available ?? true);
+  return up.find(allowed) ?? SIZE_ORDER.find(allowed) ?? null;
+}
+
+export function isSmaller(type: SizeValue, than: SizeValue | null): boolean {
+  return than !== null && SIZE_ORDER.indexOf(type) < SIZE_ORDER.indexOf(than);
+}
+
+/** The peak card's sentence after "Peak memory: 6.1 of 8 GB". */
+export function peakSentence(memory: {
+  peak: { shared: boolean } | null;
+  recommendation: { type: SizeValue; label: string; current: SizeValue | null; reason: "near-limit" | "out-of-memory" | "fits" | "largest"; allowed: boolean; planReason: string | null } | null;
+  project: { name: string; effective: SizeValue } | null;
+}): string {
+  const rec = memory.recommendation;
+  if (rec === null) return "Its size isn't known, so there's no recommendation.";
+  const parts = [
+    rec.reason === "largest"
+      ? "XLarge is the largest size. Run fewer tests at once."
+      : rec.reason === "out-of-memory"
+        ? `Recommended size: ${rec.label}. The sandbox ran out of memory during the check.`
+        : rec.reason === "near-limit"
+          ? `Recommended size: ${rec.label}. The sandbox used over 75% of its memory during the check.`
+          : `Recommended size: ${rec.label}. The check fits with room to spare.`,
+  ];
+  if (!rec.allowed) parts.push(`Your boat plan doesn't include ${rec.label}: ${rec.planReason?.replace(/[.\s]+$/, "") ?? "not on your plan"}.`);
+  if (memory.peak?.shared) parts.push("Other tasks worked on this sandbox meanwhile, so part of it is theirs.");
+  if (rec.reason !== "largest" && memory.project !== null && memory.project.effective === rec.type) parts.push(`${memory.project.name} already uses ${rec.label} sandboxes.`);
+  else if (rec.reason !== "largest" && memory.project === null && rec.type !== rec.current && rec.allowed) parts.push(`Next time, pick ${rec.label} under More options in New task.`);
+  return parts.join(" ");
+}

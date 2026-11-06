@@ -260,7 +260,6 @@ export function NewTaskForm({
   const onlyAgent = defaults?.onlyAgent ?? null;
   const roleDefault = role === "review" ? defaults?.reviewProvider : defaults?.implementProvider;
   const effectiveProvider: Provider = provider ?? roleDefault ?? "claude";
-  const effectiveMachine: MachineType = machineType ?? (starter === "test" ? "small" : (defaults?.machineType ?? "default"));
   const activeSandboxes = (sandboxes.data?.sandboxes ?? []).filter(
     (entry) => isSandboxActive(entry.state) && !entry.uses.some((use) => use.open && use.kind !== "task"),
   );
@@ -270,6 +269,8 @@ export function NewTaskForm({
   const repoOwner =
     typedRepo === "" ? null : (projectList.find((entry) => entry.repos.some((each) => shortRepo(each.repo).toLowerCase() === typedRepo)) ?? null);
   const project = (chosenProject === null ? repoOwner : projectList.find((entry) => entry.id === chosenProject)) ?? null;
+  // A project's size, else the setting; the server applies it unless a size is picked here.
+  const effectiveMachine: MachineType = machineType ?? (starter === "test" ? "small" : (project?.machineType ?? defaults?.machineType ?? "default"));
   // With a project, an empty repo means its main repo, and a project repo gets its own base branch.
   const projectRepo =
     project === null
@@ -344,6 +345,8 @@ export function NewTaskForm({
         machineType: sandbox === NEW_SANDBOX ? machineType : null,
         notifyThreadId: null,
         projectId: project?.id ?? null,
+        // The repo check measures its peak memory and recommends a size.
+        measureMemory: starter === "check-repo",
       });
       toast.success(pending ? `${task.title}: starting` : `${task.title}: started`);
       onStarted?.();
@@ -1191,7 +1194,7 @@ function CloudOrchestratorNote({ overview, fullAccess }: { overview: OverviewDat
 }
 
 /** A select option with a muted second line (the trigger shows only the name). */
-function OptionLabel({ name, detail }: { name: ReactNode; detail: ReactNode }) {
+export function OptionLabel({ name, detail }: { name: ReactNode; detail: ReactNode }) {
   return (
     <span className="flex min-w-0 flex-col py-0.5">
       <span className="break-words">{name}</span>

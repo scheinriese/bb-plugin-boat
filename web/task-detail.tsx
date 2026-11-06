@@ -14,6 +14,7 @@ import { CloseTaskDialog, NewTaskDialog, ReviewDialog, SaveSnapshotDialog, submi
 import { canRequestReview, historyText, isCheckRepoTask, isTestTask, sandboxLink } from "./logic";
 import { ShipButton } from "./board";
 import { PreviewsSection } from "./previews";
+import { SandboxSizeLabel, SandboxSizePanel } from "./sandbox-size";
 import {
   PROVIDER_LABEL,
   ROLE_LABEL,
@@ -109,6 +110,7 @@ function TaskView({ task }: { task: TaskDetailDto }) {
         <TaskHeader task={task} now={now} />
         <TaskActions task={task} link={link} />
         <TaskMeta task={task} link={link} />
+        <SandboxSizePanel task={task} />
         <SnapshotOffer task={task} />
         <TestTaskNext task={task} />
         <PreviewsSection threadId={null} taskId={task.id} showTask={false} />
@@ -211,6 +213,7 @@ function TaskMeta({ task, link }: { task: TaskDetailDto; link: SandboxLinkState 
               <span className="font-mono text-xs">{task.sandboxId}</span>
               {!task.ownsSandbox ? <Muted>shared</Muted> : null}
               {link === "gone" ? <Muted>deleted</Muted> : null}
+              {link !== "gone" ? <SandboxSizeLabel task={task} /> : null}
               {task.dashboardUrl && link === "live" ? (
                 <button
                   type="button"
@@ -271,7 +274,8 @@ function TaskMeta({ task, link }: { task: TaskDetailDto; link: SandboxLinkState 
           </span>
         </MetaRow>
       </dl>
-      {task.error ? <InlineAlert>{task.error}</InlineAlert> : null}
+      {/* Out of memory: the size panel below says it, with what to do. */}
+      {task.error && !task.memory?.oom ? <InlineAlert>{task.error}</InlineAlert> : null}
     </div>
   );
 }
@@ -750,7 +754,11 @@ function ReplyBox({ task }: { task: TaskDetailDto }) {
   const steering = running && steer;
   const blocked = isClosed(task.status)
     ? `This task is ${STATUS_LABEL[task.status].toLowerCase()}. Start a new task to continue the work.`
-    : task.status === "starting"
+    : task.memory?.resize?.state === "running"
+      ? task.memory.resize.withMessage
+        ? `The sandbox is moving to ${task.memory.resize.toSummary}. Your follow-up goes out when it's up.`
+        : `The sandbox is moving to ${task.memory.resize.toSummary}. You can send a follow-up when it's up.`
+      : task.status === "starting"
       ? "The agent is starting. You can follow up once its first turn is running."
       : chat && task.threadId === null
         ? "This task never reached its chat, so there's nothing to continue."
