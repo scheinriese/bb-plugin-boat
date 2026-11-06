@@ -10,7 +10,7 @@ import { Icon } from "@/components/ui/icon";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { CloseTaskDialog, NewTaskDialog, ReviewDialog, SaveSnapshotDialog, submitOnModEnter } from "./dialogs";
+import { CloseTaskDialog, ContinueAsChatDialog, NewTaskDialog, ReviewDialog, SaveSnapshotDialog, submitOnModEnter } from "./dialogs";
 import { canRequestReview, historyText, isCheckRepoTask, isTestTask, sandboxLink } from "./logic";
 import { ShipButton } from "./board";
 import { PreviewsSection } from "./previews";
@@ -32,12 +32,14 @@ import {
 import { useCloudAgentsNavigation, useCopy, useInterval, useNow, useOverview, useSandboxes, useTask } from "./hooks";
 import {
   AgentBadge,
+  Disclosure,
   EmptyBox,
   InlineAlert,
   Kbd,
   PrLink,
   ReportChip,
   PhasePill,
+  RichText,
   RoleIcon,
   ThreadLink,
   showError,
@@ -118,7 +120,15 @@ function TaskView({ task }: { task: TaskDetailDto }) {
             {tab === "report" ? (
               <ReportPanel task={task} />
             ) : tab === "transcript" ? (
-              task.runner === "chat" ? (
+              task.runner === "chat" && task.conversationId !== null ? (
+                // Moved from boat (Continue as a chat): the chat, then the old conversation.
+                <div className="space-y-4">
+                  <ChatTranscriptNote task={task} moved />
+                  <Disclosure label="Before the move: the headless conversation">
+                    <TranscriptPanel task={task} live={false} />
+                  </Disclosure>
+                </div>
+              ) : task.runner === "chat" ? (
                 <ChatTranscriptNote task={task} />
               ) : (
                 <TranscriptPanel task={task} />
@@ -322,15 +332,48 @@ function SnapshotOffer({ task }: { task: TaskDetailDto }) {
 
 // ------------------------------------------------------------------- actions
 
+/**
+ * Whether this headless task can continue as a chat, read live while the
+ * button could show (refetched when the task or bb Connect changes).
+ */
+function useMoveStatus(task: TaskDetailDto, enabled: boolean) {
+  const input = useMemo(() => ({ id: task.id }), [task.id]);
+  const status = experimental_useRpcQuery({ contract: rpcContract, method: "continueAsChatStatus", input, enabled });
+  const connect = useOverview().data?.connect.state;
+  const { refetch } = status;
+  const refetchRef = useRef(refetch);
+  useEffect(() => {
+    refetchRef.current = refetch;
+  }, [refetch]);
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    if (enabled) void refetchRef.current();
+  }, [task.updatedAt, task.movingToChat, connect, enabled]);
+  return status;
+}
+
 function TaskActions({ task, link }: { task: TaskDetailDto; link: SandboxLinkState }) {
   const navigate = useBbNavigate();
   const copy = useCopy();
   const interrupt = experimental_useRpcMutation({ contract: rpcContract, method: "interrupt" });
   const [reviewing, setReviewing] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [moving, setMoving] = useState(false);
   const running = isRunning(task.status);
   const closed = isClosed(task.status);
   const chatId = workerChatId(task);
+  // Continue as a chat: open headless tasks, where this bb runs task chats.
+  const taskChats = useOverview().data?.taskChats;
+  const movable = task.runner === "boat" && !closed && !isTestTask(task) && taskChats !== false;
+  const moveStatus = useMoveStatus(task, movable);
+  const move = movable ? moveStatus.data : undefined;
+  const inFlight = task.movingToChat || move?.moving === true;
+  const moveBlocked = move?.offered && !inFlight ? move.blocked : null;
+  const moveFailure = move?.offered && !inFlight && moveBlocked === null ? move.lastFailure : null;
 
   const sendInterrupt = async () => {
     try {
@@ -342,40 +385,75 @@ function TaskActions({ task, link }: { task: TaskDetailDto; link: SandboxLinkSta
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {chatId ? (
-        <Button size="sm" onClick={() => navigate.toThread(chatId)}>
-          <Icon name="MessageSquare" /> Open chat
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {chatId ? (
+          <Button size="sm" onClick={() => navigate.toThread(chatId)}>
+            <Icon name="MessageSquare" /> Open chat
+          </Button>
+        ) : null}
+        {task.canShip ? <ShipButton task={task} className="my-0" /> : null}
+        {canRequestReview(task) ? (
+          <Button variant="outline" size="sm" disabled={running || inFlight} onClick={() => setReviewing(true)}>
+            <Icon name="Eye" /> Request review
+          </Button>
+        ) : null}
+        {movable && (inFlight || move === undefined || move.offered) ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={inFlight || move === undefined || moveBlocked !== null}
+            onClick={() => setMoving(true)}
+          >
+            <Icon name={inFlight ? "Loading" : "MessageSquare"} className={cn(inFlight && "animate-spin")} />
+            {inFlight ? "Moving to a chat…" : "Continue as a chat"}
+          </Button>
+        ) : null}
+        {task.status === "running" ? (
+          <Button variant="outline" size="sm" disabled={interrupt.isPending} onClick={() => void sendInterrupt()}>
+            <Icon name={interrupt.isPending ? "Loading" : "Pause"} className={cn(interrupt.isPending && "animate-spin")} />
+            Interrupt
+          </Button>
+        ) : null}
+        {!closed ? (
+          <Button variant="outline" size="sm" onClick={() => setClosing(true)}>
+            <Icon name={running ? "Square" : "CircleCheck"} />
+            {running ? "Cancel" : "Close"}
+          </Button>
+        ) : null}
+        <Button variant="ghost" size="sm" onClick={() => void copy(taskReference(task), "Reference copied")}>
+          <Icon name="Copy" /> Copy reference
         </Button>
+        {task.dashboardUrl && link === "live" ? (
+          <Button variant="ghost" size="sm" onClick={() => task.dashboardUrl && navigate.openUrl(task.dashboardUrl)}>
+            <Icon name="ExternalLink" /> Open in boat
+          </Button>
+        ) : null}
+        <ReviewDialog task={task} open={reviewing} onOpenChange={setReviewing} />
+        <CloseTaskDialog task={task} open={closing} onOpenChange={setClosing} />
+        {move?.offered ? (
+          <ContinueAsChatDialog
+            task={task}
+            status={move}
+            open={moving}
+            onOpenChange={(open) => {
+              setMoving(open);
+              if (open) void moveStatus.refetch();
+            }}
+          />
+        ) : null}
+      </div>
+      {/* Why Continue as a chat is greyed out, on its own line: touch screens have no hover. */}
+      {moveBlocked ? (
+        <p className="text-xs text-pretty text-muted-foreground">
+          <RichText text={`Continue as a chat: ${moveBlocked.message}${moveBlocked.hint ? ` ${moveBlocked.hint}` : ""}`} />
+        </p>
       ) : null}
-      {task.canShip ? <ShipButton task={task} className="my-0" /> : null}
-      {canRequestReview(task) ? (
-        <Button variant="outline" size="sm" disabled={running} onClick={() => setReviewing(true)}>
-          <Icon name="Eye" /> Request review
-        </Button>
+      {moveFailure ? (
+        <InlineAlert tone="warning">
+          <RichText text={moveFailure} />
+        </InlineAlert>
       ) : null}
-      {task.status === "running" ? (
-        <Button variant="outline" size="sm" disabled={interrupt.isPending} onClick={() => void sendInterrupt()}>
-          <Icon name={interrupt.isPending ? "Loading" : "Pause"} className={cn(interrupt.isPending && "animate-spin")} />
-          Interrupt
-        </Button>
-      ) : null}
-      {!closed ? (
-        <Button variant="outline" size="sm" onClick={() => setClosing(true)}>
-          <Icon name={running ? "Square" : "CircleCheck"} />
-          {running ? "Cancel" : "Close"}
-        </Button>
-      ) : null}
-      <Button variant="ghost" size="sm" onClick={() => void copy(taskReference(task), "Reference copied")}>
-        <Icon name="Copy" /> Copy reference
-      </Button>
-      {task.dashboardUrl && link === "live" ? (
-        <Button variant="ghost" size="sm" onClick={() => task.dashboardUrl && navigate.openUrl(task.dashboardUrl)}>
-          <Icon name="ExternalLink" /> Open in boat
-        </Button>
-      ) : null}
-      <ReviewDialog task={task} open={reviewing} onOpenChange={setReviewing} />
-      <CloseTaskDialog task={task} open={closing} onOpenChange={setClosing} />
     </div>
   );
 }
@@ -560,14 +638,16 @@ function buildTranscript(events: readonly ChatEventDto[]): TranscriptEntry[] {
   );
 }
 
-/** Chat workers have no boat transcript: their steps live in the bb chat. */
-function ChatTranscriptNote({ task }: { task: TaskDetailDto }) {
+/** Chat workers have no boat transcript: their steps live in the bb chat. moved: it ran headless before. */
+function ChatTranscriptNote({ task, moved = false }: { task: TaskDetailDto; moved?: boolean }) {
   const navigate = useBbNavigate();
   const chatId = workerChatId(task);
   return (
     <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border px-4 py-6 text-center">
       <p className="text-sm text-pretty text-muted-foreground">
-        {chatId
+        {chatId && moved
+          ? "This task moved to a bb chat. Its steps since then are there."
+          : chatId
           ? "This task runs as a bb chat. Its steps, tool calls and messages are there."
           : task.status === "starting"
             ? "This task runs as a bb chat. You can open it once the task starts."
@@ -582,10 +662,11 @@ function ChatTranscriptNote({ task }: { task: TaskDetailDto }) {
   );
 }
 
-function TranscriptPanel({ task }: { task: TaskDetailDto }) {
+/** live: the conversation may still change (false: a task that moved to a chat; its status is the chat's). */
+function TranscriptPanel({ task, live = true }: { task: TaskDetailDto; live?: boolean }) {
   const input = useMemo(() => ({ id: task.id, limit: 200 }), [task.id]);
   const transcript = experimental_useRpcQuery({ contract: rpcContract, method: "transcript", input });
-  const running = isRunning(task.status);
+  const running = live && isRunning(task.status);
   const { refetch } = transcript;
   const refetchRef = useRef(refetch);
   useEffect(() => {
@@ -748,7 +829,9 @@ function ReplyBox({ task }: { task: TaskDetailDto }) {
   const chat = task.runner === "chat";
   const switching = agent !== "keep" && agent !== "room" && agent !== task.provider;
   const steering = running && steer;
-  const blocked = isClosed(task.status)
+  const blocked = task.movingToChat
+    ? "Moving to a chat. Follow-ups go there once it's open."
+    : isClosed(task.status)
     ? `This task is ${STATUS_LABEL[task.status].toLowerCase()}. Start a new task to continue the work.`
     : task.status === "starting"
       ? "The agent is starting. You can follow up once its first turn is running."

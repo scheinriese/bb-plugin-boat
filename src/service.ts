@@ -251,10 +251,10 @@ const RESULT_LIMIT = 16_000;
 /** The setup checklist's fix for bb Connect, when the connect plugin gives none. */
 const CONNECT_FIX = "Turn on bb Connect: sign in with `bb account login`, then run `bb connect on`.";
 
-/** "acme/x isn't in a project that runs tasks as chats" (or How tasks run is In boat). */
+/** "Your projects don't run tasks on acme/x as chats" (or How tasks run is In boat). */
 function trustText(trust: ChatTrust): string {
   if (trust.workersBoat) return "How tasks run is set to In boat";
-  return `${trust.untrustedRepos.join(", ")} ${trust.untrustedRepos.length === 1 ? "isn't" : "aren't"} in a project that runs tasks as chats`;
+  return `Your projects don't run tasks on ${trust.untrustedRepos.join(", ")} as chats`;
 }
 const USAGE_LIMIT_PATTERN =
   /usage limit|rate[ -]?limit|limit reached|quota|out of credits|credit balance|too many requests|\b429\b|hit your (usage )?limit/i;
@@ -1164,7 +1164,7 @@ export class BoatService {
     const repo = trust.untrustedRepos[0] ?? null;
     const what = via === "start" ? "start as a task chat" : "continue as a task chat";
     const message = confirmedOther
-      ? `The task's repos changed after the warning: ${trust.untrustedRepos.join(", ")} ${trust.untrustedRepos.length === 1 ? "isn't" : "aren't"} in a project that runs tasks as chats.`
+      ? `The task's repos changed after the warning: your projects don't run tasks on ${trust.untrustedRepos.join(", ")} as chats.`
       : trust.workersBoat
         ? `How tasks run is set to In boat, so ${repo === null ? "a task" : repo} can't ${what} here.`
         : this.hooks.repoWorkerMode?.(repo ?? "") === "boat"

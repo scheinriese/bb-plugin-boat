@@ -290,7 +290,7 @@ test("refused: no chat runner, bb Connect off, an untrusted repo from the CLI", 
   // The user's tick on the page.
   const { task: moved } = await move(made, outside.id, { confirmUntrusted: ["acme/other"] });
   assert.equal(moved.runner, "chat");
-  assert.match(made.store.latestEvent(outside.id, "trust-confirmed")!.text, /acme\/other isn't in a project that runs tasks as chats; moved to a task chat after the warning/);
+  assert.match(made.store.latestEvent(outside.id, "trust-confirmed")!.text, /Your projects don't run tasks on acme\/other as chats; moved to a task chat after the warning/);
 });
 
 test("refused: the sandbox is gone or broken, lent, shared, or runs someone else's bb", async () => {

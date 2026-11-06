@@ -474,8 +474,8 @@ export function NewTaskForm({
               </RepoTrustAlert>
             ) : chatRules.headlessProject !== null ? (
               <RepoTrustAlert>
-                The {chatRules.headlessProject} project runs its tasks headless. A task chat's sandbox can reach your bb, so run chats only for repos you
-                trust.
+                <code className="font-mono text-xs">{warnedRepo}</code> is in the {chatRules.headlessProject} project, which runs its tasks headless. A
+                task chat's sandbox can reach your bb, so run chats only for repos you trust.
               </RepoTrustAlert>
             ) : (
               <RepoTrustAlert action="Add as project" icon="Plus" onAction={() => setAddingProject(true)}>
@@ -1643,6 +1643,139 @@ function CloseTaskForm({ task, onDone }: { task: TaskDto; onDone: () => void }) 
         </Button>
         <SubmitButton pending={close.isPending} variant={cancel || (unshipped && !keepSandbox) ? "destructive" : "default"}>
           {cancel ? "Cancel task" : unshipped && !keepSandbox ? "Discard and close" : "Close task"}
+        </SubmitButton>
+      </DialogFooter>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------- continue as a chat
+
+type MoveStatus = {
+  blocked: { code: string; message: string; hint: string | null } | null;
+  untrusted: boolean;
+  untrustedRepos: string[];
+  workersBoat: boolean;
+  hasMachine: boolean;
+  sandboxStopped: boolean;
+  lastFailure: string | null;
+};
+
+/** Continue as a chat: what happens, the warning for repos no rule runs as chats, and the confirm. */
+export function ContinueAsChatDialog({ task, status, open, onOpenChange }: DialogControl & { task: TaskDto; status: MoveStatus }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        {open ? <ContinueAsChatForm task={task} status={status} onDone={() => onOpenChange(false)} /> : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ContinueAsChatForm({ task, status, onDone }: { task: TaskDto; status: MoveStatus; onDone: () => void }) {
+  const navigate = useBbNavigate();
+  const mutation = experimental_useRpcMutation({ contract: rpcContract, method: "continueAsChat" });
+  const [trusted, setTrusted] = useState(false);
+  const agent = PROVIDER_LABEL[task.provider];
+  const repos = status.untrustedRepos;
+  const canSubmit = status.blocked === null && (!status.untrusted || trusted);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSubmit) return;
+    try {
+      const { task: moved, pending } = await mutation.mutate({ id: task.id, confirmUntrusted: status.untrusted ? repos : null });
+      if (pending || moved.threadId === null) {
+        toast.success("Moving to a chat", {
+          description: status.hasMachine ? "The chat opens in a moment. This page updates when it's open." : "bb is being installed on the sandbox. This page updates when the chat is open.",
+        });
+      } else {
+        const threadId = moved.threadId;
+        toast.success("Moved to a chat", { action: { label: "Open chat", onClick: () => navigate.toThread(threadId) } });
+      }
+      onDone();
+    } catch (error) {
+      showError(error);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="grid gap-4">
+      <DialogHeader>
+        <DialogTitle>Continue as a chat?</DialogTitle>
+        <DialogDescription>
+          {agent} keeps working on this task in a bb chat you can open and type into. There's no way back to headless.
+        </DialogDescription>
+      </DialogHeader>
+      <ul className="list-disc space-y-1 pl-4 text-sm text-pretty text-muted-foreground">
+        <li>
+          {status.hasMachine ? "bb already runs on the task's sandbox." : "bb is installed on the task's sandbox (about a minute)."}
+          {status.sandboxStopped ? " The sandbox starts again first." : ""}
+        </li>
+        <li>
+          A {agent} chat opens in the same sandbox, working in the task's checkout, with the brief, the latest report and the messages so far (and which
+          tools it used).
+        </li>
+        <li>
+          The headless conversation stops. Follow-ups from this page{task.source.threadId ? " and from the chat that started the task" : ""} go into the
+          chat.
+        </li>
+        <li>
+          {task.source.kind === "orchestrator"
+            ? "Its first turn reads up and sums up where the task stands. The orchestrator hears that you moved it."
+            : "Its first turn reads up and sums up where the task stands; then it's yours."}
+        </li>
+      </ul>
+      {status.blocked ? (
+        <InlineAlert tone="warning">
+          <RichText text={`${status.blocked.message}${status.blocked.hint ? ` ${status.blocked.hint}` : ""}`} />
+        </InlineAlert>
+      ) : null}
+      {status.blocked === null && status.lastFailure ? (
+        <InlineAlert tone="warning">
+          <RichText text={`The last try failed: ${status.lastFailure.replace(/^Couldn't continue as a chat: /, "")}`} />
+        </InlineAlert>
+      ) : null}
+      {status.untrusted ? (
+        <div className="grid gap-3">
+          <InlineAlert tone="warning">
+            {status.workersBoat ? (
+              <>How tasks run is set to In boat. The chat's sandbox can reach your bb, so continue only if you trust what this task works on.</>
+            ) : (
+              <>
+                Your projects don't run tasks on{" "}
+                {repos.map((repo, index) => (
+                  <span key={repo}>
+                    {index > 0 ? (index === repos.length - 1 ? " and " : ", ") : ""}
+                    <code className="font-mono text-xs">{repo}</code>
+                  </span>
+                ))}{" "}
+                as chats. The chat's sandbox can reach your bb, so continue only if you trust {repos.length === 1 ? "it" : "them"}.
+              </>
+            )}
+          </InlineAlert>
+          <label htmlFor="ca-move-trust" className="flex items-start gap-2 text-sm">
+            <Checkbox id="ca-move-trust" className="mt-0.5" checked={trusted} onCheckedChange={(checked) => setTrusted(checked === true)} />
+            <span className="min-w-0">
+              {status.workersBoat || repos.length === 0 ? (
+                "I trust this task's work"
+              ) : repos.length === 1 ? (
+                <>
+                  I trust <code className="font-mono text-xs">{repos[0]}</code>
+                </>
+              ) : (
+                "I trust these repos"
+              )}
+            </span>
+          </label>
+        </div>
+      ) : null}
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onDone}>
+          Cancel
+        </Button>
+        <SubmitButton pending={mutation.isPending} disabled={!canSubmit} icon="MessageSquare">
+          Continue as a chat
         </SubmitButton>
       </DialogFooter>
     </form>

@@ -106,7 +106,7 @@ test("explicit chat on a repo outside your projects: refused without the user's 
 
   const { task } = await start(made, { runner: "chat", repo: "acme/other", confirmUntrustedChat: ["acme/other"] });
   assert.equal(task.runner, "chat");
-  assert.match(made.store.latestEvent(task.id, "trust-confirmed")!.text, /acme\/other isn't in a project that runs tasks as chats; started as a task chat after the warning/);
+  assert.match(made.store.latestEvent(task.id, "trust-confirmed")!.text, /Your projects don't run tasks on acme\/other as chats; started as a task chat after the warning/);
   assert.equal(made.store.latestEvent(task.id, "trust"), null);
   assert.match(made.store.latestEvent(task.id, "runner")!.text, /Runs as a task chat, as asked/);
 });
