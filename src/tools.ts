@@ -488,7 +488,7 @@ export function registerTools(runtime: Runtime): void {
     execute: (params, ctx) =>
       attempt(async () => {
         if (params.discard) {
-          const check = await runtime.chatApproval(ctx.threadId, service.mustGet(params.task_id));
+          const check = await runtime.chatApproval(ctx.threadId, service.mustGet(params.task_id), "discard");
           if (!check.ok) {
             throw new TaskError(`Not discarded: ${check.reason}.`, "approval_required", "Discard only when the user tells you to in this chat.");
           }

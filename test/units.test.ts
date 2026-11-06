@@ -177,6 +177,7 @@ test("notifications summarize each finished task and suggest next steps", () => 
     finishedAt: null,
     notifiedAt: null,
     unshipped: null,
+    shipApproval: null,
   };
   const text = notificationText([
     { ...base, id: "t_1", status: "idle", prUrl: "https://github.com/acme/web/pull/12", result: "done\n=== REPORT ===\nSTATUS: done\n=== END REPORT ===" },

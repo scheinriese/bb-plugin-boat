@@ -15,6 +15,7 @@ import {
   type MachineType,
   type PreparedRepo,
   type Sandbox,
+  type ShipConflict,
   type ShipResult,
   type EnvironmentInfo,
   shellQuote,
@@ -41,10 +42,12 @@ import {
   type PreviewHealth,
   type Provider,
   type Runner,
+  type SinceApproval,
   type Task,
   type TaskRole,
   type TaskStatus,
 } from "./store.ts";
+import { changedSinceApproval, parseSinceApproval, sinceApprovalScript } from "./ship-approval.ts";
 import {
   bbModelId,
   boatEffort,
@@ -1156,6 +1159,7 @@ export class BoatService {
       finishedAt: null,
       notifiedAt: null,
       unshipped: null,
+      shipApproval: null,
     });
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
     if (input.measureMemory) this.sizes.watch(id); // sizes
@@ -3623,7 +3627,8 @@ export class BoatService {
       }
       await this.assertGithubLogin(task, { signal: options.signal, forShip: true });
       try {
-        result = await this.boat.ship(task.sandboxId, this.shipTargets(task), options.signal);
+        // Base commits another task of this plugin shipped are named with it.
+        result = await this.boat.ship(task.sandboxId, this.shipTargets(task), options.signal, (sha) => this.store.shippedBy(sha, task.id));
       } catch (error) {
         // Repos that landed before a later one failed are recorded as shipped.
         const partial = (error as { shipped?: ShipResult["shipped"] }).shipped ?? [];
@@ -3634,7 +3639,11 @@ export class BoatService {
             `Shipped ${partial.map((entry) => `${entry.commits} commit${entry.commits === 1 ? "" : "s"} to ${entry.baseBranch} (${entry.sha.slice(0, 7)})`).join(", ")} before it stopped; the rest is still unshipped`,
           );
         }
-        if (error instanceof BoatError) throw new TaskError(error.message, error.code ?? "ship_failed");
+        if (error instanceof BoatError) {
+          const conflict = (error as { conflict?: (ShipConflict & { path: string; baseBranch: string }) | null }).conflict ?? null;
+          if (error.code === "ship_conflict") this.noteShipConflict(task, error.message, conflict);
+          throw new TaskError(error.message, error.code ?? "ship_failed");
+        }
         throw error;
       }
     } finally {
@@ -3645,6 +3654,8 @@ export class BoatService {
     }
     const summary = result.shipped.map((entry) => `${entry.commits} commit${entry.commits === 1 ? "" : "s"} to ${entry.baseBranch} (${entry.sha.slice(0, 7)})`).join(", ");
     this.store.addEvent(task.id, "shipped", `Shipped ${summary}; approved ${options.approval}`);
+    // Shipped: an approval kept from a conflict has done its job.
+    if (task.shipApproval !== null) this.store.update(task.id, { shipApproval: null });
     // Nothing left to ship, unless a follow-up started during the push.
     this.store.transition(task.id, ["idle"], { unshipped: 0 }, { promptId: task.promptId });
     this.hooks.changed([task.id]);
@@ -3680,7 +3691,7 @@ export class BoatService {
         "Ship it once the user approves (Ship on the overview, or boat_ship after their OK in chat), or ask the user whether to throw the work away.",
       );
     }
-    const updated = this.store.update(task.id, { status, finishedAt: new Date().toISOString() }) ?? task;
+    const updated = this.store.update(task.id, { status, finishedAt: new Date().toISOString(), shipApproval: null }) ?? task;
     // Stop an in-flight dispatch, then the running turn.
     this.dispatches.get(task.id)?.abort();
     if (task.status === "running" && task.runner === "chat" && task.threadId && this.hooks.chat) {
@@ -3771,6 +3782,87 @@ export class BoatService {
     const unshipped = await this.unshippedCommits(task, this.hooks.lifecycle, known);
     // Only for the turn it checked: a newer turn or a close wins.
     this.store.transition(task.id, ["idle", "failed"], { unshipped }, { promptId: task.promptId });
+    // The turn after a ship conflict: what changed since the user approved.
+    const current = this.store.get(task.id);
+    if (current !== null && this.needsComparison(current)) await this.compareSinceApproval(current, known);
+  }
+
+  /**
+   * A ship stopped on a conflict: keep what the user approved (the task's
+   * head and the base it was rebased onto), so the next turn's changes can be
+   * shown and approved again. A later attempt replaces it.
+   */
+  private noteShipConflict(task: Task, message: string, conflict: (ShipConflict & { path: string; baseBranch: string }) | null): void {
+    this.store.addEvent(task.id, "ship-conflict", message);
+    if (conflict === null || conflict.head === null || conflict.base === null) return;
+    this.store.update(task.id, {
+      shipApproval: {
+        at: new Date().toISOString(),
+        turns: task.turns,
+        path: conflict.path,
+        baseBranch: conflict.baseBranch,
+        head: conflict.head,
+        base: conflict.base,
+        files: conflict.files,
+        moreFiles: conflict.moreFiles,
+        message,
+        changes: null,
+      },
+    });
+    this.hooks.changed([task.id]);
+  }
+
+  /** Tasks whose "what changed since you approved" is being worked out: their notice waits for it. */
+  private readonly comparing = new Map<string, Promise<void>>();
+  /** Turns compared (or tried) since the plugin started, as `<task id>:<turns>`. */
+  private readonly compared = new Set<string>();
+
+  /** A finished turn after a ship conflict that hasn't been compared with the approved commits yet. */
+  private needsComparison(task: Task): boolean {
+    return (
+      changedSinceApproval(task) &&
+      task.shipApproval!.changes?.turns !== task.turns &&
+      (task.status === "idle" || task.status === "failed") &&
+      !this.compared.has(`${task.id}:${task.turns}`)
+    );
+  }
+
+  /**
+   * Compare the commits the user approved with the task's commits now, in
+   * its sandbox (git range-diff; git diff --stat where that fails). Never
+   * fails the turn: what went wrong is kept as the comparison.
+   */
+  private compareSinceApproval(task: Task, known?: Sandbox): Promise<void> {
+    const running = this.comparing.get(task.id);
+    if (running !== undefined) return running;
+    const approval = task.shipApproval!;
+    const work = (async () => {
+      let changes: SinceApproval;
+      try {
+        if (task.sandboxId === null) throw new Error("the task has no sandbox");
+        const sandbox = known ?? (await this.boat.findInfo(task.sandboxId, this.hooks.lifecycle));
+        if (sandbox === null) throw new Error("its sandbox is gone");
+        if (!ACTIVE_STATES.has(sandbox.state)) throw new Error(`its sandbox is ${sandbox.state}`);
+        const result = await this.boat.exec(task.sandboxId, sinceApprovalScript(approval), { timeoutMs: 60_000, signal: this.hooks.lifecycle });
+        changes = parseSinceApproval(result.stdout, task.turns);
+      } catch (error) {
+        changes = { turns: task.turns, via: "none", text: clip(errorText(error), 300), omitted: 0 };
+      }
+      // Only onto the same approval and turn: a newer attempt, turn or close wins.
+      const current = this.store.get(task.id);
+      if (current?.shipApproval?.at !== approval.at || current.turns !== task.turns) return;
+      this.store.transition(task.id, ["idle", "failed"], { shipApproval: { ...current.shipApproval, changes } }, { promptId: task.promptId });
+      this.hooks.changed([task.id]);
+    })()
+      .catch((error) => this.hooks.log.warn(`compare ${task.id}: ${errorText(error)}`))
+      .finally(() => {
+        this.compared.add(`${task.id}:${task.turns}`);
+        this.comparing.delete(task.id);
+        // The notice that waited for it.
+        void this.deliverPending().catch(() => undefined);
+      });
+    this.comparing.set(task.id, work);
+    return work;
   }
 
 
@@ -3987,7 +4079,7 @@ export class BoatService {
     }
     if (state === null || state.archived || hint?.kind === "archived") {
       // Archived or deleted by hand: the work there is over, and so is its machine.
-      const closed = this.store.transition(task.id, ["running", "idle", "failed"], { status: "cancelled", finishedAt: nowIso });
+      const closed = this.store.transition(task.id, ["running", "idle", "failed"], { status: "cancelled", finishedAt: nowIso, shipApproval: null });
       if (closed === null) return false;
       this.store.addEvent(task.id, "cancelled", "The task chat was archived or deleted");
       const settings = await this.settings();
@@ -4330,8 +4422,12 @@ export class BoatService {
       byThread.set(task.orchestratorThreadId!, list);
     }
     for (const [threadId, all] of byThread) {
-      // A preview still being hosted, or a memory check: the notice goes out with them, on the next pass.
-      const list = all.filter((task) => !this.hostingPreviews.has(task.id) && !this.sizes.holds(task.id));
+      // A preview still being hosted, a memory check, or what changed since a
+      // ship's approval: the notice goes out with them, on the next pass.
+      const list = all.filter((task) => {
+        if (this.needsComparison(task)) void this.compareSinceApproval(task);
+        return !this.comparing.has(task.id) && !this.hostingPreviews.has(task.id) && !this.sizes.holds(task.id);
+      });
       if (list.length === 0) continue;
       try {
         await this.hooks.notify({ threadId, tasks: list });

@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { CloseTaskDialog, ContinueAsChatDialog, NewTaskDialog, ReviewDialog, SaveSnapshotDialog, submitOnModEnter } from "./dialogs";
-import { canRequestReview, historyText, isCheckRepoTask, isTestTask, sandboxLink } from "./logic";
+import { canRequestReview, historyText, isCheckRepoTask, isTestTask, sandboxLink, shipApprovalPanel } from "./logic";
 import { ShipButton } from "./board";
 import { PreviewsSection } from "./previews";
 import { SandboxSizeLabel, SandboxSizePanel } from "./sandbox-size";
@@ -112,6 +112,7 @@ function TaskView({ task }: { task: TaskDetailDto }) {
         <TaskHeader task={task} now={now} />
         <TaskActions task={task} link={link} />
         <TaskMeta task={task} link={link} />
+        <ShipApprovalPanel task={task} />
         <SandboxSizePanel task={task} />
         <SnapshotOffer task={task} />
         <TestTaskNext task={task} />
@@ -292,6 +293,28 @@ function TaskMeta({ task, link }: { task: TaskDetailDto; link: SandboxLinkState 
 
 function Muted({ children }: { children: ReactNode }) {
   return <span className="text-xs text-muted-foreground">{children}</span>;
+}
+
+/** After Ship stopped on a conflict: why, then (after the next turn) what changed since you approved. */
+function ShipApprovalPanel({ task }: { task: TaskDetailDto }) {
+  if (task.shipApproval === null || isClosed(task.status)) return null;
+  const panel = shipApprovalPanel(task.shipApproval);
+  return (
+    <section aria-label={panel.title} className="space-y-2 rounded-lg border border-border bg-card px-4 py-3">
+      <div className="flex items-start gap-3">
+        <Icon name="GitBranch" className="mt-0.5 hidden size-4 shrink-0 text-muted-foreground sm:block" aria-hidden />
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <p className="text-sm font-medium text-foreground">{panel.title}</p>
+          <p className="text-xs text-pretty break-words text-muted-foreground">{panel.lead}</p>
+        </div>
+      </div>
+      {panel.source ? <p className="text-xs text-pretty break-words text-muted-foreground">{panel.source}</p> : null}
+      {panel.block !== null ? (
+        <pre className="max-h-96 overflow-auto rounded-md bg-secondary px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground">{panel.block}</pre>
+      ) : null}
+      {panel.note ? <p className="text-xs text-pretty text-muted-foreground">{panel.note}</p> : null}
+    </section>
+  );
 }
 
 /** After a test task that worked: the next step. */

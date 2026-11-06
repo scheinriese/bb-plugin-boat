@@ -229,6 +229,14 @@ Each project picks one (Projects → "How work lands", or
     conflicts stop it before anything is pushed. Then the task closes and
     its sandbox is deleted, unless another open task (its review, say)
     still uses it; the message after Ship or Close names that task.
+  - A conflict names its files and the commits on the base branch that
+    changed them (and the task that shipped one, when it was one of yours).
+    The task's agent rebases and resolves it in a follow-up. That changes
+    the work you approved, so you approve again: after that turn, the
+    task's page and the orchestrator's notice show **What changed since you
+    approved** (`git range-diff` of the commits you approved and the new
+    ones, or the changed files where that doesn't work). Until you write in
+    the orchestrator's chat again, its `boat_ship` is refused and says why.
   - Until it ships, the sandbox holds the only copy. Closing or cancelling
     such a task asks you to discard the work, and `bb boat sandbox delete`
     refuses. A task with nothing to ship closes like any other. boat deletes stopped sandboxes after 14 days, so after 10 days

@@ -121,7 +121,14 @@ switch (command) {
     }
     if (script.includes("BOAT_SHIP_DONE")) {
       (state.ships ??= []).push({ id: rest[0], script });
-      print({ exitCode: 0, stdout: state.shipFail ? `BOAT_SHIP_ERROR 0 ${state.shipFail}\n` : "BOAT_SHIPPED 0 abcdef1234567890 2\nBOAT_SHIP_DONE\n", stderr: "" });
+      // shipOutput: what the ship script printed (a conflict's detail, say).
+      print({ exitCode: 0, stdout: state.shipOutput ?? (state.shipFail ? `BOAT_SHIP_ERROR 0 ${state.shipFail}\n` : "BOAT_SHIPPED 0 abcdef1234567890 2\nBOAT_SHIP_DONE\n"), stderr: "" });
+      break;
+    }
+    if (script.includes("BOAT_SINCE")) {
+      // "What changed since you approved" (src/ship-approval.ts).
+      (state.compared ??= []).push({ id: rest[0], script });
+      print({ exitCode: 0, stdout: state.since ?? "BOAT_SINCE none 0\n", stderr: "" });
       break;
     }
     if (script.includes("BOAT_LOGIN")) {

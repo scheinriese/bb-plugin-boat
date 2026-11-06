@@ -90,6 +90,44 @@ export interface Task {
    * the last turn ended; 0 = nothing to ship; null = not checked or unknown.
    */
   unshipped: number | null;
+  /**
+   * push: what the user approved when a ship stopped on a conflict (the
+   * task's head and the base it was rebased onto). A later turn is new work
+   * the user hasn't seen; cleared once the task ships or closes.
+   */
+  shipApproval: ShipApproval | null;
+}
+
+/** "What changed since you approved": compared in the sandbox after the turn that followed a conflict. */
+export interface SinceApproval {
+  /** The task's turn it was compared for. */
+  turns: number;
+  /** range-diff of the approved commits and the new ones; stat: `git diff --stat` instead; none: couldn't compare. */
+  via: "range-diff" | "stat" | "none";
+  /** At most SINCE_APPROVAL_LINES lines. */
+  text: string;
+  /** Lines left out (0: the whole output). */
+  omitted: number;
+}
+
+export interface ShipApproval {
+  /** When the ship attempt stopped. */
+  at: string;
+  /** The task's turns then: a higher count means newer work. */
+  turns: number;
+  /** The checkout that conflicted and its base branch. */
+  path: string;
+  baseBranch: string;
+  /** The task's head commit and the base commit at that attempt. */
+  head: string;
+  base: string;
+  /** The conflicting files (at most 10) and how many more there were. */
+  files: string[];
+  moreFiles: number;
+  /** The ship error the user saw. */
+  message: string;
+  /** Filled in after the next turn. */
+  changes: SinceApproval | null;
 }
 
 export interface TaskEvent {
@@ -205,6 +243,7 @@ const MIGRATIONS = [
   // kept, so its old tasks still read as started by an orchestrator.
   `ALTER TABLE orchestrators ADD COLUMN retired_at TEXT`,
   `ALTER TABLE tasks ADD COLUMN unshipped INTEGER`,
+  `ALTER TABLE tasks ADD COLUMN ship_approval TEXT`,
 ];
 
 export const DECISION_STATUSES = ["open", "answered", "withdrawn"] as const;
@@ -336,6 +375,7 @@ const COLUMN_BY_FIELD: Record<keyof Task, string> = {
   finishedAt: "finished_at",
   notifiedAt: "notified_at",
   unshipped: "unshipped",
+  shipApproval: "ship_approval",
 };
 
 function nullableString(value: unknown): string | null {
@@ -385,7 +425,39 @@ function toTask(row: Row): Task {
     finishedAt: nullableString(row.finished_at),
     notifiedAt: nullableString(row.notified_at),
     unshipped: row.unshipped === null || row.unshipped === undefined ? null : Number(row.unshipped),
+    shipApproval: parseShipApproval(row.ship_approval),
   };
+}
+
+function parseShipApproval(value: unknown): ShipApproval | null {
+  if (typeof value !== "string" || value === "") return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<ShipApproval> | null;
+    if (parsed === null || typeof parsed.head !== "string" || typeof parsed.base !== "string" || typeof parsed.path !== "string") return null;
+    const changes = parsed.changes;
+    return {
+      at: String(parsed.at ?? ""),
+      turns: Number(parsed.turns ?? 0),
+      path: parsed.path,
+      baseBranch: String(parsed.baseBranch ?? ""),
+      head: parsed.head,
+      base: parsed.base,
+      files: Array.isArray(parsed.files) ? parsed.files.filter((file): file is string => typeof file === "string") : [],
+      moreFiles: Number(parsed.moreFiles ?? 0),
+      message: String(parsed.message ?? ""),
+      changes:
+        changes && typeof changes.text === "string"
+          ? {
+              turns: Number(changes.turns ?? 0),
+              via: changes.via === "range-diff" || changes.via === "stat" ? changes.via : "none",
+              text: changes.text,
+              omitted: Number(changes.omitted ?? 0),
+            }
+          : null,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function parseRepos(value: unknown): { repo: string; baseBranch: string; path?: string }[] {
@@ -406,6 +478,7 @@ function parseRepos(value: unknown): { repo: string; baseBranch: string; path?: 
 function toColumnValue(field: keyof Task, value: unknown): unknown {
   if (field === "ownsSandbox") return value === true ? 1 : 0;
   if (field === "extraRepos") return JSON.stringify(Array.isArray(value) ? value : []);
+  if (field === "shipApproval") return value === null || value === undefined ? null : JSON.stringify(value);
   return value ?? null;
 }
 
@@ -835,6 +908,19 @@ export class TaskStore {
       .prepare(`SELECT task_id, at, kind, text FROM task_events WHERE task_id = ? AND kind = ? ORDER BY seq DESC LIMIT 1`)
       .get(taskId, kind) as Row | undefined;
     return row === undefined ? null : { taskId: String(row.task_id), at: String(row.at), kind: String(row.kind), text: String(row.text) };
+  }
+
+  /**
+   * The task (other than `except`) whose ship landed this commit as its new
+   * head: shipped events name it by its first 7 characters.
+   */
+  shippedBy(sha: string, except: string | null = null): string | null {
+    const short = sha.slice(0, 7);
+    if (!/^[0-9a-f]{7}$/.test(short)) return null;
+    const row = this.db()
+      .prepare(`SELECT task_id FROM task_events WHERE kind IN ('shipped', 'shipped-partly') AND text LIKE ? AND task_id IS NOT ? ORDER BY seq DESC LIMIT 1`)
+      .get(`%(${short})%`, except) as Row | undefined;
+    return row === undefined ? null : String(row.task_id);
   }
 
   events(taskId: string, limit = 50): TaskEvent[] {

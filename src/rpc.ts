@@ -27,6 +27,7 @@ import { SETTING_SECTIONS } from "./settings.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import { HIDDEN_EVENT_KINDS } from "./memory.ts";
 import { sizeHandlers } from "./rpc-size.ts";
+import { currentChanges } from "./ship-approval.ts";
 
 /** Chats that are or were orchestrators (store.orchestratorThreadIds). */
 export interface OrchestratorSets {
@@ -50,6 +51,17 @@ export function taskSource(task: Pick<Task, "orchestratorThreadId">, orchestrato
 export function holdsUnshippedWork(task: Pick<Task, "delivery" | "role" | "turns" | "status" | "unshipped">): boolean {
   if (task.delivery !== "push" || task.role === "review" || task.turns === 0) return false;
   return task.status === "running" || task.status === "starting" || task.unshipped !== 0;
+}
+
+/** A ship that stopped on a conflict, and what changed since (the current turn's comparison only). */
+export function shipApprovalDto(task: Pick<Task, "turns" | "shipApproval">): TaskDetailDto["shipApproval"] {
+  if (task.shipApproval === null) return null;
+  const changes = currentChanges(task);
+  return {
+    message: task.shipApproval.message,
+    at: task.shipApproval.at,
+    changes: changes === null ? null : { via: changes.via, text: changes.text, omitted: changes.omitted },
+  };
 }
 
 export function toTaskDto(
@@ -390,6 +402,7 @@ export function registerRpc(runtime: Runtime): void {
           .map(({ at, kind, text }) => ({ at, kind, text })),
         dashboardUrl: task.sandboxId ? dashboardUrl(task.sandboxId) : null,
         memory: await service.sizes.view(task),
+        shipApproval: shipApprovalDto(task),
       };
       return { task: detail };
     },

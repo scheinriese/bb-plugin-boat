@@ -181,3 +181,93 @@ test("a project that ships after approval: set it, then ship only on the user's 
   assert.match(shipScript, /git push --no-verify --quiet origin 'HEAD:refs\/heads\/master'/);
   assert.doesNotMatch(shipScript, /--force/);
 });
+
+test("a ship conflict names the files everywhere, and the work it changed needs a second OK", async (t) => {
+  const { harness, edit, finishAll } = await setup(t);
+  const sent: string[] = [];
+  harness.sdk.stub("threads.send", async (args: unknown) => {
+    sent.push(JSON.stringify(args));
+    return { ok: true, delivery: "sent" };
+  });
+  await harness.runCli(["project", "add", "--name", "Storefront", "--repo", "acme/storefront@master", "--environment", "storefront"]);
+  await harness.runCli(["project", "set", "storefront", "--delivery", "push"]);
+  const started = await harness.runCli(["task", "start", "--project", "storefront", "--title", "Dev script", "--brief", "Do it.", "--json"], { threadId: "thr_orch" });
+  assert.equal(started.exitCode, 0, started.stderr || started.stdout);
+  const { task } = JSON.parse(started.stdout) as { task: { id: string } };
+  finishAll(REPORT);
+  await harness.runCli(["task", "show", task.id, "--refresh"]);
+  const report = (n: number) => ({ id: `r${n}`, role: "user", preview: `[boat] Task ${task.id} finished a turn.`, attachmentSummary: null });
+  const user = (id: string, preview: string) => ({ id, role: "user", preview, attachmentSummary: null });
+  let outline = [user("m1", "Add a dev script"), report(1), user("m2", "Looks good, ship it")];
+  harness.sdk.stub("threads.conversationOutline", async () => ({ items: outline, maxSeq: outline.length }));
+
+  // The rebase stops on package.json, which another change on master touched.
+  edit((current) => {
+    current.shipOutput = [
+      "BOAT_SHIP_ERROR 0 conflict",
+      `BOAT_SHIP_DETAIL head ${"1".repeat(40)}`,
+      `BOAT_SHIP_DETAIL base ${"2".repeat(40)}`,
+      "BOAT_SHIP_DETAIL file package.json",
+      "BOAT_SHIP_DETAIL commit 1a2b3c4 Add the videos:test suite",
+      "",
+    ].join("\n");
+  });
+  const why = "its commits conflict with the latest master in `package.json` (changed by 1a2b3c4 `Add the videos:test suite`). The task's agent must rebase and resolve them.";
+  const cli = await harness.runCli(["task", "ship", task.id], { threadId: "thr_orch" });
+  assert.notEqual(cli.exitCode, 0);
+  assert.ok(`${cli.stdout}${cli.stderr}`.includes(why), `${cli.stdout}${cli.stderr}`);
+  const tool = await harness.callAgentTool("boat_ship", { task_id: task.id }, { threadId: "thr_orch" });
+  assert.ok(JSON.stringify(tool).includes(why), JSON.stringify(tool));
+  // The task page's detail says the same.
+  const detail = (await harness.callRpc("task", { id: task.id })) as { task: { shipApproval: { message: string; changes: unknown } | null } };
+  assert.ok(detail.task.shipApproval?.message.endsWith(why));
+  assert.equal(detail.task.shipApproval?.changes, null);
+
+  // The orchestrator follows up; the worker resolves it and the next turn is reported.
+  const followed = await harness.runCli(["task", "followup", task.id, "--message", "Rebase onto master and resolve package.json."], { threadId: "thr_orch" });
+  assert.equal(followed.exitCode, 0, followed.stderr || followed.stdout);
+  edit((current) => {
+    current.since = "BOAT_SINCE range-diff 3\n1:  1111111 ! 1:  3333333 Add the dev script\n    @@ package.json\n    ++  \"scripts\": { \"videos:test\": \"node --test\", \"dev\": \"vite\" }\n";
+  });
+  const notices = sent.length;
+  finishAll(REPORT);
+  await harness.runCli(["task", "show", task.id, "--refresh"]);
+  const notice = sent.slice(notices).find((entry) => entry.includes(`[boat] Task ${task.id} finished a turn.`));
+  assert.ok(notice, "the turn was reported");
+  assert.match(notice, /What changed since you approved: Ship stopped on a conflict in `package\.json`/);
+  assert.match(notice, /1:  1111111 ! 1:  3333333 Add the dev script/);
+  outline = [...outline, report(2)];
+
+  // The OK from before the follow-up doesn't cover it, and the refusal says why.
+  const refused = await harness.runCli(["task", "ship", task.id], { threadId: "thr_orch" });
+  assert.notEqual(refused.exitCode, 0);
+  assert.match(
+    `${refused.stdout}${refused.stderr}`,
+    /Not shipped: the work changed after the user approved it \(a follow-up resolved a conflict in `package\.json`\); show the user what changed and ask them to approve again\./,
+  );
+  const shown = await harness.runCli(["task", "show", task.id]);
+  assert.match(shown.stdout, /What changed since you approved/);
+  const page = (await harness.callRpc("task", { id: task.id })) as { task: { shipApproval: { changes: { via: string; text: string } | null } | null } };
+  assert.equal(page.task.shipApproval?.changes?.via, "range-diff");
+  // Discarding keeps its own reason.
+  const discard = await harness.runCli(["task", "close", task.id, "--discard"], { threadId: "thr_orch" });
+  assert.match(`${discard.stdout}${discard.stderr}`, /Not discarded: the user hasn't written in this chat since the task's work was reported/);
+
+  // The user approves again: it ships, and the record goes.
+  outline = [...outline, user("m3", "Checked the change, ship it")];
+  edit((current) => {
+    delete current.shipOutput;
+  });
+  const shipped = await harness.runCli(["task", "ship", task.id, "--keep-open"], { threadId: "thr_orch" });
+  assert.equal(shipped.exitCode, 0, shipped.stderr || shipped.stdout);
+  const after = (await harness.callRpc("task", { id: task.id })) as { task: { shipApproval: unknown } };
+  assert.equal(after.task.shipApproval, null);
+
+  // Without a conflict, a newer turn after the user's last word is named too.
+  await harness.runCli(["task", "followup", task.id, "--message", "Also add a build script."], { threadId: "thr_orch" });
+  finishAll(REPORT);
+  await harness.runCli(["task", "show", task.id, "--refresh"]);
+  outline = [...outline, report(3)];
+  const newer = await harness.runCli(["task", "ship", task.id], { threadId: "thr_orch" });
+  assert.match(`${newer.stdout}${newer.stderr}`, /Not shipped: the task had a newer turn after the user last wrote here; show the user what changed and ask them to approve again\./);
+});

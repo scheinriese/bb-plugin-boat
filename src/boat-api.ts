@@ -2,6 +2,7 @@
 // observed from boat CLI 1.0.89; every accessor tolerates missing fields.
 import { randomUUID } from "node:crypto";
 import { BoatCli, BoatError, bool, num, rec, str, type JsonRecord } from "./boat.ts";
+import { codeSpan } from "./literal.ts";
 import type { Provider } from "./store.ts";
 
 export const MACHINE_TYPES = ["small", "default", "large", "xlarge"] as const;
@@ -328,6 +329,21 @@ export interface ShipResult {
   shipped: { path: string; baseBranch: string; sha: string; commits: number }[];
 }
 
+/** What a ship's rebase stopped on (the ship script's conflict detail). */
+export interface ShipConflict {
+  /** The task's head commit and the base commit the rebase ran onto (null: not printed). */
+  head: string | null;
+  base: string | null;
+  /** The conflicting files (at most 10) and how many more there were. */
+  files: string[];
+  moreFiles: number;
+  /** Up to 3 base commits since the task's fork point that changed those files. */
+  commits: { sha: string; subject: string }[];
+}
+
+/** Conflicting files the ship script lists. */
+export const SHIP_CONFLICT_FILES = 10;
+
 /** Where the plugin keeps its git hooks in a sandbox. */
 export const BOAT_HOOKS_DIR = "/home/user/.boat-hooks";
 
@@ -540,6 +556,22 @@ export function shipScript(targets: ShipTarget[]): string {
   return `set -uo pipefail
 export GIT_TERMINAL_PROMPT=0
 fail() { echo "BOAT_SHIP_ERROR $1 $2"; [ -n "\${3:-}" ] && printf '%s\\n' "$3" | tail -5 | sed 's/^/BOAT_SHIP_DETAIL /'; exit 3; }
+# A rebase that stopped (already aborted): the task's head, the base, the
+# conflicting files ($3, one per line) and the base commits that changed them.
+conflict() {
+  echo "BOAT_SHIP_ERROR $1 conflict"
+  echo "BOAT_SHIP_DETAIL head $(git rev-parse HEAD 2>/dev/null)"
+  echo "BOAT_SHIP_DETAIL base $(git rev-parse "$2" 2>/dev/null)"
+  local FILES=()
+  mapfile -t FILES < <(printf '%s\\n' "$3" | grep -v '^$')
+  if [ "\${#FILES[@]}" -gt 0 ]; then
+    printf 'BOAT_SHIP_DETAIL file %s\\n' "\${FILES[@]:0:${SHIP_CONFLICT_FILES}}"
+    [ "\${#FILES[@]}" -gt ${SHIP_CONFLICT_FILES} ] && echo "BOAT_SHIP_DETAIL more $((\${#FILES[@]} - ${SHIP_CONFLICT_FILES}))"
+    local FORK
+    FORK=$(git merge-base HEAD "$2" 2>/dev/null) && git log --no-merges -n 3 --format='BOAT_SHIP_DETAIL commit %h %s' "$FORK..$2" -- "\${FILES[@]}" 2>/dev/null
+  fi
+  exit 3
+}
 ${each((target, index) => `cd ${shellQuote(target.path)} || fail ${index} missing
 DIRTY=$(git status --porcelain)
 [ -z "$DIRTY" ] || fail ${index} dirty "$DIRTY"
@@ -547,7 +579,11 @@ OUT=$(git fetch --quiet origin ${shellQuote(target.baseBranch)} 2>&1) || fail ${
 ${each((target, index) => `cd ${shellQuote(target.path)}
 AHEAD_${index}=$(git rev-list --count ${shellQuote(`origin/${target.baseBranch}`)}..HEAD)
 if [ "$AHEAD_${index}" != "0" ]; then
-  git rebase --quiet ${shellQuote(`origin/${target.baseBranch}`)} >/dev/null 2>&1 || { git rebase --abort >/dev/null 2>&1; fail ${index} conflict; }
+  if ! git rebase --quiet ${shellQuote(`origin/${target.baseBranch}`)} >/dev/null 2>&1; then
+    UNMERGED=$(git -c core.quotePath=false diff --name-only --diff-filter=U 2>/dev/null)
+    git rebase --abort >/dev/null 2>&1
+    conflict ${index} ${shellQuote(`origin/${target.baseBranch}`)} "$UNMERGED"
+  fi
 fi`)}
 ${each((target, index) => `cd ${shellQuote(target.path)}
 if [ "$AHEAD_${index}" != "0" ]; then
@@ -559,17 +595,87 @@ echo "BOAT_SHIP_DONE"
 }
 
 /** What the ship script said: what landed, and why it stopped if it did. */
-export function parseShipOutput(stdout: string, targets: ShipTarget[]): ShipResult & { failure: { target: ShipTarget | null; reason: string; detail: string[] } | null } {
+export function parseShipOutput(
+  stdout: string,
+  targets: ShipTarget[],
+): ShipResult & { failure: { target: ShipTarget | null; reason: string; detail: string[]; conflict: ShipConflict | null } | null } {
   const shipped = [...stdout.matchAll(/BOAT_SHIPPED (\d+) ([0-9a-f]{7,40}) (\d+)/g)].map((match) => {
     const target = targets[Number(match[1])]!;
     return { path: target.path, baseBranch: target.baseBranch, sha: match[2]!, commits: Number(match[3]) };
   });
   const failed = stdout.match(/BOAT_SHIP_ERROR (\d+) (\w+)/);
   const detail = [...stdout.matchAll(/^BOAT_SHIP_DETAIL (.*)$/gm)].map((match) => match[1]!.trim()).filter(Boolean);
+  if (failed === null) return { shipped, failure: null };
+  const reason = failed[2]!;
   return {
     shipped,
-    failure: failed === null ? null : { target: targets[Number(failed[1])] ?? null, reason: failed[2]!, detail },
+    failure: { target: targets[Number(failed[1])] ?? null, reason, detail, conflict: reason === "conflict" ? parseConflictDetail(detail) : null },
   };
+}
+
+/** The ship script's conflict detail: `head <sha>`, `base <sha>`, `file <path>`, `more <n>`, `commit <sha> <subject>`. */
+export function parseConflictDetail(detail: readonly string[]): ShipConflict {
+  const conflict: ShipConflict = { head: null, base: null, files: [], moreFiles: 0, commits: [] };
+  for (const line of detail) {
+    const match = line.match(/^(head|base|file|more|commit) (.+)$/);
+    if (match === null) continue;
+    const key = match[1]!;
+    const value = match[2]!.trim();
+    if (key === "head" || key === "base") {
+      if (/^[0-9a-f]{7,64}$/.test(value)) conflict[key] = value;
+    } else if (key === "file") {
+      conflict.files.push(value);
+    } else if (key === "more") {
+      conflict.moreFiles = Math.max(0, Number.parseInt(value, 10) || 0);
+    } else {
+      const commit = value.match(/^([0-9a-f]{4,64})(?: (.*))?$/);
+      if (commit !== null) conflict.commits.push({ sha: commit[1]!, subject: (commit[2] ?? "").trim() });
+    }
+  }
+  return conflict;
+}
+
+/** "a", "a and b", "a, b and c" */
+function joinAnd(items: readonly string[]): string {
+  return items.length <= 1 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+/** Repository names and subjects in messages: each one clipped to this many characters. */
+export const NAME_MAX = 120;
+/** A conflict's files-and-commits part longer than this names one file and one commit instead. */
+export const CONFLICT_DETAIL_MAX = 600;
+
+/** Up to `shown` file names, as inline code (repository text stays literal), then "and 4 more files". */
+export function fileList(files: readonly string[], more = 0, shown = 3): string {
+  const named = files.slice(0, shown).map((file) => codeSpan(file, NAME_MAX));
+  const rest = files.length - named.length + more;
+  if (named.length === 0) return "";
+  return rest > 0 ? `${named.join(", ")} and ${rest} more file${rest === 1 ? "" : "s"}` : joinAnd(named);
+}
+
+/**
+ * Why a ship stopped on a conflict: the files, and the base commits that
+ * changed them (with the task of this plugin that shipped one, when known).
+ * "its commits conflict with the latest main in `package.json` (changed by
+ * 1a2b3c4 `Add the test suite`). The task's agent must rebase and resolve them"
+ * File names and subjects are inline code, clipped to NAME_MAX characters;
+ * past CONFLICT_DETAIL_MAX it names one file and one commit.
+ */
+export function conflictReason(baseBranch: string, conflict: ShipConflict, shippedBy: (sha: string) => string | null = () => null): string {
+  const detail = (files: number, commits: number): string => {
+    const names = fileList(conflict.files, conflict.moreFiles, files);
+    if (names === "") return "";
+    const listed = conflict.commits.slice(0, commits).map((commit) => {
+      const task = shippedBy(commit.sha);
+      return `${commit.sha.slice(0, 7)}${commit.subject ? ` ${codeSpan(commit.subject, NAME_MAX)}` : ""}${task ? ` from task ${task}` : ""}`;
+    });
+    const rest = conflict.commits.length - listed.length;
+    const by = rest > 0 ? [...listed, `${rest} more commit${rest === 1 ? "" : "s"}`] : listed;
+    return ` in ${names}${listed.length > 0 ? ` (changed by ${joinAnd(by)})` : ""}`;
+  };
+  const full = detail(3, 3);
+  const where = full.length <= CONFLICT_DETAIL_MAX ? full : detail(1, 1);
+  return `its commits conflict with the latest ${baseBranch}${where}. The task's agent must rebase and resolve them`;
 }
 
 export class BoatApi {
@@ -766,23 +872,27 @@ export class BoatApi {
   /**
    * Land a worker's commits on the base branch (see shipScript). Throws a
    * BoatError with code ship_<reason>; its `shipped` lists repos that landed
-   * before a later one failed.
+   * before a later one failed, and `conflict` what a conflict stopped on.
+   * `shippedBy`: the task of this plugin that shipped a base commit, if any.
    */
-  async ship(id: string, targets: ShipTarget[], signal?: AbortSignal): Promise<ShipResult> {
+  async ship(id: string, targets: ShipTarget[], signal?: AbortSignal, shippedBy?: (sha: string) => string | null): Promise<ShipResult> {
     const result = await this.exec(id, shipScript(targets), { timeoutMs: 300_000, signal });
     const parsed = parseShipOutput(result.stdout, targets);
     if (parsed.failure !== null) {
-      const { target, reason, detail } = parsed.failure;
+      const { target, reason, detail, conflict } = parsed.failure;
       const where = target ? `${target.path} → ${target.baseBranch}` : "the checkout";
       const why: Record<string, string> = {
         missing: "the checkout is gone",
         dirty: `it has changes that aren't committed (${detail.slice(0, 4).join("; ") || "see git status"}); the task's agent must commit or remove them`,
         fetch: `fetching the base branch failed (${detail.at(-1) ?? "is the sandbox's GitHub login still valid?"})`,
-        conflict: "its commits conflict with the latest base branch (the task's agent must rebase and resolve them)",
+        conflict: conflictReason(target?.baseBranch ?? "base branch", conflict ?? parseConflictDetail([]), shippedBy),
         push: `the push was refused (${detail.at(-1) ?? "the base moved on, or the GitHub login can't push there"})`,
       };
       const partial = parsed.shipped.length > 0 ? ` Already shipped: ${parsed.shipped.map((entry) => `${entry.path} → ${entry.baseBranch}`).join(", ")}.` : "";
-      throw Object.assign(new BoatError(`Couldn't ship ${where}: ${why[reason] ?? reason}.${partial}`, { code: `ship_${reason}` }), { shipped: parsed.shipped });
+      throw Object.assign(new BoatError(`Couldn't ship ${where}: ${why[reason] ?? reason}.${partial}`, { code: `ship_${reason}` }), {
+        shipped: parsed.shipped,
+        conflict: conflict !== null && target !== null ? { ...conflict, path: target.path, baseBranch: target.baseBranch } : null,
+      });
     }
     if (!result.stdout.includes("BOAT_SHIP_DONE")) {
       const detail = `${result.stderr}\n${result.stdout}`.trim().split("\n").slice(-4).join(" ");
