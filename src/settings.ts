@@ -108,9 +108,10 @@ export const SETTINGS = {
   stopIdleAfterMinutes: {
     type: "number",
     label: "Stop idle sandboxes after (min)",
-    description: "Stops a task's sandbox once its agent has waited this long, to save sandbox hours. The task picks up again on your next message. 0: never.",
+    description:
+      "A sandbox whose agent has finished and is waiting for you stops after this long, to save sandbox hours. Work still running, background jobs included, keeps it on. Your next message starts it again; anything the agent kept in memory or /tmp is lost. 60 is an hour; 0: never.",
     experimental_schema: range("stopIdleAfterMinutes"),
-    default: 30,
+    default: 60,
   },
   pushNotifications: {
     type: "boolean",
@@ -268,6 +269,7 @@ export const PLUGIN_SETTINGS = {
     experimental_optionLabels: { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" },
     default: "high",
   },
+
   sidebarLayout: {
     section: "orchestrators",
     type: "select",
