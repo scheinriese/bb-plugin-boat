@@ -89,7 +89,7 @@ default 3) caps how many run; `bb boat status` shows the room left.
 | `bb boat task start --title "…" --brief "…" --tier build --reason "…"` | Start a task on this chat's project (repo, base branch, environment come from it). The model preset (`light`, `review`, `build`, `deep`, `frontier`) picks model and effort for the agent. Add `--project <id>`, `--repo owner/name`, `--agent codex`, `--effort`, `--model`, `--branch`, `--base`, `--role review`, `--sandbox <id>`, `--type small`, `--context-from t_…` |
 | `bb boat task start … --brief-file brief.md` | Long briefs from a file on your machine |
 | `bb boat task review <id>` | Independent review of a task's work, by the other agent by default |
-| `bb boat task followup <id> --message "…"` | Next turn in the same conversation (`--agent codex` switches to the other agent at the same preset, `--tier deep` changes the preset, `--steer` redirects a running turn, `--evidence-only` only asks for uploads and needs no message) |
+| `bb boat task followup <id> --message "…"` | Next turn in the same conversation (`--agent codex` switches to the other agent at the same preset, `--tier deep` changes the preset, `--steer` redirects a running turn, `--evidence-only` only asks for uploads and needs no message, `--type large` moves its sandbox to another size first: after an out-of-memory failure, for example) |
 | `bb boat task show <id>` | Status, pull request, branch, sandbox, the agent's report, history |
 | `bb boat task transcript <id>` | What the agent did step by step |
 | `bb boat task list [--mine] [--all]` | Tasks |
@@ -98,11 +98,12 @@ default 3) caps how many run; `bb boat status` shows the room left.
 | `bb boat task ship <id>` | Projects that ship after approval: push the task's commits to its base branch. Only from the task's orchestrator chat, after the user said so there |
 | `bb boat preview list` / `preview wake\|extend\|stop <id>` | Previews agents left running (private links), and bringing a sleeping one back |
 | `bb boat sandbox list [--all]` / `sandbox new [--repo …]` / `sandbox info\|stop\|resume\|delete <id>` | Sandboxes |
+| `bb boat sandbox resize <id> --type <size>` | Move a task's sandbox to another size (it stops and starts again: files stay, running processes stop, other tasks on it move too; `xlarge` needs `--user-approved`) |
 | `bb boat sandbox exec <id> -- <command>` | Run a shell command in a sandbox |
 | `bb boat sandbox snapshot <id> <name>` / `sandbox snapshots` | Save a sandbox as a snapshot; list saved ones (`--snapshot <name>` on task start starts from one) |
 | `bb boat project list [--local]` | Projects (and local bb projects as `local:<id>`) |
-| `bb boat project add --name "Web app" --repo acme/web@main` | Add a project (repeat `--repo` for more repos; `--environment`, `--snapshot`, `--protocol`, `--workers`, `--delivery`, `--protected-branches "release, develop"`, `--instructions` or `--instructions-file`) |
-| `bb boat project set <id> --delivery pr\|push` | Change a project: how work lands (draft pull requests, or ship after approval), and the same options as `add` (`none` clears protected branches or instructions) |
+| `bb boat project add --name "Web app" --repo acme/web@main` | Add a project (repeat `--repo` for more repos; `--environment`, `--snapshot`, `--protocol`, `--workers`, `--delivery`, `--protected-branches "release, develop"`, `--instructions` or `--instructions-file`, `--size large` for its sandboxes) |
+| `bb boat project set <id> --delivery pr\|push` | Change a project: how work lands (draft pull requests, or ship after approval), and the same options as `add` (`none` clears protected branches, instructions or the size) |
 | `bb boat orchestrator new --project <id> --prompt "…"` | Start an orchestrator for a project (`--local` on this computer, `--cloud` in a new small boat sandbox, which needs bb Connect; without either, the cloud when bb Connect is set up; `--take-over <thread>` continues a previous one) |
 | `bb boat orchestrator on` / `off` | Make the current chat an orchestrator, or stop (tools load on its next session) |
 | `bb boat protocol show [--project <id>]` | The orchestrator protocol: shared rules, model presets, then the project's rules file |

@@ -99,7 +99,7 @@ open task's sandbox that has evidence-upload.
 | `boat_status` | Room for more sandboxes; don't start more tasks than there's room for |
 | `boat_dispatch` | New task in a fresh sandbox; needs `tier` (the model preset) and a one-line `reason` |
 | `boat_review` | Independent review, by the other agent when the user has both (Review preset by default) |
-| `boat_followup` | Next turn for the same task; `tier` changes the preset, `agent` switches agent at the same preset, `steer` redirects a running turn |
+| `boat_followup` | Next turn for the same task; `tier` changes the preset, `agent` switches agent at the same preset, `steer` redirects a running turn, `sandbox_size` moves the task's sandbox to a larger size first (`large` after it ran out of memory; `xlarge` only with the user's OK) |
 | `boat_tasks` / `boat_task` / `boat_transcript` | State, reports, what an agent is doing |
 | `boat_interrupt` / `boat_close` | Stop a turn; accept or cancel a task |
 | `boat_needs_you` / `boat_resolve` | Put a decision (with your recommendation) on the user's Cloud agents page; close it once answered |
@@ -122,6 +122,9 @@ per agent and records preset, model, effort and your reason on the task.
   already shows a review.
 - Blocked or partial: one consolidated `boat_followup`, re-scope, or ask the
   user.
+- Out of memory (the notice says so): `boat_followup` with
+  `sandbox_size: "large"` moves the sandbox and continues (twice the cost
+  per hour: mention it), or ask the agent to run fewer tests at once.
 - Changes requested: numbered blocking issues to the task's agent; then ask
   the reviewer to re-review. After 3 rounds, summarize the disagreement for
   the user.

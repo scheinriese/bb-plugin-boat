@@ -762,10 +762,18 @@ export class SandboxSizes {
     return peak !== null && peak.data.turn === task.turns && (peak.data.reason === "near-limit" || peak.data.reason === "out-of-memory" || peak.data.reason === "largest");
   }
 
-  /** The checks that read boat or bb; `type` null: the dialog's (no size yet). */
-  private async asyncBlocker(task: Task, type: MachineType | null): Promise<{ blocker: TaskError | null; startsLeft: number | null; current: MachineType | null }> {
+  /**
+   * The checks that read boat or bb; `type` null: the dialog's (no size
+   * yet). `facts.active`: the sandbox runs now (its previews would stop).
+   */
+  private async asyncBlocker(
+    task: Task,
+    type: MachineType | null,
+    facts: { active: boolean } = { active: true },
+  ): Promise<{ blocker: TaskError | null; startsLeft: number | null; current: MachineType | null }> {
     const sandboxId = task.sandboxId!;
     const info = await this.deps.boat.findInfo(sandboxId, this.deps.hooks.lifecycle).catch(() => undefined);
+    facts.active = info === undefined || (info !== null && ACTIVE_STATES.has(info.state));
     if (info === null) {
       return { blocker: new TaskError(`Task ${task.id}'s sandbox no longer exists.`, "sandbox_gone", `Start a new task (\`boat_dispatch\` with \`context_from\` ${task.id}).`), startsLeft: null, current: null };
     }
@@ -828,8 +836,9 @@ export class SandboxSizes {
     const current = size === null ? null : { type: size.type, label: size.type ? LABEL(size.type) : "Unknown size", summary: (size.type ? specText(size.type) : sizeSummary(size)) ?? "" };
     let blocker = this.blocker(task, { type: null, by: "page", userApproved: true, threadId: null });
     let startsLeft: number | null = null;
+    const facts = { active: true };
     if (blocker === null) {
-      const checked = await this.asyncBlocker(task, null);
+      const checked = await this.asyncBlocker(task, null, facts);
       blocker = checked.blocker;
       startsLeft = checked.startsLeft;
     }
@@ -848,7 +857,7 @@ export class SandboxSizes {
       suggested,
       oom: oom !== null && oom.data.turn === task.turns && oom.data.certain,
       others: others.map((other) => ({ id: other.id, title: other.title, status: other.status })),
-      previews: sandboxId === null ? 0 : this.livePreviews(sandboxId),
+      previews: sandboxId === null || !facts.active ? 0 : this.livePreviews(sandboxId),
       chat: sandboxId !== null && this.deps.hooks.chat !== undefined && this.deps.store.hostForSandbox(sandboxId) !== null,
       startsLeft,
       blocker: blocker === null ? null : { code: blocker.code, message: blocker.message, hint: blocker.hint ?? null },
@@ -886,9 +895,11 @@ export class SandboxSizes {
     };
     this.jobs.set(sandboxId, job);
     try {
-      const checked = await this.asyncBlocker(task, request.type);
+      const facts = { active: true };
+      const checked = await this.asyncBlocker(task, request.type, facts);
       if (checked.blocker !== null) throw checked.blocker;
       job.from = checked.current;
+      if (!facts.active) job.previews = 0;
     } catch (error) {
       this.jobs.delete(sandboxId);
       job.release();

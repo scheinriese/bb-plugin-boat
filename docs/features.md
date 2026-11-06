@@ -97,9 +97,10 @@ one. New installs start with none.
   ```
   Repeat `--repo` for more repos; the first is the main one, and tasks
   clone the others next to it.
-- Per project: the boat environment, a snapshot tasks start from, how work
-  lands, **Run tasks as chats**, protected branches, instructions added to
-  each task's brief, and an orchestrator rules file in its main repo.
+- Per project: the boat environment, a snapshot tasks start from, the
+  sandbox size its tasks use, how work lands, **Run tasks as chats**,
+  protected branches, instructions added to each task's brief, and an
+  orchestrator rules file in its main repo.
 - From the command line:
   ```sh
   bb boat project set web-app --protected-branches "release, develop" --instructions-file house-rules.md
@@ -200,6 +201,55 @@ report it in their report block:
   idle, and it's the last one stopped to make room.
 - `bb boat preview list | wake | extend | stop`, and `boat_preview` for
   orchestrators.
+
+## Sandbox sizes and memory
+
+Sandboxes come in four sizes: Small (2 vCPU, 4 GB, half rate), Default
+(4 vCPU, 8 GB), Large (8 vCPU, 16 GB, double rate) and XLarge (16 vCPU,
+32 GB, needs a bigger boat plan). Your plan says which you
+can use.
+
+- **Which size a new sandbox gets:** the size you pick for the task, else
+  its project's **Sandbox size** (the project the task belongs to, or the
+  one whose main repo it is), else the **Default sandbox size** setting. A
+  project size your plan doesn't include falls back to the setting, with a
+  note in the task's history; a size you pick that the plan doesn't include
+  is refused before anything starts. A review in a new sandbox gets at
+  least its task's current size.
+  ```sh
+  bb boat project set web-app --size large     # none: the setting
+  ```
+- **Agents know their size.** Every task's prompt says the sandbox's size,
+  CPUs and memory (read inside the sandbox, new or reused), that other
+  processes share it, and to run heavy test suites one at a time.
+- **Out of memory.** When a turn fails, is cut off or ends without a new
+  message, the plugin reads the sandbox's kernel log for out-of-memory kills
+  in that turn. The task's error then says so in plain words, for example
+  "The sandbox ran out of memory: the system stopped a 1.4 GB process in the
+  task chat (MainThread)", with the original error kept as detail; the
+  orchestrator's notice says what to do. Without a readable kernel log it
+  only notes that the sandbox may have run out of memory. These facts are
+  measured inside the sandbox, so treat them as a strong hint, not proof.
+- **Continue on a larger sandbox.** After an out-of-memory failure the task
+  page offers it, and **Change size…** in the task's Sandbox row works
+  between turns. The sandbox stops and starts again on the new size (one
+  boat start): files stay, running processes stop (Wake restarts previews),
+  and other open tasks on it move too. Then your message goes to the agent,
+  which is told the new size. A move boat refuses (it won't shrink a
+  sandbox whose data doesn't fit) puts it back on its old size.
+  ```sh
+  bb boat task followup t_1a2b3c4d --type large --message "Continue where you left off."
+  bb boat sandbox resize bx_k3p9 --type default    # only the size
+  ```
+  Orchestrators use `boat_followup` with `sandbox_size`: only to a larger
+  size, Large after an out-of-memory failure (otherwise with your OK),
+  XLarge only with your OK.
+- **Measure instead of guess.** "Check this repo runs in a sandbox" (and
+  the test task) samples the sandbox's memory every second during the turn
+  and shows the peak with a recommended size, for example "Peak memory: 6.1
+  of 8 GB. Recommended size: Large": the next size up when the peak reached
+  75% of the sandbox's memory or something was killed for memory. **Use
+  Large for Web app** sets the project's size.
 
 ## Snapshots
 
@@ -377,16 +427,16 @@ command has `--help`, and `--json` gives machine-readable output.
 | `bb boat task start --test` | Start the test task: no repo, changes nothing |
 | `bb boat task start --title … --brief …` | Start a task (`--repo`, `--project`, `--agent`, `--tier`, `--snapshot`, `--sandbox`, `--type` …) |
 | `bb boat task review <id>` | Independent review of a task's work |
-| `bb boat task followup <id> --message …` | Next turn (`--agent` switches agent, `--tier` changes preset, `--steer` redirects a running turn) |
+| `bb boat task followup <id> --message …` | Next turn (`--agent` switches agent, `--tier` changes preset, `--steer` redirects a running turn, `--type large` moves its sandbox to another size first) |
 | `bb boat task show \| transcript \| list \| interrupt \| close` | Inspect and finish tasks |
 | `bb boat task ship <id>` | Ship approved work (projects that ship after approval) |
 | `bb boat task ready <id> --note …` | Put a task under Ready to review (what `boat_ready` does, for chats without tools) |
 | `bb boat decision add \| list \| resolve` | Decisions only you can make, under Needs you (`boat_needs_you`, `boat_resolve`) |
 | `bb boat task wait <id>…` | Block until tasks stop running; a last resort: ending the turn is better, the chat is told when a turn ends |
 | `bb boat preview list \| wake \| extend \| stop` | Previews |
-| `bb boat sandbox list \| new \| info \| stop \| resume \| delete \| exec` | Sandboxes |
+| `bb boat sandbox list \| new \| info \| stop \| resume \| resize \| delete \| exec` | Sandboxes (`resize <id> --type <size>` moves a task's sandbox to another size) |
 | `bb boat sandbox snapshot \| snapshots` | Snapshots |
-| `bb boat project list [--local] \| add \| set \| remove` | Projects (`--protected-branches`, `--instructions`, `--delivery`, `--workers` …) |
+| `bb boat project list [--local] \| add \| set \| remove` | Projects (`--protected-branches`, `--instructions`, `--delivery`, `--workers`, `--size` …) |
 | `bb boat config get [key] \| set <key> <value> \| reset <key>` | Every setting, wherever it's shown ([settings.md](settings.md)) |
 | `bb boat config export \| import` | Back up and restore settings, projects, model presets and protocol |
 | `bb boat orchestrator new \| on \| off \| list` | Orchestrators ([orchestrators.md](orchestrators.md)) |
