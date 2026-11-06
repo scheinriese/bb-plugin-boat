@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { PROVIDER_LABEL } from "./format";
 import { useOrchestratorCardHidden, useOrchestrators, useSandboxSizes, useSettingRows } from "./hooks";
 import { EVIDENCE_VARIABLES, ORCHESTRATOR_CARD_RULE, cardShownToast, evidenceMode, type EvidenceMode } from "./logic";
 import { ModelPresetsEditor, ProtocolEditor } from "./protocol-settings";
@@ -439,15 +440,22 @@ export function ModelsSettings() {
 const SIZE_KEYS = new Set(["orchestratorMachineType"]);
 
 export function OrchestratorsSettings() {
-  const { rows, error } = useSectionRows("orchestrators");
+  const { rows, data, error } = useSectionRows("orchestrators");
   const saver = useSaveSetting();
   const sizes = useSandboxSizes().data?.sizes;
+  const only = data?.onlyAgent ?? null;
+  const extra = (row: SettingDto) => {
+    if (SIZE_KEYS.has(row.key)) return { sizes };
+    // Greyed out with one agent: say which one runs them.
+    if (row.key === "relayPreferred" && only !== null) return { describe: `Coding agents uses only ${PROVIDER_LABEL[only]} now, so it runs every orchestrator.` };
+    return {};
+  };
   return (
     <div className="space-y-3">
       <Loading error={error} rows={rows.length} />
       {rows.length > 0 ? (
         <SettingsCard>
-          <Rows rows={rows} saver={saver} extra={(row) => (SIZE_KEYS.has(row.key) ? { sizes } : {})} />
+          <Rows rows={rows} saver={saver} extra={extra} />
           <OrchestratorCardRow />
         </SettingsCard>
       ) : null}

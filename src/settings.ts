@@ -34,6 +34,14 @@ const SIZE_LABELS = {
   xlarge: "XLarge (16 vCPU, 32 GB)",
 };
 
+/**
+ * Effort levels for orchestrator chats: the ones both Claude Code and Codex
+ * take in bb (both also have max, and one level of their own above it,
+ * which an orchestrator doesn't need).
+ */
+export const ORCHESTRATOR_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+export type OrchestratorEffort = (typeof ORCHESTRATOR_EFFORTS)[number];
+
 /** "How tasks run": in boat everywhere, as chats for your projects, or as chats everywhere. */
 export const WORKERS_VALUES = ["boat", "projects", "all"] as const;
 export type Workers = (typeof WORKERS_VALUES)[number];
@@ -180,18 +188,8 @@ export const PLUGIN_SETTINGS = {
     type: "boolean",
     label: "Claude ↔ Codex switching for orchestrators",
     description:
-      "Near a usage limit, an orchestrator writes a handoff note and continues on the other agent, then comes back once its main agent has room. New tasks also start on the agent with room. Needs both Claude and Codex; usage readings come from bb's Provider usage (and the Account Pooler, if you use it).",
+      "Near a usage limit, an orchestrator writes a handoff note and continues on the other agent, then moves back to the Agent for orchestrators (under Orchestrators) once it has room. New tasks also start on the agent with room. Needs both Claude and Codex; usage readings come from bb's Provider usage (and the Account Pooler, if you use it).",
     default: false,
-  },
-  relayPreferred: {
-    section: "usage-limits",
-    group: "switching",
-    type: "select",
-    label: "Main agent for orchestrators",
-    description: "Orchestrators come back to it once it has room.",
-    options: ["claude", "codex"],
-    experimental_optionLabels: { claude: "Claude", codex: "Codex" },
-    default: "claude",
   },
   relaySwitchAt: {
     section: "usage-limits",
@@ -209,7 +207,7 @@ export const PLUGIN_SETTINGS = {
     fold: "Fine-tune",
     type: "number",
     label: "Switch back below (%)",
-    description: "Orchestrators move back once their main agent's usage is under this. At least 5 below Switch at.",
+    description: "Orchestrators move back once the Agent for orchestrators is under this. At least 5 below Switch at.",
     experimental_schema: range("relaySwitchBackBelow"),
     default: 50,
   },
@@ -250,6 +248,27 @@ export const PLUGIN_SETTINGS = {
     default: "default",
   },
   // Orchestrators (optional)
+  // The key is the old "Main agent for orchestrators" (backups keep working).
+  relayPreferred: {
+    section: "orchestrators",
+    type: "select",
+    label: "Agent for orchestrators",
+    description:
+      "New orchestrators start on it while it's connected, else on the agent that is; the New orchestrator dialog can pick the other. Claude ↔ Codex switching brings them back to it once it has room.",
+    options: ["claude", "codex"],
+    experimental_optionLabels: { claude: "Claude Code", codex: "Codex" },
+    default: "claude",
+  },
+  orchestratorEffort: {
+    section: "orchestrators",
+    type: "select",
+    label: "Effort for orchestrators",
+    description:
+      "Orchestrators mostly read reports, plan and start tasks; the tasks do the heavy work at their own preset's effort. Higher effort uses your limits faster, since an orchestrator stays open and wakes after every task turn. The model is the Build preset's for its agent (see Models).",
+    options: [...ORCHESTRATOR_EFFORTS],
+    experimental_optionLabels: { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" },
+    default: "high",
+  },
   sidebarLayout: {
     section: "orchestrators",
     type: "select",
