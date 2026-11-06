@@ -41,12 +41,12 @@ import {
   useCloudAgentsNavigation,
   useCopy,
   useNow,
+  useOrchestratorCardHidden,
   useOrchestrators,
   useOverview,
   useRelay,
   useSandboxes,
   useSetup,
-  useStoredFlag,
 } from "./hooks";
 import { pageState, sandboxUseLabel, statusLine, usageSummary, type PageState } from "./logic";
 import { SetupCard, SetupWarnings } from "./setup";
@@ -378,14 +378,15 @@ function WayRow({ icon, title, text, actions }: { icon: string; title: string; t
 
 /**
  * Until someone has an orchestrator: what one is, How it works (a
- * disclosure), Set up an orchestrator, and × to hide it (remembered on this
- * device).
+ * disclosure), Set up an orchestrator, and × to hide it (for the account;
+ * Settings → Orchestrators brings it back).
  */
 function StepUpCard() {
-  const [hidden, setHidden] = useStoredFlag("hide-orchestrator-card");
+  const [hidden, setHidden] = useOrchestratorCardHidden();
   const only = useOverview().data?.defaults.onlyAgent ?? null;
   const [creating, setCreating] = useState(false);
-  if (hidden) return null;
+  // Not while the flag loads: a hidden card mustn't flash.
+  if (hidden !== false) return null;
   return (
     <section aria-labelledby="ca-step-up" className="flex flex-col gap-3 rounded-lg border border-dashed border-border px-4 py-4 sm:flex-row sm:items-start">
       <Icon name="Workflow" className="mt-0.5 hidden size-4 shrink-0 text-muted-foreground sm:block" aria-hidden />
@@ -400,8 +401,13 @@ function StepUpCard() {
               icon="X"
               className="-mr-2 -mt-1.5"
               onClick={() => {
-                setHidden(true);
-                toast("Hidden. New orchestrator stays in the ⋯ menu at the top.");
+                setHidden(true).then(
+                  () =>
+                    toast("Hidden. New orchestrator stays in the ⋯ menu at the top.", {
+                      description: "Show it again in Settings → Plugins → Boat Cloud Agents → Orchestrators.",
+                    }),
+                  showError,
+                );
               }}
             />
           </div>

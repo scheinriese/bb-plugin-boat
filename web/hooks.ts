@@ -8,6 +8,7 @@ import {
   experimental_copyToClipboard,
   experimental_usePluginId,
   experimental_useRpcKeyedQuery,
+  experimental_useRpcMutation,
   experimental_useRpcQuery,
   experimental_useSidebarThreads,
   useBbNavigate,
@@ -173,8 +174,39 @@ export function useCopy() {
 }
 
 /**
- * A yes/no the user chose on this device (a hidden card, a note they've
- * read), kept in localStorage under the plugin's id.
+ * Account-level UI state (the plugin's storage, the same on every device):
+ * today, whether the orchestrator card is hidden.
+ */
+export function useUiState() {
+  return experimental_useRpcQuery({ contract: rpcContract, method: "uiState", input: null });
+}
+
+/**
+ * The orchestrator card's hidden flag, for the account (undefined while it
+ * loads; false when it can't be read). A change shows at once in this
+ * window and is rolled back if the save fails (which rejects); other open
+ * pages refresh when the server says it changed.
+ */
+export function useOrchestratorCardHidden(): [boolean | undefined, (hidden: boolean) => Promise<void>] {
+  const { data, error } = useUiState();
+  const save = experimental_useRpcMutation({
+    contract: rpcContract,
+    method: "saveUiState",
+    optimistic: (input, cache) => cache.update("uiState", null, (current) => ({ ...current, ...input })),
+  });
+  const { mutate } = save;
+  const set = useCallback(
+    async (hidden: boolean) => {
+      await mutate({ hideOrchestratorCard: hidden });
+    },
+    [mutate],
+  );
+  return [data?.hideOrchestratorCard ?? (error ? false : undefined), set];
+}
+
+/**
+ * A yes/no the user chose on this device (a note they've read), kept in
+ * localStorage under the plugin's id.
  */
 export function useStoredFlag(name: string): [boolean, (value: boolean) => void] {
   const pluginId = experimental_usePluginId();

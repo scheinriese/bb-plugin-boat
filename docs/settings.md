@@ -35,7 +35,8 @@ In this order:
 4. **Models:** the model presets, and models for tasks without one.
 5. **Orchestrators (optional):** the sidebar, the size of chats on a Boat
    sandbox, full access for cloud orchestrators, and the orchestrator
-   protocol.
+   protocol. While you've hidden the orchestrator card on the Cloud agents
+   page, **Show the orchestrator card again** brings it back.
 6. **Advanced** (collapsed).
 7. **Back up and restore.**
 
@@ -85,7 +86,8 @@ bb boat config import boat-config.json
 
 - The file holds every setting (bb's list and the plugin's own), your
   projects, your model presets and your custom orchestrator protocol. It
-  holds no tasks, sandboxes, chats or secrets.
+  holds no tasks, sandboxes, chats or secrets, and no page state such as a
+  hidden orchestrator card.
 - Import merges: it adds and updates projects and keeps the others. It
   applies the file, then prints what changed (settings old → new, projects
   added, updated or removed, presets, protocol). Run it with `--dry-run`

@@ -5,6 +5,7 @@ import type { PreviewView } from "./previews.ts";
 import { MACHINE_TYPES, assertBranch, autoStopHours, dashboardUrl, normalizeRepo, type MachineType, type Sandbox } from "./boat-api.ts";
 import { BoatError, resolveBoatBinary } from "./boat.ts";
 import { describeClose } from "./close-outcome.ts";
+import { uiStateHandlers } from "./ui-state.ts";
 import { parseReport } from "./briefs.ts";
 import { resultExcerpt } from "./format.ts";
 import { bbProjectRepo, listLocalProjects, pushLocalBranch } from "./local-projects.ts";
@@ -1089,6 +1090,9 @@ export function registerRpc(runtime: Runtime): void {
         runtime.changed();
         return { threadId: opened };
       }),
+
+    // Account-level UI state (src/ui-state.ts).
+    ...uiStateHandlers(bb),
   });
 }
 

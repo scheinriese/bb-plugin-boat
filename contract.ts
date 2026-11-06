@@ -9,6 +9,10 @@ import { z } from "zod";
 
 const defineRpcContract = ((contract: unknown) => contract) as typeof DefineRpcContract;
 
+// Account-level UI state (contract-ui.ts), spread into the contract at its end.
+import { uiRpcMethods } from "./contract-ui.ts";
+export { UI_TAG, uiStateSchema, type UiStateDto } from "./contract-ui.ts";
+
 export const PROVIDER_VALUES = ["claude", "codex"] as const;
 export const ROLE_VALUES = ["implement", "review", "custom"] as const;
 export const STATUS_VALUES = ["starting", "running", "idle", "failed", "done", "cancelled"] as const;
@@ -991,6 +995,8 @@ export const rpcContract = defineRpcContract({
   /** Import a backup (the same checks as the preview; a file with problems is refused). */
   importConfig: { input: configImportInputSchema, output: configImportResultSchema },
   refresh: { input: z.null(), output: ok },
+  // ------------------------------------------------------------- account-level UI state (contract-ui.ts)
+  ...uiRpcMethods,
 });
 
 export type RpcContract = typeof rpcContract;

@@ -25,6 +25,12 @@ The page in bb's sidebar changes with what you have:
 - **With an orchestrator:** **Needs you** (decisions only you can make) and
   **Orchestrators** move to the top.
 
+Until you have an orchestrator, a "Coordinate a project with an
+orchestrator" card says what one does (**How it works** unfolds the steps)
+and has **Set up an orchestrator**. Its × hides it for your account, on
+every device; Settings → Plugins → Boat Cloud Agents → Orchestrators →
+**Show the orchestrator card again** brings it back.
+
 The header has **New task**, and a ⋯ menu with **New sandbox**, **New chat
 in a Boat sandbox** and **New orchestrator…**. Each task opens a page with
 its report, review, transcript, previews, history and a reply box, plus

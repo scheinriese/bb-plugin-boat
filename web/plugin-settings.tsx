@@ -4,17 +4,19 @@
 // files. Rows look and behave like bb's own settings list: switches and
 // selects save at once, text and numbers when you leave the field.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import { experimental_useRpcMutation } from "@get-bb/plugin-sdk/app";
 import { rpcContract, rpcErrorInfo, type SandboxSizeDto, type SettingDto } from "../contract";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { useSandboxSizes, useSettingRows } from "./hooks";
+import { useOrchestratorCardHidden, useSandboxSizes, useSettingRows } from "./hooks";
 import { EVIDENCE_VARIABLES, evidenceMode, type EvidenceMode } from "./logic";
 import { ModelPresetsEditor, ProtocolEditor } from "./protocol-settings";
 import { SetupChecklist } from "./setup";
-import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch } from "./ui";
+import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, showError } from "./ui";
 
 type SettingValue = string | number | boolean;
 
@@ -446,11 +448,36 @@ export function OrchestratorsSettings() {
       {rows.length > 0 ? (
         <SettingsCard>
           <Rows rows={rows} saver={saver} extra={(row) => (SIZE_KEYS.has(row.key) ? { sizes } : {})} />
+          <OrchestratorCardRow />
         </SettingsCard>
       ) : null}
       <SubHeading description="The shared rules every orchestrator loads. A project's own rules file is read after it.">Protocol</SubHeading>
       <ProtocolEditor />
     </div>
+  );
+}
+
+/** Only while the Cloud agents page's orchestrator card is hidden (its ×): brings it back, on every device. */
+function OrchestratorCardRow() {
+  const [hidden, setHidden] = useOrchestratorCardHidden();
+  if (hidden !== true) return null;
+  return (
+    <SettingField
+      label="Orchestrator card"
+      description="Hidden on the Cloud agents page. It says what an orchestrator does and sets one up."
+      control={
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7"
+          onClick={() => {
+            setHidden(false).then(() => toast.success("The orchestrator card is back on the Cloud agents page"), showError);
+          }}
+        >
+          Show the orchestrator card again
+        </Button>
+      }
+    />
   );
 }
 
