@@ -6,6 +6,8 @@ for orchestrators, [orchestrators.md](orchestrators.md).
 
 ## The Cloud agents page
 
+![The Cloud agents page, lower part: ready to review, running tasks, previews and the sandboxes they run in](screenshots/sandboxes.png)
+
 The page in bb's sidebar changes with what you have:
 
 - **Until the setup is complete:** the "Set up cloud agents" checklist (if
@@ -205,6 +207,8 @@ for 12 hours at most, then the sandbox stops. The plugin never suspends a
 machine while something else works in its sandbox: a headless agent, a
 ship, or a live preview.
 
+![A task chat: the worker's brief and progress, its parent orchestrator, and the boat sandbox it runs on](screenshots/worker-chat.png)
+
 ## How work lands: pull requests, or ship after approval
 
 Each project picks one (Projects → "How work lands", or
@@ -250,6 +254,8 @@ With both agents it runs on the other one: **Agent for reviews** (Codex by
 default), or the other agent when the task already ran on that one. With one
 agent, the same agent reviews. The review reports a verdict and its
 findings; send them back with a follow-up.
+
+![A Codex review of a task Claude built: the verdict and its notes](screenshots/review.png)
 
 ## Protected branches
 

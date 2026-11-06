@@ -10,7 +10,7 @@
     "./screenshots/boat/setup.png",
     "./screenshots/boat/new-task.png",
     "./screenshots/boat/task.png",
-    "./screenshots/boat/orchestrators.png",
+    "./screenshots/boat/orchestrator-chat.png",
     "./screenshots/boat/projects.png"
   ],
   "overview": "./overview/boat.md",

@@ -150,12 +150,12 @@ CLI, agent tools and skills, send-menu and New thread entry points, and a
 ## Screenshots
 
 All of them show the real plugin UI in a separate bb with demo content (the
-`acme` org, made-up tasks and sandboxes); no real repos, accounts, tokens or
-paths.
+`acme` org, made-up tasks and sandboxes, scripted chat replies); no real
+repos, accounts, tokens or paths.
 
-1. `overview.png`: the Cloud agents page: the status line with plan,
-   sandboxes and agent usage, work ready to review (each with the chat
-   that started it), running tasks, previews and sandboxes.
+1. `overview.png`: the Cloud agents page: the status line with sandboxes
+   and agent usage, decisions under Needs you with a recommendation, one
+   orchestrator per project on Claude or Codex, then work ready to review.
 2. `setup.png`: the "Set up cloud agents" checklist on a new account: what's
    done, and for the missing plan the command with Copy, Run in terminal
    and a boat.dev link.
@@ -163,8 +163,8 @@ paths.
    project), what to do, the agent and the "What a task can reach" note.
 4. `task.png`: one task's page: pull request, branch, sandbox, who started
    it, a live preview, and the agent's report with evidence links.
-5. `orchestrators.png`: the same page with orchestrators: decisions under
-   Needs you, one orchestrator per project, then work ready to review.
+5. `orchestrator-chat.png`: an orchestrator chat after it started a task:
+   its worker chats nested under it in the sidebar, on a boat sandbox.
 6. `projects.png`: the plugin's settings: projects with repos, environment,
    secret names and GitHub access checks, then usage limits.
 
