@@ -47,6 +47,12 @@ switch (command) {
     });
     break;
   case "ai":
+    // `boat ai proxy` without on or off only shows the account's proxy.
+    if (rest[0] === "proxy" && (rest[1] === undefined || rest[1].startsWith("-"))) {
+      // The real shape (test/fixtures/boat-json/ai-proxy.json); the proxy is a paid add-on.
+      print({ enabled: state.aiProxy !== false, enabledAt: null, org: false, pricing: { dailyDollars: 1, dollarsPer1000Requests: 1 }, proxyUrl: "https://ai-proxy.example.com", success: true });
+      break;
+    }
     if (rest[0] !== "profiles") fail("unknown", `fake boat ai ${rest[0]}`);
     if (state.profilesFail) fail("boat_timeout", "boat.dev didn't answer");
     print({
@@ -213,6 +219,7 @@ switch (command) {
           passGithub: true,
           passSecrets: true,
           passAgentsCredentials: true,
+          ...(state.boatCredentials === "unreported" ? {} : { passSandboxCredentials: state.boatCredentials === true }),
           proxyAiCredentials: false,
         },
       });
@@ -222,7 +229,10 @@ switch (command) {
     print({
       environments: ["base", "storefront", "storefront-api", "docs"].map((name) => {
         const safe = name === "base" && state.safe === true;
-        const effective = { passAgentsCredentials: !safe, passGithub: !safe, passSecrets: !safe, passSandboxCredentials: !safe };
+        // boat passes its credentials by default; the fake starts with them off unless the state says so.
+        const effective = { passAgentsCredentials: !safe, passGithub: !safe, passSecrets: !safe, passSandboxCredentials: !safe && state.boatCredentials === true };
+        // "unreported": a boat that doesn't say.
+        if (state.boatCredentials === "unreported") delete effective.passSandboxCredentials;
         return { name, isDefault: name === "base", credentialProfileId: null, safeForThirdParties: safe, effective, passGithub: true, passAgentsCredentials: true, envContents: "EXAMPLE_TOKEN=fake_value_123\n" };
       }),
     });

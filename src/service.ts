@@ -20,7 +20,7 @@ import {
   shellQuote,
 } from "./boat-api.ts";
 import { checkPreview, previewLink, previewView, type PreviewView } from "./previews.ts";
-import { BOAT_GIT_ENV, autoStopHours, withinAutoStopCap } from "./boat-api.ts";
+import { BOAT_GIT_ENV, aiProxyPrice, autoStopHours, withinAutoStopCap, type AiProxyState } from "./boat-api.ts";
 import { BoatError } from "./boat.ts";
 import { alwaysProtectedBranches, protectedBranches, type OrchestratorProject, type ProjectRepo } from "./projects.ts";
 import {
@@ -136,7 +136,14 @@ export interface ProjectAccess {
   secretFiles: string[];
   passGithub: boolean | null;
   passSecrets: boolean | null;
+  passAgentsCredentials: boolean | null;
+  /** boat credentials (the boat CLI's login, for the whole account): workers could start, stop and delete any sandbox. */
+  passSandboxCredentials: boolean | null;
   proxyAiCredentials: boolean | null;
+  /** Sandboxes get placeholder AI keys (the account's `boat ai proxy`, or the environment's proxy toggle); null: couldn't tell. */
+  aiProxy: boolean | null;
+  /** What the proxy costs, a paid boat add-on ("about $1 a day plus $1 per 1,000 requests"); null: boat didn't say. */
+  aiProxyPrice: string | null;
   repos: {
     repo: string;
     baseBranch: string;
@@ -2425,16 +2432,32 @@ export class BoatService {
     return entry.info;
   }
 
+  private aiProxyCache: { at: number; value: Promise<AiProxyState | null>; known: boolean } | null = null;
+
+  /** The account's AI credentials proxy and its price (null: couldn't tell): cached like an environment, unknown for one minute. */
+  private aiProxy(signal?: AbortSignal): Promise<AiProxyState | null> {
+    const hit = this.aiProxyCache;
+    if (hit && Date.now() - hit.at < (hit.known ? 5 * 60_000 : 60_000)) return hit.value;
+    const entry = { at: Date.now(), value: this.boat.aiProxy(signal).catch(() => null), known: true };
+    void entry.value.then((value) => {
+      entry.known = value !== null && value.enabled !== null;
+    });
+    this.aiProxyCache = entry;
+    return entry.value;
+  }
+
   /**
    * What a project's workers can reach: per repo, boat's GitHub access (the
-   * last check inside a sandbox, and the environment's listing), and the
-   * environment's secret names.
+   * last check inside a sandbox, and the environment's listing), the
+   * environment's secret names, and what else it passes in (boat
+   * credentials, real AI keys or placeholders).
    */
   async projectAccess(project: Pick<OrchestratorProject, "repos" | "environment">, signal?: AbortSignal): Promise<ProjectAccess> {
     const settings = await this.settings();
     let environment = project.environment || settings.environment || null;
     let info: EnvironmentInfo | null = null;
     let error: string | null = null;
+    const accountProxy = this.aiProxy(signal);
     try {
       // No environment named: boat uses its default one.
       if (environment === null) environment = await this.boat.defaultEnvironment(signal);
@@ -2443,6 +2466,8 @@ export class BoatService {
     } catch (failure) {
       error = errorText(failure);
     }
+    const proxied = info?.safeForThirdParties === true && info.proxyAiCredentials === true;
+    const account = await accountProxy;
     return {
       environment,
       error,
@@ -2450,7 +2475,11 @@ export class BoatService {
       secretFiles: info?.secretFiles ?? [],
       passGithub: info?.passGithub ?? null,
       passSecrets: info?.passSecrets ?? null,
+      passAgentsCredentials: info?.passAgentsCredentials ?? null,
+      passSandboxCredentials: info?.passSandboxCredentials ?? null,
       proxyAiCredentials: info?.proxyAiCredentials ?? null,
+      aiProxy: proxied ? true : (account?.enabled ?? null),
+      aiProxyPrice: account === null ? null : aiProxyPrice(account),
       repos: project.repos.map((entry) => {
         const listed = info?.repos.find((repo) => repo.repo.toLowerCase() === entry.repo.toLowerCase());
         const checked = this.store.repoAccess(entry.repo);

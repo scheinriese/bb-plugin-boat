@@ -71,7 +71,7 @@ export const TAGS = {
 // ------------------------------------------------------------- setup checks
 // Mirrors src/setup.ts (the app can't import server modules).
 
-export const SETUP_CHECK_IDS = ["cli", "signed-in", "plan", "agents", "environment", "github", "connect", "gh"] as const;
+export const SETUP_CHECK_IDS = ["cli", "signed-in", "plan", "agents", "environment", "boat-credentials", "github", "connect", "gh"] as const;
 export const SETUP_CHECK_STATES = ["ok", "missing", "warning", "unknown", "optional"] as const;
 /**
  * Buttons a fix can offer. check-again: run the checks again (setup with
@@ -816,7 +816,7 @@ export const rpcContract = defineRpcContract({
       keptBecause: z.string().nullable(),
     }),
   },
-  /** What a project's workers can reach: GitHub access per repo, and the environment's secret NAMES (never values). */
+  /** What a project's workers can reach: GitHub access per repo, the environment's secret NAMES (never values), and what else it passes in. */
   projectAccess: {
     input: z.object({ projectId: z.string() }),
     output: z.object({
@@ -826,7 +826,14 @@ export const rpcContract = defineRpcContract({
       secretFiles: z.array(z.string()),
       passGithub: z.boolean().nullable(),
       passSecrets: z.boolean().nullable(),
+      passAgentsCredentials: z.boolean().nullable(),
+      /** boat credentials: the boat CLI's login, for the whole account (workers could start, stop and delete any sandbox). */
+      passSandboxCredentials: z.boolean().nullable(),
       proxyAiCredentials: z.boolean().nullable(),
+      /** Sandboxes get placeholder AI keys (`boat ai proxy on`); false: real keys go in; null: couldn't tell. */
+      aiProxy: z.boolean().nullable(),
+      /** The proxy is a paid boat add-on: "about $1 a day plus $1 per 1,000 requests", null when boat didn't say. */
+      aiProxyPrice: z.string().nullable(),
       repos: z.array(
         z.object({
           repo: z.string(),

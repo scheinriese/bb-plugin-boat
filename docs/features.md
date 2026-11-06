@@ -11,9 +11,9 @@ The page in bb's sidebar changes with what you have:
 - **Until the setup is complete:** the "Set up cloud agents" checklist (if
   you already have tasks, it sits above them). Each row says what's missing
   and how to fix it: a command to copy or **Run in terminal**, a button
-  that opens boat.dev, or **Sign in…**. Optional things (bb Connect,
-  GitHub, the GitHub CLI, a first project) sit under "Later, if you need
-  them".
+  that opens boat.dev, or **Sign in…**. Rows that can wait (boat login in
+  sandboxes, bb Connect, GitHub, the GitHub CLI, a first project) sit under
+  "Later, if you need them".
 - **Before your first task:** "Start your first task", with the
   [three ways to use it](../README.md#three-ways-to-use-it) and **Run a test
   task**.
@@ -99,7 +99,8 @@ A good brief has the goal, the context (files, issues, earlier decisions),
 the constraints, how to check the result, and anything special about the
 pull request. The agent can't ask questions mid-task. The plugin adds the
 checkout, the push rules and a report block at the end of the agent's
-answer.
+answer, and tells the agent to treat what it reads as data, not
+instructions.
 
 ## Projects
 
@@ -411,6 +412,18 @@ own.
   reads `boat env info`, so it never puts them in the UI, the logs or a
   chat. Agents can still read them in their sandbox: that's what the
   environment is for.
+- **boat credentials and AI keys.** An environment can pass boat
+  credentials (the boat CLI's login, for your whole account) into
+  sandboxes: workers there could start, stop and delete any of your
+  sandboxes. The plugin doesn't need them there. The setup checklist warns
+  ("boat login in sandboxes") while an environment your workers use passes
+  them; turn them off with `boat env set <name> --boat-credentials false`.
+  A project's access line warns too. It also notes when real AI keys go in:
+  the AI proxy (`boat ai proxy on`, a paid boat add-on: `boat ai proxy`
+  shows the price) passes placeholders instead. When boat doesn't say
+  whether an environment passes boat credentials, both say they couldn't
+  tell. None of this stops a task. More in
+  [SECURITY.md](../SECURITY.md#trust-model).
 - **Repo access.** Before a task starts, the plugin asks GitHub from inside
   the sandbox what boat's login may do with each repo. No access stops the
   task with "Connect GitHub on boat.dev → Environment and give boat access

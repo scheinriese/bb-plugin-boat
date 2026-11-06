@@ -645,3 +645,41 @@ export function cardShownToast(hasOrchestrator: boolean): { title: string; descr
     ? { title: "The orchestrator card is shown again", description: ORCHESTRATOR_CARD_RULE }
     : { title: "The orchestrator card is back on the Cloud agents page", description: null };
 }
+
+// ------------------------------------------------------------------ project access
+
+/**
+ * Notes on a project's access line about what its environment passes in:
+ * boat credentials (the boat CLI's login, for the whole account), a warning,
+ * or "couldn't tell" when boat didn't say (never read as off); and real AI
+ * keys while the AI proxy is off (only when agent logins go in at all),
+ * information only: the proxy is a paid add-on, a trade-off rather than a
+ * misconfiguration. Call it only when the environment was read.
+ */
+export function accessNotes(access: {
+  passSandboxCredentials: boolean | null;
+  passAgentsCredentials: boolean | null;
+  aiProxy: boolean | null;
+}): ("boat-credentials" | "boat-credentials-unknown" | "real-ai-keys")[] {
+  const notes: ("boat-credentials" | "boat-credentials-unknown" | "real-ai-keys")[] = [];
+  if (access.passSandboxCredentials === true) notes.push("boat-credentials");
+  if (access.passSandboxCredentials === null) notes.push("boat-credentials-unknown");
+  if (access.passAgentsCredentials === true && access.aiProxy === false) notes.push("real-ai-keys");
+  return notes;
+}
+
+/**
+ * A setup fix's command as typed into a terminal: every `boat` it runs (the
+ * fix may chain several with &&) uses the boat CLI the plugin found, in case
+ * the shell's PATH doesn't have it.
+ */
+export function withBoatPath(command: string, cliPath: string | null): string {
+  if (cliPath === null) return command;
+  const quoted = "'" + cliPath.replace(/'/g, "'\\''") + "'";
+  return command.replace(/(^|&&\s*|\|\|\s*|;\s*)boat(?=\s|$)/g, (_match, lead: string) => lead + quoted);
+}
+
+/** "paid add-on, about $1 a day plus $1 per 1,000 requests", or just "paid add-on" when boat didn't price it. */
+export function aiProxyCost(price: string | null): string {
+  return price ? `paid add-on, ${price}` : "paid add-on";
+}

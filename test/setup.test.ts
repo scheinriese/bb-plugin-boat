@@ -32,7 +32,7 @@ import {
   type SetupSettings,
 } from "../src/setup.ts";
 import { TaskError } from "../src/service.ts";
-import { BoatApi, TRIAL_AUTO_STOP_HOURS, autoStopCapFromLimits, autoStopCapFromText, withinAutoStopCap } from "../src/boat-api.ts";
+import { BoatApi, TRIAL_AUTO_STOP_HOURS, aiProxyPrice, autoStopCapFromLimits, autoStopCapFromText, parseAiProxy, withinAutoStopCap } from "../src/boat-api.ts";
 
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/boat-json/${name}`, import.meta.url), "utf8")) as JsonRecord;
 
@@ -91,6 +91,7 @@ test("boat's JSON parses as the plugin needs it (real shapes, no variable values
     passAgentsCredentials: true,
     passGithub: true,
     passSecrets: true,
+    passSandboxCredentials: true,
     credentialProfileId: null,
   });
   assert.doesNotMatch(JSON.stringify(environments), /fake_value|EXAMPLE_TOKEN/, "variable values are dropped");
@@ -106,6 +107,57 @@ test("the effective toggles count, not the raw ones (Safe for third parties)", (
   const [base] = parseEnvironments(raw);
   assert.equal(base!.passGithub, false);
   assert.equal(base!.passAgentsCredentials, false);
+  assert.equal(base!.passSandboxCredentials, true, "the raw toggle when effective doesn't say");
+  environments[0] = { ...environments[0], effective: { passSandboxCredentials: false }, passSandboxCredentials: true };
+  assert.equal(parseEnvironments(raw)[0]!.passSandboxCredentials, false);
+  environments[0] = { name: "bare" };
+  assert.equal(parseEnvironments(raw)[0]!.passSandboxCredentials, null, "unknown, not false");
+});
+
+test("boat credentials and the AI proxy, as boat reports them (env info, `boat ai proxy`)", async () => {
+  // A real account's answer: off, and what the paid add-on costs.
+  const real = parseAiProxy(fixture("ai-proxy.json"));
+  assert.deepEqual(real, { enabled: false, dailyDollars: 1, dollarsPer1000Requests: 1 });
+  assert.equal(aiProxyPrice(real), "about $1 a day plus $1 per 1,000 requests");
+  assert.doesNotMatch(JSON.stringify(real), /proxyUrl|example\.com/, "only the state and the price are kept");
+  assert.equal(aiProxyPrice({ dailyDollars: 0.5, dollarsPer1000Requests: null }), "about $0.50 a day");
+  assert.equal(aiProxyPrice({ dailyDollars: null, dollarsPer1000Requests: 2 }), "about $2 per 1,000 requests");
+  // Other shapes: the state without a price; nothing usable is unknown.
+  assert.deepEqual(parseAiProxy({ enabled: true }), { enabled: true, dailyDollars: null, dollarsPer1000Requests: null });
+  assert.equal(aiProxyPrice(parseAiProxy({ enabled: true })), null);
+  assert.equal(parseAiProxy({ proxy: { enabled: true } }).enabled, true);
+  assert.equal(parseAiProxy({ state: "off" }).enabled, false);
+  assert.equal(parseAiProxy({ enabled: false, pricing: { dailyDollars: -1, dollarsPer1000Requests: "1" } }).dailyDollars, null);
+  assert.deepEqual(parseAiProxy({ event: "error", code: "api_key_action_forbidden" }), { enabled: null, dailyDollars: null, dollarsPer1000Requests: null });
+
+  const seen: string[][] = [];
+  const answers: Record<string, JsonRecord> = {
+    "ai proxy": fixture("ai-proxy.json"),
+    "env info web": {
+      environment: {
+        name: "web",
+        envContents: "EXAMPLE_TOKEN=fake_value_123\n",
+        effective: { passAgentsCredentials: true, passGithub: true, passSecrets: true, passSandboxCredentials: false },
+        passSandboxCredentials: true,
+        proxyAiCredentials: false,
+        safeForThirdParties: false,
+      },
+    },
+  };
+  const api = new BoatApi({
+    json: async (args: string[]) => {
+      seen.push(args);
+      return answers[args.join(" ")]!;
+    },
+  } as unknown as BoatCli);
+  assert.equal((await api.aiProxy()).enabled, false);
+  // Only shown: no on or off.
+  assert.deepEqual(seen[0], ["ai", "proxy"]);
+  const info = await api.environmentInfo("web");
+  assert.equal(info.passSandboxCredentials, false, "the effective toggle wins");
+  assert.equal(info.passAgentsCredentials, true);
+  assert.deepEqual(info.secretNames, ["EXAMPLE_TOKEN"]);
+  assert.doesNotMatch(JSON.stringify(info), /fake_value/);
 });
 
 test("agents come from the environment's credential profile", () => {
@@ -137,8 +189,11 @@ test("agents come from the environment's credential profile", () => {
   assert.equal(effectiveAgents("codex", ["claude"]), "codex", "a manual choice wins");
 });
 
+/** The fixture's environments with boat credentials off (boat passes them by default). */
+const withoutBoatLogin = () => parseEnvironments(fixture("env-list.json")).map((env) => ({ ...env, passSandboxCredentials: false }));
+
 test("a working setup reads ready, with plain details", () => {
-  const status = buildStatus(facts(), context());
+  const status = buildStatus(facts({ environments: withoutBoatLogin() }), context());
   assert.equal(status.ok, true);
   assert.equal(status.summary, "Setup: ready.");
   assert.deepEqual(
@@ -149,6 +204,7 @@ test("a working setup reads ready, with plain details", () => {
       ["plan", "ok"],
       ["agents", "ok"],
       ["environment", "ok"],
+      ["boat-credentials", "ok"],
       ["github", "unknown"],
       ["connect", "optional"],
       ["gh", "optional"],
@@ -160,8 +216,94 @@ test("a working setup reads ready, with plain details", () => {
   assert.equal(check(status.checks, "agents").detail, "Claude and Codex connected in boat.dev.");
   assert.match(check(status.checks, "environment").detail, /^"base" \(your default\): agent logins and GitHub reach sandboxes/);
   assert.match(check(status.checks, "github").detail, /Not checked yet/);
+  assert.equal(check(status.checks, "boat-credentials").detail, "Your tasks' environments don't pass boat credentials into sandboxes.");
   assert.deepEqual(status.agents, { setting: "auto", detected: ["claude", "codex"], effective: "both" });
   assert.deepEqual(status.environment, { name: "base", isDefault: true, safeForThirdParties: false });
+});
+
+test("boat credentials in the environments workers use: a warning with the fix, never a failure", () => {
+  // boat passes them by default (the fixture's "base").
+  const status = buildStatus(facts(), context());
+  const boatLogin = check(status.checks, "boat-credentials");
+  assert.equal(boatLogin.state, "warning");
+  assert.equal(boatLogin.required, false);
+  assert.equal(
+    boatLogin.detail,
+    '"base" (your default) passes boat credentials into sandboxes: your boat CLI login, for your whole account. Workers there can start, stop and delete any of your sandboxes. The plugin doesn\'t need them: it runs boat on the machine that runs bb, and task chats and cloud orchestrators reach it through bb Connect.',
+  );
+  assert.equal(boatLogin.fix?.command, "boat env set base --boat-credentials false");
+  assert.match(boatLogin.fix!.text, /`boat api-key create --env <env id> --actions <only what's needed> --ttl <short>`/);
+  assert.match(boatLogin.fix!.text, /stored as a secret variable of that environment/);
+  assert.equal(status.ok, true, "a warning doesn't block");
+  assert.equal(status.summary, "Setup: ready, but check boat login in sandboxes. Run `bb boat doctor`.");
+  assert.equal(preflightProblem(facts(), SETTINGS, { agent: "claude", runner: "boat", newSandbox: true }), null, "work still starts");
+  const text = doctorText(status);
+  assert.match(text, /^Setup: ready, but check boat login in sandboxes\.\n/);
+  assert.match(text, /\n! boat login in sandboxes: "base" \(your default\) passes boat credentials/);
+  assert.match(text, /\n {4}\$ boat env set base --boat-credentials false/);
+
+  // Every environment workers use: the default and each project's, named once; others don't count.
+  const some = parseEnvironments(fixture("env-list.json")).map((env) => ({ ...env, passSandboxCredentials: env.name !== "docs" }));
+  const projects = buildChecks(facts({ environments: some }), context({ projectEnvironments: ["web", "docs", "web", "missing"] }));
+  assert.match(check(projects, "boat-credentials").detail, /^"base" \(your default\) and "web" pass boat credentials/);
+  assert.equal(check(projects, "boat-credentials").fix?.command, "boat env set base --boat-credentials false && boat env set web --boat-credentials false");
+  assert.doesNotMatch(check(projects, "boat-credentials").detail, /"api"/, "an environment no worker uses");
+  assert.match(check(projects, "boat-credentials").detail, / Couldn't find "missing" among your boat environments\.$/, "an environment boat doesn't list isn't dropped");
+  // A named Boat environment replaces boat's default.
+  const named = buildChecks(facts({ environments: some.map((env) => (env.name === "base" ? { ...env, passSandboxCredentials: false } : env)) }), context({ environment: "web" }));
+  assert.match(check(named, "boat-credentials").detail, /^"web" passes boat credentials/);
+  const elsewhere = buildChecks(facts({ environments: some }), context({ environment: "docs" }));
+  assert.equal(check(elsewhere, "boat-credentials").state, "ok", "boat's default isn't used then");
+
+  // Off everywhere workers go: quiet. Unknown when boat can't be read.
+  assert.equal(check(buildChecks(facts({ environments: withoutBoatLogin() }), context({ projectEnvironments: ["web"] })), "boat-credentials").state, "ok");
+  const unread = buildChecks(facts({ environments: null, environmentsError: "timeout" }), context());
+  assert.equal(check(unread, "boat-credentials").state, "unknown");
+  assert.doesNotMatch(summaryLine(unread), /boat login/);
+  const signedOut = buildChecks(facts({ account: parseAccount(fixture("status-signed-out.json")) }), context());
+  assert.equal(check(signedOut, "boat-credentials").state, "unknown");
+  assert.equal(check(signedOut, "boat-credentials").detail, "Needs you to sign in to boat.dev first.");
+  // Alongside another warning, the summary names both.
+  assert.match(buildStatus(withProfile(["claude-subscription"]), context({ agents: "both" })).summary, /^Setup: ready, but check Coding agents, boat login in sandboxes\. Run `bb boat doctor`\.$/);
+});
+
+test("boat credentials boat didn't report, or an environment it doesn't list, are unknown, never off", () => {
+  // boat's JSON without the toggle: the parsed value is null, and the check doesn't claim "off".
+  const bare = parseEnvironments({ environments: [{ name: "base", isDefault: true }] });
+  assert.equal(bare[0]!.passSandboxCredentials, null);
+  const unreported = buildChecks(facts({ environments: bare }), context());
+  assert.deepEqual(
+    { state: check(unreported, "boat-credentials").state, required: check(unreported, "boat-credentials").required, detail: check(unreported, "boat-credentials").detail },
+    { state: "unknown", required: false, detail: 'Couldn\'t tell whether "base" (your default) passes boat credentials into sandboxes.' },
+  );
+  assert.equal(check(unreported, "boat-credentials").fix, undefined);
+  assert.equal(setupOk(unreported), true, "never blocks");
+
+  // Every other environment off, one project's unreported: still unknown.
+  const oneUnreported = withoutBoatLogin().map((env) => (env.name === "web" ? { ...env, passSandboxCredentials: null } : env));
+  const project = check(buildChecks(facts({ environments: oneUnreported }), context({ projectEnvironments: ["web", "docs"] })), "boat-credentials");
+  assert.equal(project.state, "unknown");
+  assert.equal(project.detail, 'Couldn\'t tell whether "web" passes boat credentials into sandboxes.');
+
+  // A project's environment boat doesn't list, the rest off.
+  const ghost = check(buildChecks(facts({ environments: withoutBoatLogin() }), context({ projectEnvironments: ["ghost", "web"] })), "boat-credentials");
+  assert.equal(ghost.state, "unknown");
+  assert.equal(ghost.detail, 'Couldn\'t find "ghost" among your boat environments.');
+  // No default environment in boat, none named.
+  const noDefault = withoutBoatLogin().map((env) => ({ ...env, isDefault: false }));
+  assert.equal(check(buildChecks(facts({ environments: noDefault }), context()), "boat-credentials").detail, "Couldn't find your default environment among your boat environments.");
+
+  // Some pass them: still the warning, with the unclear ones named and only the known ones in the command.
+  const mixed = withoutBoatLogin().map((env) => (env.name === "base" ? { ...env, passSandboxCredentials: true } : env.name === "web" ? { ...env, passSandboxCredentials: null } : env));
+  const warned = check(buildChecks(facts({ environments: mixed }), context({ projectEnvironments: ["web", "ghost", "docs"] })), "boat-credentials");
+  assert.equal(warned.state, "warning");
+  assert.match(warned.detail, /^"base" \(your default\) passes boat credentials into sandboxes: /);
+  assert.match(warned.detail, /through bb Connect\. Couldn't tell whether "web" passes boat credentials into sandboxes\. Couldn't find "ghost" among your boat environments\.$/);
+  assert.equal(warned.fix?.command, "boat env set base --boat-credentials false");
+
+  // "ok" only when boat says off for each of them.
+  const off = check(buildChecks(facts({ environments: withoutBoatLogin() }), context({ projectEnvironments: ["web", "docs"] })), "boat-credentials");
+  assert.equal(off.state, "ok");
 });
 
 test("each missing piece says how to fix it", () => {

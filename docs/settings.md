@@ -27,9 +27,14 @@ In this order:
 
 1. **Setup:** the same checklist as on the Cloud agents page, plus
    **Screenshots and recordings**, and **boat CLI location** when the boat
-   CLI isn't found.
+   CLI isn't found. It warns when an environment your workers use passes
+   boat credentials into sandboxes.
 2. **Projects:** your projects, with their repos, environment, sandbox
-   size, protected branches, instructions and GitHub access.
+   size, protected branches, instructions and GitHub access. A project's
+   access line warns when its environment passes boat credentials, and
+   notes when real AI keys go in: the AI proxy (`boat ai proxy on`, a paid
+   boat add-on: `boat ai proxy` shows the price) passes placeholders
+   instead.
 3. **Usage limits:** what happens near a usage limit. The rows that need
    both agents are greyed out with one.
 4. **Models:** the model presets, and models for tasks without one.

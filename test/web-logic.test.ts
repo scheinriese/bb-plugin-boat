@@ -6,6 +6,9 @@ import type { PlanDto } from "../contract.ts";
 import { sandboxUses } from "../src/rpc.ts";
 import {
   STARTERS,
+  accessNotes,
+  aiProxyCost,
+  withBoatPath,
   canRequestReview,
   chatChoice,
   chatControl,
@@ -420,4 +423,35 @@ test("sandbox sizes on the page: cost, the follow-up, the preselected size, the 
   );
   assert.match(peakSentence({ peak, recommendation: rec("near-limit"), project: { name: "Web app", effective: "large" } }), /Web app already uses Large sandboxes\.$/);
   assert.match(peakSentence({ peak: { shared: true, percent: 79 }, recommendation: rec("near-limit"), project: null }), /Other tasks worked on this sandbox meanwhile, so part of it is theirs\./);
+});
+
+test("a project's access line notes boat credentials and real AI keys, and nothing else", () => {
+  // boat credentials off and the AI proxy on: quiet.
+  assert.deepEqual(accessNotes({ passSandboxCredentials: false, passAgentsCredentials: true, aiProxy: true }), []);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: true, passAgentsCredentials: true, aiProxy: true }), ["boat-credentials"]);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: true, passAgentsCredentials: true, aiProxy: false }), ["boat-credentials", "real-ai-keys"]);
+  // No agent logins go in at all: no AI note.
+  assert.deepEqual(accessNotes({ passSandboxCredentials: false, passAgentsCredentials: false, aiProxy: false }), []);
+  // boat didn't say: "couldn't tell", never read as off.
+  assert.deepEqual(accessNotes({ passSandboxCredentials: null, passAgentsCredentials: null, aiProxy: null }), ["boat-credentials-unknown"]);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: null, passAgentsCredentials: true, aiProxy: false }), ["boat-credentials-unknown", "real-ai-keys"]);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: false, passAgentsCredentials: true, aiProxy: null }), []);
+  // The proxy is a paid add-on: its price when boat gives one.
+  assert.equal(aiProxyCost("about $1 a day plus $1 per 1,000 requests"), "paid add-on, about $1 a day plus $1 per 1,000 requests");
+  assert.equal(aiProxyCost(null), "paid add-on");
+});
+
+test("a setup fix typed into a terminal uses the boat CLI the plugin found, for every boat in it", () => {
+  const command = "boat env set base --boat-credentials false && boat env set web --boat-credentials false";
+  assert.equal(
+    withBoatPath(command, "/opt/my tools/boat"),
+    "'/opt/my tools/boat' env set base --boat-credentials false && '/opt/my tools/boat' env set web --boat-credentials false",
+  );
+  assert.equal(withBoatPath("boat onboard", "/home/u/.ascii/bin/boat"), "'/home/u/.ascii/bin/boat' onboard");
+  assert.equal(withBoatPath("boat env set x --a b;boat env upgrade x", "/b/boat"), "'/b/boat' env set x --a b;'/b/boat' env upgrade x");
+  // A quote in the path stays quoted; "boat" inside an argument is left alone.
+  assert.equal(withBoatPath("boat env set boat-env --boat-credentials false", "/it's/boat"), "'/it'\\''s/boat' env set boat-env --boat-credentials false");
+  // Not found: typed as it is.
+  assert.equal(withBoatPath(command, null), command);
+  assert.equal(withBoatPath("curl -fsSL https://boat.dev/install | sh", "/b/boat"), "curl -fsSL https://boat.dev/install | sh");
 });

@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { PANEL_PATH, SIGN_IN_SUBPATH } from "./format";
-import { setupSummaryText } from "./logic";
+import { setupSummaryText, withBoatPath } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
 import { useCopy, useHosts, useInterval, useOverview, useProjects, useSettingRows, useSetup } from "./hooks";
 import { EmptyBox, InlineAlert, RichText, showError } from "./ui";
@@ -28,7 +28,7 @@ const STATE_ICON: Record<SetupCheckDto["state"], { icon: string; className: stri
 };
 
 /** Rows that only matter later (the page folds them away while setup is open). */
-const LATER_IDS = new Set<SetupCheckDto["id"]>(["github", "connect", "gh"]);
+const LATER_IDS = new Set<SetupCheckDto["id"]>(["boat-credentials", "github", "connect", "gh"]);
 
 // ------------------------------------------------------------------ sign in
 
@@ -92,7 +92,7 @@ function useSignIn() {
           throw new Error("no terminal panel here");
         }
         // Where the plugin found boat, in case this shell's PATH doesn't have it.
-        const typed = cliPath !== null && /^boat\s/.test(command) ? `'${cliPath.replace(/'/g, `'\\''`)}'${command.slice(4)}` : command;
+        const typed = withBoatPath(command, cliPath);
         await sdk.terminals.input({ terminalId: terminal.id, dataBase64: btoa(unescape(encodeURIComponent(`${typed}\r`))) });
         setWaiting({ since: Date.now(), checkId });
       } catch {

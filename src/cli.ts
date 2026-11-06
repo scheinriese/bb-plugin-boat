@@ -155,7 +155,7 @@ export function buildCli(runtime: Runtime) {
       "Tasks are coding agents (Claude Code or Codex) in boat.dev sandboxes: headless in boat by default, or task chats you can open in bb. The chat that started a task is told when a turn finishes. New here? Run `bb boat doctor`, then `bb boat task start --test`. See the boat and boat-orchestrator skills.",
     commands: {
       doctor: cliCommand({
-        summary: "Check the setup: boat CLI, sign-in, plan, agent logins, environment, GitHub, bb Connect",
+        summary: "Check the setup: boat CLI, sign-in, plan, agent logins, environment, boat login in sandboxes, GitHub, bb Connect",
         description:
           "Read-only: never starts a sandbox. Exits 1 when something required is missing; each problem comes with its fix. Run it when a command fails with setup_required.",
         options: { json },
@@ -1690,7 +1690,7 @@ function accessLines(name: string, access: ProjectAccess): string[] {
   };
   const secrets = access.error
     ? `couldn't read: ${access.error}`
-    : `${access.secretNames.length} secret${access.secretNames.length === 1 ? "" : "s"}${access.secretNames.length ? ` (${access.secretNames.join(", ")})` : ""}${access.secretFiles.length ? `, files ${access.secretFiles.join(", ")}` : ""}${access.passSecrets === false ? "; secrets aren't passed in" : ""}${access.passGithub === false ? "; GitHub access isn't passed in" : ""}`;
+    : `${access.secretNames.length} secret${access.secretNames.length === 1 ? "" : "s"}${access.secretNames.length ? ` (${access.secretNames.join(", ")})` : ""}${access.secretFiles.length ? `, files ${access.secretFiles.join(", ")}` : ""}${access.passSecrets === false ? "; secrets aren't passed in" : ""}${access.passGithub === false ? "; GitHub access isn't passed in" : ""}${access.passSandboxCredentials === true ? "; boat credentials are passed in: workers can start, stop and delete any of your sandboxes" : access.passSandboxCredentials === null ? "; couldn't tell whether boat credentials are passed in" : ""}${access.passAgentsCredentials === true && access.aiProxy === false ? `; real AI keys are passed in (\`boat ai proxy on\` passes placeholders: a paid add-on${access.aiProxyPrice ? `, ${access.aiProxyPrice}` : ""})` : ""}`;
   return [
     `- ${name}: environment ${access.environment ?? "default"}: ${secrets}`,
     ...access.repos.map((repo) => `    ${repo.repo}: ${repoState(repo)}`),

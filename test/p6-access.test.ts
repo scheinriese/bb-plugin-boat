@@ -100,6 +100,33 @@ test("dispatch stops with what to fix when boat can't see the repo, can't push, 
   assert.doesNotMatch(JSON.stringify(rpc), /fake_value/);
 });
 
+test("a project's access names boat credentials and real AI keys; quiet with them off and the proxy on", async (t) => {
+  type Access = { passSandboxCredentials: boolean | null; passAgentsCredentials: boolean | null; aiProxy: boolean | null; aiProxyPrice: string | null };
+  // boat credentials off, the AI proxy on: nothing to warn about.
+  const quiet = await setup(t);
+  await quiet.harness.runCli(["project", "add", "--name", "Storefront", "--repo", "acme/storefront@master", "--environment", "storefront"]);
+  const calm = (await quiet.harness.callRpc("projectAccess", { projectId: "storefront" })) as Access;
+  assert.deepEqual({ ...calm }, { ...calm, passSandboxCredentials: false, passAgentsCredentials: true, aiProxy: true });
+  const calmStatus = await quiet.harness.runCli(["status"]);
+  assert.match(calmStatus.stdout, /- Storefront: environment storefront: 2 secrets/);
+  assert.doesNotMatch(calmStatus.stdout, /boat credentials are passed in|real AI keys/);
+
+  // Both passed in.
+  const loud = await setup(t);
+  loud.edit((current) => {
+    current.boatCredentials = true;
+    current.aiProxy = false;
+  });
+  await loud.harness.runCli(["project", "add", "--name", "Storefront", "--repo", "acme/storefront@master", "--environment", "storefront"]);
+  const access = (await loud.harness.callRpc("projectAccess", { projectId: "storefront" })) as Access;
+  assert.equal(access.passSandboxCredentials, true);
+  assert.equal(access.aiProxy, false);
+  assert.equal(access.aiProxyPrice, "about $1 a day plus $1 per 1,000 requests");
+  const status = await loud.harness.runCli(["status"]);
+  assert.match(status.stdout, /; boat credentials are passed in: workers can start, stop and delete any of your sandboxes; real AI keys are passed in \(`boat ai proxy on` passes placeholders: a paid add-on, about \$1 a day plus \$1 per 1,000 requests\)\n/);
+  assert.doesNotMatch(status.stdout, /fake_value/);
+});
+
 test("a follow-up on a sandbox whose GitHub login expired is stopped with what to do", async (t) => {
   const { harness, edit, state } = await setup(t);
   edit((current) => {
