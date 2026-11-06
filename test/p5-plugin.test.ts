@@ -212,7 +212,7 @@ test("a ship conflict names the files everywhere, and the work it changed needs 
       "",
     ].join("\n");
   });
-  const why = "its commits conflict with the latest master in package.json (changed by 1a2b3c4 'Add the videos:test suite'). The task's agent must rebase and resolve them.";
+  const why = "its commits conflict with the latest master in `package.json` (changed by 1a2b3c4 `Add the videos:test suite`). The task's agent must rebase and resolve them.";
   const cli = await harness.runCli(["task", "ship", task.id], { threadId: "thr_orch" });
   assert.notEqual(cli.exitCode, 0);
   assert.ok(`${cli.stdout}${cli.stderr}`.includes(why), `${cli.stdout}${cli.stderr}`);
@@ -234,7 +234,7 @@ test("a ship conflict names the files everywhere, and the work it changed needs 
   await harness.runCli(["task", "show", task.id, "--refresh"]);
   const notice = sent.slice(notices).find((entry) => entry.includes(`[boat] Task ${task.id} finished a turn.`));
   assert.ok(notice, "the turn was reported");
-  assert.match(notice, /What changed since you approved: Ship stopped on a conflict in package\.json/);
+  assert.match(notice, /What changed since you approved: Ship stopped on a conflict in `package\.json`/);
   assert.match(notice, /1:  1111111 ! 1:  3333333 Add the dev script/);
   outline = [...outline, report(2)];
 
@@ -243,7 +243,7 @@ test("a ship conflict names the files everywhere, and the work it changed needs 
   assert.notEqual(refused.exitCode, 0);
   assert.match(
     `${refused.stdout}${refused.stderr}`,
-    /Not shipped: the work changed after the user approved it \(a follow-up resolved a conflict in package\.json\); show the user what changed and ask them to approve again\./,
+    /Not shipped: the work changed after the user approved it \(a follow-up resolved a conflict in `package\.json`\); show the user what changed and ask them to approve again\./,
   );
   const shown = await harness.runCli(["task", "show", task.id]);
   assert.match(shown.stdout, /What changed since you approved/);

@@ -2,6 +2,7 @@
 // observed from boat CLI 1.0.89; every accessor tolerates missing fields.
 import { randomUUID } from "node:crypto";
 import { BoatCli, BoatError, bool, num, rec, str, type JsonRecord } from "./boat.ts";
+import { codeSpan } from "./literal.ts";
 import type { Provider } from "./store.ts";
 
 export const MACHINE_TYPES = ["small", "default", "large", "xlarge"] as const;
@@ -639,9 +640,14 @@ function joinAnd(items: readonly string[]): string {
   return items.length <= 1 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }
 
-/** Up to `shown` file names, then "and 4 more files". */
+/** Repository names and subjects in messages: each one clipped to this many characters. */
+export const NAME_MAX = 120;
+/** A conflict's files-and-commits part longer than this names one file and one commit instead. */
+export const CONFLICT_DETAIL_MAX = 600;
+
+/** Up to `shown` file names, as inline code (repository text stays literal), then "and 4 more files". */
 export function fileList(files: readonly string[], more = 0, shown = 3): string {
-  const named = files.slice(0, shown);
+  const named = files.slice(0, shown).map((file) => codeSpan(file, NAME_MAX));
   const rest = files.length - named.length + more;
   if (named.length === 0) return "";
   return rest > 0 ? `${named.join(", ")} and ${rest} more file${rest === 1 ? "" : "s"}` : joinAnd(named);
@@ -650,17 +656,25 @@ export function fileList(files: readonly string[], more = 0, shown = 3): string 
 /**
  * Why a ship stopped on a conflict: the files, and the base commits that
  * changed them (with the task of this plugin that shipped one, when known).
- * "its commits conflict with the latest main in package.json (changed by
- * 1a2b3c4 'Add the test suite'). The task's agent must rebase and resolve them"
+ * "its commits conflict with the latest main in `package.json` (changed by
+ * 1a2b3c4 `Add the test suite`). The task's agent must rebase and resolve them"
+ * File names and subjects are inline code, clipped to NAME_MAX characters;
+ * past CONFLICT_DETAIL_MAX it names one file and one commit.
  */
 export function conflictReason(baseBranch: string, conflict: ShipConflict, shippedBy: (sha: string) => string | null = () => null): string {
-  const files = fileList(conflict.files, conflict.moreFiles);
-  const commits = conflict.commits.map((commit) => {
-    const subject = commit.subject.length > 72 ? `${commit.subject.slice(0, 71)}…` : commit.subject;
-    const task = shippedBy(commit.sha);
-    return `${commit.sha.slice(0, 7)}${subject ? ` '${subject}'` : ""}${task ? ` from task ${task}` : ""}`;
-  });
-  const where = files === "" ? "" : ` in ${files}${commits.length > 0 ? ` (changed by ${joinAnd(commits)})` : ""}`;
+  const detail = (files: number, commits: number): string => {
+    const names = fileList(conflict.files, conflict.moreFiles, files);
+    if (names === "") return "";
+    const listed = conflict.commits.slice(0, commits).map((commit) => {
+      const task = shippedBy(commit.sha);
+      return `${commit.sha.slice(0, 7)}${commit.subject ? ` ${codeSpan(commit.subject, NAME_MAX)}` : ""}${task ? ` from task ${task}` : ""}`;
+    });
+    const rest = conflict.commits.length - listed.length;
+    const by = rest > 0 ? [...listed, `${rest} more commit${rest === 1 ? "" : "s"}`] : listed;
+    return ` in ${names}${listed.length > 0 ? ` (changed by ${joinAnd(by)})` : ""}`;
+  };
+  const full = detail(3, 3);
+  const where = full.length <= CONFLICT_DETAIL_MAX ? full : detail(1, 1);
   return `its commits conflict with the latest ${baseBranch}${where}. The task's agent must rebase and resolve them`;
 }
 
