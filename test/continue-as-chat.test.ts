@@ -603,6 +603,50 @@ test("the page's status: offered, why not, the warning, bb already there, the sa
   assert.equal((await off.service.continueAsChatStatus((await headless(off)).id)).blocked?.code, "connect_required");
 });
 
+test("the page's status: what can't change hides the button, fixes in the page's words, a failure note until the next turn", async () => {
+  const made = env();
+  // A sandbox the user made and lent: no button (the CLI still says why).
+  const own = await made.boat.create({ name: "mine", type: "default" });
+  const lent = await headless(made, { sandbox: own.id });
+  let status = await made.service.continueAsChatStatus(lent.id);
+  assert.deepEqual([status.offered, status.blocked?.code], [false, "sandbox_lent"]);
+  assert.doesNotMatch(status.blocked?.hint ?? "", /--/);
+  // Another chat's bb on the sandbox (an orchestrator's): no button.
+  const orchestrated = await headless(made);
+  made.chat.machines.push({ taskId: "", sandboxId: orchestrated.sandboxId!, hostId: "host_orch", key: "orchestrator-1" });
+  status = await made.service.continueAsChatStatus(orchestrated.id);
+  assert.deepEqual([status.offered, status.blocked?.code], [false, "sandbox_runs_bb"]);
+  // A review in its task's sandbox: no button while that task is open; the CLI says how.
+  const task = await headless(made);
+  const { task: review } = await made.service.launchTask({ ...(await made.service.reviewInput(task.id, { sandbox: "same" })), runner: "boat" }, 5_000);
+  made.boat.finish(review.conversationId!, "Fine.\n=== REVIEW ===\nVERDICT: approve\n=== END REVIEW ===");
+  await made.service.sweep();
+  status = await made.service.continueAsChatStatus(review.id);
+  assert.deepEqual([status.offered, status.blocked?.code], [false, "review_shares_sandbox"]);
+  await refused(move(made, review.id, { via: "cli" }), "review_shares_sandbox", new RegExp(`Close task ${task.id} first, keeping its sandbox`));
+  // Another task in the sandbox can close: the button stays, greyed out, with the fix.
+  const second = await headless(made, { sandbox: task.sandboxId, title: "Second" });
+  status = await made.service.continueAsChatStatus(second.id);
+  assert.deepEqual([status.offered, status.blocked?.code], [true, "sandbox_shared"]);
+  // A gone sandbox: the page's fix, not the CLI's flags.
+  const gone = await headless(made);
+  made.boat.sandboxes.delete(gone.sandboxId!);
+  status = await made.service.continueAsChatStatus(gone.id);
+  assert.deepEqual([status.offered, status.blocked?.code, status.blocked?.hint], [true, "sandbox_gone", "Start a new task instead."]);
+
+  // A failed try's note stays until the next turn (or the next try).
+  const failed = await headless(made);
+  made.chat.writeError = new Error("disk full");
+  await move(made, failed.id).catch(() => undefined);
+  made.chat.writeError = null;
+  assert.match((await made.service.continueAsChatStatus(failed.id)).lastFailure ?? "", /disk full/);
+  await made.service.followup(failed.id, "Keep going headless.");
+  made.boat.finish(failed.conversationId!, REPORT);
+  await made.service.sweep();
+  assert.equal(made.store.get(failed.id)!.status, "idle");
+  assert.equal((await made.service.continueAsChatStatus(failed.id)).lastFailure, null);
+});
+
 test("the page doesn't wait for the install: pending while the move runs", async () => {
   const made = env();
   const task = await headless(made);

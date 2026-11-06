@@ -491,6 +491,14 @@ class MoveCancelled extends Error {
 
 /** Turn states after which a headless turn is over. */
 const TERMINAL_PROMPT = new Set(["finished", "failed", "interrupted", "cancelled"]);
+/** Move blockers that won't change on their own: the task's page shows no Continue as a chat for them. */
+const MOVE_NEVER = new Set(["sandbox_lent", "sandbox_runs_bb", "review_shares_sandbox"]);
+/** The task page's fixes where the CLI's name flags the page doesn't have. */
+const PAGE_MOVE_HINTS: Record<string, string> = {
+  sandbox_gone: "Start a new task instead.",
+  sandbox_lent: "Start a new task with Run as a chat instead.",
+  sandbox_runs_bb: "Start a new task with Run as a chat instead.",
+};
 /** A headless turn the sweep settled as cut off (its sandbox stopped mid-turn): boat's log never finishes it. */
 const CUT_OFF_ERROR = "The turn stopped without finishing";
 /** Events that start a turn (a failover continues the turn it hands over). */
@@ -2641,11 +2649,11 @@ export class BoatService {
     return this.store.sandboxHadBb(sandboxId);
   }
 
-  /** The newest outcome of a move: the failure text when the last try failed, else null. */
+  /** The last try's failure text while nothing happened since (no new try, no new turn), else null. */
   private lastMoveFailure(taskId: string): string | null {
     const last = this.store
       .events(taskId, 200)
-      .filter((event) => event.kind === "chat-move" || event.kind === "chat-move-failed" || event.kind === "moved-to-chat")
+      .filter((event) => event.kind === "chat-move" || event.kind === "chat-move-failed" || event.kind === "failover" || HANDOVER_TURN_STARTS.has(event.kind))
       .at(-1);
     return last?.kind === "chat-move-failed" ? last.text : null;
   }
@@ -2683,7 +2691,11 @@ export class BoatService {
     const other = this.store.liveSandboxTasks(sandboxId).find((entry) => entry.id !== task.id);
     if (other !== undefined) {
       return task.role === "review" && other.id === task.parentTaskId
-        ? new TaskError("A review that shares its task's sandbox can't move to a chat.", "sandbox_shared", "Request a new review instead.")
+        ? new TaskError(
+            "A review that shares its task's sandbox can't move to a chat while that task is open.",
+            "review_shares_sandbox",
+            `Close task ${other.id} first, keeping its sandbox, then try again.`,
+          )
         : new TaskError(`Task ${other.id} also works in this sandbox.`, "sandbox_shared", "Close it first, then try again.");
     }
     return null;
@@ -2742,11 +2754,12 @@ export class BoatService {
       moving: this.moves.has(task.id),
       lastFailure: this.moves.has(task.id) ? null : this.lastMoveFailure(task.id),
     };
-    const plain = (error: TaskError) => ({ code: error.code, message: error.message, hint: error.hint ?? null });
+    // The page's words: no CLI flags in its fixes.
+    const plain = (error: TaskError) => ({ code: error.code, message: error.message, hint: PAGE_MOVE_HINTS[error.code] ?? error.hint ?? null });
     const hidden = this.moveHidden(task);
     if (hidden !== null) return { ...base, offered: false, blocked: plain(hidden) };
     let blocked = this.moveBlockerNow(task) ?? (await this.connectBlocker());
-    if (blocked !== null) return { ...base, offered: true, blocked: plain(blocked) };
+    if (blocked !== null) return { ...base, offered: !MOVE_NEVER.has(blocked.code), blocked: plain(blocked) };
     const sandbox = await this.boat.findInfo(task.sandboxId!, signal).catch(() => undefined);
     blocked = this.sandboxBlocker(task, sandbox);
     let hasMachine = false;
@@ -2759,7 +2772,8 @@ export class BoatService {
     }
     return {
       ...base,
-      offered: true,
+      // What won't change on its own (a sandbox the plugin didn't make, another chat's bb, a review in its task's sandbox): no button.
+      offered: blocked === null || !MOVE_NEVER.has(blocked.code),
       blocked: blocked === null ? null : plain(blocked),
       hasMachine,
       sandboxStopped: sandbox !== null && sandbox !== undefined && !ACTIVE_STATES.has(sandbox.state),
