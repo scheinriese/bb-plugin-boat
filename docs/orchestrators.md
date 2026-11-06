@@ -116,7 +116,7 @@ may block `bb`. `bb boat …` is only for what no tool does.
 | `boat_status` | Room for more sandboxes |
 | `boat_dispatch` | A new task in a fresh sandbox, with a model preset and a one-line reason |
 | `boat_review` | An independent review, by the other agent when you have both |
-| `boat_followup` | The next turn for the same task; can change the preset or the agent |
+| `boat_followup` | The next turn for the same task; can change the preset or the agent, or first move its sandbox to a larger size: one size up after it ran out of memory, anything else only with your OK ([sizes](features.md#sandbox-sizes-and-memory)) |
 | `boat_tasks` / `boat_task` / `boat_transcript` | State, reports, what an agent is doing |
 | `boat_interrupt` / `boat_close` | Stop a turn; accept or cancel a task |
 | `boat_needs_you` / `boat_resolve` | Put a decision on your Cloud agents page; close it once you answered |

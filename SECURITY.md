@@ -17,11 +17,13 @@ bb plugins are full-trust code: this one runs inside bb's server with the
 rights of the user who runs bb. In particular, it uses:
 
 - **Your boat CLI login** on the bb machine. It creates, stops, resumes and
-  deletes boat.dev sandboxes (which cost money on your boat plan), runs
-  commands in them, and hosts preview links from them. The setup checks only
-  read (`boat status`, `boat limits`, `boat env list`, `boat ai profiles`)
-  and are cached for about a minute. The plugin checks your setup before it
-  creates a sandbox, so a broken setup doesn't use up starts.
+  deletes boat.dev sandboxes (which cost money on your boat plan), moves
+  them to another size when you ask (or an agent, within limits; a larger
+  size costs more per hour), runs commands in them, and hosts preview
+  links from them. The setup checks only read (`boat status`,
+  `boat limits`, `boat env list`, `boat ai profiles`) and are cached for
+  about a minute. The plugin checks your setup before it creates a sandbox,
+  so a broken setup doesn't use up starts.
 - **Your `gh` login** on the bb machine, read-only: `gh auth status` for the
   setup check, a project's rules file and, if you configure one, your own
   evidence uploader script.
@@ -38,14 +40,18 @@ rights of the user who runs bb. In particular, it uses:
   a cloud agent) and sends it. **Start as a cloud task** turns the draft
   into a task's brief.
 - **Cloud sandboxes.** The plugin runs the agents, git, your project's setup
-  and, if you turn it on, the evidence uploader there. Tasks get the GitHub
-  access, AI logins, variables and secret files of the boat environment you
-  pick, and their agents can read them. Tasks push branches and open pull
-  requests, and **Ship** pushes approved commits to the base branch, only on
-  your click or your message in the orchestrator's chat. A git hook stops
-  pushes to protected branches (pushes to a folder inside the sandbox, like
-  a test's temporary remote, pass), but it is a guard for well-behaved
-  agents, not a security boundary. Protect your base branches on GitHub.
+  and, if you turn it on, the evidence uploader there. It also checks the
+  sandbox's size and memory: it reads `/proc` and the kernel log's
+  out-of-memory lines (through `sudo -n` when the log needs it), and during
+  a repo check a small script records the peak memory in `/tmp`. Tasks get
+  the GitHub access, AI logins, variables and secret files of the boat
+  environment you pick, and their agents can read them. Tasks push branches
+  and open pull requests, and **Ship** pushes approved commits to the base
+  branch, only on your click or your message in the orchestrator's chat. A
+  git hook stops pushes to protected branches (pushes to a folder inside
+  the sandbox, like a test's temporary remote, pass), but it is a guard for
+  well-behaved agents, not a security boundary. Protect your base branches
+  on GitHub.
 - **bb machine credentials** in the sandboxes of task chats, chats on a
   Boat sandbox and cloud orchestrators. Those sandboxes run bb's daemon,
   connected to your bb through bb Connect. Task chats are opt-in (How tasks
