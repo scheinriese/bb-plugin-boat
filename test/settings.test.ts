@@ -20,6 +20,7 @@ import {
   settingProblem,
   workersFromLegacy,
 } from "../src/settings.ts";
+import { ORCHESTRATOR_EFFORT_VALUES } from "../contract.ts";
 import { EFFORTS } from "../src/tiers.ts";
 import { PLUGIN_SETTINGS_KEY, SettingsError, createSettingsStore, pluginValues } from "../src/settings-store.ts";
 import { autoStopHours } from "../src/boat-api.ts";
@@ -119,6 +120,8 @@ test("Effort for orchestrators: High by default, the four levels Claude Code and
   assert.equal(spec.default, "high");
   assert.deepEqual(spec.options, ["low", "medium", "high", "xhigh"]);
   assert.deepEqual([...ORCHESTRATOR_EFFORTS], spec.options);
+  // The app's copy of the levels (it can't import server modules).
+  assert.deepEqual([...ORCHESTRATOR_EFFORT_VALUES], spec.options);
   assert.deepEqual(spec.experimental_optionLabels, { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" });
   // Each is one of the plugin's effort levels (low, medium, high, xhigh: Claude Code and Codex both take them in bb).
   for (const level of spec.options) assert.ok((EFFORTS as readonly string[]).includes(level), level);

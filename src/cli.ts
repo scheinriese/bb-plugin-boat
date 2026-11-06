@@ -24,7 +24,8 @@ import { EFFORTS, TIERS, type Tier } from "./tiers.ts";
 import { quotaLine } from "./quota.ts";
 import { AGENT_NAME, effectiveRelay, onlyAgent, otherAgent, relayNote } from "./relay.ts";
 import { doctorText, explainBoatError, testTaskInput, type SetupStatus } from "./setup.ts";
-import { ALL_SETTINGS, parseSettingText, type SettingKey } from "./settings.ts";
+import { ALL_SETTINGS, ORCHESTRATOR_EFFORTS, parseSettingText, type SettingKey } from "./settings.ts";
+import { choiceSummary } from "./orchestrator-agent.ts";
 import { SettingsError, settingRows, settingsText, type SettingRow } from "./settings-store.ts";
 
 const json = { type: "boolean", description: "Print machine-readable JSON" } as const;
@@ -968,8 +969,17 @@ export function buildCli(runtime: Runtime) {
           cloud: { type: "boolean", description: "Run in a new boat sandbox (needs bb Connect; the default when it's set up)" },
           "take-over": { type: "string", description: "Previous orchestrator thread id: its last message and open tasks move here" },
           "take-over-file": { type: "string", description: "Handoff notes (e.g. a ledger) to put into the kickoff" },
-          provider: { type: "string", description: "bb agent provider for the orchestrator (e.g. claude-code, codex)" },
-          model,
+          provider: {
+            type: "string",
+            description: "Agent: claude-code (or claude) or codex; default: Agent for orchestrators while it's connected. Another bb agent provider id works too",
+          },
+          model: { type: "string", description: "Model id (default: the Build preset's model for the agent)" },
+          effort: {
+            type: "enum",
+            values: ORCHESTRATOR_EFFORTS,
+            aliases: ["reasoning-effort"],
+            description: "Effort: low, medium, high, xhigh (default: Effort for orchestrators, high)",
+          },
           json,
         },
         constraints: [
@@ -982,13 +992,14 @@ export function buildCli(runtime: Runtime) {
             const notes = options["take-over-file"]
               ? await textArg(runtime, ctx, undefined, options["take-over-file"], "take-over")
               : undefined;
-            const { threadId, movedTaskIds, cloud, note } = await runtime.startOrchestrator({
+            const { threadId, movedTaskIds, cloud, note, agent } = await runtime.startOrchestrator({
               project: parseProjectRef(options.project),
               hostId: options.machine ?? null,
               // Unset: in the cloud when bb Connect is set up (it keeps running while this computer sleeps).
               cloud: options.cloud ? true : options.local || options.machine ? false : undefined,
               providerId: options.provider ?? null,
               model: options.model ?? null,
+              effort: options.effort ?? null,
               title: options.title ?? null,
               prompt,
               takeOver:
@@ -996,10 +1007,11 @@ export function buildCli(runtime: Runtime) {
                   ? { threadId: options["take-over"] ?? null, text: notes ?? null, fileName: options["take-over-file"] ?? null }
                   : null,
             });
-            return out({ threadId, movedTaskIds, cloud, note }, options.json, () =>
+            return out({ threadId, movedTaskIds, cloud, note, agent }, options.json, () =>
               [
                 `Started orchestrator @thread:${threadId}${cloud ? " in a new boat sandbox" : ""}`,
                 note,
+                `Agent: ${choiceSummary(agent)}`,
                 movedTaskIds.length > 0 ? `Moved ${movedTaskIds.length} open task(s) to it: ${movedTaskIds.join(", ")}` : null,
               ]
                 .filter(Boolean)

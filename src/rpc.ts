@@ -6,6 +6,7 @@ import { MACHINE_TYPES, assertBranch, autoStopHours, dashboardUrl, normalizeRepo
 import { BoatError, resolveBoatBinary } from "./boat.ts";
 import { describeClose } from "./close-outcome.ts";
 import { uiStateHandlers } from "./ui-state.ts";
+import { orchestratorChoiceHandlers } from "./orchestrator-agent.ts";
 import { parseReport } from "./briefs.ts";
 import { resultExcerpt } from "./format.ts";
 import { bbProjectRepo, listLocalProjects, pushLocalBranch } from "./local-projects.ts";
@@ -793,6 +794,8 @@ export function registerRpc(runtime: Runtime): void {
             input.takeOverThreadId || input.takeOverText
               ? { threadId: input.takeOverThreadId ?? null, text: input.takeOverText ?? null, fileName: input.takeOverFileName ?? null }
               : null,
+          providerId: input.provider ?? null,
+          effort: input.effort ?? null,
         });
         return { threadId, movedTaskIds };
       }),
@@ -1093,6 +1096,8 @@ export function registerRpc(runtime: Runtime): void {
 
     // Account-level UI state (src/ui-state.ts).
     ...uiStateHandlers(bb),
+    // What a new orchestrator starts with (src/orchestrator-agent.ts).
+    ...orchestratorChoiceHandlers({ settings: () => service.settings(), store: runtime.settings }),
   });
 }
 

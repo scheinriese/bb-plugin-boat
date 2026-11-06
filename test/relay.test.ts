@@ -21,6 +21,7 @@ import {
   type RelaySettings,
 } from "../src/relay.ts";
 import { TaskError } from "../src/service.ts";
+import { DEFAULT_TIERS } from "../src/tiers.ts";
 import type { Provider } from "../src/store.ts";
 import { makeService, createTestHost } from "./fakes.ts";
 
@@ -532,6 +533,23 @@ test("a successor on this computer keeps the default mode", async (t) => {
   const spawn = harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as Record<string, unknown>;
   assert.equal(spawn.providerId, "codex");
   assert.equal(spawn.permissionMode, undefined);
+});
+
+test("a successor starts with the other agent's Build model at Effort for orchestrators, like a new orchestrator there", async (t) => {
+  const { harness, threads } = await relayHost(t, { claude: 93, codex: 12 }, { orchestratorEffort: "medium" });
+  await harness.callRpc("saveModelTiers", {
+    tiers: { ...DEFAULT_TIERS, build: { claude: { model: "claude-opus-5-6", effort: "max" }, codex: { model: "gpt-6.2", effort: "max" } } },
+  });
+  await harness.callRpc("startOrchestrator", { project: { kind: "boat", id: "storefront" }, prompt: "Ship it", title: null, hostId: null, cloud: false });
+  const first = harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as Record<string, unknown>;
+  assert.deepEqual([first.providerId, first.model, first.reasoningLevel], ["claude-code", "claude-opus-5-6", "medium"]);
+  await harness.runCli(["relay", "check", "--json"]);
+  threads.get("thr_old")!.updatedAt = Date.now() + 1_000;
+  const second = JSON.parse((await harness.runCli(["relay", "check", "--json"])).stdout) as { actions: { kind: string }[] };
+  assert.deepEqual(second.actions.map((action) => action.kind), ["took-over"]);
+  const successor = harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as Record<string, unknown>;
+  // Not the preset's max: the setting.
+  assert.deepEqual([successor.providerId, successor.model, successor.reasoningLevel], ["codex", "gpt-6.2", "medium"]);
 });
 
 test("Auto-detect: while boat.dev can't be read, the relay never moves an orchestrator to an agent it last reported missing", async (t) => {

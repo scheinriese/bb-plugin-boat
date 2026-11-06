@@ -12,6 +12,7 @@ import {
   type TakeOver,
 } from "./orchestrator.ts";
 import type { RepoFileReader } from "./github.ts";
+import { CHAT_PROVIDER_ID, orchestratorAgentChoice, type OrchestratorAgentChoice } from "./orchestrator-agent.ts";
 import { toOrchestratorProject, type OrchestratorProject, type ProjectStore } from "./projects.ts";
 import { ensureProjectSection, threadSection } from "./sections.ts";
 import type { QuotaReader, Quotas } from "./quota.ts";
@@ -35,7 +36,7 @@ import {
 } from "./relay.ts";
 import type { Provider, Task } from "./store.ts";
 import { composeProtocol, loadProjectRules, renderSharedProtocol, type ProtocolStore } from "./protocol.ts";
-import { DEFAULT_TIERS, bbModelId, parseTierMap, type TierMap } from "./tiers.ts";
+import { DEFAULT_TIERS, parseTierMap, type TierMap } from "./tiers.ts";
 import { TaskError, type BoatService } from "./service.ts";
 import { OPEN_STATUSES } from "./store.ts";
 
@@ -57,8 +58,10 @@ export interface StartOrchestratorInput {
   cloud?: boolean;
   /** bb project the chat lives in (default: personal). */
   bbProjectId?: string | null;
+  /** Agent, model and effort; unset: Agent and Effort for orchestrators, and the Build preset's model (src/orchestrator-agent.ts). */
   providerId?: string | null;
   model?: string | null;
+  effort?: string | null;
   takeOver?: TakeOver | null;
 }
 
@@ -82,7 +85,9 @@ export interface Runtime {
   /** The project a thread works on (orchestrator metadata), refreshed from settings. */
   projectForThread(threadId: string | undefined | null): Promise<OrchestratorProject | null>;
   /** `note`: why it runs on this computer when it could have run in the cloud (bb Connect). */
-  startOrchestrator(input: StartOrchestratorInput): Promise<{ threadId: string; movedTaskIds: string[]; cloud: boolean; note: string | null }>;
+  startOrchestrator(
+    input: StartOrchestratorInput,
+  ): Promise<{ threadId: string; movedTaskIds: string[]; cloud: boolean; note: string | null; agent: OrchestratorAgentChoice }>;
   /** One pass of the relay over every orchestrator; returns what it did. */
   relayTick(): Promise<RelayAction[]>;
   /** Hand an orchestrator to another agent now (asks for a note first unless immediate). */
@@ -123,7 +128,6 @@ export type RelayAction =
   | { threadId: string; kind: "both-out"; reason: string }
   | { threadId: string; kind: "skipped"; reason: string };
 
-const CHAT_PROVIDER_ID: Record<Provider, string> = { claude: "claude-code", codex: "codex" };
 const PROVIDER_FROM_ID: Record<string, Provider> = { "claude-code": "claude", codex: "codex" };
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -421,6 +425,8 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         }
       }
       const settings = await service.settings();
+      // The other agent's Build model at Effort for orchestrators, like a new orchestrator there.
+      const agent = orchestratorAgentChoice(settings, (await deps.settings.get()).orchestratorEffort, { providerId: CHAT_PROVIDER_ID[to] });
       const baseTitle = (old.title ?? old.titleFallback ?? project.name).replace(/ · (Claude|Codex)$/, "");
       const preferred = settings.relay.preferred;
       // What the old chat leaves behind: its note, and messages still waiting for it.
@@ -440,9 +446,9 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         bbProjectId: old.projectId ?? PERSONAL_PROJECT_ID,
         hostId: null,
         cloud: false,
-        providerId: CHAT_PROVIDER_ID[to],
-        model: bbModelId(to, settings.modelTiers.build[to].model),
-        reasoningLevel: "high",
+        providerId: agent.providerId,
+        model: agent.model,
+        reasoningLevel: agent.effort,
         // The preferred agent's orchestrator keeps the plain title.
         title: to === preferred ? baseTitle : `${baseTitle} · ${AGENT_NAME[to]}`,
         prompt,
@@ -788,14 +794,22 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
           : connect?.state === "off"
             ? `Started on this computer: cloud orchestrators need bb Connect.${connect.fix ? ` ${connect.fix}` : ""}`
             : "Started on this computer: couldn't check bb Connect, which cloud orchestrators need. Use --cloud to start one in a boat sandbox anyway.";
-      const { sidebarLayout, cloudOrchestratorFullAccess } = await service.settings();
+      const settings = await service.settings();
+      const { sidebarLayout, cloudOrchestratorFullAccess } = settings;
+      // Named here (dialog, CLI) or from the settings: always explicit, so it's what the dialog showed.
+      const agent = orchestratorAgentChoice(settings, (await deps.settings.get()).orchestratorEffort, {
+        providerId: input.providerId,
+        model: input.model,
+        effort: input.effort,
+      });
       const sectionId = sidebarLayout === "sections" ? await ensureProjectSection(bb, project.name.replace(/ \([^)]*\)$/, "")) : null;
       const started = await launch(project, {
         bbProjectId: input.bbProjectId ?? PERSONAL_PROJECT_ID,
         hostId: input.hostId ?? null,
         cloud,
-        providerId: input.providerId ?? null,
-        model: input.model ?? null,
+        providerId: agent.providerId,
+        model: agent.model,
+        reasoningLevel: agent.effort,
         title: input.title ?? null,
         prompt: input.prompt,
         takeOver: input.takeOver ?? null,
@@ -804,7 +818,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         // In a Boat sandbox: a new one, or a Boat sandbox machine picked as host.
         fullAccess: cloudOrchestratorFullAccess && (cloud || (input.hostId ? await isBoatHost(input.hostId) : false)),
       });
-      return { ...started, cloud, note };
+      return { ...started, cloud, note, agent };
     },
 
     connectStatus,

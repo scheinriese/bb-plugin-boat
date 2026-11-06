@@ -12,6 +12,9 @@ const defineRpcContract = ((contract: unknown) => contract) as typeof DefineRpcC
 // Account-level UI state (contract-ui.ts), spread into the contract at its end.
 import { uiRpcMethods } from "./contract-ui.ts";
 export { UI_TAG, uiStateSchema, type UiStateDto } from "./contract-ui.ts";
+// What a new orchestrator starts with (contract-orchestrator.ts), spread in at the end too.
+import { orchestratorEffortSchema, orchestratorRpcMethods } from "./contract-orchestrator.ts";
+export { ORCHESTRATOR_EFFORT_VALUES, type OrchestratorChoicesDto, type OrchestratorEffortDto } from "./contract-orchestrator.ts";
 
 export const PROVIDER_VALUES = ["claude", "codex"] as const;
 export const ROLE_VALUES = ["implement", "review", "custom"] as const;
@@ -847,6 +850,9 @@ export const rpcContract = defineRpcContract({
       /** Handoff notes from a file, put into the kickoff. */
       takeOverText: z.string().max(200_000).nullable().optional(),
       takeOverFileName: z.string().max(300).nullable().optional(),
+      /** Agent and effort picked in the dialog; null or absent: the settings (Agent and Effort for orchestrators). */
+      provider: providerSchema.nullable().optional(),
+      effort: orchestratorEffortSchema.nullable().optional(),
     }),
     output: z.object({ threadId: z.string(), movedTaskIds: z.array(z.string()) }),
   },
@@ -997,6 +1003,8 @@ export const rpcContract = defineRpcContract({
   refresh: { input: z.null(), output: ok },
   // ------------------------------------------------------------- account-level UI state (contract-ui.ts)
   ...uiRpcMethods,
+  // ------------------------------------------------------------- what a new orchestrator starts with (contract-orchestrator.ts)
+  ...orchestratorRpcMethods,
 });
 
 export type RpcContract = typeof rpcContract;
