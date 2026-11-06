@@ -74,7 +74,7 @@ test("a partial ship is parsed: what landed and where it stopped", () => {
   ];
   const parsed = parseShipOutput("BOAT_SHIPPED 0 abcdef1234567 2\nBOAT_SHIP_ERROR 1 push\nBOAT_SHIP_DETAIL ! [rejected] HEAD -> main (fetch first)\n", targets);
   assert.deepEqual(parsed.shipped, [{ path: "/w/storefront", baseBranch: "master", sha: "abcdef1234567", commits: 2 }]);
-  assert.deepEqual(parsed.failure, { target: targets[1], reason: "push", detail: ["! [rejected] HEAD -> main (fetch first)"] });
+  assert.deepEqual(parsed.failure, { target: targets[1], reason: "push", detail: ["! [rejected] HEAD -> main (fetch first)"], conflict: null });
 });
 
 test("unshipped work: every repo and uncommitted files count, cancel and archive keep it", async () => {

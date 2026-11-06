@@ -3623,7 +3623,8 @@ export class BoatService {
       }
       await this.assertGithubLogin(task, { signal: options.signal, forShip: true });
       try {
-        result = await this.boat.ship(task.sandboxId, this.shipTargets(task), options.signal);
+        // Base commits another task of this plugin shipped are named with it.
+        result = await this.boat.ship(task.sandboxId, this.shipTargets(task), options.signal, (sha) => this.store.shippedBy(sha, task.id));
       } catch (error) {
         // Repos that landed before a later one failed are recorded as shipped.
         const partial = (error as { shipped?: ShipResult["shipped"] }).shipped ?? [];

@@ -837,6 +837,19 @@ export class TaskStore {
     return row === undefined ? null : { taskId: String(row.task_id), at: String(row.at), kind: String(row.kind), text: String(row.text) };
   }
 
+  /**
+   * The task (other than `except`) whose ship landed this commit as its new
+   * head: shipped events name it by its first 7 characters.
+   */
+  shippedBy(sha: string, except: string | null = null): string | null {
+    const short = sha.slice(0, 7);
+    if (!/^[0-9a-f]{7}$/.test(short)) return null;
+    const row = this.db()
+      .prepare(`SELECT task_id FROM task_events WHERE kind IN ('shipped', 'shipped-partly') AND text LIKE ? AND task_id IS NOT ? ORDER BY seq DESC LIMIT 1`)
+      .get(`%(${short})%`, except) as Row | undefined;
+    return row === undefined ? null : String(row.task_id);
+  }
+
   events(taskId: string, limit = 50): TaskEvent[] {
     const rows = this.db()
       .prepare(
