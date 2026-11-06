@@ -25,7 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "./dialogs";
 import { MACHINE_LABEL, environmentLabel, errorMessage, plural, repoAtBase, shortRepo } from "./format";
 import { useProjects } from "./hooks";
-import { accessWarnings } from "./logic";
+import { accessNotes, aiProxyCost } from "./logic";
 import { ProjectSizeField } from "./sandbox-size";
 import { Disclosure, EmptyBox, Field, IconButton, InlineAlert, ListPanel, SUGGEST_INPUT, showError } from "./ui";
 
@@ -531,15 +531,15 @@ function ProjectForm({
 
 /**
  * What the project's tasks can reach: boat's GitHub access per repo, the
- * environment's secret NAMES (the plugin never reads values into the UI), and
- * warnings for boat credentials and real AI keys.
+ * environment's secret NAMES (the plugin never reads values into the UI), a
+ * warning for boat credentials, and a note when real AI keys go in.
  */
 function ProjectAccessLine({ projectId }: { projectId: string }) {
   const { data, error } = experimental_useRpcQuery({ contract: rpcContract, method: "projectAccess", input: { projectId } });
   if (error) return <p className="text-xs text-warning-text">{error.message}</p>;
   if (data === undefined) return null;
   const secrets = data.secretNames;
-  const warnings = accessWarnings(data);
+  const notes = accessNotes(data);
   return (
     <div className="space-y-0.5 text-xs text-muted-foreground">
       {data.error ? (
@@ -552,13 +552,14 @@ function ProjectAccessLine({ projectId }: { projectId: string }) {
           {data.secretFiles.length > 0 ? <span> · files <span className="font-mono">{data.secretFiles.join(", ")}</span></span> : null}
           {data.passSecrets === false ? <span className="text-warning-text"> · secrets aren't passed in</span> : null}
           {data.passGithub === false ? <span className="text-warning-text"> · GitHub access isn't passed in</span> : null}
-          {warnings.includes("boat-credentials") ? (
+          {notes.includes("boat-credentials") ? (
             <span className="text-warning-text"> · boat credentials are passed in: workers can start, stop and delete any of your sandboxes</span>
           ) : null}
-          {warnings.includes("real-ai-keys") ? (
-            <span className="text-warning-text">
+          {/* Information, not a warning: the proxy is a paid add-on. */}
+          {notes.includes("real-ai-keys") ? (
+            <span>
               {" "}
-              · real AI keys are passed in; <span className="font-mono">boat ai proxy on</span> passes placeholders
+              · real AI keys are passed in; <span className="font-mono">boat ai proxy on</span> passes placeholders ({aiProxyCost(data.aiProxyPrice)})
             </span>
           ) : null}
         </p>

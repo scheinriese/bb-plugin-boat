@@ -649,12 +649,13 @@ export function cardShownToast(hasOrchestrator: boolean): { title: string; descr
 // ------------------------------------------------------------------ project access
 
 /**
- * What a project's environment passes in that its workers could misuse, for
- * the warning notes on its access line: boat credentials (the boat CLI's
- * login, for the whole account), and real AI keys when the AI proxy is off
- * (only when agent logins go in at all). Unknowns show nothing.
+ * Notes on a project's access line about what its environment passes in:
+ * boat credentials (the boat CLI's login, for the whole account), a warning;
+ * and real AI keys while the AI proxy is off (only when agent logins go in
+ * at all), information only: the proxy is a paid add-on, a trade-off rather
+ * than a misconfiguration. Unknowns show nothing.
  */
-export function accessWarnings(access: {
+export function accessNotes(access: {
   passSandboxCredentials: boolean | null;
   passAgentsCredentials: boolean | null;
   aiProxy: boolean | null;
@@ -663,4 +664,9 @@ export function accessWarnings(access: {
   if (access.passSandboxCredentials === true) notes.push("boat-credentials");
   if (access.passAgentsCredentials === true && access.aiProxy === false) notes.push("real-ai-keys");
   return notes;
+}
+
+/** "paid add-on, about $1 a day plus $1 per 1,000 requests", or just "paid add-on" when boat didn't price it. */
+export function aiProxyCost(price: string | null): string {
+  return price ? `paid add-on, ${price}` : "paid add-on";
 }

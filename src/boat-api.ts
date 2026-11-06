@@ -261,15 +261,42 @@ export interface EnvironmentInfo {
 }
 
 /**
- * `boat ai proxy --json` (no state given: it only shows). On, sandboxes get
- * placeholder AI keys and real keys never enter them. null: couldn't tell.
+ * The account's AI credentials proxy, a paid boat add-on: on, sandboxes get
+ * placeholder AI keys and real keys never enter them.
  */
-export function parseAiProxy(raw: JsonRecord): boolean | null {
+export interface AiProxyState {
+  /** null: couldn't tell. */
+  enabled: boolean | null;
+  /** What it costs, as boat prices it (null: not reported). */
+  dailyDollars: number | null;
+  dollarsPer1000Requests: number | null;
+}
+
+/**
+ * `boat ai proxy --json` (no state given: it only shows), e.g.
+ * `{"enabled":false,"pricing":{"dailyDollars":1,"dollarsPer1000Requests":1},…}`
+ * (test/fixtures/boat-json/ai-proxy.json).
+ */
+export function parseAiProxy(raw: JsonRecord): AiProxyState {
   const nested = rec(raw.proxy) ?? rec(raw.aiProxy);
-  const enabled = bool(raw.enabled) ?? bool(nested?.enabled);
-  if (enabled !== null) return enabled;
   const state = str(raw.state) ?? str(nested?.state);
-  return state === "on" ? true : state === "off" ? false : null;
+  const enabled = bool(raw.enabled) ?? bool(nested?.enabled) ?? (state === "on" ? true : state === "off" ? false : null);
+  const pricing = rec(raw.pricing) ?? rec(nested?.pricing);
+  const dollars = (value: unknown) => {
+    const amount = num(value);
+    return amount !== null && amount >= 0 ? amount : null;
+  };
+  return { enabled, dailyDollars: dollars(pricing?.dailyDollars), dollarsPer1000Requests: dollars(pricing?.dollarsPer1000Requests) };
+}
+
+/** "about $1 a day plus $1 per 1,000 requests" (null: boat didn't say). */
+export function aiProxyPrice(state: Pick<AiProxyState, "dailyDollars" | "dollarsPer1000Requests">): string | null {
+  const money = (amount: number) => "$" + (Number.isInteger(amount) ? String(amount) : amount.toFixed(2));
+  const parts = [
+    state.dailyDollars !== null ? `${money(state.dailyDollars)} a day` : null,
+    state.dollarsPer1000Requests !== null ? `${money(state.dollarsPer1000Requests)} per 1,000 requests` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length === 0 ? null : `about ${parts.join(" plus ")}`;
 }
 
 /** A sandbox port on a stable HTTPS URL (`boat host`); a private one carries its token in the query. */
@@ -965,8 +992,8 @@ printf '%s\n' "$OUT" | tr -d '\r' | grep -i '^github-authentication-token-expira
     };
   }
 
-  /** The account's AI credentials proxy (read-only: `boat ai proxy` without on or off). */
-  async aiProxy(signal?: AbortSignal): Promise<boolean | null> {
+  /** The account's AI credentials proxy and its price (read-only: `boat ai proxy` without on or off). */
+  async aiProxy(signal?: AbortSignal): Promise<AiProxyState> {
     return parseAiProxy(await this.cli.json(["ai", "proxy"], { timeoutMs: 30_000, signal }));
   }
 

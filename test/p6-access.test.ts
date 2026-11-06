@@ -101,7 +101,7 @@ test("dispatch stops with what to fix when boat can't see the repo, can't push, 
 });
 
 test("a project's access names boat credentials and real AI keys; quiet with them off and the proxy on", async (t) => {
-  type Access = { passSandboxCredentials: boolean | null; passAgentsCredentials: boolean | null; aiProxy: boolean | null };
+  type Access = { passSandboxCredentials: boolean | null; passAgentsCredentials: boolean | null; aiProxy: boolean | null; aiProxyPrice: string | null };
   // boat credentials off, the AI proxy on: nothing to warn about.
   const quiet = await setup(t);
   await quiet.harness.runCli(["project", "add", "--name", "Storefront", "--repo", "acme/storefront@master", "--environment", "storefront"]);
@@ -121,8 +121,9 @@ test("a project's access names boat credentials and real AI keys; quiet with the
   const access = (await loud.harness.callRpc("projectAccess", { projectId: "storefront" })) as Access;
   assert.equal(access.passSandboxCredentials, true);
   assert.equal(access.aiProxy, false);
+  assert.equal(access.aiProxyPrice, "about $1 a day plus $1 per 1,000 requests");
   const status = await loud.harness.runCli(["status"]);
-  assert.match(status.stdout, /; boat credentials are passed in: workers can start, stop and delete any of your sandboxes; real AI keys are passed in \(`boat ai proxy on` passes placeholders\)\n/);
+  assert.match(status.stdout, /; boat credentials are passed in: workers can start, stop and delete any of your sandboxes; real AI keys are passed in \(`boat ai proxy on` passes placeholders: a paid add-on, about \$1 a day plus \$1 per 1,000 requests\)\n/);
   assert.doesNotMatch(status.stdout, /fake_value/);
 });
 

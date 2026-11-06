@@ -32,7 +32,7 @@ import {
   type SetupSettings,
 } from "../src/setup.ts";
 import { TaskError } from "../src/service.ts";
-import { BoatApi, TRIAL_AUTO_STOP_HOURS, autoStopCapFromLimits, autoStopCapFromText, parseAiProxy, withinAutoStopCap } from "../src/boat-api.ts";
+import { BoatApi, TRIAL_AUTO_STOP_HOURS, aiProxyPrice, autoStopCapFromLimits, autoStopCapFromText, parseAiProxy, withinAutoStopCap } from "../src/boat-api.ts";
 
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/boat-json/${name}`, import.meta.url), "utf8")) as JsonRecord;
 
@@ -115,15 +115,24 @@ test("the effective toggles count, not the raw ones (Safe for third parties)", (
 });
 
 test("boat credentials and the AI proxy, as boat reports them (env info, `boat ai proxy`)", async () => {
-  assert.equal(parseAiProxy({ enabled: true, pricing: { dailyDollars: 0 } }), true);
-  assert.equal(parseAiProxy({ enabled: false }), false);
-  assert.equal(parseAiProxy({ proxy: { enabled: true } }), true);
-  assert.equal(parseAiProxy({ state: "off" }), false);
-  assert.equal(parseAiProxy({ event: "error", code: "api_key_action_forbidden" }), null);
+  // A real account's answer: off, and what the paid add-on costs.
+  const real = parseAiProxy(fixture("ai-proxy.json"));
+  assert.deepEqual(real, { enabled: false, dailyDollars: 1, dollarsPer1000Requests: 1 });
+  assert.equal(aiProxyPrice(real), "about $1 a day plus $1 per 1,000 requests");
+  assert.doesNotMatch(JSON.stringify(real), /proxyUrl|example\.com/, "only the state and the price are kept");
+  assert.equal(aiProxyPrice({ dailyDollars: 0.5, dollarsPer1000Requests: null }), "about $0.50 a day");
+  assert.equal(aiProxyPrice({ dailyDollars: null, dollarsPer1000Requests: 2 }), "about $2 per 1,000 requests");
+  // Other shapes: the state without a price; nothing usable is unknown.
+  assert.deepEqual(parseAiProxy({ enabled: true }), { enabled: true, dailyDollars: null, dollarsPer1000Requests: null });
+  assert.equal(aiProxyPrice(parseAiProxy({ enabled: true })), null);
+  assert.equal(parseAiProxy({ proxy: { enabled: true } }).enabled, true);
+  assert.equal(parseAiProxy({ state: "off" }).enabled, false);
+  assert.equal(parseAiProxy({ enabled: false, pricing: { dailyDollars: -1, dollarsPer1000Requests: "1" } }).dailyDollars, null);
+  assert.deepEqual(parseAiProxy({ event: "error", code: "api_key_action_forbidden" }), { enabled: null, dailyDollars: null, dollarsPer1000Requests: null });
 
   const seen: string[][] = [];
   const answers: Record<string, JsonRecord> = {
-    "ai proxy": { enabled: false },
+    "ai proxy": fixture("ai-proxy.json"),
     "env info web": {
       environment: {
         name: "web",
@@ -141,7 +150,7 @@ test("boat credentials and the AI proxy, as boat reports them (env info, `boat a
       return answers[args.join(" ")]!;
     },
   } as unknown as BoatCli);
-  assert.equal(await api.aiProxy(), false);
+  assert.equal((await api.aiProxy()).enabled, false);
   // Only shown: no on or off.
   assert.deepEqual(seen[0], ["ai", "proxy"]);
   const info = await api.environmentInfo("web");

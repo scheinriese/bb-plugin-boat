@@ -331,7 +331,7 @@ export class FakeBoat {
   }
   aiProxyOn: boolean | null = true;
   async aiProxy() {
-    return this.aiProxyOn;
+    return { enabled: this.aiProxyOn, dailyDollars: 1, dollarsPer1000Requests: 1 };
   }
   prompts: { provider: string; model: string | null; effort: string | null; text: string }[] = [];
   async prompt(options: {

@@ -20,7 +20,7 @@ import {
   shellQuote,
 } from "./boat-api.ts";
 import { checkPreview, previewLink, previewView, type PreviewView } from "./previews.ts";
-import { BOAT_GIT_ENV, autoStopHours, withinAutoStopCap } from "./boat-api.ts";
+import { BOAT_GIT_ENV, aiProxyPrice, autoStopHours, withinAutoStopCap, type AiProxyState } from "./boat-api.ts";
 import { BoatError } from "./boat.ts";
 import { alwaysProtectedBranches, protectedBranches, type OrchestratorProject, type ProjectRepo } from "./projects.ts";
 import {
@@ -142,6 +142,8 @@ export interface ProjectAccess {
   proxyAiCredentials: boolean | null;
   /** Sandboxes get placeholder AI keys (the account's `boat ai proxy`, or the environment's proxy toggle); null: couldn't tell. */
   aiProxy: boolean | null;
+  /** What the proxy costs, a paid boat add-on ("about $1 a day plus $1 per 1,000 requests"); null: boat didn't say. */
+  aiProxyPrice: string | null;
   repos: {
     repo: string;
     baseBranch: string;
@@ -2430,15 +2432,15 @@ export class BoatService {
     return entry.info;
   }
 
-  private aiProxyCache: { at: number; value: Promise<boolean | null>; known: boolean } | null = null;
+  private aiProxyCache: { at: number; value: Promise<AiProxyState | null>; known: boolean } | null = null;
 
-  /** The account's AI credentials proxy (null: couldn't tell): cached like an environment, unknown for one minute. */
-  private aiProxy(signal?: AbortSignal): Promise<boolean | null> {
+  /** The account's AI credentials proxy and its price (null: couldn't tell): cached like an environment, unknown for one minute. */
+  private aiProxy(signal?: AbortSignal): Promise<AiProxyState | null> {
     const hit = this.aiProxyCache;
     if (hit && Date.now() - hit.at < (hit.known ? 5 * 60_000 : 60_000)) return hit.value;
     const entry = { at: Date.now(), value: this.boat.aiProxy(signal).catch(() => null), known: true };
     void entry.value.then((value) => {
-      entry.known = value !== null;
+      entry.known = value !== null && value.enabled !== null;
     });
     this.aiProxyCache = entry;
     return entry.value;
@@ -2465,6 +2467,7 @@ export class BoatService {
       error = errorText(failure);
     }
     const proxied = info?.safeForThirdParties === true && info.proxyAiCredentials === true;
+    const account = await accountProxy;
     return {
       environment,
       error,
@@ -2475,7 +2478,8 @@ export class BoatService {
       passAgentsCredentials: info?.passAgentsCredentials ?? null,
       passSandboxCredentials: info?.passSandboxCredentials ?? null,
       proxyAiCredentials: info?.proxyAiCredentials ?? null,
-      aiProxy: proxied ? true : await accountProxy,
+      aiProxy: proxied ? true : (account?.enabled ?? null),
+      aiProxyPrice: account === null ? null : aiProxyPrice(account),
       repos: project.repos.map((entry) => {
         const listed = info?.repos.find((repo) => repo.repo.toLowerCase() === entry.repo.toLowerCase());
         const checked = this.store.repoAccess(entry.repo);

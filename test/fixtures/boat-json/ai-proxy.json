@@ -1,0 +1,11 @@
+{
+  "enabled": false,
+  "enabledAt": null,
+  "org": false,
+  "pricing": {
+    "dailyDollars": 1,
+    "dollarsPer1000Requests": 1
+  },
+  "proxyUrl": "https://ai-proxy.example.com",
+  "success": true
+}

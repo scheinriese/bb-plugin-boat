@@ -6,7 +6,8 @@ import type { PlanDto } from "../contract.ts";
 import { sandboxUses } from "../src/rpc.ts";
 import {
   STARTERS,
-  accessWarnings,
+  accessNotes,
+  aiProxyCost,
   canRequestReview,
   chatChoice,
   chatControl,
@@ -423,14 +424,17 @@ test("sandbox sizes on the page: cost, the follow-up, the preselected size, the 
   assert.match(peakSentence({ peak: { shared: true, percent: 79 }, recommendation: rec("near-limit"), project: null }), /Other tasks worked on this sandbox meanwhile, so part of it is theirs\./);
 });
 
-test("a project's access line warns about boat credentials and real AI keys, and nothing else", () => {
+test("a project's access line notes boat credentials and real AI keys, and nothing else", () => {
   // boat credentials off and the AI proxy on: quiet.
-  assert.deepEqual(accessWarnings({ passSandboxCredentials: false, passAgentsCredentials: true, aiProxy: true }), []);
-  assert.deepEqual(accessWarnings({ passSandboxCredentials: true, passAgentsCredentials: true, aiProxy: true }), ["boat-credentials"]);
-  assert.deepEqual(accessWarnings({ passSandboxCredentials: true, passAgentsCredentials: true, aiProxy: false }), ["boat-credentials", "real-ai-keys"]);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: false, passAgentsCredentials: true, aiProxy: true }), []);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: true, passAgentsCredentials: true, aiProxy: true }), ["boat-credentials"]);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: true, passAgentsCredentials: true, aiProxy: false }), ["boat-credentials", "real-ai-keys"]);
   // No agent logins go in at all: no AI note.
-  assert.deepEqual(accessWarnings({ passSandboxCredentials: false, passAgentsCredentials: false, aiProxy: false }), []);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: false, passAgentsCredentials: false, aiProxy: false }), []);
   // Couldn't tell: nothing.
-  assert.deepEqual(accessWarnings({ passSandboxCredentials: null, passAgentsCredentials: null, aiProxy: null }), []);
-  assert.deepEqual(accessWarnings({ passSandboxCredentials: false, passAgentsCredentials: true, aiProxy: null }), []);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: null, passAgentsCredentials: null, aiProxy: null }), []);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: false, passAgentsCredentials: true, aiProxy: null }), []);
+  // The proxy is a paid add-on: its price when boat gives one.
+  assert.equal(aiProxyCost("about $1 a day plus $1 per 1,000 requests"), "paid add-on, about $1 a day plus $1 per 1,000 requests");
+  assert.equal(aiProxyCost(null), "paid add-on");
 });

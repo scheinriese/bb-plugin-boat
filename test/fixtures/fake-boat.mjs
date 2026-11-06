@@ -49,7 +49,8 @@ switch (command) {
   case "ai":
     // `boat ai proxy` without on or off only shows the account's proxy.
     if (rest[0] === "proxy" && (rest[1] === undefined || rest[1].startsWith("-"))) {
-      print({ enabled: state.aiProxy !== false, pricing: { dailyDollars: 0, dollarsPer1000Requests: 0 } });
+      // The real shape (test/fixtures/boat-json/ai-proxy.json); the proxy is a paid add-on.
+      print({ enabled: state.aiProxy !== false, enabledAt: null, org: false, pricing: { dailyDollars: 1, dollarsPer1000Requests: 1 }, proxyUrl: "https://ai-proxy.example.com", success: true });
       break;
     }
     if (rest[0] !== "profiles") fail("unknown", `fake boat ai ${rest[0]}`);

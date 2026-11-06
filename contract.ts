@@ -832,6 +832,8 @@ export const rpcContract = defineRpcContract({
       proxyAiCredentials: z.boolean().nullable(),
       /** Sandboxes get placeholder AI keys (`boat ai proxy on`); false: real keys go in; null: couldn't tell. */
       aiProxy: z.boolean().nullable(),
+      /** The proxy is a paid boat add-on: "about $1 a day plus $1 per 1,000 requests", null when boat didn't say. */
+      aiProxyPrice: z.string().nullable(),
       repos: z.array(
         z.object({
           repo: z.string(),
