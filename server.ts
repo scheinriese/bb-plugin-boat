@@ -442,6 +442,8 @@ export default async function plugin(bb: BbPluginApi) {
     skip: (sandboxId) => service.isMovingSandbox(sandboxId),
     // A dispatch, ship or wake in flight there: never suspended under it.
     held: (sandboxId) => service.holdsSandbox(sandboxId),
+    // A headless task's finished agent left processes computing there (boat ps).
+    computing: (sandboxId) => service.processesBusy(sandboxId),
   });
 
   // Monitor: check running tasks, collect results, notify, stop idle sandboxes.

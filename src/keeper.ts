@@ -5,9 +5,14 @@
 // task chat, a cloud orchestrator, any chat on a Boat sandbox; bb's daemon
 // runs there) reads "idle" to boat, so boat would stop it at its deadline,
 // mid-turn. Shortly before that deadline the keeper moves it out while a
-// turn runs there, and otherwise lets bb suspend the machine (bb resumes it
-// on the next message). It never keeps on a sandbox whose turns are over:
-// the plugin's own idle stop (Stop idle sandboxes after) works as before.
+// turn runs there, or work bb reports in the background after a turn (a
+// background command, a bb workflow, a child chat), and otherwise lets bb
+// suspend the machine (bb resumes it on the next message) rather than boat
+// stopping it behind bb's back. It never keeps on a sandbox whose turns and
+// background work are over: the plugin's own idle stop (Stop idle
+// sandboxes after) works as before. A headless task whose agent has
+// finished keeps its sandbox on the same way while processes it left are
+// still computing (`boat ps`).
 //
 // Waiting isn't working: a chat waiting for a slot, for a retry at a usage
 // limit's reset, or (past a grace) on the user, and a chat whose machine is
@@ -17,6 +22,7 @@
 // "running"), a dispatch, ship or wake in flight, or a live preview.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { KEEP_LIMIT_MS, hasWork, rowWork, workingChildren, type ThreadRow } from "./activity.ts";
 import { ACTIVE_STATES, autoStopHours, withinAutoStopCap, type BoatApi } from "./boat-api.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import type { BoatSettings } from "./service.ts";
@@ -24,6 +30,12 @@ import { OPEN_STATUSES, type Task, type TaskStore } from "./store.ts";
 
 /** Move the deadline once it's this close (or half the auto-stop, if that's shorter). */
 export const KEEP_MARGIN_MS = 25 * 60_000;
+/**
+ * This close to boat's deadline, a sandbox the keeper doesn't keep on is
+ * suspended through bb even with a live preview: boat would stop it
+ * moments later anyway, and then bb wouldn't know.
+ */
+export const LAST_CALL_MS = 5 * 60_000;
 /** After a failed extend, leave that sandbox alone this long. */
 const RETRY_MS = 2 * 60_000;
 /**
@@ -44,32 +56,21 @@ export const STOPPING_GRACE_MS = 10 * 60_000;
 /**
  * The keeper keeps a sandbox on at most this long in a row (for a task
  * chat: in one turn). A turn that runs longer is likely stuck; boat's stop
- * then comes as it would without the plugin.
+ * then comes as it would without the plugin (through bb, near its deadline).
  */
-export const KEEP_LIMIT_MS = 12 * 60 * 60_000;
+export { KEEP_LIMIT_MS };
 /** boat states with nothing of boat's at work: only then is a machine suspended. */
 const QUIET_STATES = new Set(["idle", "ready"]);
 /** The task history note the keeper writes (once per turn). */
 export const KEPT_ON_EVENT = "sandbox-kept";
+/** Open headless tasks whose agent has finished (their sandbox may still compute). */
+const WAITING = new Set(["idle", "failed"]);
 /** Task events that end a turn: the next turn gets its own note. */
 const TURN_ENDS = new Set(["finished", "failed"]);
 
 const resourceSchema = z.object({ sandboxId: z.string(), key: z.string() });
 
-/** What the keeper reads of a bb thread (threads.list). */
-export interface ThreadRow {
-  id?: string;
-  status?: string;
-  archivedAt?: number | null;
-  deletedAt?: number | null;
-  queuedWork?: string;
-  /** The agent is blocked on the user: an approval or a question. */
-  hasPendingInteraction?: boolean;
-  /** `status` refined by the machine's state ("waiting-for-host", "provisioning"). */
-  runtime?: { displayStatus?: string } | null;
-  runtimeStatus?: string;
-  activity?: { activeBackgroundAgentCount?: number } | null;
-}
+export type { ThreadRow } from "./activity.ts";
 
 /** A state that only counts as working for a while (the keeper times it). */
 export function lingering(thread: ThreadRow): "blocked" | "stopping" | null {
@@ -79,16 +80,17 @@ export function lingering(thread: ThreadRow): "blocked" | "stopping" | null {
 }
 
 /**
- * A turn (or a background agent) is under way in this chat. `lingeredMs`:
- * how long the keeper has seen it waiting on the user, or stopping.
+ * A turn, or work in the background, is under way in this chat.
+ * `lingeredMs`: how long the keeper has seen it waiting on the user, or
+ * stopping.
  */
 export function threadWorking(thread: ThreadRow, lingeredMs = 0): boolean {
   if (thread.archivedAt || thread.deletedAt) return false;
   // Its machine is gone or not up: no agent there makes progress (bb's suspend stops it cleanly).
   const display = thread.runtime?.displayStatus ?? thread.runtimeStatus;
   if (display === "waiting-for-host" || display === "provisioning") return false;
-  // A workflow's agents work even while the chat reads idle.
-  if ((thread.activity?.activeBackgroundAgentCount ?? 0) > 0) return true;
+  // Background agents, background commands and bb workflows work even while the chat reads idle.
+  if (hasWork(rowWork(thread))) return true;
   const state = lingering(thread);
   if (state === "blocked") return lingeredMs <= BLOCKED_GRACE_MS;
   if (state === "stopping") return lingeredMs <= STOPPING_GRACE_MS;
@@ -127,16 +129,22 @@ export interface KeeperDeps {
   skip?: (sandboxId: string) => boolean;
   /** Sandboxes a dispatch, ship or wake holds right now: never suspended. */
   held?: (sandboxId: string) => boolean;
+  /** Processes a headless task's finished agent left are computing there (boat ps; absent: never). */
+  computing?: (sandboxId: string) => Promise<boolean>;
   now?: () => number;
 }
 
-/** A sandbox the keeper looks after: a Boat sandbox machine bb has up, or a task chat's sandbox. */
+/** A sandbox the keeper looks after: a Boat sandbox machine bb has up, a task chat's sandbox, or a headless task's. */
 interface Candidate {
   sandboxId: string;
   /** The bb machine on it (null: none known). */
   hostId: string | null;
   /** bb lists the machine as up: an idle one may be suspended through bb. */
   machineUp: boolean;
+  /** bb's daemon there is connected (a disconnected one may only be restarting: never suspended on that). */
+  connected?: boolean;
+  /** A headless task's sandbox whose agent has finished: kept on only while processes it left compute. */
+  headless?: boolean;
 }
 
 /** A run of extends with work seen at each: since when, and for which task turns. */
@@ -173,16 +181,22 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
     return Math.round(autoStopHours((await deps.settings()).sandboxTtlHours, limits.capHours, 0.5) * 3600);
   }
 
+  /** Every Boat sandbox machine bb has (child chats on one of them don't keep another on). */
+  let boatMachines = new Set<string>();
+
   async function machines(): Promise<Candidate[]> {
-    const hosts = ((await bb.sdk.hosts.list()) as unknown as {
+    const all = (await bb.sdk.hosts.list()) as unknown as {
       id: string;
+      status?: string;
       machineProviderId: string | null;
       lifecycle?: { phase?: string; suspendedAt?: number | null } | null;
-    }[]).filter((host) => host.machineProviderId === MACHINE_PROVIDER_ID && host.lifecycle?.phase === "active" && !host.lifecycle?.suspendedAt);
+    }[];
+    boatMachines = new Set(all.filter((host) => host.machineProviderId === MACHINE_PROVIDER_ID).map((host) => host.id));
+    const hosts = all.filter((host) => host.machineProviderId === MACHINE_PROVIDER_ID && host.lifecycle?.phase === "active" && !host.lifecycle?.suspendedAt);
     const found: Candidate[] = [];
     for (const host of hosts) {
       const resource = resourceSchema.safeParse(await bb.experimental_machines.getResource(host.id).catch(() => null));
-      if (resource.success) found.push({ sandboxId: resource.data.sandboxId, hostId: host.id, machineUp: true });
+      if (resource.success) found.push({ sandboxId: resource.data.sandboxId, hostId: host.id, machineUp: true, connected: host.status === undefined || host.status === "connected" });
     }
     return found;
   }
@@ -227,7 +241,7 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
   }
 
   /** One note per task and turn: none since its last turn ended. */
-  function note(tasks: Task[], seconds: number): void {
+  function note(tasks: Task[], seconds: number, why = "while the agent works"): void {
     const noted: string[] = [];
     for (const task of tasks) {
       const events = deps.store.events(task.id, 100);
@@ -241,22 +255,27 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
         }
       }
       if (already) continue;
-      if (addNote(task, `Kept the sandbox on while the agent works (${moreTime(seconds)}).`)) noted.push(task.id);
+      if (addNote(task, `Kept the sandbox on ${why} (${moreTime(seconds)}).`)) noted.push(task.id);
     }
     if (noted.length > 0) deps.changed?.(noted);
   }
 
-  /** Nothing else works in the sandbox: no headless agent, dispatch, ship, wake or live preview. */
-  function quiet(sandboxId: string, state: string, tasks: Task[]): boolean {
-    if (!QUIET_STATES.has(state)) return false;
-    // A headless agent's turn (boat keeps those on itself), or any dispatch under way.
-    if (tasks.some((task) => task.status === "starting" || (task.runner !== "chat" && task.status === "running"))) return false;
-    if (deps.held?.(sandboxId)) return false;
-    // A live preview the user hasn't looked at yet (the idle stop keeps those on too).
-    return !deps.store
+  /**
+   * What else works in the sandbox (null: nothing): a headless agent (boat
+   * keeps those on itself), a dispatch, ship or wake in flight, or a live
+   * preview the user hasn't looked at yet (the idle stop keeps those on too).
+   */
+  function busyWith(sandboxId: string, state: string, tasks: Task[]): "agent" | "held" | "preview" | null {
+    if (!QUIET_STATES.has(state)) return "agent";
+    if (tasks.some((task) => task.runner !== "chat" && task.status === "running")) return "agent";
+    if (tasks.some((task) => task.status === "starting") || deps.held?.(sandboxId)) return "held";
+    const preview = deps.store
       .previews()
-      .some((preview) => preview.sandboxId === sandboxId && preview.health === "up" && deps.store.get(preview.taskId)?.status === "idle");
+      .some((entry) => entry.sandboxId === sandboxId && entry.health === "up" && deps.store.get(entry.taskId)?.status === "idle");
+    return preview ? "preview" : null;
   }
+
+
 
   return async function keep(): Promise<void> {
     const now = deps.now?.() ?? Date.now();
@@ -266,9 +285,11 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
 
     const open = deps.store.list({ statuses: OPEN_STATUSES, limit: 1000 });
     const candidates = new Map<string, Candidate>();
+    let listed = true;
     try {
       for (const machine of await machines()) candidates.set(machine.sandboxId, machine);
     } catch (error) {
+      listed = false;
       deps.log(`keep machines on: ${error instanceof Error ? error.message : String(error)}`);
     }
     // A task chat's turn keeps its sandbox on even when bb doesn't list its machine.
@@ -276,8 +297,14 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
       if (task.runner !== "chat" || task.sandboxId === null || candidates.has(task.sandboxId)) continue;
       if (turnRuns(task)) candidates.set(task.sandboxId, { sandboxId: task.sandboxId, hostId: task.hostId, machineUp: false });
     }
-    // A sandbox no longer up ends its run of extends.
-    for (const id of streaks.keys()) if (!candidates.has(id)) streaks.delete(id);
+    // A headless task whose agent has finished: processes it left may still compute.
+    for (const task of open) {
+      if (task.runner === "chat" || task.sandboxId === null || candidates.has(task.sandboxId) || !WAITING.has(task.status)) continue;
+      if (open.some((other) => other.sandboxId === task.sandboxId && (other.runner === "chat" || !WAITING.has(other.status)))) continue;
+      candidates.set(task.sandboxId, { sandboxId: task.sandboxId, hostId: null, machineUp: false, headless: true });
+    }
+    // A sandbox no longer up ends its run of extends (not when bb just couldn't list its machines).
+    if (listed) for (const id of streaks.keys()) if (!candidates.has(id)) streaks.delete(id);
     if (candidates.size === 0) return;
 
     const sandboxes = new Map((await deps.boat.list({ signal: deps.signal })).map((sandbox) => [sandbox.id, sandbox]));
@@ -296,15 +323,44 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
       // A short auto-stop: extend at half of it, so one extend isn't followed by another.
       if (deadline - now > Math.min(KEEP_MARGIN_MS, ttl * 500)) continue;
 
-      // Who works there: any chat on the machine (bb's word), or a task chat's
-      // turn bb doesn't list (the plugin's record).
       const here = open.filter((task) => task.sandboxId === sandboxId);
+      if (candidate.headless) {
+        // A headless sandbox: only processes its finished agent left keep it on (boat
+        // keeps a running agent on itself). Nothing else of the plugin's to do here.
+        if (sandbox.state !== "idle") continue;
+        if (!(await deps.computing?.(sandboxId).catch(() => false))) {
+          streaks.delete(sandboxId);
+          continue;
+        }
+        const streak = streaks.get(sandboxId) ?? { since: now, turns: "", ended: false };
+        streaks.set(sandboxId, streak);
+        if (now - streak.since >= KEEP_LIMIT_MS) continue;
+        try {
+          const used = await withinAutoStopCap(ttl, async (seconds) => {
+            await deps.boat.extend(sandboxId, ["--ttl", String(seconds)], deps.signal);
+            return seconds;
+          });
+          extendedAt.set(sandboxId, now);
+          deps.info?.(`kept ${sandboxId} on for ${moreTime(used)}: processes the agent started are still running`);
+          note(here, used, "while processes the agent started are still running");
+        } catch (error) {
+          retryAt.set(sandboxId, now + RETRY_MS);
+          deps.log(`keep ${sandboxId} on: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        continue;
+      }
+
+      // Who works there: any chat on the machine (bb's word), a child chat
+      // of one of them working elsewhere, or a task chat's turn bb doesn't
+      // list (the plugin's record).
       const threads = hostId === null ? null : await threadsOn(hostId);
       const listed = new Set((threads ?? []).map((thread) => thread.id));
       const busyChats = new Set((threads ?? []).filter((thread) => working(thread, now)).map((thread) => thread.id ?? "?"));
       const unlisted = here.filter((task) => task.runner === "chat" && turnRuns(task) && (threads === null || task.threadId === null || !listed.has(task.threadId)));
       const workers = here.filter((task) => unlisted.includes(task) || deps.store.chatThreads(task.id).some((threadId) => busyChats.has(threadId)));
-      let keepOn = busyChats.size > 0 || unlisted.length > 0;
+      const children =
+        busyChats.size > 0 || unlisted.length > 0 || threads === null || hostId === null ? [] : await workingChildren(bb, threads, new Set([...boatMachines, hostId])).catch(() => []);
+      let keepOn = busyChats.size > 0 || unlisted.length > 0 || children.length > 0;
 
       if (keepOn) {
         // A run of extends; a task chat's next turn starts a new one.
@@ -326,7 +382,7 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
             streak.ended = true;
             const hours = Math.round(KEEP_LIMIT_MS / 3_600_000);
             deps.info?.(`stopped keeping ${sandboxId} on after ${hours} hours`);
-            const noted = workers.filter((task) => addNote(task, `Stopped keeping the sandbox on after ${hours} hours. It stops at its auto-stop; the next message resumes it.`));
+            const noted = workers.filter((task) => addNote(task, `Stopped keeping the sandbox on after ${hours} hours. bb suspends it before its auto-stop; the next message resumes it.`));
             if (noted.length > 0) deps.changed?.(noted.map((task) => task.id));
           }
         }
@@ -336,6 +392,14 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
 
       // bb couldn't say whether a chat there works: neither extend nor suspend on a guess.
       if (!keepOn && hostId !== null && threads === null) continue;
+      // bb has lost the machine's daemon while the sandbox runs (bb updating it, a network
+      // blip): a turn may still run there. Never suspend on that; boat's stop, if it
+      // comes, the watchdog brings in line with bb.
+      if (!keepOn && candidate.connected === false) continue;
+      const lastCall = deadline - now <= LAST_CALL_MS;
+      const busy = keepOn || !candidate.machineUp || hostId === null ? null : busyWith(sandboxId, sandbox.state, here);
+      // Right before boat's stop, a dispatch, ship or wake in flight is work too.
+      if (!keepOn && lastCall && busy === "held") keepOn = true;
       try {
         if (keepOn) {
           const used = await withinAutoStopCap(ttl, async (seconds) => {
@@ -345,8 +409,10 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
           extendedAt.set(sandboxId, now);
           deps.info?.(`kept ${sandboxId} on for ${moreTime(used)}: a chat there is working`);
           note(workers, used);
-        } else if (candidate.machineUp && hostId !== null && quiet(sandboxId, sandbox.state, here)) {
-          // bb drains the machine, calls the provider's suspend (boat stop), and resumes it on demand.
+        } else if (candidate.machineUp && hostId !== null && (busy === null || (lastCall && busy === "preview"))) {
+          // bb drains the machine, calls the provider's suspend (boat stop), and
+          // resumes it on demand. A live preview goes too right before boat's
+          // stop: through bb, the next message brings it all back.
           await bb.sdk.hosts.experimental_suspend({ hostId });
         }
       } catch (error) {

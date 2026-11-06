@@ -104,6 +104,62 @@ export interface Limits {
   autoStopCapHours: number | null;
 }
 
+/** One process in `boat ps` (fields as boat names them; unknown ones null). */
+export interface SandboxProcess {
+  pid: number | null;
+  command: string;
+  cpuPercent: number | null;
+  memoryMb: number | null;
+  /** The boat command it belongs to (cmd_…), if boat says. */
+  commandId: string | null;
+}
+
+/** `boat ps`: the sandbox's processes, live or (stopped) its last stored sample. */
+export interface ProcessSample {
+  /** False: boat shows its last stored sample (the sandbox is stopped, or its agent is older); null: boat didn't say. */
+  live: boolean | null;
+  sampledAt: string | null;
+  processes: SandboxProcess[];
+}
+
+/** At least this much CPU: the process is computing (a build, tests), not idling (a dev server, a watcher). */
+export const BUSY_CPU_PERCENT = 20;
+/** boat's, bb's and the system's own programs in a sandbox (by executable name): never the task's work. */
+const INFRASTRUCTURE = /^(ascii[\w.-]*|boat|bb|bb-host-daemon|sshd|systemd[\w.-]*|\(sd-pam\)|containerd[\w.-]*|dockerd|journald|dbus[\w.-]*|cron|ps|top)$/i;
+
+function executable(command: string): string {
+  const first = command.trim().split(/\s+/)[0] ?? "";
+  return first.slice(first.lastIndexOf("/") + 1);
+}
+
+/**
+ * Processes still computing in a sandbox whose agent has finished: what a
+ * headless task left running (a build, a test run). A stored sample (the
+ * sandbox isn't live) counts for nothing.
+ */
+export function busyProcesses(sample: ProcessSample | null): SandboxProcess[] {
+  if (sample === null || sample.live === false) return [];
+  return sample.processes.filter((entry) => (entry.cpuPercent ?? 0) >= BUSY_CPU_PERCENT && !INFRASTRUCTURE.test(executable(entry.command)));
+}
+
+export function parseProcessSample(records: JsonRecord[]): ProcessSample {
+  const last = records.at(-1) ?? {};
+  const body = rec(last.data) ?? last;
+  // One object with a list, or one record per process.
+  const listed = Array.isArray(body.processes) ? body.processes : records.filter((record) => num(record.pid) !== null || num(rec(record.data)?.pid) !== null).map((record) => rec(record.data) ?? record);
+  const processes = (listed as unknown[])
+    .map((raw) => rec(raw))
+    .filter((raw): raw is JsonRecord => raw !== null)
+    .map((raw) => ({
+      pid: num(raw.pid),
+      command: str(raw.command) ?? str(raw.cmd) ?? str(raw.name) ?? "",
+      cpuPercent: num(raw.cpuPercent) ?? num(raw.cpu),
+      memoryMb: num(raw.memoryMB) ?? num(raw.memoryMb) ?? num(raw.memMb),
+      commandId: str(raw.commandId),
+    }));
+  return { live: bool(body.live), sampledAt: str(body.sampledAt), processes };
+}
+
 export interface Conversation {
   id: string;
   running: boolean;
@@ -1196,6 +1252,12 @@ printf '%s\n' "$OUT" | tr -d '\r' | grep -i '^github-authentication-token-expira
           tools,
         };
       });
+  }
+
+  /** `boat ps`: what runs in the sandbox (its last stored sample when it's stopped). */
+  async processes(sandboxId: string, signal?: AbortSignal): Promise<ProcessSample> {
+    const result = await this.cli.run(["ps", sandboxId], { signal, timeoutMs: 30_000 });
+    return parseProcessSample(result.records);
   }
 
   async steer(sandboxId: string, conversationId: string, message: string, signal?: AbortSignal): Promise<void> {
