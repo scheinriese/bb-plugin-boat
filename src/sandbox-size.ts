@@ -17,6 +17,7 @@ import {
   TURN_END_KINDS,
   TURN_START_KINDS,
   compareSizes,
+  costSentence,
   decodeData,
   encodeData,
   errorWithOom,
@@ -156,13 +157,6 @@ function chatSentAt(task: Pick<Task, "promptId">): number | null {
   if (!task.promptId?.startsWith("chat:")) return null;
   const at = Number(task.promptId.slice(5));
   return Number.isFinite(at) ? at : null;
-}
-
-/** "Small costs half as much per hour as Default." ("" for Default; boat states no rate for XLarge). */
-export function costSentence(type: MachineType): string {
-  if (type === "small") return "Small costs half as much per hour as Default.";
-  if (type === "large") return "Large costs twice as much per hour as Default.";
-  return "";
 }
 
 export class SandboxSizes {
@@ -639,6 +633,8 @@ export class SandboxSizes {
     parent: Task | null;
     role: Task["role"];
     settings: BoatSettings;
+    /** The user said yes (the page, --user-approved, user_approved): an XLarge sandbox needs it. */
+    userApproved: boolean;
   }): Promise<{ type: MachineType; note: string | null }> {
     this.settingType = input.settings.machineType;
     const allowed = async (type: MachineType) => {
@@ -648,6 +644,14 @@ export class SandboxSizes {
       return verdict;
     };
     if (input.requested !== null) {
+      // Like Frontier at max effort: asked for by name, XLarge needs the user's OK, whoever asks.
+      if (input.checkPlan && input.requested === "xlarge" && !input.userApproved) {
+        throw new TaskError(
+          "An XLarge sandbox needs the user's OK.",
+          "size_needs_approval",
+          "Ask the user first, then pass user_approved (--user-approved). Large needs no OK.",
+        );
+      }
       if (input.checkPlan) {
         const verdict = await allowed(input.requested);
         if (!verdict.allowed) {
@@ -673,15 +677,35 @@ export class SandboxSizes {
         note = `${project.name} uses ${LABEL(project.machineType)} sandboxes, but your boat plan doesn't include ${LABEL(project.machineType)} (${trimDot(verdict.reason ?? "")}). This sandbox is ${LABEL(type)}.`;
       }
     }
-    // After a move up, a review in a new sandbox would run the same tests on less.
+    // A review in a new sandbox runs the same tests: on less, they'd fail.
+    // The parent's size is boat's word (or the plugin's own move), never the
+    // sandbox's own answer; and XLarge needs the user's OK for each sandbox.
     if (input.role === "review" && input.parent?.sandboxId) {
-      const parentType = this.knownSize(input.parent)?.type ?? null;
+      const parentType = await this.trustedType(input.parent.sandboxId, input.parent.id);
       if (parentType !== null && compareSizes(parentType, type) > 0 && planVerdict(parentType, this.planNow()).allowed) {
-        type = parentType;
-        note = `${LABEL(type)} sandbox, like task ${input.parent.id}'s`;
+        const capped = parentType === "xlarge" && !input.userApproved;
+        const inherited: MachineType = capped ? "large" : parentType;
+        if (compareSizes(inherited, type) > 0) {
+          const cost = costSentence(inherited, type);
+          note = capped
+            ? `${LABEL(inherited)} sandbox: task ${input.parent.id}'s is XLarge, but an XLarge one needs the user's OK.${cost ? ` ${cost}` : ""}`
+            : `${LABEL(inherited)} sandbox, like task ${input.parent.id}'s.${cost ? ` ${cost}` : ""}`;
+          type = inherited;
+        }
       }
     }
     return { type, note };
+  }
+
+  /** A sandbox's size from boat, else from the plugin's own last move of it (null: not known that way). */
+  private async trustedType(sandboxId: string, taskId: string): Promise<MachineType | null> {
+    const info = await within(this.deps.boat.findInfo(sandboxId, this.deps.hooks.lifecycle), this.timing.checkMs).catch(() => null);
+    if (info?.machineType) return info.machineType;
+    const moved = this.data(taskId)
+      .map((entry) => entry.data)
+      .filter((data): data is DataOf<"resize"> => data.type === "resize" && data.state === "done" && data.sandboxId === sandboxId)
+      .at(-1);
+    return moved?.to ?? null;
   }
 
   /** The setting when the plan has it, else the largest size the plan has below `wanted`. */
@@ -787,11 +811,21 @@ export class SandboxSizes {
       if (current !== null && compareSizes(options.type, current) < 0) {
         return new TaskError("Orchestrators only move a sandbox to a larger size.", "invalid_value", "The user can pick a smaller size on the task page (Change size…).");
       }
+      const cost = costSentence(options.type, current) || `${LABEL(options.type)} costs more per hour.`;
       if (!this.ranOutOfRoom(task)) {
         return new TaskError(
           `Moving task ${task.id}'s sandbox to ${LABEL(options.type)} needs the user's OK: its latest turn didn't run out of memory or come near the limit.`,
           "size_needs_approval",
-          `${costSentence(options.type) || `${LABEL(options.type)} costs more per hour.`} Ask the user first, then pass user_approved.`,
+          `${cost} Ask the user first, then pass user_approved (--user-approved).`,
+        );
+      }
+      // Without an OK, one size up at a time.
+      const next = current === null ? null : nextSize(current);
+      if (next !== null && options.type !== next) {
+        return new TaskError(
+          `Without the user's OK, an orchestrator moves a sandbox one size up: from ${LABEL(current!)} to ${LABEL(next)}.`,
+          "size_needs_approval",
+          `Use ${LABEL(next).toLowerCase()} (sandbox_size "${next}", --type ${next}), or ask the user first, then pass user_approved. ${cost}`,
         );
       }
       const foreign = others.find((other) => other.orchestratorThreadId !== (options.threadId ?? task.orchestratorThreadId));
@@ -799,7 +833,7 @@ export class SandboxSizes {
         return new TaskError(
           `Task ${foreign.id} (“${foreign.title}”) from another chat also uses this sandbox, and moving it stops that work too.`,
           "size_needs_approval",
-          "Ask the user first, then pass user_approved.",
+          "Ask the user first, then pass user_approved (--user-approved).",
         );
       }
     }
@@ -1191,7 +1225,7 @@ export class SandboxSizes {
       if (request.by !== "page" && threadId === asker?.orchestratorThreadId && id === job.taskId) continue;
       threads.set(threadId, [...(threads.get(threadId) ?? []), id]);
     }
-    const cost = costSentence(job.to);
+    const cost = costSentence(job.to, job.from);
     for (const [threadId, ids] of threads) {
       const who = request.by === "page" ? "The user moved it" : `Task ${job.taskId}'s follow-up moved it`;
       const mine = ids.includes(job.taskId) && job.withMessage ? " The follow-up goes out now; you get a [boat] message when that turn finishes." : " You can follow up now.";
@@ -1442,7 +1476,7 @@ export function resizeText(result: ResizeResult, style: "cli" | "tool", agent: s
   const to = `${LABEL(result.to)} (${specText(result.to)})`;
   const others = result.moved.filter((id) => id !== result.task.id);
   const also = others.length > 0 ? ` Also moved: ${others.join(", ")}.` : "";
-  const cost = costSentence(result.to);
+  const cost = costSentence(result.to, result.from);
   const costNote = cost ? ` ${cost}${style === "tool" ? " Mention it in your next update." : ""}` : "";
   if (result.pending) {
     const from = result.from ? `from ${LABEL(result.from)} ` : "";

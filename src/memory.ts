@@ -92,6 +92,26 @@ export function sizeSummary(size: KnownSize | null): string | null {
     .join(", ");
 }
 
+/** Price per hour against Default (boat states none for XLarge). */
+const RATE: Record<MachineType, number | null> = { small: 0.5, default: 1, large: 2, xlarge: null };
+const TIMES: Record<string, string> = { "0.25": "a quarter as much", "0.5": "half as much", "2": "twice as much", "4": "four times as much" };
+
+/**
+ * "Large costs twice as much per hour as Default." Against `from` (the size
+ * it is now) when given: "Large costs four times as much per hour as
+ * Small." "" when there's nothing to say (the same rate); boat states no
+ * rate for XLarge, so it only "costs more".
+ */
+export function costSentence(type: MachineType, from: MachineType | null = null): string {
+  const base: MachineType = from ?? "default";
+  if (type === base) return "";
+  const to = RATE[type];
+  const was = RATE[base];
+  if (to === null || was === null) return compareSizes(type, base) > 0 ? `${SIZE_SPECS[type].label} costs more per hour than ${SIZE_SPECS[base].label}.` : "";
+  const times = TIMES[String(to / was)];
+  return times ? `${SIZE_SPECS[type].label} costs ${times} per hour as ${SIZE_SPECS[base].label}.` : "";
+}
+
 // ------------------------------------------------------------------ the probe
 
 /** A task id as it may appear in a path (t_1a2b → t_1a2b; anything else is dropped). */
@@ -925,7 +945,8 @@ export function memoryNoticeLines(task: { id: string; turns: number }, events: r
         oomLine = `${head} Ask the agent to run fewer tests at once, or, only after the user's OK, move it to XLarge and continue: \`boat_followup\` with \`sandbox_size: "xlarge"\` and \`user_approved\` (\`bb boat task followup ${task.id} --type xlarge --user-approved --message "…"\`).`;
       } else {
         const label = SIZE_SPECS[oom.next].label;
-        oomLine = `${head} Ask the agent to run fewer tests at once, or move it to a larger sandbox and continue: \`boat_followup\` with \`sandbox_size: "${oom.next}"\` (\`bb boat task followup ${task.id} --type ${oom.next} --message "…"\`). ${label === "Large" ? "Large costs twice as much per hour as Default; mention it in your next update." : ""}`.trimEnd();
+        const cost = costSentence(oom.next, oom.machineType);
+        oomLine = `${head} Ask the agent to run fewer tests at once, or move it to ${label} and continue: \`boat_followup\` with \`sandbox_size: "${oom.next}"\` (\`bb boat task followup ${task.id} --type ${oom.next} --message "…"\`). ${cost ? `${cost.replace(/\.$/, "")}; mention it in your next update.` : ""}`.trimEnd();
       }
     }
   }

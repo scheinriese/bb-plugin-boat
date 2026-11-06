@@ -856,7 +856,13 @@ test("sandbox sizes through the CLI: a project's size, task show, and moving a s
   edit((current) => {
     current.machineTypes = ["small", "default", "large", "xlarge"].map((type) => ({ type, available: type !== "xlarge", reason: type === "xlarge" ? "needs the $100/month plan or higher" : null }));
   });
-  const moved = await harness.runCli(["task", "followup", task.id, "--message", "Run the tests again.", "--type", "large"], { threadId: "thr_orch" });
+  // From an agent's chat, the CLI has boat_followup's limits: no move up without an out-of-memory failure or the user's OK.
+  const unasked = await harness.runCli(["task", "followup", task.id, "--message", "Run the tests again.", "--type", "large", "--json"], { threadId: "thr_orch" });
+  assert.notEqual(unasked.exitCode, 0);
+  assert.equal(JSON.parse(unasked.stdout).error.code, "size_needs_approval");
+  const unaskedResize = await harness.runCli(["sandbox", "resize", task.sandboxId, "--type", "large", "--json"], { threadId: "thr_orch" });
+  assert.equal(JSON.parse(unaskedResize.stdout).error.code, "size_needs_approval");
+  const moved = await harness.runCli(["task", "followup", task.id, "--message", "Run the tests again.", "--type", "large", "--user-approved"], { threadId: "thr_orch" });
   assert.equal(moved.exitCode, 0, moved.stderr || moved.stdout);
   assert.match(moved.stdout, new RegExp(`^Moved task ${task.id}'s sandbox to Large \\(8 vCPU, 16 GB\\) and sent the follow-up`));
   const calls = state().calls as string[][];
@@ -875,4 +881,73 @@ test("sandbox sizes through the CLI: a project's size, task show, and moving a s
   const nobody = await harness.runCli(["sandbox", "resize", "bx_nobody", "--type", "large"]);
   assert.notEqual(nobody.exitCode, 0);
   assert.match(nobody.stderr, /No open task uses sandbox bx_nobody/);
+
+  // XLarge for every task of a project, from an agent's chat, needs the user's OK; the user's own terminal doesn't.
+  const xlarge = await harness.runCli(["project", "set", "web-app", "--size", "xlarge", "--json"], { threadId: "thr_orch" });
+  assert.equal(JSON.parse(xlarge.stdout).error.code, "size_needs_approval");
+  const addedX = await harness.runCli(["project", "add", "--name", "Docs", "--repo", "acme/docs@main", "--size", "xlarge", "--json"], { threadId: "thr_orch" });
+  assert.equal(JSON.parse(addedX.stdout).error.code, "size_needs_approval");
+  assert.equal((await harness.runCli(["project", "set", "web-app", "--size", "xlarge", "--user-approved"], { threadId: "thr_orch" })).exitCode, 0);
+  assert.equal((await harness.runCli(["project", "set", "web-app", "--size", "xlarge"])).exitCode, 0);
+  // A task asking for XLarge by name needs it too.
+  const big = await harness.runCli(["task", "start", "--title", "Big", "--repo", "acme/web", "--brief", "b", "--type", "xlarge", "--json"], { threadId: "thr_orch" });
+  assert.equal(JSON.parse(big.stdout).error.code, "size_needs_approval");
+});
+
+test("sandbox sizes through the page's RPCs: the dialog's facts, a move, a project's size, a measured start", async (t) => {
+  const { harness, state, finishAll } = await setup();
+  t.after(() => harness.lifecycle.dispose());
+  // A paid plan: Large yes, XLarge no.
+  writeFileSync(
+    process.env.FAKE_BOAT_STATE!,
+    JSON.stringify({
+      sandboxes: {},
+      convos: {},
+      calls: [],
+      next: 1,
+      machineTypes: ["small", "default", "large", "xlarge"].map((type) => ({ type, available: type !== "xlarge", reason: type === "xlarge" ? "needs the $100/month plan or higher" : null })),
+    }),
+  );
+
+  // A project's size through saveProject and setProjectSize.
+  const saved = (await harness.callRpc("saveProject", {
+    name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }], environment: null, snapshot: null, protocolPath: null, machineType: "large",
+  })) as { project: { id: string; machineType: string | null } };
+  assert.equal(saved.project.machineType, "large");
+  const kept = (await harness.callRpc("saveProject", {
+    id: saved.project.id, name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }], environment: null, snapshot: null, protocolPath: null,
+  })) as { project: { machineType: string | null } };
+  assert.equal(kept.project.machineType, "large");
+  const xl = (await harness.callRpc("setProjectSize", { projectId: saved.project.id, machineType: "xlarge" })) as { allowed: boolean; reason: string | null };
+  assert.deepEqual([xl.allowed, xl.reason], [false, "needs the $100/month plan or higher"]);
+  const back = (await harness.callRpc("setProjectSize", { projectId: saved.project.id, machineType: null })) as { machineType: string | null; allowed: boolean };
+  assert.deepEqual([back.machineType, back.allowed], [null, true]);
+  await assert.rejects(harness.callRpc("setProjectSize", { projectId: "nope", machineType: "large" }), /No project "nope"/);
+
+  // The repo check measures its turn: the sampler starts in the sandbox.
+  const started = (await harness.callRpc("startTask", {
+    title: "Check acme/web runs in a sandbox", brief: "Run the tests.", role: "custom", repo: "acme/web", branch: null, baseBranch: null,
+    provider: "claude", model: null, tier: "light", sandbox: null, machineType: null, notifyThreadId: null, measureMemory: true,
+  })) as { task: { id: string; sandboxId: string } };
+  const { id, sandboxId } = started.task;
+  const calls = () => state().calls as string[][];
+  assert.ok(calls().some((call) => call[0] === "exec" && call.includes("--detach") && call.at(-1)!.includes("/tmp/boat-memory/")), "the sampler started");
+
+  // While it runs: the dialog says why it can't move, and a move is refused.
+  let info = (await harness.callRpc("sandboxResizeInfo", { id })) as { blocker: { code: string } | null; current: { type: string } | null; suggested: string | null };
+  assert.equal(info.blocker?.code, "sandbox_busy");
+  await assert.rejects(harness.callRpc("resizeSandbox", { id, type: "large", message: null }), /still running/);
+
+  finishAll("Done.\n=== REPORT ===\nSTATUS: done\n=== END REPORT ===");
+  await harness.runCli(["task", "show", id, "--refresh"]);
+  info = (await harness.callRpc("sandboxResizeInfo", { id })) as typeof info;
+  assert.equal(info.blocker, null);
+  assert.equal(info.current?.type, "default");
+  assert.equal(info.suggested, "large");
+  const moved = (await harness.callRpc("resizeSandbox", { id, type: "large", message: "Continue where you left off." })) as { pending: boolean; to: string; sent: boolean };
+  assert.deepEqual([moved.pending, moved.to, moved.sent], [false, "large", true]);
+  assert.equal(state().sandboxes[sandboxId].type, "large");
+  const detail = (await harness.callRpc("task", { id })) as { task: { memory: { size: { type: string } | null; resize: unknown } | null } };
+  assert.equal(detail.task.memory?.size?.type, "large");
+  assert.equal(detail.task.memory?.resize, null);
 });

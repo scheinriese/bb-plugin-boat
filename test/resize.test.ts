@@ -558,3 +558,14 @@ test("the move's note waits for a prompt that carries it: an evidence-only turn 
   await chat.service.followup(chatTask.id, "Continue.");
   assert.match(chat.chat.sends.at(-1)!.text, /## Sandbox\nThe sandbox moved to a larger machine/);
 });
+
+test("without the user's OK, an orchestrator moves one size up after running out of memory", async () => {
+  const env = makeService({ settings: { machineType: "small" } });
+  const task = await idleTask(env);
+  oomRecord(env, task, { machineType: "small", next: "default" });
+  const tool = (overrides: Partial<ResizeRequest> = {}) => request(task.id, { by: "tool", userApproved: false, notifyThreadId: "thr_orch", ...overrides });
+  const skip = await refused(env.service.sizes.resize(tool({ type: "large" })), "size_needs_approval", /one size up: from Small to Default/);
+  assert.match(skip.hint ?? "", /sandbox_size "default".*Large costs four times as much per hour as Small\./);
+  const moved = await env.service.sizes.resize(tool({ type: "default" }));
+  assert.equal(moved.to, "default");
+});

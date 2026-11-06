@@ -98,7 +98,7 @@ default 3) caps how many run; `bb boat status` shows the room left.
 | `bb boat task ship <id>` | Projects that ship after approval: push the task's commits to its base branch. Only from the task's orchestrator chat, after the user said so there |
 | `bb boat preview list` / `preview wake\|extend\|stop <id>` | Previews agents left running (private links), and bringing a sleeping one back |
 | `bb boat sandbox list [--all]` / `sandbox new [--repo …]` / `sandbox info\|stop\|resume\|delete <id>` | Sandboxes |
-| `bb boat sandbox resize <id> --type <size>` | Move a task's sandbox to another size (it stops and starts again: files stay, running processes stop, other tasks on it move too; `xlarge` needs `--user-approved`) |
+| `bb boat sandbox resize <id> --type <size>` | Move a task's sandbox to another size (it stops and starts again: files stay, running processes stop, other tasks on it move too). From an agent's chat, the same limits as `boat_followup`'s `sandbox_size`: one size up after an out-of-memory failure, anything else (and `xlarge` always) with `--user-approved` after the user's OK |
 | `bb boat sandbox exec <id> -- <command>` | Run a shell command in a sandbox |
 | `bb boat sandbox snapshot <id> <name>` / `sandbox snapshots` | Save a sandbox as a snapshot; list saved ones (`--snapshot <name>` on task start starts from one) |
 | `bb boat project list [--local]` | Projects (and local bb projects as `local:<id>`) |

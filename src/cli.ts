@@ -356,7 +356,7 @@ export function buildCli(runtime: Runtime) {
         positionals: [{ name: "id", description: "Sandbox id (bx_…)", required: true }],
         options: {
           type: { type: "enum", values: MACHINE_TYPES, required: true, description: "small, default, large or xlarge (xlarge needs --user-approved)" },
-          "user-approved": { type: "boolean", description: "The user approved an XLarge sandbox" },
+          "user-approved": { type: "boolean", description: "The user approved this move (XLarge always needs it; from an agent's chat, any move without an out-of-memory failure)" },
           json,
         },
         async run({ positionals, options }, ctx) {
@@ -375,7 +375,8 @@ export function buildCli(runtime: Runtime) {
               userApproved: options["user-approved"] === true,
               notifyThreadId: ctx.threadId ?? null,
               waitMs: runtime.launchWaitMs,
-              by: "cli",
+              // From an agent's chat: the same limits as boat_followup's sandbox_size.
+              by: ctx.threadId ? "tool" : "cli",
             });
             runtime.changed();
             const label = SIZE_SPECS[result.to].label;
@@ -752,7 +753,8 @@ export function buildCli(runtime: Runtime) {
                 userApproved: options["user-approved"] === true,
                 notifyThreadId: ctx.threadId ?? null,
                 waitMs: runtime.launchWaitMs,
-                by: "cli",
+                // From an agent's chat: the same limits as boat_followup's sandbox_size.
+                by: ctx.threadId ? "tool" : "cli",
               });
               runtime.wake();
               const now = service.store.get(result.task.id) ?? result.task;
@@ -1312,12 +1314,14 @@ export function buildCli(runtime: Runtime) {
           size: {
             type: "enum",
             values: MACHINE_TYPES,
-            description: "Sandbox size for this project's new tasks and their reviews (small, default, large, xlarge); default: the Default sandbox size setting",
+            description: "Sandbox size for this project's new tasks and their reviews (small, default, large, xlarge); default: the Default sandbox size setting. xlarge from an agent's chat needs --user-approved",
           },
+          "user-approved": { type: "boolean", description: "The user approved XLarge sandboxes for this project" },
           json,
         },
         async run({ options }, ctx) {
           return guard(async () => {
+            assertProjectSizeAllowed(options.size, options["user-approved"] === true, ctx.threadId);
             const repos = options.repo.map((entry) => {
               const at = entry.lastIndexOf("@");
               if (at <= 0) {
@@ -1366,12 +1370,14 @@ export function buildCli(runtime: Runtime) {
           size: {
             type: "enum",
             values: [...MACHINE_TYPES, "none"],
-            description: 'Sandbox size for its new tasks and their reviews ("none": the Default sandbox size setting)',
+            description: 'Sandbox size for its new tasks and their reviews ("none": the Default sandbox size setting); xlarge from an agent\'s chat needs --user-approved',
           },
+          "user-approved": { type: "boolean", description: "The user approved XLarge sandboxes for this project" },
           json,
         },
         async run({ positionals, options }, ctx) {
           return guard(async () => {
+            assertProjectSizeAllowed(options.size, options["user-approved"] === true, ctx.threadId);
             const existing = runtime.projects.get(positionals.id);
             if (existing === null) throw new PluginCliError(`No project "${positionals.id}".`, { code: "project_not_found" });
             const value = (next: string | undefined, current: string | null) => (next === undefined ? current : next === "none" ? null : next);
@@ -1559,6 +1565,18 @@ export function buildCli(runtime: Runtime) {
 function projectLine(project: BoatProject): string {
   const repos = project.repos.map((entry) => `${entry.repo}@${entry.baseBranch}`).join(" + ");
   return `${project.id}  ${project.name}  ${repos}  env ${project.environment ?? "default"}${project.snapshot ? `  snapshot ${project.snapshot}` : ""}${project.protocolPath ? `  protocol ${project.protocolPath}` : ""}  ${project.workerMode === "boat" ? "tasks in boat only" : "tasks as chats allowed"}  ${project.delivery === "push" ? "ships after approval" : "draft PRs"}${project.machineType ? `  ${SIZE_SPECS[project.machineType].label.toLowerCase()} sandboxes` : ""}${project.protectedBranches.length > 0 ? `  protects ${project.protectedBranches.join(", ")}` : ""}${project.instructions ? "  has instructions" : ""}`;
+}
+
+/**
+ * XLarge for every new task of a project, set from an agent's chat, needs
+ * the user's OK (like an XLarge task); the user's own terminal doesn't.
+ */
+function assertProjectSizeAllowed(size: string | undefined, userApproved: boolean, threadId: string | null | undefined): void {
+  if (size !== "xlarge" || userApproved || !threadId) return;
+  throw new PluginCliError("XLarge sandboxes for every task of a project need the user's OK.", {
+    code: "size_needs_approval",
+    hint: "Ask the user first, then pass --user-approved. Large needs no OK.",
+  });
 }
 
 /** A project size the plan doesn't allow (yet): what happens until it does. */

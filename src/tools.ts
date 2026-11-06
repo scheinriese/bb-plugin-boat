@@ -155,9 +155,6 @@ export function registerTools(runtime: Runtime): void {
     }),
     execute: (params, ctx) =>
       attempt(async () => {
-        if (params.machine_type === "xlarge" && params.user_approved !== true) {
-          throw new TaskError("An XLarge sandbox needs the user's OK.", "size_needs_approval", "Ask the user first, then pass user_approved. Large needs no OK.");
-        }
         const context = service.contextBlock(params.context_from ?? []);
         const project = params.project
           ? await runtime.resolveProject(parseProjectRef(params.project))
@@ -253,7 +250,7 @@ export function registerTools(runtime: Runtime): void {
         .enum(MACHINE_TYPES)
         .optional()
         .describe(
-          'Move the task\'s sandbox to this larger size before the follow-up, e.g. "large" after it ran out of memory. Stops and starts the sandbox: files stay, running processes (previews) stop, and other tasks on it move too. "large" needs no OK after an out-of-memory failure (otherwise user_approved); "xlarge" only with user_approved.',
+          'Move the task\'s sandbox to this larger size before the follow-up: after it ran out of memory, the next size up that the [boat] notice names (no OK needed for that one step; any other move needs user_approved; "xlarge" always does). Stops and starts the sandbox: files stay, running processes (previews) stop, and other tasks on it move too. Larger sizes cost more per hour.',
         ),
     }),
     execute: (params, ctx) =>

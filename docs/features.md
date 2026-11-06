@@ -215,7 +215,7 @@ can use.
   project size your plan doesn't include falls back to the setting, with a
   note in the task's history; a size you pick that the plan doesn't include
   is refused before anything starts. A review in a new sandbox gets at
-  least its task's current size.
+  least its task's size as boat reports it (up to Large without your OK).
   ```sh
   bb boat project set web-app --size large     # none: the setting
   ```
@@ -241,9 +241,11 @@ can use.
   bb boat task followup t_1a2b3c4d --type large --message "Continue where you left off."
   bb boat sandbox resize bx_k3p9 --type default    # only the size
   ```
-  Orchestrators use `boat_followup` with `sandbox_size`: only to a larger
-  size, Large after an out-of-memory failure (otherwise with your OK),
-  XLarge only with your OK.
+  Orchestrators use `boat_followup` with `sandbox_size` (the CLI from an
+  agent's chat has the same limits): only to a larger size, one size up
+  after an out-of-memory failure; anything else, and XLarge always, only
+  with your OK. A new XLarge sandbox, or XLarge for a project from an
+  agent's chat, also needs your OK.
 - **Measure instead of guess.** "Check this repo runs in a sandbox" (and
   the test task) samples the sandbox's memory every second during the turn
   and shows the peak with a recommended size, for example "Peak memory: 6.1

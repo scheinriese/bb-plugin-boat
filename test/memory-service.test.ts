@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { notificationText } from "../src/format.ts";
-import { decodeData } from "../src/memory.ts";
+import { costSentence, decodeData } from "../src/memory.ts";
+import { TaskError } from "../src/service.ts";
 import { testTaskInput } from "../src/setup.ts";
 import { makeService, oomLines } from "./fakes.ts";
 
@@ -470,4 +471,58 @@ test("the check has one deadline: a slow boat and a slow probe together stay wit
   const took = Date.now() - started;
   assert.ok(took < 300, `took ${took} ms`);
   assert.equal(env.service.sizes.holds(task.id), false);
+});
+
+test("a review in a new sandbox: its task's size as boat reports it, up to Large without the user's OK", async () => {
+  const env = makeService({ settings: { reviewSandbox: "new" } });
+  const task = await start(env);
+  env.boat.finish(task.conversationId!, REPORT);
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  // The user moved it to XLarge (their OK covered that sandbox only).
+  env.boat.sandboxes.get(task.sandboxId!)!.machineType = "xlarge";
+  const review = (await env.service.launchTask(await env.service.reviewInput(task.id), 5_000)).task;
+  assert.equal(env.boat.created.at(-1)!.type, "large");
+  assert.ok(
+    history(env, review.id, "sandbox-size").includes(`Large sandbox: task ${task.id}'s is XLarge, but an XLarge one needs the user's OK. Large costs twice as much per hour as Default.`),
+    JSON.stringify(history(env, review.id, "sandbox-size")),
+  );
+  await env.service.closeTask(review.id);
+  await env.service.launchTask(await env.service.reviewInput(task.id, { userApproved: true }), 5_000);
+  assert.equal(env.boat.created.at(-1)!.type, "xlarge");
+
+  // A sandbox that only says it's bigger (its own answer, which an agent there can fake): the setting.
+  const spoofed = makeService({ settings: { reviewSandbox: "new" } });
+  const other = await start(spoofed);
+  spoofed.boat.finish(other.conversationId!, REPORT);
+  await spoofed.service.sweep();
+  await spoofed.service.sizes.settled();
+  Object.assign(spoofed.boat.probe(other.sandboxId!), { cpus: 16, memTotalKb: 33_000_000 });
+  spoofed.boat.sandboxes.get(other.sandboxId!)!.machineType = null;
+  await spoofed.service.followup(other.id, "Again.");
+  spoofed.boat.finish(spoofed.store.get(other.id)!.conversationId!, "", "failed", "harness exited");
+  await spoofed.service.sweep();
+  await spoofed.service.sizes.settled();
+  assert.equal(spoofed.service.sizes.knownSize(spoofed.store.get(other.id)!)?.type, "xlarge");
+  await spoofed.service.launchTask(await spoofed.service.reviewInput(other.id), 5_000);
+  assert.equal(spoofed.boat.created.at(-1)!.type, "default");
+});
+
+test("XLarge for a new sandbox needs the user's OK, whoever asks", async () => {
+  const env = makeService();
+  await assert.rejects(start(env, { machineType: "xlarge" }), (error: unknown) => error instanceof TaskError && error.code === "size_needs_approval");
+  assert.equal(env.boat.created.length, 0);
+  await start(env, { machineType: "xlarge", userApproved: true });
+  assert.equal(env.boat.created.at(-1)!.type, "xlarge");
+  await start(env, { machineType: "large" });
+  assert.equal(env.boat.created.at(-1)!.type, "large");
+});
+
+test("what a size costs, against the size it is now", () => {
+  assert.equal(costSentence("large"), "Large costs twice as much per hour as Default.");
+  assert.equal(costSentence("large", "small"), "Large costs four times as much per hour as Small.");
+  assert.equal(costSentence("default", "small"), "Default costs twice as much per hour as Small.");
+  assert.equal(costSentence("small", "large"), "Small costs a quarter as much per hour as Large.");
+  assert.equal(costSentence("xlarge", "large"), "XLarge costs more per hour than Large.");
+  assert.equal(costSentence("default"), "");
 });

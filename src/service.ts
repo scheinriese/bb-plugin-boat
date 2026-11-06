@@ -928,6 +928,7 @@ export class BoatService {
       parent,
       role: input.role,
       settings,
+      userApproved: input.userApproved === true,
     });
     const id = newTaskId();
     const now = new Date().toISOString();
