@@ -201,6 +201,50 @@ test("after the move it's a chat task: no boat polling, turn ends and notices as
   assert.ok(!made.boat.calls.includes(`delete ${task.sandboxId}`), "bb deletes it through the machine");
 });
 
+test("a usage limit on the read-up turn: the other agent reads up instead, not an old headless follow-up", async () => {
+  const made = env();
+  const task = await headless(made);
+  await made.service.followup(task.id, "Also rename the button.");
+  made.boat.finish(task.conversationId!, REPORT);
+  await made.service.sweep();
+  assert.equal(made.store.get(task.id)!.status, "idle");
+  const { task: moved } = await move(made, task.id);
+  await made.service.sweep();
+  made.chat.finish(moved.threadId!, "Claude usage limit reached, resets at 5pm", "error");
+  await made.service.sweep();
+
+  assert.equal(made.chat.spawns.length, 2);
+  const handover = made.chat.spawns.at(-1)!;
+  assert.equal(handover.provider, "codex");
+  assert.doesNotMatch(handover.prompt, /rename the button/);
+  assert.doesNotMatch(handover.prompt, /Message from the orchestrator/);
+  assert.match(handover.prompt, new RegExp(`moved into a bb chat \\(@thread:${moved.threadId}\\)\\. That chat's agent \\(claude\\) hit a usage limit before it could read up`));
+  assert.match(handover.prompt, new RegExp(`/home/user/\\.boat-tasks/${task.id}/conversation\\.md`));
+  assert.match(handover.prompt, /## Latest report\n[\s\S]*The header is fixed/);
+  assert.match(handover.prompt, /Don't change, commit or push anything in this turn/);
+  const after = made.store.get(task.id)!;
+  assert.deepEqual([after.status, after.provider, after.threadId], ["running", "codex", handover.threadId]);
+  assert.ok(made.chat.stopped.includes(moved.threadId!));
+
+  // Its notice says both: the move, and the handover.
+  await made.service.sweep();
+  made.chat.finish(handover.threadId, REPORT);
+  await made.service.sweep();
+  const text = notificationText(made.notifications.at(-1)!.tasks, (id) => made.store.events(id, 30));
+  assert.match(text, /The user moved this task into the task chat/);
+  assert.match(text, /Handed over on a usage limit/);
+
+  // A follow-up's turn that hits a limit hands over that follow-up.
+  await made.service.followup(task.id, "Now add the test.");
+  await made.service.sweep();
+  made.chat.finish(handover.threadId, "Codex usage limit reached", "error");
+  await made.service.sweep();
+  const third = made.chat.spawns.at(-1)!;
+  assert.equal(third.provider, "claude");
+  assert.match(third.prompt, /## Message from the orchestrator\nNow add the test\./);
+  assert.doesNotMatch(third.prompt, /Don't change, commit or push anything in this turn/);
+});
+
 test("a move from the CLI tells the orchestrator in other words", async () => {
   const made = env();
   const task = await headless(made);

@@ -386,7 +386,11 @@ function composeFromBoatPrompt(input: Parameters<typeof composeHandoverPrompt>[0
   const block = input.role === "review" ? "review" : "report";
   return `# Continuing task ${input.taskId} in a bb chat: ${input.title}
 
-This task ran headless in a boat conversation (${input.fromProvider}) until now. It moved into this bb chat, so the user can follow your work and write to you here; follow-ups come here too. The headless conversation has stopped. You work in the same sandbox and checkout.
+${
+    input.fromThreadId
+      ? `This task ran headless in a boat conversation until it moved into a bb chat (@thread:${input.fromThreadId}). That chat's agent (${input.fromProvider}) hit a usage limit before it could read up, so you take over in this chat instead. The user can follow your work and write to you here; follow-ups come here too.`
+      : `This task ran headless in a boat conversation (${input.fromProvider}) until now. It moved into this bb chat, so the user can follow your work and write to you here; follow-ups come here too.`
+  } The headless conversation has stopped. You work in the same sandbox and checkout.
 
 ## The conversation so far
 It's in \`${input.transcriptPath ?? "(not written)"}\`, outside the repo: the prompts, the agent's messages and which tools it used. Read it first, the end first: the newest turns are last. Don't commit it or copy it into the repo.

@@ -491,6 +491,8 @@ class MoveCancelled extends Error {
 
 /** Turn states after which a headless turn is over. */
 const TERMINAL_PROMPT = new Set(["finished", "failed", "interrupted", "cancelled"]);
+/** Events that start a turn (a failover continues the turn it hands over). */
+const HANDOVER_TURN_STARTS = new Set(["dispatched", "followup", "followup-switch", "moved-to-chat"]);
 
 /** Whether a headless task can continue as a task chat now (Continue as a chat on its page). */
 export interface ChatMoveStatus {
@@ -2161,7 +2163,8 @@ export class BoatService {
       model: string | null;
       reasoningEffort: string | null;
       tier: Tier | null;
-      why: "usage-limit" | "switch";
+      /** from-boat: the move's read-up turn hit a usage limit; the next agent reads up instead. */
+      why: "usage-limit" | "switch" | "from-boat";
       message: string | null;
     },
   ): Promise<string> {
@@ -2173,11 +2176,20 @@ export class BoatService {
     if (environmentId === null) {
       throw new TaskError(`Task ${task.id}'s workspace is unknown, so another agent can't join it.`, "task_not_dispatched", "Start a new task.");
     }
-    const { extraProtectedBranches } = await this.settings();
+    const settings = await this.settings();
+    const { extraProtectedBranches } = settings;
+    const fromBoat =
+      next.why === "from-boat"
+        ? {
+            latestReport: task.result ? clipResult(task.result, 8_000) : null,
+            extraInstructions: this.standingInstructions(task, settings),
+          }
+        : {};
     const spawned = await this.hooks.chat!.spawn({
       taskId: task.id,
       title: task.title,
       prompt: composeHandoverPrompt({
+        ...fromBoat,
         taskId: task.id,
         role: task.role,
         title: task.title,
@@ -2204,6 +2216,11 @@ export class BoatService {
     this.store.addEvent(task.id, "chat", spawned.threadId);
     this.recordChat(task.id, spawned.threadId, next.provider, next.model, next.reasoningEffort);
     return spawned.threadId;
+  }
+
+  /** The settings' and the project's standing instructions for a task's agent. */
+  private standingInstructions(task: Task, settings: BoatSettings): string {
+    return [settings.workerInstructions, ...(this.hooks.projectInstructions?.(task.boatProject, task.repo) ?? [])].filter((part) => part.trim() !== "").join("\n\n");
   }
 
   /** Where a task's code is, for a chat that takes it over (a handover, a move from boat). */
@@ -2927,9 +2944,7 @@ export class BoatService {
       const settings = await this.settings();
       const choice = chatChoiceFromBoat(initial.provider, initial.model, initial.reasoningEffort, initial.tier, settings.modelTiers);
       const effort = agentEffort("chat", initial.provider, choice.effort);
-      const standing = [settings.workerInstructions, ...(this.hooks.projectInstructions?.(initial.boatProject, initial.repo) ?? [])]
-        .filter((part) => part.trim() !== "")
-        .join("\n\n");
+      const standing = this.standingInstructions(initial, settings);
       const prompt = composeHandoverPrompt({
         taskId: id,
         role: initial.role,
@@ -3931,8 +3946,12 @@ export class BoatService {
     const choice = tier === null ? null : choiceFor(settings.modelTiers, tier, next);
     const model = agentModel("chat", next, choice?.model ?? defaultModelFor(next, settings));
     const reasoningEffort = choice?.effort ?? null;
-    // The follow-up the stopped agent was working on, if this turn was one.
-    const lastFollowup = task.turns > 1 ? (this.store.latestEvent(task.id, "followup")?.text ?? null) : null;
+    // What the stopped agent was working on: this turn's start (a failover hands the same turn over).
+    const start = this.store.events(task.id, 200).filter((event) => HANDOVER_TURN_STARTS.has(event.kind)).at(-1) ?? null;
+    // The first turn after a move only reads up: the next agent does that instead, from the old conversation.
+    const fromBoat = start?.kind === "moved-to-chat";
+    const lastFollowup =
+      start?.kind === "followup" ? start.text : start?.kind === "followup-switch" ? start.text.replace(/^\([a-z]+ → [a-z]+\) /, "") : null;
     const marker = chatTurnMarker();
     const claimed = this.store.transition(
       task.id,
@@ -3942,7 +3961,7 @@ export class BoatService {
     );
     if (claimed === null) return false;
     try {
-      const threadId = await this.openHandoverChat(task, { provider: next, model, reasoningEffort, tier, why: "usage-limit", message: lastFollowup });
+      const threadId = await this.openHandoverChat(task, { provider: next, model, reasoningEffort, tier, why: fromBoat ? "from-boat" : "usage-limit", message: lastFollowup });
       this.store.update(task.id, { threadId });
       // The old chat must not resume (bb may retry it after the reset) in the same checkout.
       await this.hooks.chat!.stop(task.threadId!).catch(() => undefined);

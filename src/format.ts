@@ -210,22 +210,24 @@ export function notificationText(
     ]
       .filter(Boolean)
       .join(" · ");
-    const lastStart = eventsFor(task.id)
-      .filter((event) => TURN_STARTS.has(event.kind))
-      .at(-1);
+    const starts = eventsFor(task.id).filter((event) => TURN_STARTS.has(event.kind));
+    const lastStart = starts.at(-1);
+    // The turn's own start: a failover hands the same turn over (a move's read-up too).
+    const turnStart = starts.filter((event) => event.kind !== "failover").at(-1);
     const fromPage = /Cloud agents page/.test(
       eventsFor(task.id)
         .filter((event) => event.kind === "chat-move")
         .at(-1)?.text ?? "",
     );
-    const handover =
-      lastStart?.kind === "failover"
-        ? `\nHanded over on a usage limit: ${lastStart.text.split(" (")[0]}. Consider sending new dispatches to the other agent too.`
-        : lastStart?.kind === "moved-to-chat"
-          ? fromPage
-            ? `\nThe user moved this task into the task chat @thread:${task.threadId}: its headless conversation stopped, and follow-ups go into that chat. The user wants to talk to the agent there; don't send follow-ups unless they ask.`
-            : `\nThis task moved into the task chat @thread:${task.threadId} (from the CLI): its headless conversation stopped, and your follow-ups go into that chat.`
-          : "";
+    const moved =
+      turnStart?.kind === "moved-to-chat"
+        ? fromPage
+          ? `\nThe user moved this task into the task chat @thread:${task.threadId}: its headless conversation stopped, and follow-ups go into that chat. The user wants to talk to the agent there; don't send follow-ups unless they ask.`
+          : `\nThis task moved into the task chat @thread:${task.threadId} (from the CLI): its headless conversation stopped, and your follow-ups go into that chat.`
+        : "";
+    const failover =
+      lastStart?.kind === "failover" ? `\nHanded over on a usage limit: ${lastStart.text.split(" (")[0]}. Consider sending new dispatches to the other agent too.` : "";
+    const handover = `${moved}${failover}`;
     const evidence = evidenceLine(task.result, uploaderFor(task.id));
     const preview = previewFor(task.id);
     const delivery =
