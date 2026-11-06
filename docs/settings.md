@@ -36,9 +36,10 @@ In this order:
 5. **Orchestrators (optional):** the agent and effort new orchestrators
    start with, the sidebar, the size of chats on a Boat sandbox, full
    access for cloud orchestrators, and the orchestrator protocol. With one
-   agent, **Agent for orchestrators** is greyed out: that agent runs them. While you've hidden the orchestrator card on the Cloud agents
-   page, **Show the orchestrator card again** brings it back (the page shows
-   it while you have no orchestrator).
+   agent, **Agent for orchestrators** is greyed out: that agent runs them.
+   While you've hidden the orchestrator card on the Cloud agents page,
+   **Show the orchestrator card again** brings it back (the page shows it
+   while you have no orchestrator).
 6. **Advanced** (collapsed).
 7. **Back up and restore.**
 
