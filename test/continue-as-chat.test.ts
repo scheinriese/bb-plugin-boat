@@ -429,6 +429,37 @@ test("refused: the headless conversation still runs in boat, an expired GitHub l
   nothingMade(full);
 });
 
+test("a turn cut off by a stopped sandbox doesn't block the move; one boat still runs does, with a hint that works", async () => {
+  const made = env();
+  const { task } = await made.service.launchTask(
+    { title: "Fix the header", role: "implement", brief: "Fix it.", repo: "acme/web", orchestratorThreadId: null, runner: "boat" },
+    5_000,
+  );
+  // The sandbox stopped mid-turn: boat's log keeps the prompt unfinished, and the sweep settles it as cut off.
+  made.boat.convos.get(task.conversationId!)!.running = false;
+  made.boat.sandboxes.get(task.sandboxId!)!.state = "stopped";
+  await made.service.sweep();
+  const realNow = Date.now;
+  Date.now = () => realNow() + 60_000;
+  try {
+    await made.service.sweep();
+  } finally {
+    Date.now = realNow;
+  }
+  const cut = made.store.get(task.id)!;
+  assert.equal(cut.status, "idle");
+  assert.match(cut.error ?? "", /^The turn stopped without finishing/);
+
+  // boat restarted it meanwhile: refused, and the page's failure note and the CLI say how to go on (no Interrupt on an idle task's page).
+  made.boat.convos.get(task.conversationId!)!.running = true;
+  await refused(move(made, task.id), "task_running", new RegExp(`still running in boat\\. Try again once its turn ends; \`bb boat task interrupt ${task.id}\` stops it`));
+  made.boat.convos.get(task.conversationId!)!.running = false;
+
+  const { task: moved } = await move(made, task.id);
+  assert.equal(moved.runner, "chat");
+  assert.equal(moved.error, null);
+});
+
 test("failures roll back: the task stays a working headless task, and the sandbox is never deleted", async () => {
   // boat's log can't be read.
   let made = env();

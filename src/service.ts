@@ -491,6 +491,8 @@ class MoveCancelled extends Error {
 
 /** Turn states after which a headless turn is over. */
 const TERMINAL_PROMPT = new Set(["finished", "failed", "interrupted", "cancelled"]);
+/** A headless turn the sweep settled as cut off (its sandbox stopped mid-turn): boat's log never finishes it. */
+const CUT_OFF_ERROR = "The turn stopped without finishing";
 /** Events that start a turn (a failover continues the turn it hands over). */
 const HANDOVER_TURN_STARTS = new Set(["dispatched", "followup", "followup-switch", "moved-to-chat"]);
 
@@ -2890,8 +2892,14 @@ export class BoatService {
       const conversation = (await this.boat.conversations(sandboxId, signal)).find((entry) => entry.id === conversationId);
       const events = await this.boat.events(sandboxId, conversationId, signal);
       const turn = promptStatus(events, initial.promptId);
-      if (conversation?.running === true || (turn !== null && !TERMINAL_PROMPT.has(turn))) {
-        throw new TaskError("The headless conversation is still running in boat.", "task_running", "Wait for the turn to end, or Interrupt it.");
+      // A turn cut off by a stopped sandbox stays unfinished in boat's log: it's over once boat doesn't run it.
+      const cutOff = initial.status === "idle" && (initial.error ?? "").startsWith(CUT_OFF_ERROR);
+      if (conversation?.running === true || (turn !== null && !TERMINAL_PROMPT.has(turn) && !cutOff)) {
+        throw new TaskError(
+          "The headless conversation is still running in boat.",
+          "task_running",
+          `Try again once its turn ends; \`bb boat task interrupt ${id}\` stops it.`,
+        );
       }
       if (initial.delivery === "pr" && initial.repo !== null) await this.assertGithubLogin(initial, { signal });
       stillWanted();
@@ -4057,7 +4065,7 @@ export class BoatService {
         result: clipResult(text || "(The agent finished without a final message.)"),
         prUrl,
         error: cutOff
-          ? `The turn stopped without finishing (sandbox ${sandbox.state}). Send a follow-up to continue.`
+          ? `${CUT_OFF_ERROR} (sandbox ${sandbox.state}). Send a follow-up to continue.`
           : status === "interrupted"
             ? "The turn was interrupted."
             : null,
