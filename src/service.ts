@@ -252,6 +252,10 @@ const RESULT_LIMIT = 16_000;
 const CONNECT_FIX = "Turn on bb Connect: sign in with `bb account login`, then run `bb connect on`.";
 
 /** "Your projects don't run tasks on acme/x as chats" (or How tasks run is In boat). */
+function lowerFirst(text: string): string {
+  return text.charAt(0).toLowerCase() + text.slice(1);
+}
+
 function trustText(trust: ChatTrust): string {
   if (trust.workersBoat) return "How tasks run is set to In boat";
   return `Your projects don't run tasks on ${trust.untrustedRepos.join(", ")} as chats`;
@@ -326,11 +330,13 @@ export interface ChatTrust {
 }
 
 /**
- * A task chat's sandbox can reach this bb, so the rules alone allow one only
- * when How tasks run allows chats and every repo is in a project with Run
- * tasks as chats on (or, outside projects, How tasks run is As chats
- * everywhere). A task with no repo needs only the first. Only the plugin's
- * own projects count (repoMode), never a thread's project metadata.
+ * A task chat's sandbox can reach this bb, so the rules allow one only when
+ * How tasks run allows chats and every repo the task clones is in a project
+ * with Run tasks as chats on (or, outside projects, How tasks run is As chats
+ * everywhere). A task with no repo needs only the first. The same rule picks
+ * the runner (no --chat), allows --chat without the user's confirm, and sets
+ * New task's default, so they never disagree. repoMode: how the projects run
+ * a repo's tasks (null: none has it).
  */
 export function chatTrust(
   repos: readonly string[],
@@ -340,6 +346,12 @@ export function chatTrust(
   if (settings.workerMode !== "chat") return { trusted: false, untrustedRepos: [...repos], workersBoat: true };
   const untrustedRepos = repos.filter((repo) => (repoMode(repo) ?? settings.adhocWorkerMode) !== "chat");
   return { trusted: untrustedRepos.length === 0, untrustedRepos, workersBoat: false };
+}
+
+/** A sandbox named by id (not "", new, same or auto), or null. */
+export function namedSandbox(choice: string | null | undefined): string | null {
+  const named = (choice ?? "").trim();
+  return named === "" || named === "new" || named === "same" || named === "auto" ? null : named;
 }
 
 /** The user's confirm (the repos they were warned about) covers every repo the rules don't trust. */
@@ -937,26 +949,29 @@ export class BoatService {
     // Trust follows the repo: any of your projects that has it decides.
     // Trust follows the repo across all your projects (the current settings, not
     // an orchestrator's old copy); a project's own setting is the fallback.
-    const projectMode =
-      repo === null
-        ? null
-        : (this.hooks.repoWorkerMode?.(repo) ?? (project !== null && projectEntry !== null ? project.workerMode : null));
+    const repoMode = (entry: string): Runner | null =>
+      this.hooks.repoWorkerMode?.(entry) ?? (project !== null && project.repos.some((each) => each.repo.toLowerCase() === entry.toLowerCase()) ? project.workerMode : null);
+    const projectMode = repo === null ? null : repoMode(repo);
     const repos = [repo, ...extraRepos.map((entry) => entry.repo)].filter((entry): entry is string => entry !== null);
-    const runner = this.chooseRunner(input, parent, settings, projectMode, repo, repos);
-    // bb was installed on a named sandbox for a move (its files may still be there): only for repos you trust.
-    const named = (input.sandbox ?? "").trim();
-    if (named !== "" && named !== "new" && named !== "same" && named !== "auto" && this.store.sandboxHadBb(named) && !this.chatTrust(repos, settings).trusted) {
+    // One rule for every repo the task clones: the runner's, --chat's and New task's.
+    const trust = chatTrust(repos, settings, repoMode);
+    const runner = this.chooseRunner(input, parent, settings, trust);
+    // A sandbox that runs bb (or did) holds this bb's login: never for repos you
+    // don't trust, whatever the runner. Its own task's sandbox is no news to a review.
+    const named = namedSandbox(input.sandbox);
+    if (named !== null && !trust.trusted && !(parent !== null && named === parent.sandboxId && repo === parent.repo) && (await this.sandboxHasBb(named))) {
       throw new TaskError(
-        `bb was installed on sandbox ${named} (a task moved to a chat there); a repo you don't trust can't run there.`,
+        `Sandbox ${named} runs bb (a task chat's or orchestrator's machine, or bb was installed there for a move), so a repo you don't trust can't run there, headless or not.`,
         "untrusted_sandbox",
         "Use a new sandbox, or add the repo to a project with Run tasks as chats on if you trust it.",
       );
     }
     // What the rules alone would have picked (null: they'd refuse), for the history.
-    const ruleRunner = input.runner == null ? runner : this.tryRules(input, parent, settings, projectMode, repo, repos);
+    const ruleRunner = input.runner == null ? runner : this.tryRules(input, parent, settings, trust);
     // A worker chat runs bb in its sandbox, which reaches this bb through bb Connect.
-    if (runner === "chat" && this.hooks.connect) {
-      const connect = await this.hooks.connect();
+    const connectState = (runner === "chat" || ruleRunner === "chat") && this.hooks.connect ? await this.hooks.connect() : null;
+    if (runner === "chat" && connectState !== null) {
+      const connect = connectState;
       if (connect.state === "off") {
         throw new TaskError(
           "Task chats need bb Connect, and it isn't set up on this bb.",
@@ -974,14 +989,11 @@ export class BoatService {
     if (this.hooks.preflight) {
       await this.hooks.preflight({ agent: provider, runner, environment, newSandbox: surelyNewSandbox(input, parent, settings) });
     }
-    const untrusted =
-      runner === "boat" &&
-      input.runner == null &&
-      repo !== null &&
-      projectMode === null &&
-      this.hooks.chat !== undefined &&
-      settings.workerMode === "chat" &&
-      (parent === null || this.store.latestEvent(parent.id, "trust") !== null);
+    // Headless because the rules don't trust the repo (asked for or not): the Untrusted repo badge.
+    const ruled = runner === "boat" && ruleRunner === "boat" && this.hooks.chat !== undefined && settings.workerMode === "chat";
+    const untrusted = ruled && repo !== null && projectMode === null && (parent === null || this.store.latestEvent(parent.id, "trust") !== null);
+    // Headless for another repo the task clones (its own is trusted).
+    const otherUntrusted = ruled && parent === null && !trust.trusted && (repo === null || (projectMode ?? settings.adhocWorkerMode) === "chat");
     const model = agentModel(runner, provider, explicitModel ?? choice?.model ?? configuredModel);
     // Likewise an effort level only the missing agent has (ultra, ultracode).
     const explicitEffort = agentNote !== null && (effortAgent(askedEffort) ?? provider) !== provider ? null : askedEffort;
@@ -1079,20 +1091,24 @@ export class BoatService {
     if (untrusted) {
       this.store.addEvent(id, "trust", `${repo} isn't one of your projects: the task runs headless in boat, with no access to your bb.`);
     }
+    if (otherUntrusted) {
+      this.store.addEvent(id, "runner", `Runs headless in boat: ${lowerFirst(trustText(trust))}, and the task clones ${trust.untrustedRepos.length === 1 ? "it" : "them"} too`);
+    }
     if (input.runner != null && ruleRunner !== null && ruleRunner !== runner && input.evidence !== false) {
       this.store.addEvent(
         id,
         "runner",
         runner === "chat"
           ? "Runs as a task chat, as asked (How tasks run would run it headless)"
-          : "Runs headless in boat, as asked (How tasks run would make it a task chat)",
+          : connectState?.state === "off"
+            ? "Runs headless in boat: task chats need bb Connect, which is off"
+            : "Runs headless in boat, as asked (How tasks run would make it a task chat)",
       );
     }
     if (input.runner == null && runner === "boat" && parent?.runner === "chat" && this.userMadeChat(parent)) {
       this.store.addEvent(id, "runner", `Runs headless: task ${parent.id} is a task chat only because the user asked, so its reviews don't get this bb's reach`);
     }
     if (runner === "chat" && input.runner === "chat") {
-      const trust = this.chatTrust(repos, settings);
       if (!trust.trusted) this.store.addEvent(id, "trust-confirmed", `${trustText(trust)}; started as a task chat after the warning in New task (its sandbox can reach this bb).`);
     }
     if (input.userApproved === true && needsFrontierApproval(settings.modelTiers, tier, model, reasoningEffort)) {
@@ -1114,7 +1130,7 @@ export class BoatService {
     return { task, run };
   }
 
-  /** The rules' trust for these repos (the plugin's projects and How tasks run). */
+  /** The rules' trust for these repos (the plugin's projects and How tasks run), for a task that exists. */
   chatTrust(repos: readonly string[], settings: Pick<BoatSettings, "workerMode" | "adhocWorkerMode">): ChatTrust {
     return chatTrust(repos, settings, (repo) => this.hooks.repoWorkerMode?.(repo) ?? null);
   }
@@ -1124,21 +1140,20 @@ export class BoatService {
     return this.hooks.chat !== undefined;
   }
 
+  /** bb runs on this sandbox, or did (a task chat's or orchestrator's machine, a move's install): it may hold bb's login. */
+  private async sandboxHasBb(sandboxId: string): Promise<boolean> {
+    if (this.store.machineForSandbox(sandboxId) !== null || this.store.sandboxHadBb(sandboxId)) return true;
+    return this.hooks.chat !== undefined && (await this.hooks.chat.findMachine(sandboxId).catch(() => null)) !== null;
+  }
+
   /** A task chat the user made against the rules (a confirmed start or move): its reviews don't follow it. */
   private userMadeChat(task: Task): boolean {
     return this.store.latestEvent(task.id, "trust-confirmed") !== null;
   }
 
-  private tryRules(
-    input: StartTaskInput,
-    parent: Task | null,
-    settings: BoatSettings,
-    projectMode: Runner | null,
-    repo: string | null,
-    repos: readonly string[],
-  ): Runner | null {
+  private tryRules(input: StartTaskInput, parent: Task | null, settings: BoatSettings, trust: ChatTrust): Runner | null {
     try {
-      return this.chooseRunner({ ...input, runner: null }, parent, settings, projectMode, repo, repos);
+      return this.chooseRunner({ ...input, runner: null }, parent, settings, trust);
     } catch {
       return null;
     }
@@ -1148,28 +1163,31 @@ export class BoatService {
    * An explicit "chat": this bb runs task chats, a named sandbox already runs
    * bb, and the rules trust the repos or the user confirmed the warning.
    */
-  private explicitChat(input: StartTaskInput, settings: BoatSettings, repos: readonly string[]): Runner {
+  private explicitChat(input: StartTaskInput, trust: ChatTrust): Runner {
     if (this.hooks.chat === undefined) throw new TaskError("This bb can't run task chats.", "chat_unavailable", "Start it headless instead (drop --chat).");
-    const choice = (input.sandbox ?? "").trim();
-    if (choice !== "" && choice !== "new" && choice !== "same" && choice !== "auto" && this.store.hostForSandbox(choice) === null) {
-      throw new TaskError(`Sandbox ${choice} doesn't run bb, so a task chat can't start there.`, "sandbox_not_chat", "Use a new sandbox, or start it headless.");
+    const named = namedSandbox(input.sandbox);
+    if (named !== null && this.store.hostForSandbox(named) === null) {
+      throw new TaskError(`Sandbox ${named} doesn't run bb, so a task chat can't start there.`, "sandbox_not_chat", "Use a new sandbox, or start it headless.");
     }
-    const trust = this.chatTrust(repos, settings);
     if (!confirmCovers(input.confirmUntrustedChat, trust)) throw this.untrustedRepoError(trust, "start", input.confirmUntrustedChat != null);
     return "chat";
   }
 
   /** A task chat the rules don't allow and the user didn't confirm (or confirmed for other repos). */
-  private untrustedRepoError(trust: ChatTrust, via: "start" | "move", confirmedOther: boolean): TaskError {
+  private untrustedRepoError(trust: ChatTrust, via: "start" | "move", confirmedOther: boolean, ownRepos?: readonly string[]): TaskError {
     const repo = trust.untrustedRepos[0] ?? null;
     const what = via === "start" ? "start as a task chat" : "continue as a task chat";
+    // A move: a repo another task ran in the same sandbox counts too.
+    const other = repo !== null && ownRepos !== undefined && !ownRepos.some((own) => own.toLowerCase() === repo.toLowerCase());
     const message = confirmedOther
       ? `The task's repos changed after the warning: your projects don't run tasks on ${trust.untrustedRepos.join(", ")} as chats.`
       : trust.workersBoat
-        ? `How tasks run is set to In boat, so ${repo === null ? "a task" : repo} can't ${what} here.`
-        : this.hooks.repoWorkerMode?.(repo ?? "") === "boat"
-          ? `${repo}'s project runs its tasks headless (Run tasks as chats is off), so it can't ${what} here.`
-          : `${repo} isn't in one of your projects with Run tasks as chats on, so it can't ${what} here.`;
+        ? `How tasks run is set to In boat, so ${repo === null ? "a task" : other ? `a task whose sandbox also ran ${repo}` : repo} can't ${what} here.`
+        : other
+          ? `Another task ran ${repo} in this task's sandbox, and your projects don't run tasks on it as chats, so this task can't ${what} there.`
+          : this.hooks.repoWorkerMode?.(repo ?? "") === "boat"
+            ? `${repo}'s project runs its tasks headless (Run tasks as chats is off), so it can't ${what} here.`
+            : `${repo} isn't in one of your projects with Run tasks as chats on, so it can't ${what} here.`;
     const hint = confirmedOther
       ? "Check the warning again, then try again."
       : via === "start"
@@ -1179,25 +1197,18 @@ export class BoatService {
   }
 
   /** Workers are bb chats unless the setting, a boat sandbox or the implementer says otherwise. */
-  private chooseRunner(
-    input: StartTaskInput,
-    parent: Task | null,
-    settings: BoatSettings,
-    projectMode: Runner | null,
-    repo: string | null,
-    repos: readonly string[] = repo === null ? [] : [repo],
-  ): Runner {
+  private chooseRunner(input: StartTaskInput, parent: Task | null, settings: BoatSettings, trust: ChatTrust): Runner {
     if (input.runner === "boat") return "boat";
-    if (input.runner === "chat") return this.explicitChat(input, settings, repos);
+    if (input.runner === "chat") return this.explicitChat(input, trust);
     if (this.hooks.chat === undefined || settings.workerMode !== "chat") return "boat";
     // A task the user made a chat against the rules: its reviews run headless,
     // so no more sandboxes get this bb's reach without their say.
     if (parent !== null && parent.runner === "chat" && this.userMadeChat(parent)) return "boat";
     // Worker chats hold bb machine credentials: only for repos you trust. A
     // review follows its implementer; a task without a repo clones no code.
-    const trusted: Runner = parent !== null ? parent.runner : repo === null ? "chat" : (projectMode ?? settings.adhocWorkerMode);
-    const choice = (input.sandbox ?? "").trim();
-    if (choice !== "" && choice !== "new" && choice !== "same" && choice !== "auto") {
+    const trusted: Runner = parent !== null ? parent.runner : trust.trusted ? "chat" : "boat";
+    const choice = namedSandbox(input.sandbox);
+    if (choice !== null) {
       // A named sandbox without a bb machine stays a boat conversation.
       if (this.store.hostForSandbox(choice) === null) return "boat";
       // One with a machine holds bb credentials: never for a repo you don't trust.
@@ -2330,9 +2341,7 @@ export class BoatService {
     }
     // A bb machine's disk holds bb's login for this server: a snapshot of it would
     // carry that into every sandbox started from it, untrusted repos' included.
-    const machine =
-      this.store.isChatMachineSandbox(sandboxId) || this.bbWasInstalled(sandboxId) || (await this.hooks.chat?.findMachine(sandboxId).catch(() => null)) != null;
-    if (machine) {
+    if (await this.sandboxHasBb(sandboxId)) {
       throw new TaskError(
         `Sandbox ${sandboxId} runs bb (a task chat's or orchestrator's machine), so it can't be a snapshot.`,
         "invalid_value",

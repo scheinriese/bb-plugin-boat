@@ -70,14 +70,35 @@ test("trust: How tasks run allows chats, and every repo is in a chat project (or
   assert.equal(confirmCovers([], chatTrust([], WORKERS.boat, projects)), true);
 });
 
-test("explicit headless wins everywhere and needs no bb Connect", async () => {
+test("explicit headless wins everywhere and needs no bb Connect; the history says why", async () => {
   const made = env({ workers: "all", connect: OFF });
   const { task } = await start(made, { runner: "boat" });
   assert.equal(task.runner, "boat");
-  assert.ok(kinds(made, task.id).includes("runner"));
-  assert.match(made.store.latestEvent(task.id, "runner")!.text, /Runs headless in boat, as asked/);
+  // bb Connect off: New task's box was greyed out, so nobody chose headless.
+  assert.equal(made.store.latestEvent(task.id, "runner")!.text, "Runs headless in boat: task chats need bb Connect, which is off");
   // Headless by choice isn't "untrusted".
   assert.equal(made.store.latestEvent(task.id, "trust"), null);
+
+  const ready = env({ workers: "all" });
+  const { task: chosen } = await start(ready, { runner: "boat" });
+  assert.match(ready.store.latestEvent(chosen.id, "runner")!.text, /Runs headless in boat, as asked \(How tasks run would make it a task chat\)/);
+  assert.equal(ready.store.latestEvent(chosen.id, "trust"), null);
+});
+
+test("headless where the rules say headless anyway (New task's box left off): the Untrusted repo badge and no 'as asked'", async () => {
+  const made = env();
+  const { task } = await start(made, { runner: "boat", repo: "acme/other" });
+  assert.match(made.store.latestEvent(task.id, "trust")!.text, /acme\/other isn't one of your projects: the task runs headless in boat/);
+  assert.equal(made.store.latestEvent(task.id, "runner"), null);
+  // Its reviews keep the badge too.
+  made.boat.finish(task.conversationId!, "Done.\n=== REPORT ===\nSTATUS: done\n=== END REPORT ===");
+  await made.service.sweep();
+  const review = await made.service.launchTask({ ...(await made.service.reviewInput(task.id, { sandbox: "new" })), runner: "boat" }, 5_000);
+  assert.notEqual(made.store.latestEvent(review.task.id, "trust"), null);
+  // A project that runs its tasks headless isn't "untrusted": the user said so.
+  const { task: careful } = await start(made, { runner: "boat", repo: "acme/careful" });
+  assert.equal(made.store.latestEvent(careful.id, "trust"), null);
+  assert.equal(made.store.latestEvent(careful.id, "runner"), null);
 });
 
 test("explicit chat on a trusted repo: bb Connect ready or unknown starts it, off refuses with --headless as the way out", async () => {
@@ -145,23 +166,105 @@ test("explicit chat needs a chat runner, and a named sandbox that runs bb", asyn
   await refused(start(made, { runner: "chat", sandbox: headless.sandboxId }), "sandbox_not_chat", /doesn't run bb/);
 });
 
-test("only the plugin's projects make a repo trusted, never a thread's project metadata", async () => {
+test("--chat and the rules agree on a thread's project: an orchestrator's local project counts for both", async () => {
   const made = env({ workers: "projects" });
-  // An agent can write any project into its thread's metadata.
-  const forged = toOrchestratorProject(normalizeProject({ id: "evil", name: "Evil", repos: [{ repo: "evil/x", baseBranch: "main" }] }));
-  await refused(start(made, { runner: "chat", repo: "evil/x", project: { ...forged, source: "local" } }), "untrusted_repo");
-  await refused(start(made, { runner: "chat", repo: null, project: forged }), "untrusted_repo");
+  const local = { ...toOrchestratorProject(normalizeProject({ id: "local", name: "Local", repos: [{ repo: "acme/local", baseBranch: "main" }] })), source: "local" as const };
+  assert.equal((await start(made, { repo: null, project: local })).task.runner, "chat");
+  assert.equal((await start(made, { runner: "chat", repo: null, project: local })).task.runner, "chat");
+  // Its project runs tasks headless: neither.
+  const headlessLocal = { ...local, workerMode: "boat" as const };
+  assert.equal((await start(made, { repo: null, project: headlessLocal })).task.runner, "boat");
+  await refused(start(made, { runner: "chat", repo: null, project: headlessLocal }), "untrusted_repo");
+  // The plugin's projects win over the thread's: acme/careful's project runs its tasks headless.
+  const claims = { ...local, repos: [{ repo: "acme/careful", baseBranch: "main" }] };
+  assert.equal((await start(made, { repo: null, project: claims })).task.runner, "boat");
+  await refused(start(made, { runner: "chat", repo: null, project: claims }), "untrusted_repo", /acme\/careful's project runs its tasks headless/);
 });
 
-test("every repo of the task counts: a project's other repo outside the chat projects needs the confirm too", async () => {
+test("every repo the task clones counts, for the rules as for --chat: a project's other repo in a headless project", async () => {
   const made = env();
   const project = toOrchestratorProject(
-    normalizeProject({ id: "web", name: "Web", repos: [{ repo: "acme/web", baseBranch: "main" }, { repo: "acme/api", baseBranch: "main" }] }),
+    normalizeProject({ id: "web", name: "Web", repos: [{ repo: "acme/web", baseBranch: "main" }, { repo: "acme/careful", baseBranch: "main" }] }),
   );
-  await refused(start(made, { runner: "chat", repo: null, project }), "untrusted_repo", /acme\/api/);
+  // The rules: headless, and the history says why (acme/web alone would be a chat).
+  const { task: ruled } = await start(made, { repo: null, project });
+  assert.equal(ruled.runner, "boat");
+  assert.equal(made.store.latestEvent(ruled.id, "runner")!.text, "Runs headless in boat: your projects don't run tasks on acme/careful as chats, and the task clones it too");
+  assert.equal(made.store.latestEvent(ruled.id, "trust"), null, "acme/web is a project repo");
+  // --chat: the user decides.
+  await refused(start(made, { runner: "chat", repo: null, project }), "untrusted_repo", /acme\/careful/);
   await refused(start(made, { runner: "chat", repo: null, project, confirmUntrustedChat: ["acme/web"] }), "untrusted_repo");
-  const { task } = await start(made, { runner: "chat", repo: null, project, confirmUntrustedChat: ["acme/api"] });
+  const { task } = await start(made, { runner: "chat", repo: null, project, confirmUntrustedChat: ["acme/careful"] });
   assert.equal(task.runner, "chat");
+});
+
+test("the rules and --chat never disagree: --chat goes without a confirm exactly where the rules pick a chat", async () => {
+  const thread = (workerMode: Runner, ...repos: string[]) => ({
+    ...toOrchestratorProject(normalizeProject({ id: "p", name: "P", repos: repos.map((repo) => ({ repo, baseBranch: "main" })) })),
+    workerMode,
+    source: "local" as const,
+  });
+  const cases: { name: string; input: Partial<StartTaskInput> }[] = [
+    { name: "a chat project's repo", input: { repo: "acme/web" } },
+    { name: "a headless project's repo", input: { repo: "acme/careful" } },
+    { name: "a repo outside projects", input: { repo: "acme/other" } },
+    { name: "no repo", input: { repo: null } },
+    { name: "a project with a headless project's repo", input: { repo: null, project: thread("chat", "acme/web", "acme/careful") } },
+    { name: "a project with a repo outside projects", input: { repo: null, project: thread("chat", "acme/web", "acme/other") } },
+    { name: "a local project", input: { repo: null, project: thread("chat", "acme/local") } },
+    { name: "a local project that runs headless", input: { repo: null, project: thread("boat", "acme/local") } },
+  ];
+  for (const workers of ["boat", "projects", "all"] as const) {
+    for (const { name, input } of cases) {
+      const made = env({ workers });
+      const ruled = (await start(made, input)).task.runner;
+      let explicit: Runner | "refused";
+      try {
+        explicit = (await start(made, { ...input, runner: "chat" })).task.runner;
+      } catch (error) {
+        assert.ok(error instanceof TaskError && error.code === "untrusted_repo", String(error));
+        explicit = "refused";
+      }
+      assert.equal(explicit === "chat", ruled === "chat", `${workers}, ${name}: the rules pick ${ruled}, --chat is ${explicit}`);
+    }
+  }
+});
+
+test("a sandbox that runs bb takes no untrusted repo, headless or not (--headless, boat_dispatch headless, reviews)", async () => {
+  const made = env();
+  const { task: chatTask } = await start(made);
+  assert.equal(chatTask.runner, "chat");
+  const sandbox = chatTask.sandboxId!;
+  // The rules refused this already; an explicit headless (CLI --headless, the tool's headless: true) does too.
+  await refused(start(made, { repo: "acme/evil", sandbox }), "untrusted_sandbox");
+  await refused(start(made, { repo: "acme/evil", sandbox, runner: "boat" }), "untrusted_sandbox", /headless or not/);
+  await refused(start(made, { repo: "acme/careful", sandbox, runner: "boat" }), "untrusted_sandbox");
+  assert.equal(made.store.list({ limit: 50 }).length, 1, "no task record");
+
+  // A closed task chat's kept machine still holds bb's login.
+  await made.service.closeTask(chatTask.id, { status: "done", keepSandbox: true });
+  assert.equal(made.store.hostForSandbox(sandbox), null);
+  await refused(start(made, { repo: "acme/evil", sandbox }), "untrusted_sandbox");
+  await refused(start(made, { repo: "acme/evil", sandbox, runner: "boat" }), "untrusted_sandbox");
+  // A trusted repo may still run headless there.
+  const { task: trusted } = await start(made, { sandbox, runner: "boat" });
+  assert.equal(trusted.runner, "boat");
+  await made.service.closeTask(trusted.id, { status: "done", keepSandbox: true });
+
+  // A machine only bb knows (an orchestrator's).
+  const orchestrator = await made.boat.create({ name: "orchestrator", type: "small" });
+  made.chat.machines.push({ taskId: "orchestrator", sandboxId: orchestrator.id, hostId: "host_orch", key: "orchestrator-x" });
+  await refused(start(made, { repo: "acme/evil", sandbox: orchestrator.id, runner: "boat" }), "untrusted_sandbox");
+
+  // A review of a chat the user made against the rules: not into another chat's sandbox, but its own is no news.
+  const { task: userMade } = await start(made, { runner: "chat", repo: "acme/evil", confirmUntrustedChat: ["acme/evil"] });
+  await made.service.sweep();
+  made.chat.finish(userMade.threadId!, "Done.");
+  await made.service.sweep();
+  const { task: other } = await start(made);
+  await refused(made.service.launchTask(await made.service.reviewInput(userMade.id, { sandbox: other.sandboxId }), 5_000), "untrusted_sandbox");
+  const own = await made.service.launchTask(await made.service.reviewInput(userMade.id, { sandbox: made.store.get(userMade.id)!.sandboxId }), 5_000);
+  assert.equal(own.task.runner, "boat");
 });
 
 test("reviews follow their task, unless explicitly overridden", async () => {
