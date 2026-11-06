@@ -182,6 +182,14 @@ Idle sandboxes stop on their own. Their files and agent conversations
 survive and resume on the next follow-up. Closing a task deletes its
 sandbox, unless another open task uses it.
 
+boat's own auto-stop (**Hard stop after**, within your plan's cap) only
+sees boat's headless agents at work, not a chat's. While a turn runs in a
+task chat, or in any chat on a Boat sandbox (a cloud orchestrator, a chat
+you started there), the plugin moves that stop out shortly before it comes,
+by up to Hard stop after (within the cap). The task's history says "Kept
+the sandbox on while the agent works", once a turn. A sandbox with no turn
+running is never kept on: once the turn ends, it stops when idle, as above.
+
 ## How work lands: pull requests, or ship after approval
 
 Each project picks one (Projects → "How work lands", or
