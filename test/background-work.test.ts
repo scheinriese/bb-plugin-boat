@@ -282,6 +282,18 @@ test("boat ps, as boat prints it: bb's daemon and workers and boat's own process
   assert.equal(sample.processes[4]!.startedAt, "2026-11-06T10:05:00Z");
   assert.deepEqual(busyProcesses(sample).map((entry) => entry.pid), [301]);
   assert.equal(isInfrastructure({ command: "/usr/bin/node /work/server/bb-app/notes.mjs" }), false, "a repo's own file named like bb's isn't bb");
+  // bb's other entry points are its own.
+  assert.equal(isInfrastructure({ command: "node /home/user/.bb-machines/acme.example/npm/lib/node_modules/bb-app/dist/bb-app.js serve" }), true);
+  assert.equal(isInfrastructure({ command: "node /home/user/.bb-machines/acme.example/plugin-host-artifacts/boat/1.0.0/host.mjs" }), true);
+  // Task work in a bb workspace is the task's, even under a bb machine's data folder.
+  for (const command of [
+    "/usr/bin/node /home/user/.bb-machines/acme.example/plugins/environment-personal-workspace/host-data/workspaces/task/node_modules/typescript/bin/tsc -b",
+    "cargo build --manifest-path /home/user/.bb-machines/acme.example/plugins/environment-personal-workspace/host-data/workspaces/task/Cargo.toml",
+    "node /home/user/.bb-machines/acme.example/worktrees/web/scripts/build.mjs",
+    "node /home/user/.bb-machines/acme.example/npm/lib/node_modules/bb-app/host-daemon/dist/x.mjs /home/user/.bb-machines/acme.example/plugins/p/host-data/workspaces/t/data.csv",
+  ]) {
+    assert.equal(isInfrastructure({ command }), false, command);
+  }
 });
 
 test("the idle stop tells the watchdog when it stops a headless sandbox with nothing computing", async () => {
@@ -303,7 +315,6 @@ test("servers started in the background are told from finite jobs by bb's descri
     "Start the API server",
     "python3 -m http.server 8000",
     "Launch the preview",
-    "npx vite --host",
     "Run tsc in watch mode",
     "jest --watch",
     "rails server -b 0.0.0.0",
@@ -311,7 +322,30 @@ test("servers started in the background are told from finite jobs by bb's descri
   ]) {
     assert.equal(isServerCommand(text), true, text);
   }
-  for (const text of ["Run the full test suite", "cargo bench", "Run server tests", "npm run build", "vite build", "Run vitest", "Build the site", "pytest -x tests/server", "Wait for the migration to finish"]) {
+  for (const text of [
+    "Run the full test suite",
+    "cargo bench",
+    "Run server tests",
+    "npm run build",
+    "vite build",
+    "Run vitest",
+    "Build the site",
+    "pytest -x tests/server",
+    "Wait for the migration to finish",
+    // Framework names in a finite step's description, and anything unclear, count as work.
+    "Build the Vite production bundle",
+    "Build Storybook",
+    "Run the Storybook build",
+    "Compile the Next.js app",
+    "Bundle with Vite",
+    "Export the Astro site",
+    "npx vite --host",
+    "Run Vite",
+    "Install dependencies, then start the dev server",
+    "Run tests in watch mode",
+    "Type-check the server",
+    "Generate the preview images",
+  ]) {
     assert.equal(isServerCommand(text), false, text);
   }
 });

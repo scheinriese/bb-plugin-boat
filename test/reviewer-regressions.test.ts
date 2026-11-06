@@ -1,6 +1,7 @@
 // Regression checks from the Codex review of PR #6 (t_b13aa57b), kept as tests.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { NO_WORK, withoutServers } from '../src/activity.ts';
 import { busyProcesses, parseProcessSample } from '../src/boat-api.ts';
 import { createWatchdog } from '../src/watchdog.ts';
 import { makeService } from './fakes.ts';
@@ -60,4 +61,28 @@ test('a second headless interruption arms a new resume note', async () => {
   at += 24 * 3600000;
   await dog.headlessStopped({sandboxId: task.sandboxId!, stoppedAt: at, how: 'idle-stop'});
   assert.ok(await dog.noteFor(task.id));
+});
+
+// Re-review of PR #6 (t_7f5d8623): two reproduced regressions.
+const buildBrief = { title: 'Build', role: 'implement' as const, brief: 'Build it.', repo: 'acme/web', orchestratorThreadId: 'thr_orch' };
+test('a finite Vite build remains protected from idle suspension', async () => {
+  const env = makeService({ chat: true, settings: { stopIdleAfterMinutes: 1 } });
+  const { task } = await env.service.launchTask({ ...buildBrief, projectId: 'proj_personal' }, 5000);
+  await env.service.sweep(); env.chat.finish(task.threadId!, REPORT); await env.service.sweep();
+  const bb = { sdk: { threads: { timeline: async () => ({ activeBackgroundCommands: [{ description: 'Build the Vite production bundle', summary: null, taskStatus: 'running' }] }) } } } as any;
+  const rows = await withoutServers(bb, [{ id: task.threadId!, status: 'idle', activity: { activeBackgroundCommandCount: 1 } }]);
+  env.chat.activities.set(task.hostId!, { background: { ...NO_WORK, commands: rows[0]!.activity!.activeBackgroundCommandCount! } });
+  const real = Date.now; Date.now = () => real() + 5 * 60000;
+  try { await env.service.sweep(); } finally { Date.now = real; }
+  assert.deepEqual(env.chat.suspended, []);
+});
+test('a headless build under a bb workspace is not evicted', async () => {
+  const env = makeService({ settings: { maxActiveSandboxes: 1 } });
+  const { task } = await env.service.launchTask(buildBrief, 5000);
+  env.boat.finish(task.conversationId!, REPORT); await env.service.sweep();
+  const sample = { live: true, sampledAt: null, processes: [{ pid: 42, command: '/usr/bin/node /home/user/.bb-machines/acme.example/plugins/environment-personal-workspace/host-data/workspaces/task/node_modules/typescript/bin/tsc -b', cpuPercent: 99, memoryMb: 100, commandId: null }] };
+  env.boat.processSamples.set(task.sandboxId!, sample);
+  await env.service.processesBusy(task.sandboxId!, Date.now() - 6 * 60000);
+  await env.service.launchTask({ ...buildBrief, title: 'Second' }, 5000).catch(() => undefined);
+  assert.equal(env.boat.calls.includes(`stop ${task.sandboxId}`), false);
 });

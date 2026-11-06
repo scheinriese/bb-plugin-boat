@@ -136,24 +136,33 @@ export const BUSY_CPU_PERCENT = 20;
 const INFRASTRUCTURE_PROGRAMS =
   /^(ascii[\w.-]*|boat|bb|bb-host-daemon|sshd|systemd[\w.-]*|\(sd-pam\)|init|containerd[\w.-]*|dockerd|journald|rsyslogd|dbus[\w.-]*|cron|crond|atd|agetty|udevd|polkitd|tailscaled|snapd|packagekitd|unattended-upgrade[s]?|multipathd|ps|top)$/i;
 /**
- * The same by full command line, for programs run by an interpreter: bb's
- * host daemon and its workers (node with a script under bb's install or a
- * bb machine's data folder), boat's own binaries, and the plugin's memory
- * sampler. A node build or test run of the task's doesn't match.
+ * The same by full command line, for programs run by an interpreter: only
+ * known entry points of bb's runtime (its host daemon and CLI, provider
+ * bridge and plugin host workers, a plugin's host entry) and of boat
+ * (ascii-lazyfs), and the plugin's memory sampler. Not a whole folder of
+ * bb's: task workspaces live under a bb machine's data folder too.
  */
 const INFRASTRUCTURE_COMMANDS = [
   /\/bb-app\/host-daemon\//,
-  /\/\.bb-machines\//,
+  /\/bb-app\/dist\/bb(-app|-host-daemon)?\.js\b/,
+  /\bbb-app\.js\b/,
   /\bbb-provider-bridge-worker\.mjs\b/,
   /\bbb-plugin-host-worker\.mjs\b/,
   /\bbb-parcel-watcher-child\.mjs\b/,
-  /\/host-daemon\/dist\/daemon-bundle\.mjs\b/,
-  /\/var\/lib\/ascii-/,
+  /\/plugin-host-artifacts\/\S*\bhost\.mjs\b/,
+  /\/var\/lib\/ascii-lazy-bin\/ascii-lazyfs\b/,
   /\/tmp\/boat-memory\//,
 ];
+/** A bb workspace (or its worktrees): a process working there is the task's, whatever runs it. */
+const WORKSPACE = /\/host-data\/workspaces\/|\/\.bb-machines\/\S*\/(workspaces|worktrees)\//;
 
-/** One of boat's, bb's or the system's own processes, never the task's work. */
+/**
+ * One of boat's, bb's or the system's own processes, never the task's
+ * work. In doubt, it's work: a process with a workspace path in its
+ * command line always is.
+ */
 export function isInfrastructure(entry: Pick<SandboxProcess, "command">): boolean {
+  if (WORKSPACE.test(entry.command)) return false;
   return INFRASTRUCTURE_PROGRAMS.test(programName(entry.command)) || INFRASTRUCTURE_COMMANDS.some((pattern) => pattern.test(entry.command));
 }
 
