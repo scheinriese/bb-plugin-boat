@@ -124,7 +124,7 @@ default 3) caps how many run; `bb boat status` shows the room left.
 | `bb boat project list [--local]` | Projects (and local bb projects as `local:<id>`) |
 | `bb boat project add --name "Web app" --repo acme/web@main` | Add a project (repeat `--repo` for more repos; `--environment`, `--snapshot`, `--protocol`, `--workers`, `--delivery`, `--protected-branches "release, develop"`, `--instructions` or `--instructions-file`) |
 | `bb boat project set <id> --delivery pr\|push` | Change a project: how work lands (draft pull requests, or ship after approval), and the same options as `add` (`none` clears protected branches or instructions) |
-| `bb boat orchestrator new --project <id> --prompt "…"` | Start an orchestrator for a project (`--local` on this computer, `--cloud` in a new small boat sandbox, which needs bb Connect; without either, the cloud when bb Connect is set up; `--take-over <thread>` continues a previous one) |
+| `bb boat orchestrator new --project <id> --prompt "…"` | Start an orchestrator for a project (`--local` on this computer, `--cloud` in a new small boat sandbox, which needs bb Connect; without either, the cloud when bb Connect is set up; `--take-over <thread>` continues a previous one). It runs on the user's Agent for orchestrators with the Build preset's model at their Effort for orchestrators; `--provider codex`, `--model`, `--effort low\|medium\|high\|xhigh` only when the user asks |
 | `bb boat orchestrator on` / `off` | Make the current chat an orchestrator, or stop (tools load on its next session) |
 | `bb boat protocol show [--project <id>]` | The orchestrator protocol: shared rules, model presets, then the project's rules file |
 | `bb boat relay status` | Each agent's usage, and which agent each orchestrator runs on |
