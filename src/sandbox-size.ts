@@ -277,15 +277,17 @@ export class SandboxSizes {
    */
   private async probe(
     sandboxId: string,
-    options: { since?: number | null; task?: string | null; stopSampler?: boolean; signal?: AbortSignal },
+    options: { since?: number | null; task?: string | null; stopSampler?: boolean; signal?: AbortSignal; capMs?: number },
   ): Promise<{ probe: Probe; hostAt: number } | null> {
-    const cap = this.timing.checkMs;
-    const cached = this.klogModes.get(sandboxId);
-    const script = probeScript({ since: options.since, task: options.task, stopSampler: options.stopSampler, klog: cached?.mode ?? null });
+    const cap = Math.min(options.capMs ?? this.timing.checkMs, this.timing.checkMs);
+    if (cap <= 0) return null;
+    // The script uses it only while the sandbox is still in that boot (a stop and resume reboots it).
+    const cached = this.klogModes.get(sandboxId) ?? null;
+    const script = probeScript({ since: options.since, task: options.task, stopSampler: options.stopSampler, klog: cached });
     const started = Date.now();
     try {
       const signal = AbortSignal.any([this.deps.hooks.lifecycle, AbortSignal.timeout(cap), ...(options.signal ? [options.signal] : [])]);
-      const result = await within(this.deps.boat.exec(sandboxId, script, { timeoutMs: 15_000, signal }), cap);
+      const result = await within(this.deps.boat.exec(sandboxId, script, { timeoutMs: Math.min(15_000, cap), signal }), cap);
       if (result === null) {
         this.deps.hooks.log.warn(`memory check ${sandboxId}: no answer within ${Math.round(cap / 1000)}s`);
         return null;
@@ -293,7 +295,7 @@ export class SandboxSizes {
       const probe = parseProbe(result.stdout);
       if (probe === null) return null;
       if (probe.klog === "journal" || probe.klog === "sudo") this.klogModes.set(sandboxId, { bootId: probe.bootId, mode: probe.klog });
-      else if (probe.klog === "none" || (cached && cached.bootId !== probe.bootId)) this.klogModes.delete(sandboxId);
+      else if (probe.klog === "none" || (cached !== null && cached.bootId !== probe.bootId)) this.klogModes.delete(sandboxId);
       return { probe, hostAt: (started + Date.now()) / 2000 };
     } catch (error) {
       this.deps.hooks.log.warn(`memory check ${sandboxId}: ${message(error)}`);
@@ -437,9 +439,11 @@ export class SandboxSizes {
     const measured = this.measuredTurn(task);
     const suspicious = context.failed || (context.interrupted === true && !this.userInterrupted(task));
     if (!suspicious && measured === null) return;
-    // Synchronously, before anything awaits: no notice goes out without the check.
-    this.holding.set(task.id, Date.now() + this.timing.checkMs + 5_000);
-    const check: Promise<void> = this.check(task, { suspicious, measured, sandbox: context.sandbox, interrupted: context.interrupted === true })
+    // Synchronously, before anything awaits: no notice goes out without the
+    // check. The whole check has one deadline (checkMs), inside the hold.
+    const deadline = Date.now() + this.timing.checkMs;
+    this.holding.set(task.id, deadline + 5_000);
+    const check: Promise<void> = this.check(task, { suspicious, measured, sandbox: context.sandbox, interrupted: context.interrupted === true, deadline })
       .catch((error) => this.deps.hooks.log.warn(`memory check ${task.id}: ${message(error)}`))
       .finally(() => {
         this.holding.delete(task.id);
@@ -450,17 +454,21 @@ export class SandboxSizes {
     this.checks.add(check);
   }
 
-  private async check(task: Task, context: { suspicious: boolean; measured: DataOf<"sampler"> | null; sandbox?: Sandbox; interrupted: boolean }): Promise<void> {
+  private async check(
+    task: Task,
+    context: { suspicious: boolean; measured: DataOf<"sampler"> | null; sandbox?: Sandbox; interrupted: boolean; deadline: number },
+  ): Promise<void> {
     const sandboxId = task.sandboxId!;
+    const left = () => Math.max(0, context.deadline - Date.now());
     // Only a sandbox that's up: a stopped one (idle stop, a suspended machine) is never resumed for this.
-    const sandbox = context.sandbox ?? (await within(this.deps.boat.findInfo(sandboxId, this.deps.hooks.lifecycle), this.timing.checkMs).catch(() => null));
+    const sandbox = context.sandbox ?? (await within(this.deps.boat.findInfo(sandboxId, this.deps.hooks.lifecycle), left()).catch(() => null));
     if (sandbox === null || sandbox === undefined || !ACTIVE_STATES.has(sandbox.state)) return;
     const events = this.deps.store.events(task.id, 1000);
     const window = turnWindow(events, chatSentAt(task));
     if (window === null) return;
     const measured = context.measured;
     // A wide window for journalctl (the sandbox's clock isn't known yet); the exact one below.
-    const read = await this.probe(sandboxId, { since: window.since - 300, task: measured ? task.id : null, stopSampler: measured !== null });
+    const read = await this.probe(sandboxId, { since: window.since - 300, task: measured ? task.id : null, stopSampler: measured !== null, capMs: left() });
     if (read === null) return;
     const { probe, hostAt } = read;
     const skew = probe.now !== null ? probe.now - hostAt : 0;
@@ -514,7 +522,7 @@ export class SandboxSizes {
     // The error this turn ended with (a newer turn or a close leaves it alone).
     const sameTurn = now.turns === task.turns && now.promptId === task.promptId;
     const original = sameTurn ? now.error : null;
-    const cause = finding.certain && !context.measuredOk && (oomCausedFailure(finding, original) || original === null || context.interrupted);
+    const cause = finding.certain && !context.measuredOk && (oomCausedFailure(finding, original, task.runner) || original === null || context.interrupted);
     const chatRestart = cause && task.runner === "chat" && finding.kills.some((kill) => kill.unit === "bb");
     // A measured turn that ended fine still ran out of memory: said plainly, not as "also".
     const text = finding.certain
@@ -765,10 +773,10 @@ export class SandboxSizes {
     return null;
   }
 
-  /** The latest turn ran out of memory (or may have), or came near the limit. */
+  /** The latest turn ran out of memory (the kernel's log names it; a counter's "may have" isn't enough), or came near the limit. */
   private ranOutOfRoom(task: Task): boolean {
     const oom = this.latest(task.id, "oom");
-    if (oom !== null && oom.data.turn === task.turns) return true;
+    if (oom !== null && oom.data.turn === task.turns && oom.data.certain) return true;
     const peak = this.latest(task.id, "peak");
     return peak !== null && peak.data.turn === task.turns && (peak.data.reason === "near-limit" || peak.data.reason === "out-of-memory" || peak.data.reason === "largest");
   }

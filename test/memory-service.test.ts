@@ -382,3 +382,92 @@ test("the project offer appears only for a stored project whose size differs", a
   const other = await start(none, { repo: "acme/other" });
   assert.equal((await none.service.sizes.view(other))!.project, null);
 });
+
+test("after a stop and resume: a way to read the log from the old boot isn't trusted, and the new boot's counter counts", async () => {
+  const env = makeService();
+  const task = await start(env);
+  const sandboxId = task.sandboxId!;
+  // First failure: the journal reads (and the plugin remembers that, for this boot).
+  env.boat.finish(task.conversationId!, "", "failed", "harness exited");
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  assert.deepEqual(history(env, task.id, "memory"), []);
+  // An idle stop, then a follow-up resumes it: a new boot whose journal this user can't read.
+  await env.boat.stop(sandboxId);
+  await env.service.followup(task.id, "Try again.");
+  assert.ok(env.boat.calls.includes(`resume ${sandboxId} ttl=7200`));
+  const boot = env.boat.probe(sandboxId);
+  boot.klog = "none";
+  boot.bootTime = Math.floor(now()) - 60;
+  boot.oomKills = 1;
+  env.boat.finish(env.store.get(task.id)!.conversationId!, "", "failed", "harness exited");
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  const last = probes(env).at(-1)!.script;
+  assert.match(last, /then J=journal; else J=-; if kread/);
+  assert.match(history(env, task.id, "memory").at(-1)!, /^The sandbox may have run out of memory: its kernel counted an out-of-memory kill/);
+});
+
+test("sudo that stops working in the same boot: the failed read decides nothing, the counter does", async () => {
+  const env = makeService();
+  const task = await start(env);
+  const probe = env.boat.probe(task.sandboxId!);
+  probe.klog = "sudo";
+  env.boat.finish(task.conversationId!, "", "failed", "harness exited");
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  await env.service.followup(task.id, "Again.");
+  probe.klog = "none";
+  probe.oomKills = 1;
+  env.boat.finish(env.store.get(task.id)!.conversationId!, "", "failed", "harness exited");
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  assert.match(probes(env).at(-1)!.script, /then J=sudo; else/);
+  assert.match(history(env, task.id, "memory").at(-1)!, /^The sandbox may have run out of memory/);
+});
+
+test("after a move, its own reading is the next turn's out-of-memory baseline", async () => {
+  const env = makeService();
+  const task = await start(env);
+  env.boat.finish(task.conversationId!, REPORT);
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  await env.service.sizes.resize({ taskId: task.id, type: "large", message: "Go on.", userApproved: true, notifyThreadId: null, waitMs: 5_000, by: "page" });
+  const boot = env.boat.probe(task.sandboxId!);
+  const moved = data(env, task.id, "size").at(-1)!;
+  assert.equal(moved.type === "size" && moved.bootId, boot.bootId);
+  assert.equal(moved.type === "size" && moved.oomKills, 0);
+  boot.klog = "none";
+  boot.oomKills = 2;
+  env.boat.finish(env.store.get(task.id)!.conversationId!, "", "failed", "harness exited");
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  assert.match(history(env, task.id, "memory").at(-1)!, /its kernel counted 2 out-of-memory kills/);
+});
+
+test("bb's restart doesn't explain a headless task's failure", async () => {
+  const env = makeService();
+  const task = await start(env);
+  env.boat.probe(task.sandboxId!).kernel = oomLines({ at: now() + 1, pid: 77, comm: "MainThread", unit: "bb", rssKb: 1_400_000 });
+  env.boat.finish(task.conversationId!, "", "failed", "API error 529: overloaded");
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  const error = env.store.get(task.id)!.error!;
+  assert.match(error, /^API error 529: overloaded\n\nThe sandbox also ran out of memory during this turn: the system stopped a 1\.3 GB process in the task chat \(MainThread\)\./);
+  assert.equal((await env.service.sizes.view(env.store.get(task.id)!))!.oom?.cause, false);
+});
+
+test("the check has one deadline: a slow boat and a slow probe together stay within it", async () => {
+  const env = makeService({ sizeTiming: { checkMs: 200 } });
+  const task = await start(env);
+  env.store.update(task.id, { status: "failed", error: "harness exited" });
+  env.boat.findInfoDelayMs = 150;
+  env.boat.probeHang = true;
+  const started = Date.now();
+  env.service.sizes.afterTurn(env.store.get(task.id)!, { failed: true });
+  assert.ok(env.service.sizes.holds(task.id));
+  await env.service.sizes.settled();
+  const took = Date.now() - started;
+  assert.ok(took < 300, `took ${took} ms`);
+  assert.equal(env.service.sizes.holds(task.id), false);
+});

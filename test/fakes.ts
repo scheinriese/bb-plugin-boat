@@ -114,11 +114,18 @@ export function probeOutput(facts: Partial<FakeProbe>, script?: string): string 
     `OOM ${probe.oomKills ?? -1}`,
   ];
   if (script === undefined || script.includes("/tmp/boat-memory/")) lines.push(`PEAK ${probe.peak ?? "-"}`);
-  const since = script === undefined ? null : /--since @(\d+)/.exec(script)?.[1];
-  if (script === undefined || since !== null) {
+  const since = script === undefined ? null : (/--since @(\d+)/.exec(script)?.[1] ?? null);
+  // Like the script: a way to read the log from before, while the boot is the same.
+  const cached = script === undefined ? null : /boot_id 2>\/dev\/null\)" = "([0-9a-f-]+)" \]; then J=(journal|sudo);/.exec(script);
+  if (since !== null && cached !== null && cached[1] === probe.bootId) {
+    lines.push(`KLOG ${cached[2]}`);
+    // Not readable any more: sudo fails out loud, the journal just says nothing.
+    if (probe.klog === "none" && cached[2] === "sudo") lines.push("KLOG_FAIL");
+    else if (probe.klog !== "none") for (const line of probe.kernel.filter((line) => Number(line.split(" ")[0]) >= Number(since))) lines.push(`K ${line}`);
+  } else if (script === undefined || since !== null) {
     lines.push(`KLOG ${probe.klog === "none" ? "-" : probe.klog}`);
     if (probe.klog !== "none") {
-      const after = (line: string) => since === null || since === undefined || Number(line.split(" ")[0]) >= Number(since);
+      const after = (line: string) => since === null || Number(line.split(" ")[0]) >= Number(since);
       if (!probe.klogTimedOut) for (const line of probe.kernel.filter(after)) lines.push(`K ${line}`);
       if (probe.klogTimedOut) lines.push("KLOG_TIMEOUT");
       for (const line of probe.oomd.filter(after)) lines.push(`D ${line}`);
@@ -207,7 +214,10 @@ export class FakeBoat {
     if (!sandbox) throw new BoatError("not found (404)", { code: "not_found", status: 404 });
     return sandbox;
   }
+  /** Every findInfo takes this long (a slow boat CLI). */
+  findInfoDelayMs = 0;
   async findInfo(id: string): Promise<Sandbox | null> {
+    if (this.findInfoDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.findInfoDelayMs));
     return this.sandboxes.get(id) ?? null;
   }
   created: {

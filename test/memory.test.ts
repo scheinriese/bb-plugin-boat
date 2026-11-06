@@ -127,8 +127,17 @@ test("the finding: kills in the turn, no false positives, counter evidence is on
   // Rebooted during the turn: the kills since that boot.
   const rebooted = parseProbe(probeOutput({ bootId: "11111111-2222-3333-4444-555555555555", bootTime: since + 5, oomKills: 1, klog: "none" }))!;
   assert.equal(oomFinding(rebooted, { since, baseline: { bootId: BOOT, oomKills: 0 }, reported: new Set() })!.count, 1);
+  // Rebooted before the turn (a stop and resume) with no reading of this boot: its counter started at 0.
   const bootedBefore = parseProbe(probeOutput({ bootId: "11111111-2222-3333-4444-555555555555", bootTime: since - 500, oomKills: 1, klog: "none" }))!;
-  assert.equal(oomFinding(bootedBefore, { since, baseline: { bootId: BOOT, oomKills: 0 }, reported: new Set() }), null);
+  assert.deepEqual(
+    (({ certain, count, source }) => ({ certain, count, source }))(oomFinding(bootedBefore, { since, baseline: { bootId: BOOT, oomKills: 0 }, reported: new Set() })!),
+    { certain: false, count: 1, source: "counter" },
+  );
+  const quietBoot = parseProbe(probeOutput({ bootId: "11111111-2222-3333-4444-555555555555", bootTime: since - 500, oomKills: 0, klog: "none" }))!;
+  assert.equal(oomFinding(quietBoot, { since, baseline: { bootId: BOOT, oomKills: 3 }, reported: new Set() }), null);
+  // Without boot ids only a boot inside the turn counts.
+  const noIds = parseProbe(probeOutput({ bootId: null, bootTime: since - 500, oomKills: 1, klog: "none" }))!;
+  assert.equal(oomFinding(noIds, { since, baseline: { bootId: null, oomKills: 0 }, reported: new Set() }), null);
   // A journal read that ran out of time falls back to the counter.
   const slow = parseProbe(probeOutput({ bootId: BOOT, oomKills: 1, klog: "journal", kernel: [], klogTimedOut: true }))!;
   assert.equal(oomFinding(slow, { since, baseline: { bootId: BOOT, oomKills: 0 }, reported: new Set() })!.certain, false);
@@ -180,11 +189,14 @@ test("who was stopped, in plain words", () => {
 
 test("the error: the message first with the original as detail, or the original first when the kills aren't why", () => {
   const finding = { kills: [{ process: "vitest", unit: "command" as const, rssKb: 1, constraint: "global" as const, key: "k", at: 1, pid: 1, adj: 0 }], certain: true };
-  assert.equal(oomCausedFailure(finding, "The agent turn failed: API error 529 overloaded"), false);
-  assert.equal(oomCausedFailure(finding, "The task chat stopped with an error: Thread interrupted because the host daemon disconnected."), true);
-  assert.equal(oomCausedFailure(finding, "process exited with code 137"), true);
-  assert.equal(oomCausedFailure({ ...finding, kills: [{ ...finding.kills[0]!, unit: "bb" }] }, "anything"), true);
-  assert.equal(oomCausedFailure({ ...finding, certain: false }, "killed"), false);
+  assert.equal(oomCausedFailure(finding, "The agent turn failed: API error 529 overloaded", "boat"), false);
+  assert.equal(oomCausedFailure(finding, "The task chat stopped with an error: Thread interrupted because the host daemon disconnected.", "chat"), true);
+  assert.equal(oomCausedFailure(finding, "process exited with code 137", "boat"), true);
+  // bb's restart ends a task chat's turn, not a headless agent's.
+  assert.equal(oomCausedFailure({ ...finding, kills: [{ ...finding.kills[0]!, unit: "bb" }] }, "anything", "chat"), true);
+  assert.equal(oomCausedFailure({ ...finding, kills: [{ ...finding.kills[0]!, unit: "bb" }] }, "API error 529: overloaded", "boat"), false);
+  assert.equal(oomCausedFailure({ ...finding, kills: [{ ...finding.kills[0]!, process: "claude", unit: "agent" }] }, "harness exited", "boat"), true);
+  assert.equal(oomCausedFailure({ ...finding, certain: false }, "killed", "boat"), false);
 
   const rewritten = errorWithOom("The sandbox ran out of memory: x.", "Thread interrupted.", true);
   assert.equal(rewritten, "The sandbox ran out of memory: x.\n\nOriginal error: Thread interrupted.");
@@ -270,8 +282,17 @@ test("the scripts: a marker, a window only when asked, a safe task id, the sampl
   // Each journal read has its own timeout, under boat's.
   assert.match(windowed, /timeout 2 "\$@" journalctl/);
   assert.match(windowed, /timeout 5 \$S journalctl/);
-  // A known way to read the log skips finding it again.
-  assert.match(probeScript({ since: 1, klog: "sudo" }), /^J=sudo$/m);
+  // Every step is capped, systemctl too (the probe stays under boat's 15 s).
+  assert.match(windowed, /if timeout 2 systemctl is-active --quiet systemd-oomd/);
+  assert.match(windowed, /\[ "\$R" != 0 \] && \[ "\$R" != 124 \] && echo KLOG_FAIL/);
+  // A known way to read the log skips finding it again, only in the same boot.
+  const cached = probeScript({ since: 1, klog: { mode: "sudo", bootId: BOOT } });
+  assert.match(cached, new RegExp(`^if \\[ "\\$\\(cat /proc/sys/kernel/random/boot_id 2>/dev/null\\)" = "${BOOT}" \\]; then J=sudo; else J=-; if kread; then J=journal; elif kread sudo -n; then J=sudo; fi; fi$`, "m"));
+  // A boot id that isn't one is never put in the script.
+  assert.doesNotMatch(probeScript({ since: 1, klog: { mode: "sudo", bootId: "$(reboot)" } }), /reboot|then J=sudo; else/);
+  assert.doesNotMatch(probeScript({ since: 1, klog: { mode: "sudo", bootId: null } }), /then J=sudo; else/);
+  // A failed read decides nothing: the counter does.
+  assert.equal(parseProbe("BOAT_MEM_PROBE 1\nOOM 2\nKLOG sudo\nKLOG_FAIL\nEND\n")!.klog, "none");
   const sampler = samplerScript("t_ab;x");
   assert.match(sampler, /end=\$\(\(start \+ 14400\)\)/);
   assert.match(sampler, /\/tmp\/boat-memory\/t_abx\.stop/);

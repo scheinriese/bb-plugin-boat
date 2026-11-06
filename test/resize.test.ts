@@ -336,6 +336,13 @@ test("orchestrators move up only, Large after a memory finding, XLarge and other
   await refused(env.service.sizes.resize(tool()), "size_needs_approval", /latest turn didn't run out of memory/);
   await refused(env.service.sizes.resize(tool({ type: "small" })), "invalid_value", /only move a sandbox to a larger size/);
   await refused(env.service.sizes.resize(tool({ type: "xlarge" })), "size_needs_approval", /XLarge sandbox needs the user's OK/);
+  // A counter's "may have" isn't enough.
+  env.store.addEvent(
+    task.id,
+    "memory-data",
+    encodeData({ type: "oom", turn: task.turns, sandboxId: task.sandboxId!, machineType: "default", kills: [], count: 1, source: "counter", certain: false, cause: false, counterKey: "counter:x:1", message: "x", next: "large", nextAllowed: true, nextReason: null, at: 1 }),
+  );
+  await refused(env.service.sizes.resize(tool()), "size_needs_approval", /latest turn didn't run out of memory/);
   // After an out-of-memory finding in its latest turn: Large without asking.
   env.store.addEvent(
     task.id,

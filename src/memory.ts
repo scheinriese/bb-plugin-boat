@@ -109,7 +109,15 @@ export type KlogMode = "journal" | "sudo";
  * never costs the size and counter lines. Readable without root:
  * /proc, `journalctl -k` (else `sudo -n`); never dmesg (dmesg_restrict).
  */
-export function probeScript(options: { since?: number | null; task?: string | null; stopSampler?: boolean; klog?: KlogMode | null } = {}): string {
+export function probeScript(
+  options: {
+    since?: number | null;
+    task?: string | null;
+    stopSampler?: boolean;
+    /** How the log read last time, in that boot: used only while the sandbox is still in it. */
+    klog?: { mode: KlogMode; bootId: string | null } | null;
+  } = {},
+): string {
   const lines = [
     "echo BOAT_MEM_PROBE 1",
     "printf 'NOW %(%s)T\\n' -1",
@@ -128,16 +136,20 @@ export function probeScript(options: { since?: number | null; task?: string | nu
   }
   if (options.since !== undefined && options.since !== null) {
     const since = Math.max(0, Math.floor(options.since));
+    const detect = "J=-; if kread; then J=journal; elif kread sudo -n; then J=sudo; fi";
+    // Boot ids are [0-9a-f-] (parseProbe): safe in the script.
+    const cached = options.klog && options.klog.bootId !== null && /^[0-9a-f-]{8,64}$/.test(options.klog.bootId) ? options.klog : null;
     lines.push(
       `kread() { timeout 2 "$@" journalctl -k -b -n 1 -o short-unix --no-pager -q 2>/dev/null | grep -q ' kernel: '; }`,
-      options.klog ? `J=${options.klog}` : "J=-; if kread; then J=journal; elif kread sudo -n; then J=sudo; fi",
+      cached ? `if [ "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" = "${cached.bootId}" ]; then J=${cached.mode}; else ${detect}; fi` : detect,
       'echo "KLOG $J"',
       'if [ "$J" != - ]; then',
       '  S=; [ "$J" = sudo ] && S="sudo -n"',
       `  timeout 5 $S journalctl -k -b --since @${since} -o short-unix --no-pager -q 2>/dev/null | grep -E 'oom-kill:|Killed process [0-9]+ ' | tail -n 40 | sed 's/^/K /'`,
-      '  [ "${PIPESTATUS[0]}" = 124 ] && echo KLOG_TIMEOUT',
-      // systemd-oomd kills show neither in the counter nor in the kernel log.
-      "  if systemctl is-active --quiet systemd-oomd 2>/dev/null; then",
+      // A timeout may have cut the lines short; any other failure (sudo now wants a password) means it wasn't read.
+      '  R=${PIPESTATUS[0]}; [ "$R" = 124 ] && echo KLOG_TIMEOUT; [ "$R" != 0 ] && [ "$R" != 124 ] && echo KLOG_FAIL',
+      // systemd-oomd kills show neither in the counter nor in the kernel log. Every step is capped (the probe stays under boat's 15 s).
+      "  if timeout 2 systemctl is-active --quiet systemd-oomd 2>/dev/null; then",
       `    timeout 2 $S journalctl -u systemd-oomd -b --since @${since} -o short-unix --no-pager -q 2>/dev/null | grep -E 'Killed ' | tail -n 10 | sed 's/^/D /'`,
       "  fi",
       "fi",
@@ -293,6 +305,10 @@ export function parseProbe(stdout: string): Probe | null {
         break;
       case "KLOG_TIMEOUT":
         probe.klogTimedOut = true;
+        break;
+      case "KLOG_FAIL":
+        // The read failed: no line from it decides anything (the counter does).
+        probe.klog = "none";
         break;
       case "K":
         if (probe.lines.length < 40) probe.lines.push(rest.join(" ").slice(0, 2000));
@@ -488,8 +504,13 @@ export function oomFinding(
     const delta = probe.oomKills - context.baseline.oomKills;
     return delta > 0 ? { kills: [], count: delta, source: "counter", certain: false, counterKey } : null;
   }
-  // Rebooted since the baseline: kills since a boot inside the turn.
-  if (probe.bootTime !== null && probe.bootTime >= context.since && probe.oomKills > 0) {
+  // Rebooted since the baseline (a stop and resume: an idle stop, a move to
+  // another size). The counter started at 0 with that boot, and nothing
+  // older reads it: every kill it counts is in this boot, so this turn may
+  // have had them (still only a "may have").
+  // Without a boot id, only a boot inside the turn says the kills are this turn's.
+  const rebooted = probe.bootId !== null || (probe.bootTime !== null && probe.bootTime >= context.since);
+  if (rebooted && probe.oomKills > 0) {
     return { kills: [], count: probe.oomKills, source: "counter", certain: false, counterKey };
   }
   return null;
@@ -599,15 +620,17 @@ export function oomHistory(finding: Pick<OomFinding, "kills" | "count" | "certai
 const KILL_TEXT = /host daemon disconnected|disconnected|\b137\b|sigkill|signal 9|\bkilled\b|out of memory|\boom\b|missing from sandbox|stopped without finishing/i;
 
 /**
- * Did the kills end the turn? Yes when bb's task-chat service lost a process
- * (systemd stops and restarts the whole service, the agent with it), when
- * the agent itself was killed, or when the failure reads like a kill or a
- * disconnect. A test runner killed early in a turn that later failed on
- * something else isn't the cause.
+ * Did the kills end the turn? Yes when bb's service lost a process and the
+ * task is a task chat (systemd restarts the whole service, the agent with
+ * it; a headless agent runs outside bb), when the agent itself was killed,
+ * or when the failure reads like a kill or a disconnect. A test runner
+ * killed early in a turn that later failed on something else isn't the
+ * cause.
  */
-export function oomCausedFailure(finding: Pick<OomFinding, "kills" | "certain">, failure: string | null): boolean {
+export function oomCausedFailure(finding: Pick<OomFinding, "kills" | "certain">, failure: string | null, runner: Runner): boolean {
   if (!finding.certain) return false;
-  if (finding.kills.some((kill) => kill.unit === "bb" || kill.process === "claude" || kill.process === "codex")) return true;
+  // bb's restart ends a task chat's turn; a headless agent runs outside bb and doesn't notice it.
+  if (finding.kills.some((kill) => (kill.unit === "bb" && runner === "chat") || kill.process === "claude" || kill.process === "codex")) return true;
   return failure !== null && KILL_TEXT.test(failure);
 }
 
