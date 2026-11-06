@@ -495,7 +495,6 @@ export function RichText({ text, className }: { text: string; className?: string
   );
 }
 
-/** A failed action as a toast: the plugin's message, and what to do under it (with links). */
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
@@ -512,6 +511,7 @@ export function focusNeighbour(gone: Element | null): void {
   target?.focus();
 }
 
+/** A failed action as a toast: the plugin's message, and what to do under it (with links). */
 export function showError(error: unknown) {
   const info = rpcErrorInfo(error);
   toast.error(info.message, info.hint ? { description: <RichText text={info.hint} /> } : undefined);
