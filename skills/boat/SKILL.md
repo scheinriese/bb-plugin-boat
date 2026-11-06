@@ -27,8 +27,9 @@ One word per idea:
   environment. The user sets them up.
 - **orchestrator**: a chat that plans and coordinates tasks for one
   project.
-- **task chat**: a task the user can open as a bb chat (when "How tasks
-  run" is set to chats). Otherwise a task runs headless in boat, and the
+- **task chat**: a task the user can open as a bb chat ("How tasks run"
+  set to chats, Run as a chat in New task, or Continue as a chat on a
+  headless task's page). Otherwise a task runs headless in boat, and the
   user follows it on the Cloud agents page.
 - **model preset**: Light, Review, Build, Deep or Frontier (`--tier`).
 
@@ -64,14 +65,17 @@ files and the agent's conversation survive.
   except in a sandbox that runs bb for a repo the rules don't trust
   (`untrusted_sandbox`: use a new sandbox).
 - `--chat` only when the user asked for a task chat, and only for repos in
-  a project with Run tasks as chats on (or any repo with How tasks run set
-  to As chats everywhere). On `untrusted_repo`, don't retry and don't work
-  around it: tell the user the hint. A task chat's sandbox can reach their
-  bb, so they decide (Run as a chat in New task on the Cloud agents page,
-  or a project).
+  a project with Run tasks as chats on (or, with How tasks run set to As
+  chats everywhere, any repo not in a project with it off). On
+  `untrusted_repo`, don't retry and don't work around it: tell the user the
+  hint. A task chat's sandbox can reach their bb, so they decide (Run as a
+  chat in New task on the Cloud agents page, or a project). It needs bb
+  Connect: on `connect_required`, give the user the fix.
 - `bb boat task continue-as-chat <id>` moves a headless task into a task
-  chat when the user wants to talk to its agent. Same trust rule; for other
-  repos the user uses Continue as a chat on the task's page.
+  chat when the user wants to talk to its agent: bb on its sandbox and a
+  chat with the same agent (about a minute). It needs a finished turn and
+  bb Connect. Same trust rule; for other repos the user uses Continue as a
+  chat on the task's page.
 - Never call the plugin's RPC (`bb plugin rpc …`) to start or move chats.
 
 ## Agents

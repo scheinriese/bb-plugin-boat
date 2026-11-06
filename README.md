@@ -142,7 +142,9 @@ of environments you use for repos you don't trust.
 - Task chats and cloud orchestrators also run bb in their sandbox, with this
   bb machine's credentials, connected through bb Connect. Use them only for
   repos you trust. **How tasks run** → "As chats for projects" allows task
-  chats only in projects that have **Run tasks as chats** on.
+  chats only in projects that have **Run tasks as chats** on. **Run as a
+  chat** and **Continue as a chat** warn you before they make a chat for
+  any other repo.
 - boat's AI credentials proxy (`boat ai proxy on`, a paid boat feature)
   gives sandboxes placeholder keys, so your real Claude and ChatGPT
   credentials never enter them.
@@ -164,7 +166,9 @@ and what it stores.
 - [**Projects**](docs/features.md#projects): repos with their base branches,
   boat environment, snapshot and instructions, set once.
 - [**Task chats**](docs/features.md#how-tasks-run-in-boat-or-as-task-chats):
-  open a task as a bb chat and type into it (needs bb Connect).
+  open a task as a bb chat and type into it: per project, one task at a
+  time (**Run as a chat**), or a headless task later (**Continue as a
+  chat**). Needs bb Connect.
 - [**Pull requests or ship after
   approval**](docs/features.md#how-work-lands-pull-requests-or-ship-after-approval),
   per project.

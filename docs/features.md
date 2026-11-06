@@ -28,11 +28,13 @@ The page in bb's sidebar changes with what you have:
 The header has **New task**, and a ⋯ menu with **New sandbox**, **New chat
 in a Boat sandbox** and **New orchestrator…**. Each task opens a page with
 its report, review, transcript, previews, history and a reply box, plus
-**Request review** and, where it applies, **Ship** or **Save as snapshot**
-(a finished test task offers **New task** instead). In the reply box,
-**Agent with room** (the default with both agents) continues on the task's
-agent, or on the other one when it's near its limit; **Keep Claude** (or
-Codex) never switches.
+**Request review** and, where it applies, **Open chat** (a task chat),
+**Continue as a chat** (a headless task, see [How tasks
+run](#how-tasks-run-in-boat-or-as-task-chats)), **Ship** or **Save as
+snapshot** (a finished test task offers **New task** instead). In the reply
+box, **Agent with room** (the default with both agents) continues on the
+task's agent, or on the other one when it's near its limit; **Keep Claude**
+(or Codex) never switches.
 A task started from a chat shows "From" and the chat's name; one started by
 an orchestrator links to it. A finished turn of a task you started (from a chat
 or the page) lands in **Ready to review**; an orchestrator's tasks wait for
@@ -60,7 +62,7 @@ the orchestrator first.
 
 ## New task
 
-![New task: a starter, the repo, what to do and the agent](screenshots/new-task.png)
+![New task: a starter, the repo, Run as a chat, what to do and the agent](screenshots/new-task.png)
 
 New task asks for the repo, what to do and the agent; branch, base branch,
 role, model, sandbox and size are under **More options**. Starters fill in
@@ -77,12 +79,14 @@ the brief:
 - **Test task (no repo).**
 
 **Run as a chat**, under Repository, makes the task a bb chat you can open
-and type into instead of a headless one. It's on by default where How tasks
-run and the repo's project would make the task a chat, and follows the repo
-until you tick or clear it. It needs bb Connect (the hint under it says how
-to turn it on). For a repo your projects don't run as chats, ticking it
-shows a warning first: a task chat's sandbox can reach your bb, so do it
-only for repos you trust.
+and type into instead of a headless one. It's ticked where How tasks run
+and the repo's project would make the task a chat, and follows the repo
+until you tick or clear it. It needs bb Connect: without it, the box is
+greyed out and the line under it says how to turn it on. With an existing
+sandbox picked under More options, the sandbox decides. Ticked for a repo
+How tasks run and your projects would run headless, it shows a warning: a
+task chat's sandbox can reach your bb, so run chats only for repos you
+trust. Starting the task then is your OK for those repos.
 
 A good brief has the goal, the context (files, issues, earlier decisions),
 the constraints, how to check the result, and anything special about the
@@ -130,34 +134,49 @@ one. New installs start with none.
 
 A task becomes a chat only if every repo it clones may: a project's other
 repo that's also in a project with **Run tasks as chats** off makes its
-tasks headless (New task and the task's history say so). A sandbox that
-runs bb, or had it installed, takes no other repo, headless or not.
+tasks headless (New task and the task's history say so). A review runs the
+way its task does, except that a task you made a chat against these rules
+gets headless reviews. A sandbox that runs bb, or had it installed, takes
+no repo these rules would run headless, not even for a headless task.
 
 Open a task chat to watch every step or write to it; the plugin treats your
 turn as part of the task. Ultracode (Claude) and Ultra (Codex) work there.
 Task chats need bb Connect and take about a minute longer to start. Their
 sandbox holds bb machine credentials, so keep them for repos you trust.
 
-**Continue as a chat** on a headless task's page moves it into a task chat
-once its turn has ended: bb is installed on the task's sandbox (about a
-minute), and a chat with the same agent opens there, working in the task's
-checkout, with the brief, the latest report and the messages so far (in a
-file outside the repo). The headless conversation stops, follow-ups go to
-the chat, and the chat's first turn only reads up and sums up where the
-task stands. There's no way back. For repos your projects don't run as
-chats (the task's own, or one another task ran in that sandbox before),
-the dialog names them and asks you to confirm. It waits while the turn
-runs, without bb Connect, or while another open task shares the sandbox.
-It isn't offered for a sandbox you lent, one where another chat's bb runs,
-or a review in its open task's sandbox; start a new task as a chat
-instead (`--context-from <id>` gives it this one's brief and report).
+**Continue as a chat** on a headless task's page moves the task into a
+task chat once its turn has ended. bb is installed on the task's sandbox
+(about a minute; a stopped sandbox starts first), and a chat with the same
+agent opens there, working in the task's checkout, with the brief, the
+latest report and the messages so far (in a file outside the repo, so it's
+never committed). The headless conversation stops, follow-ups go into the
+chat, and the chat's first turn only reads up and sums up where the task
+stands. There's no way back; the Transcript tab keeps the headless
+conversation under "Before the move". If a step fails, the task stays
+headless and its history says why.
 
-A single task can also go its own way: `--chat` or `--headless` on
-`bb boat task start` (Run as a chat in New task). Agents only get `--chat`
-where the rules would make the task a chat anyway; for any other repo you
-decide, on the page. That confirm is a step in the UI, not a security
-boundary: an agent that already has bb access could send it too (see
-SECURITY.md).
+- For repos How tasks run and your projects would run headless (the
+  task's own, or one another task ran in that sandbox before), the dialog
+  names them, and you tick "I trust …" first.
+- The button is greyed out, with the reason under it, while the turn runs
+  (wait for it to end, or **Interrupt** it), without bb Connect, while
+  another open task shares the sandbox, or once the sandbox is gone.
+- It isn't there for a sandbox the plugin didn't create, or one where
+  another chat's bb runs: start a new task with Run as a chat instead
+  (`--context-from <id>` gives it this one's brief and report). Nor for a
+  review in its open task's sandbox: close that task first, keeping its
+  sandbox.
+
+From the command line, `bb boat task start` takes `--chat` or `--headless`
+(what Run as a chat sends), and `bb boat task continue-as-chat <id>` moves a
+task. `--headless` always works, apart from the sandbox rule above. `--chat`
+and `continue-as-chat` need bb Connect and work only where these rules would
+make the task a chat anyway: agents run the CLI, so for any other repo
+they're refused and you decide, in New task or on the task's page.
+Orchestrators' `boat_dispatch` can ask for headless, never for a chat. The
+confirm in the dialogs is a step in the UI, not a security boundary: an
+agent that already has bb access could send it too (see
+[SECURITY.md](../SECURITY.md)).
 
 Idle sandboxes stop on their own. Their files and agent conversations
 survive and resume on the next follow-up. Closing a task deletes its

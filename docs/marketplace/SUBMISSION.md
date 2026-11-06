@@ -122,11 +122,14 @@ CLI, agent tools and skills, send-menu and New thread entry points, and a
   agent** puts one instruction line in front of the draft and sends it;
   **Start as a cloud task** turns the draft into a task's brief.
 - Tasks run headless in boat by default, with no bb in the sandbox. Task
-  chats are opt-in ("How tasks run"). New orchestrators run in a boat
-  sandbox by default when bb Connect is set up, and on the bb machine
-  otherwise (`--local` or the dialog to choose). Those sandboxes run bb's
-  daemon with that machine's bb credentials. Cloud orchestrators start in
-  full access, like task chats (a setting, on by default, documented in
+  chats are opt-in ("How tasks run", or one task at a time with "Run as
+  a chat" and "Continue as a chat", which warn and need the user's
+  confirm for repos the rules don't trust; agents' CLI commands are
+  refused for those repos). New orchestrators run in a boat sandbox by
+  default when bb Connect is set up, and on the bb machine otherwise
+  (`--local` or the dialog to choose). Those sandboxes run bb's daemon
+  with that machine's bb credentials. Cloud orchestrators start in full
+  access, like task chats (a setting, on by default, documented in
   docs/settings.md and docs/orchestrators.md).
 - No secret settings, and no passwords or API keys stored. Environment
   secrets are shown by name only; values are dropped when read. The
