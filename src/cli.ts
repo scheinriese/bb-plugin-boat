@@ -54,7 +54,7 @@ const effort = {
 } as const;
 const userApproved = {
   type: "boolean",
-  description: "The user approved Frontier at max effort (refused otherwise)",
+  description: "The user approved Frontier at max effort, or an XLarge sandbox (refused otherwise)",
 } as const;
 
 function out(value: unknown, asJson: boolean, text: () => string) {
@@ -514,7 +514,7 @@ export function buildCli(runtime: Runtime) {
           model,
           "user-approved": userApproved,
           sandbox: { type: "string", description: "new (default), or an existing sandbox id to run in" },
-          type: { type: "enum", values: MACHINE_TYPES, description: "Machine size for a new sandbox" },
+          type: { type: "enum", values: MACHINE_TYPES, description: "Machine size for a new sandbox (default: the project's, else the Default sandbox size setting); xlarge needs --user-approved" },
           "context-from": {
             type: "string",
             repeatable: true,
