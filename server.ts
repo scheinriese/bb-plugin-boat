@@ -434,7 +434,14 @@ export default async function plugin(bb: BbPluginApi) {
           }
         }
         try {
-          await keepBoatMachines(bb, { boat, settings: readSettings, signal: lifecycle.signal, log: (line) => bb.log.warn(line) });
+          await keepBoatMachines(bb, {
+            boat,
+            settings: readSettings,
+            signal: lifecycle.signal,
+            log: (line) => bb.log.warn(line),
+            // A task moving to a chat there: the move keeps its sandbox up.
+            skip: (sandboxId) => service.isMovingSandbox(sandboxId),
+          });
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
         }

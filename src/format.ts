@@ -171,7 +171,7 @@ export function limitsLine(limits: Limits | null, active: number, cap: number | 
 
 /** The message posted into an orchestrator thread when its workers finish a turn. */
 /** Kinds that start a turn; a failover after them means this turn was handed over. */
-const TURN_STARTS = new Set(["dispatched", "followup", "followup-switch", "failover"]);
+const TURN_STARTS = new Set(["dispatched", "followup", "followup-switch", "failover", "moved-to-chat"]);
 
 /** One line on a turn's visual evidence for the orchestrator (empty: nothing to say). */
 export function evidenceLine(result: string | null, installEvent: string | null): string {
@@ -213,10 +213,19 @@ export function notificationText(
     const lastStart = eventsFor(task.id)
       .filter((event) => TURN_STARTS.has(event.kind))
       .at(-1);
+    const fromPage = /Cloud agents page/.test(
+      eventsFor(task.id)
+        .filter((event) => event.kind === "chat-move")
+        .at(-1)?.text ?? "",
+    );
     const handover =
       lastStart?.kind === "failover"
         ? `\nHanded over on a usage limit: ${lastStart.text.split(" (")[0]}. Consider sending new dispatches to the other agent too.`
-        : "";
+        : lastStart?.kind === "moved-to-chat"
+          ? fromPage
+            ? `\nThe user moved this task into the task chat @thread:${task.threadId}: its headless conversation stopped, and follow-ups go into that chat. The user wants to talk to the agent there; don't send follow-ups unless they ask.`
+            : `\nThis task moved into the task chat @thread:${task.threadId} (from the CLI): its headless conversation stopped, and your follow-ups go into that chat.`
+          : "";
     const evidence = evidenceLine(task.result, uploaderFor(task.id));
     const preview = previewFor(task.id);
     const delivery =

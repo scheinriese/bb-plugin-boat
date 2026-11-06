@@ -281,6 +281,8 @@ export const taskSchema = z.object({
   canShip: z.boolean(),
   /** The repo isn't one of the user's projects, so the worker ran as a boat conversation. */
   untrustedRepo: z.boolean(),
+  /** A move to a task chat is running (Continue as a chat). */
+  movingToChat: z.boolean(),
   parentTaskId: z.string().nullable(),
   prUrl: z.string().nullable(),
   error: z.string().nullable(),
@@ -711,6 +713,38 @@ export const rpcContract = defineRpcContract({
     output: z.object({ task: taskSchema }),
   },
   interrupt: { input: z.object({ id: z.string() }), output: ok },
+  /** Can this headless task continue as a task chat now? Read live (boat and bb are asked); the page refetches when the task changes. */
+  continueAsChatStatus: {
+    input: z.object({ id: z.string() }),
+    output: z.object({
+      /** False: no button (a task chat already, closed, never dispatched, or no task chats on this bb). */
+      offered: z.boolean(),
+      /** Why not now, with the fix. */
+      blocked: z.object({ code: z.string(), message: z.string(), hint: z.string().nullable() }).nullable(),
+      /** The rules don't run this task as a chat: the dialog warns and needs a tick. */
+      untrusted: z.boolean(),
+      /** The repos the warning names (all of them with How tasks run In boat). */
+      untrustedRepos: z.array(z.string()),
+      /** How tasks run is In boat. */
+      workersBoat: z.boolean(),
+      /** bb already runs on the sandbox (no install). */
+      hasMachine: z.boolean(),
+      /** The sandbox is stopped; it starts first. */
+      sandboxStopped: z.boolean(),
+      moving: z.boolean(),
+      /** The last try failed and nothing happened since. */
+      lastFailure: z.string().nullable(),
+    }),
+  },
+  /**
+   * Move a headless task into a task chat. confirmUntrusted: the repos the
+   * user was warned about and ticked ([] for a task with no repo); null: no
+   * warning confirmed. Returns once the quick checks passed (pending: true).
+   */
+  continueAsChat: {
+    input: z.object({ id: z.string(), confirmUntrusted: z.array(z.string().max(200)).max(20).nullable() }),
+    output: launchResult,
+  },
   closeTask: {
     /** discard: close work that hasn't shipped (its sandbox and commits are deleted). */
     input: z.object({ id: z.string(), cancel: z.boolean(), keepSandbox: z.boolean(), discard: z.boolean().optional() }),

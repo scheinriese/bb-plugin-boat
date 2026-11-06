@@ -652,7 +652,12 @@ export function buildCli(runtime: Runtime) {
               throw new PluginCliError(`Task ${task.id} has no conversation yet.`, { code: "task_not_dispatched" });
             }
             const events = (await service.boat.events(task.sandboxId, task.conversationId, ctx.signal)).slice(-options.limit);
+            const moved =
+              task.runner === "chat" && task.threadId !== null
+                ? `Task ${task.id} now runs as the task chat @thread:${task.threadId}; below is its headless conversation from before the move.\n`
+                : "";
             return out(events, options.json, () =>
+              moved +
               events
                 .map((event) => {
                   const time = event.timestamp ? new Date(event.timestamp).toISOString().slice(11, 19) : "--:--:--";
@@ -713,6 +718,36 @@ export function buildCli(runtime: Runtime) {
               options.steer && task.status === "running" && task.promptId === before.promptId
                 ? `Steered the running turn of ${task.id}.`
                 : `Follow-up sent to ${task.id} (${agentLine(task)}). You will be notified when the turn finishes.`,
+            );
+          });
+        },
+      }),
+      "task continue-as-chat": cliCommand({
+        summary: "Move a headless task into a task chat: bb on its sandbox, and a chat with the same agent in the same checkout that gets the conversation so far",
+        description:
+          "Needs bb Connect, a finished turn, and repos the rules trust (a project with Run tasks as chats on, or How tasks run set to As chats everywhere); for other repos the user decides, with Continue as a chat on the task's page. Takes about a minute; then follow-ups go into the chat, and its first turn sums up where the task stands.",
+        positionals: [{ name: "id", description: "Task id", required: true }],
+        options: { json },
+        async run({ positionals, options }, ctx) {
+          return guard(async () => {
+            const { task, pending } = await service.continueAsChat(positionals.id, {
+              // Never a confirm: an untrusted repo needs the user (the task's page, or a project).
+              confirmUntrusted: null,
+              via: "cli",
+              waitMs: runtime.launchWaitMs,
+              // Nobody waits any more: tell the chat that asked.
+              onLateFailure: ctx.threadId
+                ? (message) =>
+                    void runtime
+                      .tellOrchestrator(ctx.threadId!, `[boat] Task ${positionals.id} couldn't continue as a chat: ${message} It stays headless; \`bb boat task show ${positionals.id}\` has the details.`)
+                      .catch(() => undefined)
+                : undefined,
+            });
+            runtime.wake();
+            return out({ task, pending }, options.json, () =>
+              pending
+                ? `Task ${task.id} is moving to a task chat (bb is being installed on its sandbox). \`bb boat task show ${task.id}\` says when it's open.`
+                : `Task ${task.id} continues as the task chat @thread:${task.threadId}. Its headless conversation stopped; follow-ups go into the chat.`,
             );
           });
         },

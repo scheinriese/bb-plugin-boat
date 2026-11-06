@@ -49,7 +49,7 @@ export function holdsUnshippedWork(task: Pick<Task, "delivery" | "role" | "turns
 
 export function toTaskDto(
   task: Task,
-  extras: { ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto } = {},
+  extras: { ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean } = {},
 ): TaskDto {
   const report = task.result ? parseReport(task.result) : { status: null, verdict: null };
   const unshipped = holdsUnshippedWork(task);
@@ -65,6 +65,7 @@ export function toTaskDto(
     unshipped,
     canShip: unshipped && task.status === "idle",
     untrustedRepo: extras.untrustedRepo ?? false,
+    movingToChat: extras.movingToChat ?? false,
     id: task.id,
     title: task.title,
     role: task.role,
@@ -249,6 +250,7 @@ export function registerRpc(runtime: Runtime): void {
   const dto = (task: Task, sources: Sourcing, all?: readonly Task[]) =>
     toTaskDto(task, {
       untrustedRepo: untrusted(task),
+      movingToChat: service.isMovingToChat(task.id),
       latestReview: latestReview(task),
       // Without the list: marked ready, or started from the page or a plain chat.
       ready: all
@@ -542,6 +544,22 @@ export function registerRpc(runtime: Runtime): void {
           },
           runtime.launchWaitMs,
         );
+        runtime.wake();
+        return { task: await single(task), pending };
+      }),
+
+    continueAsChatStatus: ({ id }) => refuse(() => service.continueAsChatStatus(id)),
+
+    continueAsChat: ({ id, confirmUntrusted }) =>
+      refuse(async () => {
+        // The page doesn't wait for bb's install: it shows "Moving to a chat…" until it's done.
+        const { task, pending } = await service.continueAsChat(id, {
+          // Like Ship: the user's click past the warning (and their tick) is the confirm.
+          confirmUntrusted,
+          via: "page",
+          waitMs: runtime.launchWaitMs,
+          waitFor: "checks",
+        });
         runtime.wake();
         return { task: await single(task), pending };
       }),
@@ -948,10 +966,10 @@ export function registerRpc(runtime: Runtime): void {
       return {
         needsYou: board.needsYou.map(toDecisionDto),
         ready: board.ready.map((task) =>
-          toTaskDto(task, { ready: true, latestReview: latestReview(task), untrustedRepo: untrusted(task), previewUrl: service.previewLinkFor(task.id), source: sources.source(task) }),
+          toTaskDto(task, { ready: true, latestReview: latestReview(task), untrustedRepo: untrusted(task), movingToChat: service.isMovingToChat(task.id), previewUrl: service.previewLinkFor(task.id), source: sources.source(task) }),
         ),
         running: board.running.map((task) =>
-          toTaskDto(task, { ready: false, latestReview: latestReview(task), untrustedRepo: untrusted(task), previewUrl: service.previewLinkFor(task.id), source: sources.source(task) }),
+          toTaskDto(task, { ready: false, latestReview: latestReview(task), untrustedRepo: untrusted(task), movingToChat: service.isMovingToChat(task.id), previewUrl: service.previewLinkFor(task.id), source: sources.source(task) }),
         ),
         done: board.done.map((task) => toTaskDto(task, { latestReview: latestReview(task), untrustedRepo: untrusted(task), source: sources.source(task) })),
       };

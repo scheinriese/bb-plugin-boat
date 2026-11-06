@@ -49,6 +49,7 @@ import {
   bbModelId,
   boatEffort,
   boatModelId,
+  chatChoiceFromBoat,
   choiceFor,
   defaultTierFor,
   effortAgent,
@@ -60,9 +61,11 @@ import {
   type TierMap,
 } from "./tiers.ts";
 import type { ChatRunner, ChatWhere, ComposerRequest } from "./chat.ts";
+import type { WorkspaceInfo } from "./briefs.ts";
 import type { QuotaReader } from "./quota.ts";
 import { AGENT_NAME, agentWithRoom, effectiveRelay, onlyAgent, otherAgent, type AgentChoice, type RelaySettings } from "./relay.ts";
 import type { ConnectCheck } from "./connect.ts";
+import { renderBoatTranscript, transcriptDir, transcriptPath } from "./transcript.ts";
 import type { PreflightInput } from "./setup.ts";
 
 export interface BoatSettings {
@@ -462,6 +465,43 @@ const TRANSITION_WAIT_MS = 120_000;
 /** How long a turn may look finished in one endpoint but not the other. */
 const SETTLE_MS = 30_000;
 
+/** A move to a chat whose task was closed or changed meanwhile. */
+class MoveCancelled extends Error {
+  readonly why: "closed" | "changed" | "unloaded";
+  constructor(why: "closed" | "changed" | "unloaded") {
+    super(
+      why === "closed" ? "The task was closed during the move." : why === "unloaded" ? "bb stopped the plugin during the move." : "The task changed during the move.",
+    );
+    this.why = why;
+    this.name = "MoveCancelled";
+  }
+}
+
+/** Turn states after which a headless turn is over. */
+const TERMINAL_PROMPT = new Set(["finished", "failed", "interrupted", "cancelled"]);
+
+/** Whether a headless task can continue as a task chat now (Continue as a chat on its page). */
+export interface ChatMoveStatus {
+  /** False: no button (a task chat already, closed, never dispatched, or no task chats on this bb). */
+  offered: boolean;
+  /** Why not now, with the fix. */
+  blocked: { code: string; message: string; hint: string | null } | null;
+  /** The rules don't run this task as a chat: the dialog warns and asks for a confirm. */
+  untrusted: boolean;
+  /** The repos the warning names (all of them with How tasks run In boat). */
+  untrustedRepos: string[];
+  /** How tasks run is In boat. */
+  workersBoat: boolean;
+  /** bb already runs on the sandbox (no install). */
+  hasMachine: boolean;
+  /** The sandbox is stopped; it starts first. */
+  sandboxStopped: boolean;
+  /** A move is running now. */
+  moving: boolean;
+  /** The last try failed and nothing happened since (its history text). */
+  lastFailure: string | null;
+}
+
 class DispatchCancelled extends Error {
   constructor() {
     super("The task was closed while it was being dispatched.");
@@ -499,6 +539,10 @@ export class BoatService {
   private readonly dispatches = new Map<string, AbortController>();
   /** When a turn first looked finished without a terminal status. */
   private readonly settling = new Map<string, number>();
+  /** Moves to a task chat in flight (Continue as a chat): closing the task aborts one. */
+  private readonly moves = new Map<string, { controller: AbortController; done: Promise<unknown>; sandboxId: string }>();
+  /** Follow-ups being sent, per task: a move refuses while one runs, and the other way round. */
+  private readonly sending = new Map<string, number>();
 
   readonly boat: BoatApi;
   readonly store: TaskStore;
@@ -899,6 +943,15 @@ export class BoatService {
         : (this.hooks.repoWorkerMode?.(repo) ?? (project !== null && projectEntry !== null ? project.workerMode : null));
     const repos = [repo, ...extraRepos.map((entry) => entry.repo)].filter((entry): entry is string => entry !== null);
     const runner = this.chooseRunner(input, parent, settings, projectMode, repo, repos);
+    // bb was installed on a named sandbox for a move (its files may still be there): only for repos you trust.
+    const named = (input.sandbox ?? "").trim();
+    if (named !== "" && named !== "new" && named !== "same" && named !== "auto" && this.store.sandboxHadBb(named) && !this.chatTrust(repos, settings).trusted) {
+      throw new TaskError(
+        `bb was installed on sandbox ${named} (a task moved to a chat there); a repo you don't trust can't run there.`,
+        "untrusted_sandbox",
+        "Use a new sandbox, or add the repo to a project with Run tasks as chats on if you trust it.",
+      );
+    }
     // What the rules alone would have picked (null: they'd refuse), for the history.
     const ruleRunner = input.runner == null ? runner : this.tryRules(input, parent, settings, projectMode, repo, repos);
     // A worker chat runs bb in its sandbox, which reaches this bb through bb Connect.
@@ -1668,7 +1721,47 @@ export class BoatService {
     return null;
   }
 
-  async followup(
+  async followup(idOrPrefix: string, message: string, options: Parameters<BoatService["sendFollowup"]>[2] = {}): Promise<Task> {
+    // Entered before the task is read: a follow-up right after a move sees the chat.
+    const leave = this.enterFollowup(this.mustGet(idOrPrefix).id);
+    try {
+      return await this.sendFollowup(idOrPrefix, message, options);
+    } finally {
+      leave();
+    }
+  }
+
+  /** Follow-ups and a move to a chat exclude each other; follow-ups don't exclude each other. */
+  private enterFollowup(taskId: string): () => void {
+    if (this.moves.has(taskId)) {
+      throw new TaskError(`Task ${taskId} is moving to a task chat.`, "task_busy", "Send it once the chat is open (in about a minute); it goes there.");
+    }
+    this.sending.set(taskId, (this.sending.get(taskId) ?? 0) + 1);
+    let left = false;
+    return () => {
+      if (left) return;
+      left = true;
+      const count = (this.sending.get(taskId) ?? 1) - 1;
+      if (count <= 0) this.sending.delete(taskId);
+      else this.sending.set(taskId, count);
+    };
+  }
+
+  /** A move to a task chat is running for this task. */
+  isMovingToChat(taskId: string): boolean {
+    return this.moves.has(taskId);
+  }
+
+  /** A move to a task chat holds this sandbox (the machine keeper leaves it alone). */
+  isMovingSandbox(sandboxId: string): boolean {
+    return [...this.moves.values()].some((move) => move.sandboxId === sandboxId);
+  }
+
+  private assertNotMoving(taskId: string): void {
+    if (this.moves.has(taskId)) throw new TaskError(`Task ${taskId} is moving to a task chat.`, "task_busy", "Try again once the chat is open (in about a minute).");
+  }
+
+  private async sendFollowup(
     idOrPrefix: string,
     message: string,
     options: {
@@ -1831,21 +1924,27 @@ export class BoatService {
         reasoningEffort,
         signal: options.signal,
       });
-      const updated = this.store.transition(task.id, ["idle", "failed"], {
-        status: "running",
-        promptId: dispatch.promptId,
-        provider,
-        model: dispatch.model ?? model,
-        reasoningEffort,
-        tier,
-        reason,
-        turns: task.turns + 1,
-        error: null,
-        finishedAt: null,
-        notifiedAt: null,
-        readyAt: null,
-        readyNote: null,
-      });
+      const updated = this.store.transition(
+        task.id,
+        ["idle", "failed"],
+        {
+          status: "running",
+          promptId: dispatch.promptId,
+          provider,
+          model: dispatch.model ?? model,
+          reasoningEffort,
+          tier,
+          reason,
+          turns: task.turns + 1,
+          error: null,
+          finishedAt: null,
+          notifiedAt: null,
+          readyAt: null,
+          readyNote: null,
+        },
+        // A move to a chat (or another turn) that landed meanwhile wins.
+        { promptId: task.promptId },
+      );
       if (updated === null) {
         await this.boat.interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
@@ -2070,24 +2169,9 @@ export class BoatService {
         role: task.role,
         title: task.title,
         brief: task.brief,
-        workspace: {
-          repo: task.repo,
-          repoPath: task.repoPath,
-          branch: task.branch,
-          baseBranch: task.baseBranch,
-          prUrl: task.prUrl,
-          extraRepos: task.extraRepos.filter((extra): extra is { repo: string; baseBranch: string; path: string } => typeof extra.path === "string"),
-          protectedBranches: protectedBranches(
-            null,
-            [
-              task.baseBranch,
-              ...task.extraRepos.map((extra) => extra.baseBranch),
-              ...this.projectBaseBranches([task.repo, ...task.extraRepos.map((extra) => extra.repo)]),
-            ],
-            alwaysProtectedBranches(extraProtectedBranches),
-          ),
-          delivery: task.delivery,
-        },
+        workspace: this.handoverWorkspace(task, extraProtectedBranches),
+        // A task that moved from boat: its headless conversation stays readable.
+        transcriptPath: this.store.latestEvent(task.id, "moved-to-chat") !== null ? transcriptPath(task.id) : null,
         fromProvider: task.provider,
         fromThreadId: task.threadId,
         why: next.why,
@@ -2109,6 +2193,24 @@ export class BoatService {
     return spawned.threadId;
   }
 
+  /** Where a task's code is, for a chat that takes it over (a handover, a move from boat). */
+  private handoverWorkspace(task: Task, extraProtected: string[]): WorkspaceInfo {
+    return {
+      repo: task.repo,
+      repoPath: task.repoPath,
+      branch: task.branch,
+      baseBranch: task.baseBranch,
+      prUrl: task.prUrl,
+      extraRepos: task.extraRepos.filter((extra): extra is { repo: string; baseBranch: string; path: string } => typeof extra.path === "string"),
+      protectedBranches: protectedBranches(
+        null,
+        [task.baseBranch, ...task.extraRepos.map((extra) => extra.baseBranch), ...this.projectBaseBranches([task.repo, ...task.extraRepos.map((extra) => extra.repo)])],
+        alwaysProtectedBranches(extraProtected),
+      ),
+      delivery: task.delivery,
+    };
+  }
+
   /** A new turn on reviewed work: the old verdict no longer covers it. */
   private markChangedSinceReview(task: Task): void {
     if (task.role !== "implement") return;
@@ -2125,6 +2227,11 @@ export class BoatService {
       (task.sandboxId !== null && this.store.liveSandboxTasks(task.sandboxId).some((other) => other.id !== task.id));
     if (shared) return "kept";
     try {
+      // A moved task's machine may still carry the keep flag (a restart between the switch and the settle).
+      if (this.store.latestEvent(task.id, "moved-to-chat") !== null) {
+        const key = await this.hooks.chat.machineKey(task.hostId).catch(() => null);
+        if (key !== null) await this.hooks.chat.settleMachine(key);
+      }
       await this.hooks.chat.removeMachine(task.hostId);
       this.store.addEvent(task.id, "sandbox", `Removed bb machine ${task.hostId} and its sandbox ${task.sandboxId ?? ""}`.trim());
       return "deleted";
@@ -2223,7 +2330,8 @@ export class BoatService {
     }
     // A bb machine's disk holds bb's login for this server: a snapshot of it would
     // carry that into every sandbox started from it, untrusted repos' included.
-    const machine = this.store.isChatMachineSandbox(sandboxId) || (await this.hooks.chat?.findMachine(sandboxId).catch(() => null)) != null;
+    const machine =
+      this.store.isChatMachineSandbox(sandboxId) || this.bbWasInstalled(sandboxId) || (await this.hooks.chat?.findMachine(sandboxId).catch(() => null)) != null;
     if (machine) {
       throw new TaskError(
         `Sandbox ${sandboxId} runs bb (a task chat's or orchestrator's machine), so it can't be a snapshot.`,
@@ -2247,6 +2355,9 @@ export class BoatService {
   }
 
   async sandboxAction(sandboxId: string, action: "stop" | "resume" | "delete", ttlSeconds: number, signal?: AbortSignal): Promise<void> {
+    if (this.isMovingSandbox(sandboxId)) {
+      throw new TaskError(`A task is moving to a task chat in sandbox ${sandboxId}.`, "task_busy", "Try again once the chat is open (in about a minute).");
+    }
     const hostId = this.hooks.chat === undefined ? null : this.store.hostForSandbox(sandboxId);
     if (hostId === null) {
       if (action === "stop") await this.boat.stop(sandboxId, signal);
@@ -2423,6 +2534,8 @@ export class BoatService {
   ): Promise<StartTaskInput> {
     const settings = await this.settings();
     const parent = await this.refreshChatTask(implementationId);
+    // A review started mid-move would reuse a sandbox that's half a machine.
+    this.assertNotMoving(parent.id);
     if (parent.status === "running" || parent.status === "starting") {
       throw new TaskError(`Task ${parent.id} is still running.`, "task_running", "Review it after its turn finishes.");
     }
@@ -2460,6 +2573,480 @@ export class BoatService {
       projectId: options.projectId ?? parent.projectId,
       signal: options.signal,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Continue as a chat: a headless task moves into a task chat
+
+  /** A task's repos: its own and the other project repos it cloned. */
+  private taskRepos(task: Task): string[] {
+    return [task.repo, ...task.extraRepos.map((extra) => extra.repo)].filter((repo): repo is string => repo !== null);
+  }
+
+  /** bb was installed on this sandbox for a move (it may hold bb's files even after a rollback). */
+  private bbWasInstalled(sandboxId: string): boolean {
+    return this.store.sandboxHadBb(sandboxId);
+  }
+
+  /** The newest outcome of a move: the failure text when the last try failed, else null. */
+  private lastMoveFailure(taskId: string): string | null {
+    const last = this.store
+      .events(taskId, 200)
+      .filter((event) => event.kind === "chat-move" || event.kind === "chat-move-failed" || event.kind === "moved-to-chat")
+      .at(-1);
+    return last?.kind === "chat-move-failed" ? last.text : null;
+  }
+
+  /** Why the button isn't there at all (null: it is). */
+  private moveHidden(task: Task): TaskError | null {
+    if (this.hooks.chat === undefined) return new TaskError("This bb can't run task chats.", "chat_unavailable");
+    if (task.runner === "chat") return new TaskError(`Task ${task.id} already runs as a task chat.`, "already_chat", "Open its chat.");
+    if (task.status === "done" || task.status === "cancelled") return new TaskError(`Task ${task.id} is ${task.status}.`, "task_closed", "Start a new task instead.");
+    if (task.status !== "starting" && (task.sandboxId === null || task.conversationId === null)) {
+      return new TaskError(`Task ${task.id} never reached its agent.`, "task_not_dispatched", "Start a new task instead.");
+    }
+    return null;
+  }
+
+  /** The checks that need neither boat nor bb, in the order the user meets them. */
+  private moveBlockerNow(task: Task): TaskError | null {
+    const hidden = this.moveHidden(task);
+    if (hidden !== null) return hidden;
+    if (task.status === "starting") return new TaskError("The task is still starting.", "task_starting", "Wait for its first turn to end.");
+    if (task.status === "running") return new TaskError("The agent's turn is running.", "task_running", "Wait for the turn to end, or Interrupt it.");
+    if (this.moves.has(task.id)) return new TaskError(`Task ${task.id} is moving to a task chat.`, "task_busy", "It's open in about a minute.");
+    if ((this.sending.get(task.id) ?? 0) > 0) return new TaskError("A follow-up is being sent to this task.", "task_busy", "Try again in a moment.");
+    const sandboxId = task.sandboxId!;
+    if (this.claims.has(sandboxId)) {
+      return new TaskError("Something is using the task's sandbox right now (a ship, a preview or a follow-up).", "task_busy", "Try again in a moment.");
+    }
+    if (!this.store.pluginOwnsSandbox(sandboxId)) {
+      return new TaskError(
+        `Task ${task.id} runs in a sandbox the plugin didn't create, so bb isn't installed there.`,
+        "sandbox_lent",
+        `Start a new task as a chat instead (\`bb boat task start --chat --context-from ${task.id}\`).`,
+      );
+    }
+    const other = this.store.liveSandboxTasks(sandboxId).find((entry) => entry.id !== task.id);
+    if (other !== undefined) {
+      return task.role === "review" && other.id === task.parentTaskId
+        ? new TaskError("A review that shares its task's sandbox can't move to a chat.", "sandbox_shared", "Request a new review instead.")
+        : new TaskError(`Task ${other.id} also works in this sandbox.`, "sandbox_shared", "Close it first, then try again.");
+    }
+    return null;
+  }
+
+  private async connectBlocker(): Promise<TaskError | null> {
+    if (!this.hooks.connect) return null;
+    const connect = await this.hooks.connect();
+    if (connect.state !== "off") return null;
+    return new TaskError("Task chats need bb Connect, which is off.", "connect_required", connect.fix ?? CONNECT_FIX);
+  }
+
+  /** What the sandbox says: gone, broken, or up (null: boat couldn't be read; the move itself will say). */
+  private sandboxBlocker(task: Task, sandbox: Sandbox | null | undefined): TaskError | null {
+    if (sandbox === null) {
+      return new TaskError(`Task ${task.id}'s sandbox is gone.`, "sandbox_gone", `Start a new task; \`--context-from ${task.id}\` gives it this one's brief and report.`);
+    }
+    if (sandbox !== undefined && (sandbox.state === "error" || sandbox.state === "cancelled")) {
+      return new TaskError(`Task ${task.id}'s sandbox is ${sandbox.state}.`, "sandbox_unavailable", "Start a new task instead.");
+    }
+    return null;
+  }
+
+  /**
+   * The bb machine to reuse on the sandbox: the one the plugin knows (a kept
+   * machine of a closed task chat), or this task's own from a try cut short.
+   * Another one (an orchestrator's) is refused. null: none, attach one.
+   */
+  private async moveMachine(task: Task): Promise<{ hostId: string; key: string | null; own: boolean } | null> {
+    const chat = this.hooks.chat!;
+    const found = await chat.findMachine(task.sandboxId!);
+    if (found === null) return null;
+    const key = await chat.machineKey(found).catch(() => null);
+    if (key?.startsWith(`task-${task.id}-m`)) return { hostId: found, key, own: true };
+    if (found === this.store.machineForSandbox(task.sandboxId!)) return { hostId: found, key, own: false };
+    throw new TaskError(
+      `Sandbox ${task.sandboxId} already runs bb for another chat.`,
+      "sandbox_runs_bb",
+      `Start a new task as a chat instead (\`bb boat task start --chat --context-from ${task.id}\`).`,
+    );
+  }
+
+  /** For the task's page: can it continue as a chat now, and what the dialog has to say. */
+  async continueAsChatStatus(idOrPrefix: string, signal?: AbortSignal): Promise<ChatMoveStatus> {
+    const task = this.mustGet(idOrPrefix);
+    const settings = await this.settings();
+    const trust = this.chatTrust(this.taskRepos(task), settings);
+    const base = {
+      untrusted: !trust.trusted,
+      untrustedRepos: trust.untrustedRepos,
+      workersBoat: trust.workersBoat,
+      hasMachine: false,
+      sandboxStopped: false,
+      moving: this.moves.has(task.id),
+      lastFailure: this.moves.has(task.id) ? null : this.lastMoveFailure(task.id),
+    };
+    const plain = (error: TaskError) => ({ code: error.code, message: error.message, hint: error.hint ?? null });
+    const hidden = this.moveHidden(task);
+    if (hidden !== null) return { ...base, offered: false, blocked: plain(hidden) };
+    let blocked = this.moveBlockerNow(task) ?? (await this.connectBlocker());
+    if (blocked !== null) return { ...base, offered: true, blocked: plain(blocked) };
+    const sandbox = await this.boat.findInfo(task.sandboxId!, signal).catch(() => undefined);
+    blocked = this.sandboxBlocker(task, sandbox);
+    let hasMachine = false;
+    if (blocked === null) {
+      try {
+        hasMachine = (await this.moveMachine(task)) !== null;
+      } catch (error) {
+        if (error instanceof TaskError) blocked = error;
+      }
+    }
+    return {
+      ...base,
+      offered: true,
+      blocked: blocked === null ? null : plain(blocked),
+      hasMachine,
+      sandboxStopped: sandbox !== null && sandbox !== undefined && !ACTIVE_STATES.has(sandbox.state),
+    };
+  }
+
+  /**
+   * Move a headless task into a task chat: bb on its sandbox (or the machine
+   * already there), the conversation so far in a file outside the repo, and a
+   * chat with the same agent in the same checkout. The quick checks throw
+   * right away; the rest runs in the background like a launch: the caller
+   * waits up to waitMs (or, with waitFor "checks", until the checks that ask
+   * boat and bb have passed). Any failure leaves the task headless, with a
+   * history note. confirmUntrusted: the repos the user was warned about.
+   */
+  async continueAsChat(
+    idOrPrefix: string,
+    options: {
+      confirmUntrusted: string[] | null;
+      via: "page" | "cli";
+      waitMs: number;
+      waitFor?: "checks" | "done";
+      /** A failure after the caller stopped waiting. */
+      onLateFailure?: (message: string) => void;
+    },
+  ): Promise<{ task: Task; pending: boolean }> {
+    let task = this.mustGet(idOrPrefix);
+    const settings = await this.settings();
+    const now = this.moveBlockerNow(task);
+    if (now !== null) throw now;
+    const trust = this.chatTrust(this.taskRepos(task), settings);
+    if (!confirmCovers(options.confirmUntrusted, trust)) throw this.untrustedRepoError(trust, "move", options.confirmUntrusted !== null);
+    const connect = await this.connectBlocker();
+    if (connect !== null) throw connect;
+    // Every await is behind us: check again and take the task in one step.
+    task = this.mustGet(task.id);
+    const again = this.moveBlockerNow(task);
+    if (again !== null) throw again;
+    const controller = new AbortController();
+    const onUnload = () => controller.abort();
+    this.hooks.lifecycle.addEventListener("abort", onUnload, { once: true });
+    const release = this.claim(task.sandboxId!);
+    const entry = { controller, done: Promise.resolve() as Promise<unknown>, sandboxId: task.sandboxId! };
+    this.moves.set(task.id, entry);
+    this.store.addEvent(task.id, "chat-move", `Moving to a task chat (${options.via === "page" ? "asked on the Cloud agents page" : "from the CLI"})`);
+    this.hooks.changed([task.id]);
+    let checked: () => void = () => undefined;
+    const checks = new Promise<void>((resolve) => {
+      checked = resolve;
+    });
+    const id = task.id;
+    const run = this.runMove(task, trust, options.via, controller.signal, () => checked()).finally(() => {
+      release();
+      this.hooks.lifecycle.removeEventListener("abort", onUnload);
+      if (this.moves.get(id) === entry) this.moves.delete(id);
+      this.hooks.changed([id]);
+    });
+    entry.done = run;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      run.then(
+        (moved) => ({ kind: "done" as const, task: moved }),
+        (error: unknown) => ({ kind: "error" as const, error }),
+      ),
+      ...(options.waitFor === "checks" ? [checks.then(() => ({ kind: "pending" as const }))] : []),
+      new Promise<{ kind: "pending" }>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "pending" }), options.waitMs);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (outcome.kind === "done") return { task: outcome.task, pending: false };
+    if (outcome.kind === "error") throw outcome.error;
+    run.catch((error: unknown) => options.onLateFailure?.(clip(errorText(error), 300)));
+    return { task: this.store.get(id) ?? task, pending: true };
+  }
+
+  private async runMove(initial: Task, trust: ChatTrust, via: "page" | "cli", signal: AbortSignal, checked: () => void): Promise<Task> {
+    const chat = this.hooks.chat!;
+    const id = initial.id;
+    const sandboxId = initial.sandboxId!;
+    const conversationId = initial.conversationId!;
+    /** A machine this try attached (undone on failure). */
+    let attached: { hostId: string; key: string } | null = null;
+    /** This task's machine from an earlier try (kept for the next one on failure). */
+    let reusedOwn: string | null = null;
+    /** A reused machine's key this move protected for its length. */
+    let protectedKey: string | null = null;
+    let spawnedThread: string | null = null;
+    /** Why the move stopped being wanted (null: it still is). */
+    const unwanted = (): MoveCancelled | null => {
+      if (signal.aborted) return new MoveCancelled(signal.reason === "closed" ? "closed" : "unloaded");
+      const current = this.store.get(id);
+      if (current === null || current.status === "done" || current.status === "cancelled") return new MoveCancelled("closed");
+      if (current.status === "running" || current.status === "starting" || current.promptId !== initial.promptId || current.runner !== "boat") return new MoveCancelled("changed");
+      return null;
+    };
+    const stillWanted = () => {
+      const why = unwanted();
+      if (why !== null) throw why;
+    };
+    try {
+      // 1. Checks that ask boat and bb.
+      const sandbox = await this.boat.findInfo(sandboxId, signal);
+      const gone = this.sandboxBlocker(initial, sandbox);
+      if (gone !== null) throw gone;
+      await this.hooks.preflight?.({ agent: initial.provider, runner: "chat", environment: initial.environment, newSandbox: false });
+      const machine = await this.moveMachine(initial);
+      let hostId = machine?.hostId ?? null;
+      if (machine?.own) {
+        reusedOwn = machine.hostId;
+      } else if (machine !== null && machine.key !== null && (await chat.protectSandbox(machine.key, sandboxId))) {
+        protectedKey = machine.key;
+      }
+      stillWanted();
+      checked();
+
+      // 2. Bring the sandbox up and keep it up, and make sure the headless turn is over.
+      if (!ACTIVE_STATES.has(sandbox!.state)) {
+        if (hostId !== null) {
+          await chat.resumeMachine(hostId);
+          this.suspendedHosts.delete(hostId);
+          await this.waitForSandbox(sandboxId, signal);
+        } else {
+          await this.ensureRunning(sandboxId, signal);
+        }
+        this.store.resetPreviewHealthForSandbox(sandboxId);
+      }
+      await this.extendSandbox(sandboxId, signal);
+      const conversation = (await this.boat.conversations(sandboxId, signal)).find((entry) => entry.id === conversationId);
+      const events = await this.boat.events(sandboxId, conversationId, signal);
+      const turn = promptStatus(events, initial.promptId);
+      if (conversation?.running === true || (turn !== null && !TERMINAL_PROMPT.has(turn))) {
+        throw new TaskError("The headless conversation is still running in boat.", "task_running", "Wait for the turn to end, or Interrupt it.");
+      }
+      if (initial.delivery === "pr" && initial.repo !== null) await this.assertGithubLogin(initial, { signal });
+      stillWanted();
+
+      // 3. The conversation so far.
+      const rendered = renderBoatTranscript(events, {
+        taskId: id,
+        title: initial.title,
+        provider: initial.provider,
+        model: initial.model,
+        at: new Date().toISOString(),
+        expectedTurns: initial.turns,
+      });
+
+      // 4. bb on the sandbox.
+      if (hostId === null) {
+        this.store.addEvent(id, "machine", "Installing bb on the sandbox (about a minute)");
+        this.hooks.changed([id]);
+        // From here on its files may be on the sandbox, whatever happens next.
+        this.store.addEvent(id, "bb-installed", sandboxId);
+        try {
+          attached = await chat.attachMachine({ taskId: id, sandboxId, keepSandbox: true, signal });
+        } catch (error) {
+          // An attach cut short may still have made the machine.
+          const left = await chat.findMachine(sandboxId).catch(() => null);
+          const key = left === null ? null : await chat.machineKey(left).catch(() => null);
+          if (left !== null && key?.startsWith(`task-${id}-m`)) attached = { hostId: left, key };
+          throw error;
+        }
+        hostId = attached.hostId;
+        this.store.addEvent(id, "machine", `The sandbox is bb machine ${hostId}`);
+      } else {
+        this.store.addEvent(id, "machine", `bb already runs on the sandbox (machine ${hostId})`);
+      }
+      this.suspendedHosts.delete(hostId);
+      this.hooks.changed([id]);
+      stillWanted();
+
+      // 5. The transcript, outside every checkout (never in history, logs or errors).
+      const path = transcriptPath(id);
+      await chat.writeFile(hostId, path, rendered.text);
+      this.store.addEvent(
+        id,
+        "transcript",
+        `Wrote the headless conversation (${rendered.turns} ${rendered.turns === 1 ? "turn" : "turns"}) to ${path} for the chat${rendered.cut > 0 ? `; ${rendered.cut} earlier ${rendered.cut === 1 ? "turn" : "turns"} left out` : ""}`,
+      );
+      stillWanted();
+
+      // 6. The first message: brief, workspace, rules, latest report, and where the conversation is.
+      const settings = await this.settings();
+      const choice = chatChoiceFromBoat(initial.provider, initial.model, initial.reasoningEffort, initial.tier, settings.modelTiers);
+      const effort = agentEffort("chat", initial.provider, choice.effort);
+      const standing = [settings.workerInstructions, ...(this.hooks.projectInstructions?.(initial.boatProject, initial.repo) ?? [])]
+        .filter((part) => part.trim() !== "")
+        .join("\n\n");
+      const prompt = composeHandoverPrompt({
+        taskId: id,
+        role: initial.role,
+        title: initial.title,
+        brief: initial.brief,
+        workspace: this.handoverWorkspace(initial, settings.extraProtectedBranches),
+        fromProvider: initial.provider,
+        fromThreadId: null,
+        why: "from-boat",
+        message: null,
+        tier: initial.tier,
+        provider: initial.provider,
+        effort,
+        evidence: this.hasEvidence(id),
+        transcriptPath: path,
+        latestReport: initial.result ? clipResult(initial.result, 8_000) : null,
+        extraInstructions: standing,
+      });
+
+      // 7. The chat, in the task's checkout on the machine.
+      const spawned = await chat.spawn({
+        taskId: id,
+        title: initial.title,
+        prompt,
+        provider: initial.provider,
+        model: choice.model,
+        effort,
+        parentThreadId: initial.orchestratorThreadId,
+        projectId: initial.projectId,
+        where: { kind: "machine", hostId, path: initial.repoPath },
+      });
+      spawnedThread = spawned.threadId;
+
+      // 8. Switch the task, only if nothing else happened to it meanwhile.
+      stillWanted();
+      const moved = this.store.transition(
+        id,
+        ["idle", "failed"],
+        {
+          runner: "chat",
+          status: "running",
+          hostId,
+          threadId: spawned.threadId,
+          environmentId: spawned.environmentId ?? null,
+          promptId: chatTurnMarker(),
+          model: choice.model,
+          reasoningEffort: effort,
+          turns: initial.turns + 1,
+          error: null,
+          finishedAt: null,
+          notifiedAt: null,
+        },
+        { promptId: initial.promptId },
+      );
+      if (moved === null) throw unwanted() ?? new MoveCancelled("changed");
+
+      // 9. Record it; the chat runs the read-up turn now.
+      this.store.addEvent(id, "chat", spawned.threadId);
+      this.recordChat(id, spawned.threadId, initial.provider, choice.model, effort);
+      if (!trust.trusted) {
+        this.store.addEvent(id, "trust-confirmed", `${trustText(trust)}; moved to a task chat after the warning on the task's page (its sandbox can reach this bb).`);
+      }
+      if (choice.note !== null) this.store.addEvent(id, "model", choice.note);
+      this.store.addEvent(
+        id,
+        "moved-to-chat",
+        `Moved to the task chat @thread:${spawned.threadId} (${initial.provider} · ${modelLine(initial.tier, choice.model, effort, null)}). The headless conversation stops here; follow-ups go to the chat.`,
+      );
+      this.settling.delete(id);
+      this.chatTurnSeen.delete(id);
+      // Two agents never share the checkout: stop the headless one if anything restarted it.
+      const still = (await this.boat.conversations(sandboxId).catch(() => [])).find((entry) => entry.id === conversationId);
+      if (still?.running) await this.boat.interrupt(sandboxId, conversationId).catch(() => undefined);
+      // From now on, removing the machine deletes the sandbox like any task chat's.
+      const settle = attached?.key ?? (reusedOwn !== null ? machine?.key : null) ?? protectedKey;
+      if (settle) await chat.settleMachine(settle).catch((error) => this.hooks.log.warn(`settle ${settle}: ${errorText(error)}`));
+      void via;
+      this.hooks.changed([id]);
+      return moved;
+    } catch (error) {
+      if (spawnedThread !== null) {
+        await chat.stop(spawnedThread).catch(() => undefined);
+        await chat.archive(spawnedThread).catch(() => undefined);
+      }
+      let undo = "";
+      if (attached !== null) {
+        try {
+          await chat.detachMachine(attached.hostId, attached.key);
+          undo = " The bb machine was removed again; the sandbox and its work stay.";
+        } catch (detachError) {
+          this.hooks.log.warn(`detach ${attached.hostId}: ${errorText(detachError)}`);
+          undo = ` bb is still on the sandbox (machine ${attached.hostId}); the next try reuses it.`;
+        }
+      } else if (reusedOwn !== null) {
+        undo = ` bb is still on the sandbox (machine ${reusedOwn}); the next try reuses it.`;
+      }
+      if (protectedKey !== null) await chat.settleMachine(protectedKey).catch(() => undefined);
+      // An abort (a close, an unload) can surface as any error from the step it cut short.
+      const cancelled = error instanceof MoveCancelled ? error : signal.aborted ? unwanted() : null;
+      const reason = cancelled !== null ? cancelled.message : clip(errorText(error), 300);
+      this.store.addEvent(id, "chat-move-failed", `Couldn't continue as a chat: ${reason.replace(/\.?$/, ".")} The task stays headless.${undo}`);
+      this.hooks.changed([id]);
+      if (cancelled !== null) {
+        throw new TaskError(`Task ${id} ${cancelled.why === "closed" ? "was closed" : "changed"} while it was moving to a chat.`, "task_changed", "Nothing moved; try again.");
+      }
+      throw error;
+    }
+  }
+
+  /** Keep a sandbox from stopping during a move (boat's auto-stop); never fatal. */
+  private async extendSandbox(sandboxId: string, signal: AbortSignal): Promise<void> {
+    try {
+      const limits = await this.boat.limits(signal).catch(() => null);
+      await withinAutoStopCap(ttlSeconds(await this.settings(), limits), (ttl) => this.boat.extend(sandboxId, ["--ttl", String(ttl)], signal));
+    } catch (error) {
+      this.hooks.log.warn(`extend ${sandboxId}: ${errorText(error)}`);
+    }
+  }
+
+  /** A move cut short (a restart) may have left this task's machine on its sandbox: bb forgets it, the sandbox stays. */
+  private async detachLeftoverMachine(task: Task): Promise<string | null> {
+    if (this.hooks.chat === undefined || task.sandboxId === null || this.store.latestEvent(task.id, "chat-move") === null) return null;
+    const hostId = await this.hooks.chat.findMachine(task.sandboxId).catch(() => null);
+    if (hostId === null) return null;
+    const key = await this.hooks.chat.machineKey(hostId).catch(() => null);
+    if (!key?.startsWith(`task-${task.id}-m`)) return null;
+    try {
+      await this.hooks.chat.detachMachine(hostId, key);
+      return hostId;
+    } catch (error) {
+      this.hooks.log.warn(`detach ${hostId}: ${errorText(error)}`);
+      return null;
+    }
+  }
+
+  /** Moves bb restarted in the middle of: undo what's left and say so (once per move). */
+  private async reconcileMoves(open: readonly Task[]): Promise<string[]> {
+    const changed: string[] = [];
+    for (const task of open) {
+      if (task.runner !== "boat" || this.moves.has(task.id) || this.store.latestEvent(task.id, "chat-move") === null) continue;
+      const last = this.store
+        .events(task.id, 200)
+        .filter((event) => event.kind === "chat-move" || event.kind === "chat-move-failed" || event.kind === "moved-to-chat")
+        .at(-1);
+      if (last?.kind !== "chat-move") continue;
+      const detached = await this.detachLeftoverMachine(task);
+      this.store.addEvent(
+        task.id,
+        "chat-move-failed",
+        `Couldn't continue as a chat: bb restarted during the move. The task stays headless.${detached ? " The bb machine was removed again; the sandbox and its work stay." : ""}`,
+      );
+      changed.push(task.id);
+    }
+    return changed;
   }
 
   // -------------------------------------------------------------------------
@@ -2795,6 +3382,7 @@ export class BoatService {
    */
   async shipTask(idOrPrefix: string, options: { keepOpen?: boolean; approval: string; signal?: AbortSignal }): Promise<{ task: Task; shipped: ShipResult["shipped"]; sandbox: "deleted" | "kept" | "gone" | "none" }> {
     const task = await this.refreshChatTask(idOrPrefix);
+    this.assertNotMoving(task.id);
     if (task.delivery !== "push") {
       throw new TaskError(`Task ${task.id} delivers through a pull request.`, "not_shippable", "Merge its pull request on GitHub.");
     }
@@ -2857,7 +3445,14 @@ export class BoatService {
     options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal } = {},
   ): Promise<{ task: Task; sandbox: "deleted" | "kept" | "gone" | "none" }> {
     const settings = await this.settings();
-    const task = this.mustGet(idOrPrefix);
+    let task = this.mustGet(idOrPrefix);
+    // A move to a chat in flight stops (and rolls back) first; then the row is current.
+    const move = this.moves.get(task.id);
+    if (move !== undefined) {
+      move.controller.abort("closed");
+      await move.done.catch(() => undefined);
+      task = this.store.get(task.id) ?? task;
+    }
     const unfinished = task.status === "running" || task.status === "starting";
     const status: TaskStatus = options.status ?? (unfinished ? "cancelled" : "done");
     // Unshipped work lives only in its sandbox: closing (or cancelling) throws it away.
@@ -2898,9 +3493,17 @@ export class BoatService {
         sandbox = removed === "none" ? (sandboxId === null ? "none" : await this.releaseSandbox(sandboxId, task.id, options.signal)) : removed;
       }
     } else if (sandboxId !== null) {
+      // A try to move it to a chat cut short (a restart) may have left a machine there.
+      await this.detachLeftoverMachine(current);
       const keep = options.keepSandbox ?? !settings.deleteSandboxOnClose;
       sandbox = keep ? "kept" : await this.releaseSandbox(sandboxId, task.id, options.signal);
       if (sandbox === "deleted") this.store.addEvent(task.id, "sandbox", `Deleted sandbox ${sandboxId}`);
+    }
+    // A kept sandbox may get other tasks: the moved task's old conversation goes.
+    if (sandbox === "kept" && sandboxId !== null && this.store.latestEvent(task.id, "moved-to-chat") !== null) {
+      await this.boat
+        .exec(sandboxId, `rm -rf ${shellQuote(transcriptDir(task.id))}`, { timeoutMs: 30_000, signal: options.signal })
+        .catch((error) => this.hooks.log.warn(`remove transcript ${task.id}: ${errorText(error)}`));
     }
     if (sandbox === "deleted" || sandbox === "gone") {
       this.store.expirePreviews(task.id);
@@ -3046,7 +3649,10 @@ export class BoatService {
       this.hooks.changed([task.id]);
     }
 
-    const changed: string[] = [];
+    const changed: string[] = await this.reconcileMoves(open).catch((error) => {
+      this.hooks.log.warn(`move reconcile: ${errorText(error)}`);
+      return [];
+    });
     // Worker chats: bb runs them; mirror their state onto the tasks.
     if (this.hooks.chat !== undefined) {
       for (const task of open) {

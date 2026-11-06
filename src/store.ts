@@ -773,7 +773,11 @@ export class TaskStore {
     return this.db().prepare(`SELECT 1 AS one FROM tasks WHERE sandbox_id = ? AND host_id IS NOT NULL LIMIT 1`).get(sandboxId) !== undefined;
   }
 
-  /** The bb machine an open chat task made of this sandbox, if any. */
+  /** bb was ever installed on this sandbox for a move to a chat (bb-installed events), even if that move failed. */
+  sandboxHadBb(sandboxId: string): boolean {
+    return this.db().prepare(`SELECT 1 AS one FROM task_events WHERE kind = 'bb-installed' AND text = ? LIMIT 1`).get(sandboxId) !== undefined;
+  }
+
   /** The bb machine that wraps a sandbox, whatever its tasks' state (a kept machine of closed tasks too). */
   machineForSandbox(sandboxId: string): string | null {
     const row = this.db()

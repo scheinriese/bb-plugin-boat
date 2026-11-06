@@ -892,3 +892,41 @@ test("Run as a chat: --chat only for repos the rules trust, --headless always; t
   const sneaky = (JSON.parse((await harness.runCli(["task", "list", "--json"])).stdout) as { title: string; runner: string }[]).find((task) => task.title === "Sneaky");
   assert.equal(sneaky?.runner, "boat");
 });
+
+test("task continue-as-chat: refused for untrusted repos (the user decides on the task's page) and without bb Connect", async (t) => {
+  const { harness, finishAll } = await setup({ workers: "projects" });
+  t.after(() => harness.lifecycle.dispose());
+  // bb Connect is off (and read once: the plugin caches it briefly).
+  stubConnect(harness, { paired: false, enabled: true });
+  assert.equal((await harness.runCli(["project", "add", "--name", "Web app", "--repo", "acme/web@main"])).exitCode, 0);
+  const start = async (repo: string) => {
+    const started = await harness.runCli(["task", "start", "--title", repo, "--repo", repo, "--brief", "b", "--headless", "--json"], { threadId: "thr_orch" });
+    assert.equal(started.exitCode, 0, started.stderr || started.stdout);
+    return JSON.parse(started.stdout).task as { id: string };
+  };
+  const outside = await start("acme/api");
+  const trusted = await start("acme/web");
+  finishAll("Done.\n=== REPORT ===\nSTATUS: done\n=== END REPORT ===");
+  await harness.runCli(["task", "show", outside.id, "--refresh"]);
+
+  const refused = await harness.runCli(["task", "continue-as-chat", outside.id, "--json"], { threadId: "thr_orch" });
+  assert.notEqual(refused.exitCode, 0);
+  const error = JSON.parse(refused.stdout).error as { code: string; hint: string };
+  assert.equal(error.code, "untrusted_repo");
+  assert.match(error.hint, /Continue as a chat on the task's page/);
+  // The page's status says what the dialog needs.
+  const status = (await harness.callRpc("continueAsChatStatus", { id: outside.id })) as {
+    offered: boolean;
+    untrusted: boolean;
+    untrustedRepos: string[];
+    blocked: { code: string; hint: string | null } | null;
+  };
+  assert.deepEqual([status.offered, status.untrusted, status.untrustedRepos, status.blocked?.code], [true, true, ["acme/api"], "connect_required"]);
+  assert.match(status.blocked?.hint ?? "", /bb account login/);
+  const task = (await harness.callRpc("task", { id: trusted.id })) as { task: { movingToChat: boolean; runner: string } };
+  assert.deepEqual([task.task.movingToChat, task.task.runner], [false, "boat"]);
+
+  const off = await harness.runCli(["task", "continue-as-chat", trusted.id, "--json"], { threadId: "thr_orch" });
+  assert.equal(JSON.parse(off.stdout).error.code, "connect_required");
+  await assert.rejects(harness.callRpc("continueAsChat", { id: trusted.id, confirmUntrusted: null }), (failure: unknown) => rpcErrorInfo(failure).code === "connect_required");
+});
