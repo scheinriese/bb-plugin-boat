@@ -489,6 +489,14 @@ export function NewTaskForm({
               <code className="font-mono text-xs">{shortRepo(repo.trim())}</code> isn't one of your projects, so its task runs headless in boat, with
               no access to your bb. Add it as a project if you trust it.
             </RepoTrustAlert>
+          ) : chat.note === "headless-other" ? (
+            <RepoTrustAlert>
+              <code className="font-mono text-xs">{chatRules.untrustedRepos[0]}</code>
+              {chatRules.headlessProject !== null
+                ? ` is also in the ${chatRules.headlessProject} project, which runs its tasks headless`
+                : " isn't one of your projects"}
+              , so this task runs headless in boat, with no access to your bb.
+            </RepoTrustAlert>
           ) : null}
           <Field
             label="What to do"

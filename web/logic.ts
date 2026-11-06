@@ -397,6 +397,8 @@ export interface ChatControl {
   workersBoat: boolean;
   /** The first untrusted repo's project that runs its tasks headless (null: it's in no project). */
   headlessProject: string | null;
+  /** The task's own repo (the first) is trusted; only another repo it clones isn't. */
+  mainTrusted: boolean;
   /** The line under the checkbox (RichText). */
   hint: string;
 }
@@ -424,6 +426,8 @@ export function chatControl(input: ChatControlInput): ChatControl {
     ? [...input.repos]
     : input.repos.filter((repo) => (repoModeIn(input.projects, repo).mode ?? (input.workers === "all" ? "chat" : "boat")) !== "chat");
   const trusted = !workersBoat && untrustedRepos.length === 0;
+  const main = input.repos[0];
+  const mainTrusted = !workersBoat && (main === undefined || !untrustedRepos.includes(main));
   const first = untrustedRepos[0];
   const headlessProject = first === undefined ? null : repoModeIn(input.projects, first).boatProject;
   const possible = !input.loading && input.taskChats === true && input.connect?.state !== "off" && !input.existingSandbox;
@@ -439,8 +443,8 @@ export function chatControl(input: ChatControlInput): ChatControl {
           ? `Needs bb Connect, which is off. ${input.connect.fix ?? CONNECT_FIX}`
           : input.connect?.state === "unknown"
             ? "Opens as a bb chat you can type into. Couldn't check bb Connect; without it, the task won't start."
-            : "Opens as a bb chat you can type into. Off: headless in boat, followed on this page.";
-  return { loading: input.loading, possible, trusted, untrustedRepos, workersBoat, headlessProject, hint };
+            : "Opens as a bb chat you can type into. Off: headless in boat, followed on the Cloud agents page.";
+  return { loading: input.loading, possible, trusted, untrustedRepos, workersBoat, headlessProject, mainTrusted, hint };
 }
 
 export interface ChatChoice {
@@ -450,8 +454,12 @@ export interface ChatChoice {
   runner: "chat" | "boat" | null;
   /** The repos the warning named, sent when the user starts the chat past it ([] for a task with no repo). */
   confirmUntrustedChat: string[] | null;
-  /** The one alert under Repository: the warning before an untrusted chat, or today's "runs headless" note. */
-  note: "untrusted-chat" | "untrusted" | null;
+  /**
+   * The one alert under Repository: the warning before an untrusted chat,
+   * today's "runs headless" note, or why a project repo's task runs headless
+   * (another repo it clones isn't trusted).
+   */
+  note: "untrusted-chat" | "untrusted" | "headless-other" | null;
 }
 
 /**
@@ -461,7 +469,7 @@ export interface ChatChoice {
 export function chatChoice(
   control: ChatControl,
   touched: boolean | null,
-  input: Pick<ChatControlInput, "workers" | "repos" | "repoComplete" | "existingSandbox" | "taskChats"> & {
+  input: Pick<ChatControlInput, "workers" | "repos" | "repoComplete" | "existingSandbox" | "taskChats" | "projects"> & {
     /** A project has the typed repo (or was picked). */
     inProject: boolean;
   },
@@ -470,11 +478,14 @@ export function chatChoice(
   // Unknown (the settings or the overview couldn't be read): the server's rules decide.
   const runner = control.loading || input.existingSandbox || input.taskChats === undefined || input.workers === undefined ? null : checked ? "chat" : "boat";
   const warn = checked && !control.trusted && input.repoComplete;
-  const headlessNote = !checked && input.workers === "projects" && !input.inProject && input.repos.length > 0 && input.repoComplete;
+  // Notes on a headless task wait for the projects (a project repo isn't "outside" while they load).
+  const known = !control.loading && input.projects !== undefined && input.repoComplete;
+  const headlessNote = known && !checked && input.workers === "projects" && !input.inProject && input.repos.length > 0;
+  const otherNote = known && !checked && !control.trusted && control.mainTrusted && input.repos.length > 1;
   return {
     checked,
     runner,
     confirmUntrustedChat: warn && runner === "chat" ? [...control.untrustedRepos] : null,
-    note: warn ? "untrusted-chat" : headlessNote ? "untrusted" : null,
+    note: warn ? "untrusted-chat" : headlessNote ? "untrusted" : otherNote ? "headless-other" : null,
   };
 }

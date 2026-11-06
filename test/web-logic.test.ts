@@ -298,8 +298,14 @@ test("Run as a chat: on by default exactly where the rules run chats, and sends 
   assert.equal(chatForm({ workers: "all", repos: ["acme/careful"] }).choice.checked, false);
   // No repo with chats on.
   assert.equal(chatForm({ repos: [] }).choice.checked, true);
-  // A project's other repo counts too.
-  assert.equal(chatForm({ repos: ["acme/web", "acme/careful"] }).choice.checked, false);
+  // A project's other repo counts too (as for the server's rules), and a note says why it's off.
+  const mixed = chatForm({ repos: ["acme/web", "acme/careful"] });
+  assert.deepEqual([mixed.choice.checked, mixed.choice.runner, mixed.choice.note], [false, "boat", "headless-other"]);
+  assert.deepEqual([mixed.control.mainTrusted, mixed.control.untrustedRepos, mixed.control.headlessProject], [true, ["acme/careful"], "Careful"]);
+  // Ticked anyway: the warning instead.
+  assert.equal(chatForm({ repos: ["acme/web", "acme/careful"] }, true).choice.note, "untrusted-chat");
+  // A headless task is followed on the Cloud agents page (the form also opens over a chat).
+  assert.match(chatForm().control.hint, /Off: headless in boat, followed on the Cloud agents page\./);
 });
 
 test("Run as a chat: the user's choice sticks; past the rules it warns and sends the confirm for those repos", () => {
@@ -341,6 +347,9 @@ test("Run as a chat: not possible means off, disabled, the reason and the fix; t
   assert.equal(chatForm({ workers: undefined }).choice.runner, null);
   // Outside projects, with projects only: today's headless note while off, the warning once ticked.
   assert.equal(chatForm({ repos: ["acme/other"] }, null, false).choice.note, "untrusted");
+  // Not before the projects are known: a project repo isn't "outside" while they load (or can't be read).
+  assert.equal(chatForm({ repos: ["acme/web"], loading: true, projects: undefined }, null, false).choice.note, null);
+  assert.equal(chatForm({ repos: ["acme/web"], projects: undefined }, null, false).choice.note, null);
   assert.equal(chatForm({ repos: ["acme/other"], connect: { state: "off", fix: null } }, null, false).choice.note, "untrusted");
   assert.equal(chatForm({ repos: ["acme/other"] }, true, false).choice.note, "untrusted-chat");
   for (const workers of ["boat", "projects", "all"]) {
@@ -348,7 +357,7 @@ test("Run as a chat: not possible means off, disabled, the reason and the fix; t
       for (const touched of [null, true, false]) {
         for (const state of ["ready", "off", "unknown"] as const) {
           const { choice, control } = chatForm({ workers, repos, connect: { state, fix: null } }, touched, repos[0] === "acme/web" || repos[0] === "acme/careful");
-          assert.ok(choice.note === null || choice.note === "untrusted" || choice.note === "untrusted-chat");
+          assert.ok(choice.note === null || choice.note === "untrusted" || choice.note === "untrusted-chat" || choice.note === "headless-other");
           if (choice.runner === "chat") assert.ok(control.trusted || choice.confirmUntrustedChat !== null, `${workers} ${repos} ${touched} ${state}`);
           if (!control.possible) assert.equal(choice.checked, false);
         }
