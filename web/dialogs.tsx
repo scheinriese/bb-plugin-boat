@@ -1799,7 +1799,7 @@ function RepoList({ repos }: { repos: readonly string[] }) {
       {repos.map((repo, index) => (
         <span key={repo}>
           {index > 0 ? (index === repos.length - 1 ? " and " : ", ") : ""}
-          <code className="font-mono text-xs break-all">{repo}</code>
+          <code className="font-mono text-xs break-words">{repo}</code>
         </span>
       ))}
     </>
