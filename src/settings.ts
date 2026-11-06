@@ -317,7 +317,7 @@ export const PLUGIN_SETTINGS = {
     section: "advanced",
     type: "boolean",
     label: "Make room at your sandbox limit",
-    description: "At the limit, stop the sandbox that has waited longest (all its agents idle) to start new work. Its tasks pick up again on your next message.",
+    description: "At the limit, stop the sandbox that has waited longest (all its agents idle, nothing running in the background) to start new work. Its tasks pick up again on your next message.",
     default: true,
   },
   deleteSandboxOnClose: {

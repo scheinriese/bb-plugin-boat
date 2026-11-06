@@ -114,15 +114,16 @@ pay for:
 What the plugin does to keep that down:
 
 - At most 3 sandboxes run at once (**Sandboxes at once**; 0 means your
-  plan's limit). Agents using the plugin ask you before they start more
-  than 3 tasks at once.
+  plan's limit). Orchestrators ask you before they run more than 5 tasks
+  at once (**Tasks at once before asking**; 0 means they never ask).
 - New sandboxes use the **Default sandbox size** (Default) unless a
   project or a task picks another. Agents need your OK for a larger
   sandbox, except one size up after it ran out of memory or came close
   ([sandbox sizes](docs/features.md#sandbox-sizes-and-memory)).
-- A sandbox stops once its agent has waited 30 minutes (**Stop idle
-  sandboxes after**). The task picks up again on your next message. Closing
-  a task deletes its sandbox.
+- A sandbox stops once its agent has finished and waited an hour (**Stop
+  idle sandboxes after**). Work still running there, background jobs
+  included, keeps it on. The task picks up again on your next message.
+  Closing a task deletes its sandbox.
 - When your agents are near their usage limits, new tasks wait for a reset
   instead of starting on paid extra usage (**Don't start work on paid extra
   usage**).

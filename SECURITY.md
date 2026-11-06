@@ -127,6 +127,11 @@ rights of the user who runs bb. In particular, it uses:
 - **Other bb plugins**, through bb: usage readings (Account Pooler, the
   Claude Code and Codex providers), Push notifications and bb Connect's
   status, when installed.
+- **Messages in bb**, through bb's message hook: bb asks the plugin about
+  each message before an agent gets it. The plugin only looks for a task
+  chat whose sandbox stopped under background work; it holds one message
+  to that chat once, for 10 seconds, and puts a note for the agent in
+  front of it in bb's queue. It keeps no message text.
 
 ## What it stores
 

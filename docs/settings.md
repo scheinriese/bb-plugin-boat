@@ -17,9 +17,14 @@ any of them. (`bb plugin config boat set` only reaches bb's list.)
 | Sandboxes at once | `maxActiveSandboxes` | `3` | The most sandboxes running at the same time; 0 is your plan's limit |
 | Agent for tasks | `implementProvider` | `claude` | For tasks that don't name an agent. With one agent connected, it runs everything |
 | Agent for reviews | `reviewProvider` | `codex` | When a task already ran on this agent, its review uses the other one. With one agent connected, it reviews too |
-| Stop idle sandboxes after (min) | `stopIdleAfterMinutes` | `30` | Stops a task's sandbox once its agent has waited this long; 0 is never |
+| Stop idle sandboxes after (min) | `stopIdleAfterMinutes` | `60` | A sandbox whose agent has finished and is waiting for you stops after this long, to save sandbox hours. Work still running, background jobs included, keeps it on (up to 12 hours). Your next message starts it again; anything the agent kept in memory or `/tmp` is lost. 0 is never |
 | Notify my devices | `pushNotifications` | off | A notice when a task finishes a turn. Notices about agent switches and usage limits always go out |
 | Instructions for every task | `workerInstructions` | empty | Added to every task's brief: house rules, test commands, commit style. Don't put credentials here |
+
+**Stop idle sandboxes after** is in minutes: 15, 30, 60 (an hour, the
+default), 120 or 240, any other number, or 0 for never
+(`bb plugin config boat set stopIdleAfterMinutes 120`). A value you set
+stays when the default changes.
 
 ## The plugin's own sections
 
@@ -39,8 +44,9 @@ In this order:
    both agents are greyed out with one.
 4. **Models:** the model presets, and models for tasks without one.
 5. **Orchestrators (optional):** the agent and effort new orchestrators
-   start with, the sidebar, the size of chats on a Boat sandbox, full
-   access for cloud orchestrators, and the orchestrator protocol. With one
+   start with, how many tasks they run at once before asking you, the
+   sidebar, the size of chats on a Boat sandbox, full access for cloud
+   orchestrators, and the orchestrator protocol. With one
    agent, **Agent for orchestrators** is greyed out: that agent runs them.
    While you've hidden the orchestrator card on the Cloud agents page,
    **Show the orchestrator card again** brings it back (the page shows it
@@ -62,6 +68,7 @@ In this order:
 | Models | Effort | `reasoningEffort` | `default` (boat's) |
 | Orchestrators | Agent for orchestrators | `relayPreferred` | `claude` (Claude Code); `codex` |
 | Orchestrators | Effort for orchestrators | `orchestratorEffort` | `high`; `low`, `medium`, `xhigh` |
+| Orchestrators | Tasks at once before asking | `tasksBeforeAsking` | `5`; 0 never asks |
 | Orchestrators | Orchestrators in the sidebar | `sidebarLayout` | `sections` |
 | Orchestrators | Size for chats on a Boat sandbox | `orchestratorMachineType` | `small` |
 | Orchestrators | Full access for cloud orchestrators | `cloudOrchestratorFullAccess` | on |
