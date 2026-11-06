@@ -679,7 +679,7 @@ test("the dispatch hold's own row takes the note; a deleted carrier lets the nex
   assert.equal(dog.dispatch(inline).action, "wait");
 });
 
-test("a stop that only ended a dev server running in the background isn't an incident", async () => {
+test("a stop that ended a dev server running in the background is an incident like any other", async () => {
   const w = await world();
   const dog = w.watchdog();
   w.setRow({ activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 1, activeWorkflowCount: 0 } });
@@ -688,7 +688,8 @@ test("a stop that only ended a dev server running in the background isn't an inc
   w.boatStops();
   w.advance(MINUTE);
   await dog.tick();
-  assert.deepEqual(w.calls.suspend, [w.host.id], "bb's record is still brought in line");
-  assert.equal(w.told.length, 0);
-  assert.equal(await dog.noteFor(w.task.id), null);
+  assert.deepEqual(w.calls.suspend, [w.host.id]);
+  assert.equal(w.told.length, 1);
+  assert.match(w.told[0]!.text, /while work was running in the background \(a background command\)/);
+  assert.notEqual(await dog.noteFor(w.task.id), null);
 });

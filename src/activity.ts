@@ -168,86 +168,9 @@ export async function workingChildren(bb: BbPluginApi, parents: ThreadRow[], boa
   return found;
 }
 
-// ------------------------------------------------------------------ servers
-
-/**
- * Background commands that serve rather than finish: a dev server, a
- * preview, a watcher. They don't count as background work: like any
- * preview, a live one keeps its sandbox on under the preview rules, and
- * nothing waits for one to end. Told from bb's description of the command
- * (the agent's, like "Start the Vite dev server") and its summary, and only
- * on explicit evidence: it must say it serves, and name no finite step. A
- * build, a test run or anything unclear counts as work (a sandbox kept on a
- * while longer costs little; stopping real work loses it).
- */
-const SERVING = [
-  /\bdev[\s-]?server\b/i,
-  /\bpreview\b/i,
-  /\bserv(e|es|ing)\b/i,
-  /\b(start|run|launch|boot|restart)(s|ing|ed)?\b[^.;\n]{0,40}\bserver\b/i,
-  /--watch\b|\bwatch\s+mode\b|\bwatch(es|ing)?\s+for\s+changes\b/i,
-  /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(dev|start)\b/i,
-  /\b(vite|next|nuxt|astro|remix|gatsby|docusaurus)\s+(dev|develop|preview|start)\b/i,
-  /\bhttp\.server\b|\bphp\s+-S\b|\brails\s+(s|server)\b|\brunserver\b|\bflask\s+run\b|\b(uvicorn|gunicorn)\b|\b(hugo|zola)\s+server\b|\bstorybook\s+dev\b|\bstart-storybook\b|\bwebpack-dev-server\b|\b(http|live)-server\b|\bnodemon\b|\btail\s+-f\b/i,
-];
-/** Words that name a finite step: a command that says one of these is work, whatever else it says. */
-const FINITE =
-  /\b(build(s|ing)?|test(s|ing)?|lint(s|ing)?|type-?check(s|ing)?|tsc\s+(-b|--build)|install(s|ing)?|migrat(e|es|ing|ion|ions)|compil(e|es|ing|ation)|bundl(e|es|ing)|bench(mark)?(s|ing)?|e2e|deploy(s|ing)?|publish(es|ing)?|export(s|ing)?|generat(e|es|ing))\b/i;
-
-export function isServerCommand(text: string): boolean {
-  return !FINITE.test(text) && SERVING.some((pattern) => pattern.test(text));
-}
-
-interface ActiveCommand {
-  description?: string | null;
-  summary?: string | null;
-  taskStatus?: string;
-}
-
-/** Per bb and chat: how many of its background commands serve, when it was read, and of how many. */
-const serverCountsByBb = new WeakMap<object, Map<string, { at: number; total: number; servers: number }>>();
-const SERVER_COUNT_MS = 30_000;
-
-async function serversOf(bb: BbPluginApi, threadId: string, total: number): Promise<number> {
-  let serverCounts = serverCountsByBb.get(bb);
-  if (serverCounts === undefined) {
-    serverCounts = new Map();
-    serverCountsByBb.set(bb, serverCounts);
-  }
-  const cached = serverCounts.get(threadId);
-  const at = Date.now();
-  if (cached !== undefined && cached.total === total && at - cached.at < SERVER_COUNT_MS) return cached.servers;
-  const raw = (await bb.sdk.threads.timeline({ threadId, segmentLimit: "1" } as never)) as unknown;
-  const active = ((raw as { activeBackgroundCommands?: unknown } | null)?.activeBackgroundCommands ?? []) as ActiveCommand[];
-  const servers = (Array.isArray(active) ? active : []).filter(
-    (entry) => (entry.taskStatus === undefined || entry.taskStatus === "running" || entry.taskStatus === "pending") && isServerCommand(`${entry.description ?? ""} ${entry.summary ?? ""}`),
-  ).length;
-  serverCounts.set(threadId, { at, total, servers });
-  for (const [id, entry] of serverCounts) if (at - entry.at > 10 * SERVER_COUNT_MS) serverCounts.delete(id);
-  return servers;
-}
-
-/**
- * The chats with their servers taken out of the background command count.
- * When bb can't say what a command is, it counts (a stop could lose it).
- */
-export async function withoutServers(bb: BbPluginApi, rows: ThreadRow[]): Promise<ThreadRow[]> {
-  const out: ThreadRow[] = [];
-  for (const row of rows) {
-    const total = rowWork(row).commands;
-    if (total === 0 || row.id === undefined) {
-      out.push(row);
-      continue;
-    }
-    const servers = await serversOf(bb, row.id, total).catch(() => 0);
-    out.push(servers === 0 ? row : { ...row, activity: { ...row.activity, activeBackgroundCommandCount: Math.max(0, total - servers) } });
-  }
-  return out;
-}
-
 /** What runs on a machine. Throws when bb can't list its chats. */
 export async function readMachineActivity(bb: BbPluginApi, hostId: string, options: { children?: boolean; providerId?: string } = {}): Promise<MachineActivity> {
-  const rows = await withoutServers(bb, (await threadsOnMachine(bb, hostId)).filter(isOpen));
+  const rows = (await threadsOnMachine(bb, hostId)).filter(isOpen);
   const children =
     options.children === false
       ? []

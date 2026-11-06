@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { KEEP_LIMIT_MS, NO_WORK, describeWork, isServerCommand, readMachineActivity, rowWork, type ThreadRow } from "../src/activity.ts";
+import { KEEP_LIMIT_MS, NO_WORK, describeWork, readMachineActivity, rowWork, type ThreadRow } from "../src/activity.ts";
 import { busyProcesses, isInfrastructure, parseProcessSample } from "../src/boat-api.ts";
 import { createChatRunner } from "../src/chat.ts";
 import { makeService } from "./fakes.ts";
@@ -306,51 +306,7 @@ test("the idle stop tells the watchdog when it stops a headless sandbox with not
   assert.deepEqual(env.plannedSandboxStops, [task.sandboxId]);
 });
 
-test("servers started in the background are told from finite jobs by bb's description of them", () => {
-  for (const text of [
-    "Start the Vite dev server",
-    "Run dev server on port 5173",
-    "npm run dev -- --host 0.0.0.0 --port 4321",
-    "pnpm preview",
-    "Start the API server",
-    "python3 -m http.server 8000",
-    "Launch the preview",
-    "Run tsc in watch mode",
-    "jest --watch",
-    "rails server -b 0.0.0.0",
-    "serve -s dist",
-  ]) {
-    assert.equal(isServerCommand(text), true, text);
-  }
-  for (const text of [
-    "Run the full test suite",
-    "cargo bench",
-    "Run server tests",
-    "npm run build",
-    "vite build",
-    "Run vitest",
-    "Build the site",
-    "pytest -x tests/server",
-    "Wait for the migration to finish",
-    // Framework names in a finite step's description, and anything unclear, count as work.
-    "Build the Vite production bundle",
-    "Build Storybook",
-    "Run the Storybook build",
-    "Compile the Next.js app",
-    "Bundle with Vite",
-    "Export the Astro site",
-    "npx vite --host",
-    "Run Vite",
-    "Install dependencies, then start the dev server",
-    "Run tests in watch mode",
-    "Type-check the server",
-    "Generate the preview images",
-  ]) {
-    assert.equal(isServerCommand(text), false, text);
-  }
-});
-
-test("a dev server left running in the background isn't background work; a test run next to it is", async () => {
+test("every running background command counts as work, whatever bb's description says: a dev server, a test run, a readiness wait", async () => {
   const commands: Record<string, { description: string; summary: string | null; taskStatus: string }[]> = {
     thr_worker: [
       { description: "Start the Vite dev server", summary: null, taskStatus: "running" },
@@ -372,7 +328,6 @@ test("a dev server left running in the background isn't background work; a test 
       },
     },
   } as unknown as BbPluginApi;
-  assert.equal((await readMachineActivity(bb, "host_1")).background.commands, 1);
-  // Only a dev server: nothing in the background keeps the machine on (a live preview does, under its own rules).
-  assert.deepEqual((await readMachineActivity(bb, "host_2")).background, NO_WORK);
+  assert.equal((await readMachineActivity(bb, "host_1")).background.commands, 2);
+  assert.equal((await readMachineActivity(bb, "host_2")).background.commands, 1);
 });

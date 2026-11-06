@@ -650,19 +650,14 @@ test("a headless sandbox whose finished agent left processes computing is kept o
   assert.match(env.store.events(task.id, 50).find((event) => event.kind === KEPT_ON_EVENT)!.text, /while processes the agent started are still running/);
 });
 
-test("a dev server left in the background doesn't keep a sandbox on past boat's stop; a build does", async () => {
-  const server = orchestratorMachine(() => ({ id: "thr_orch", status: "idle", queuedWork: "none", activity: { activeBackgroundCommandCount: 1 } }), {
-    commands: { thr_orch: [{ description: "Start the Vite dev server", summary: null, taskStatus: "running" }] },
-  });
-  await server.start();
-  await server.keeper()();
-  assert.deepEqual(server.boat.extended, []);
-  assert.deepEqual(server.suspended, ["host_orch"]);
-
-  const build = orchestratorMachine(() => ({ id: "thr_orch", status: "idle", queuedWork: "none", activity: { activeBackgroundCommandCount: 1 } }), {
-    commands: { thr_orch: [{ description: "Build the release bundle", summary: null, taskStatus: "running" }] },
-  });
-  const sandbox = await build.start();
-  await build.keeper()();
-  assert.deepEqual(build.boat.extended, [{ id: sandbox.id, args: ["--ttl", "7200"] }]);
+test("any background command keeps a sandbox on past boat's stop, a dev server as much as a build", async () => {
+  for (const description of ["Start the Vite dev server", "Build the release bundle", "Wait for the preview to become ready"]) {
+    const env = orchestratorMachine(() => ({ id: "thr_orch", status: "idle", queuedWork: "none", activity: { activeBackgroundCommandCount: 1 } }), {
+      commands: { thr_orch: [{ description, summary: null, taskStatus: "running" }] },
+    });
+    const sandbox = await env.start();
+    await env.keeper()();
+    assert.deepEqual(env.boat.extended, [{ id: sandbox.id, args: ["--ttl", "7200"] }], description);
+    assert.deepEqual(env.suspended, [], description);
+  }
 });

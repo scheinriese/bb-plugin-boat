@@ -1,7 +1,7 @@
 // Regression checks from the Codex review of PR #6 (t_b13aa57b), kept as tests.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { NO_WORK, withoutServers } from '../src/activity.ts';
+import { NO_WORK, readMachineActivity } from '../src/activity.ts';
 import { busyProcesses, parseProcessSample } from '../src/boat-api.ts';
 import { createWatchdog } from '../src/watchdog.ts';
 import { makeService } from './fakes.ts';
@@ -63,17 +63,43 @@ test('a second headless interruption arms a new resume note', async () => {
   assert.ok(await dog.noteFor(task.id));
 });
 
-// Re-review of PR #6 (t_7f5d8623): two reproduced regressions.
+// Re-reviews of PR #6 (t_7f5d8623): reproduced regressions. Every running
+// background command counts as work, whatever bb's description says (the
+// text-based server classification these first caught is gone).
 const buildBrief = { title: 'Build', role: 'implement' as const, brief: 'Build it.', repo: 'acme/web', orchestratorThreadId: 'thr_orch' };
-test('a finite Vite build remains protected from idle suspension', async () => {
+/** A finished chat task whose chat runs one background command described like this; then five idle minutes. */
+async function idleWithCommand(description: string) {
   const env = makeService({ chat: true, settings: { stopIdleAfterMinutes: 1 } });
   const { task } = await env.service.launchTask({ ...buildBrief, projectId: 'proj_personal' }, 5000);
   await env.service.sweep(); env.chat.finish(task.threadId!, REPORT); await env.service.sweep();
-  const bb = { sdk: { threads: { timeline: async () => ({ activeBackgroundCommands: [{ description: 'Build the Vite production bundle', summary: null, taskStatus: 'running' }] }) } } } as any;
-  const rows = await withoutServers(bb, [{ id: task.threadId!, status: 'idle', activity: { activeBackgroundCommandCount: 1 } }]);
-  env.chat.activities.set(task.hostId!, { background: { ...NO_WORK, commands: rows[0]!.activity!.activeBackgroundCommandCount! } });
+  const bb = {
+    pluginId: 'boat',
+    sdk: {
+      hosts: { list: async () => [] },
+      threads: {
+        list: async (args: { hostId?: string }) => (args.hostId === task.hostId ? [{ id: task.threadId!, status: 'idle', queuedWork: 'none', activity: { activeBackgroundCommandCount: 1 } }] : []),
+        timeline: async () => ({ activeBackgroundCommands: [{ description, summary: null, taskStatus: 'running' }] }),
+      },
+    },
+  } as any;
+  const activity = await readMachineActivity(bb, task.hostId!);
+  env.chat.activities.set(task.hostId!, { background: { ...NO_WORK, commands: activity.background.commands } });
   const real = Date.now; Date.now = () => real() + 5 * 60000;
   try { await env.service.sweep(); } finally { Date.now = real; }
+  return env;
+}
+test('a finite Vite build remains protected from idle suspension', async () => {
+  const env = await idleWithCommand('Build the Vite production bundle');
+  assert.deepEqual(env.chat.suspended, []);
+});
+test('a finite preview-readiness wait remains protected from idle suspension', async () => {
+  for (const description of ['Wait for the preview to become ready', 'Take a screenshot of the preview', 'Check preview accessibility']) {
+    const env = await idleWithCommand(description);
+    assert.deepEqual(env.chat.suspended, [], description);
+  }
+});
+test('a dev server running as a background command counts as work too (up to the 12-hour cap)', async () => {
+  const env = await idleWithCommand('Start the Vite dev server');
   assert.deepEqual(env.chat.suspended, []);
 });
 test('a headless build under a bb workspace is not evicted', async () => {

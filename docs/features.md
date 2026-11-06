@@ -206,14 +206,11 @@ making room leaves it alone either way). boat's, bb's and the system's
 own processes there never count. Background work keeps a sandbox on for
 12 hours at most.
 
-A server left running in the background (a dev server, a preview, a
-watcher) isn't background work: nothing waits for it to end. Like any
-preview, it keeps its sandbox on only while its preview is live, under the
-[preview rules](#previews). The plugin treats a command as a server only
-when bb's description of it says it serves ("Start the Vite dev server",
-`npm run dev`, watch mode) and names no finite step (build, test, lint,
-type-check, install, migrate, compile, bundle). Anything else, or when bb
-can't say, counts as work.
+Every background command counts, whatever it does or how it's described:
+a dev server or a watcher left running in the background keeps its sandbox
+on too, up to those 12 hours. Stop one when it's no longer needed, or start
+servers detached, as the briefs ask; a detached server keeps its sandbox on
+only while its preview is live, under the [preview rules](#previews).
 
 boat's own auto-stop (**Hard stop after**, within your plan's cap) only
 sees boat's headless agents at work, not a chat's. While a turn runs in a
@@ -260,7 +257,7 @@ machine that's offline):
     may be stuck; the plugin leaves it running).
 
   Nothing for a normal stop (the idle stop after a finished turn with
-  nothing in the background, or a stop that only ended a dev server).
+  nothing in the background).
   Each incident goes out once, even across restarts, and waits while an
   orchestrator is handed over to its successor.
 - **The worker hears about it.** After a stop that cut off background
