@@ -170,6 +170,13 @@ may block `bb`. `bb boat …` is only for what no tool does.
 | `boat_preview` | List previews; wake, extend or stop one |
 | `boat_ship` | Projects that ship after approval: push the work to the base branch, only on your OK in the orchestrator's chat |
 
+`boat_ship` only works from the task's own orchestrator chat, after the
+task's latest turn was reported there and you wrote in that chat since.
+When a ship stops on a conflict, the orchestrator sends the follow-up that
+resolves it, then shows you what changed since you approved and asks you to
+approve again: your earlier OK doesn't cover the new commits. See
+[Ship](features.md#how-work-lands-pull-requests-or-ship-after-approval).
+
 ## Claude ↔ Codex switching
 
 Off by default. Turn it on in Settings → Usage limits → **Claude ↔ Codex
