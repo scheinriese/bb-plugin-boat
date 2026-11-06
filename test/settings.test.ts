@@ -126,7 +126,9 @@ test("Effort for orchestrators: High by default, the four levels Claude Code and
   // Each is one of the plugin's effort levels (low, medium, high, xhigh: Claude Code and Codex both take them in bb).
   for (const level of spec.options) assert.ok((EFFORTS as readonly string[]).includes(level), level);
   assert.match(spec.description, /wakes after every task turn/);
-  assert.match(spec.description, /Build preset's/);
+  // Where the model comes from, and that it's the one Build tasks use.
+  assert.match(spec.description, /Build preset model, as for Build tasks \(Models, above\)/);
+  assert.match(PLUGIN_SETTINGS.relaySwitchBackBelow.description, /under this much of its usage limit/);
   // Stored values: a level it doesn't offer falls back to High.
   assert.equal(pluginValues({}).orchestratorEffort, "high");
   assert.equal(pluginValues({ orchestratorEffort: "xhigh" }).orchestratorEffort, "xhigh");

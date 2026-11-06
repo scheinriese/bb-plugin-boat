@@ -207,7 +207,7 @@ export const PLUGIN_SETTINGS = {
     fold: "Fine-tune",
     type: "number",
     label: "Switch back below (%)",
-    description: "Orchestrators move back once the Agent for orchestrators is under this. At least 5 below Switch at.",
+    description: "Orchestrators move back once the Agent for orchestrators is under this much of its usage limit. At least 5 below Switch at.",
     experimental_schema: range("relaySwitchBackBelow"),
     default: 50,
   },
@@ -263,7 +263,7 @@ export const PLUGIN_SETTINGS = {
     type: "select",
     label: "Effort for orchestrators",
     description:
-      "Orchestrators mostly read reports, plan and start tasks; the tasks do the heavy work at their own preset. Higher effort uses your limits faster: an orchestrator stays open and wakes after every task turn. Model: the Build preset's for its agent.",
+      "Orchestrators mostly read reports, plan and start tasks; the tasks do the heavy work at their own preset. Higher effort uses your limits faster: an orchestrator stays open and wakes after every task turn. The model is its agent's Build preset model, as for Build tasks (Models, above).",
     options: [...ORCHESTRATOR_EFFORTS],
     experimental_optionLabels: { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" },
     default: "high",

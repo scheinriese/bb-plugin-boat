@@ -1332,7 +1332,7 @@ const DISCLOSURE_BUTTON =
 /**
  * What the orchestrator starts with, as one line ("Claude Code · Opus 5.5 ·
  * High effort") that unfolds into an agent and an effort pick for this one.
- * The model is the Build preset's for the agent; agents it can't start on
+ * The model is the agent's Build preset model; agents it can't start on
  * are greyed out with the reason.
  */
 function AgentSection({
@@ -1400,8 +1400,8 @@ function AgentSection({
             </Select>
           </Field>
           <p className="text-xs text-pretty text-muted-foreground sm:col-span-2">
-            The model is the Build preset's for the agent. Higher effort uses your limits faster: an orchestrator wakes after every task turn.
-            Defaults: Settings → Orchestrators.
+            The model is the agent's Build preset model, as for Build tasks (Settings → Models). Higher effort uses your limits faster: an
+            orchestrator wakes after every task turn. Default agent and effort: Settings → Orchestrators.
             {choices.switching && agent !== main
               ? ` Claude ↔ Codex switching moves it to ${PROVIDER_LABEL[main]} once ${PROVIDER_SHORT[main]} has room.`
               : null}
