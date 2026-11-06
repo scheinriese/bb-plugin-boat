@@ -86,6 +86,11 @@ function focusAfterMove(pending: boolean): void {
   tick();
 }
 
+/** "Large · 8 vCPU, 16 GB · double rate": a size option's name (its plan reason goes on a second line, never into the trigger). */
+function optionName(size: { label: string; detail: string }): string {
+  return size.detail ? `${size.label} · ${size.detail}` : size.label;
+}
+
 /** A button whose label wraps on a narrow screen instead of overflowing it. */
 const WRAPPING = "h-auto min-h-7 whitespace-normal py-1 text-left";
 
@@ -281,6 +286,7 @@ function ResizeForm({ task, mode, onDone }: { task: TaskDetailDto; mode: "oom" |
   const preselected = info.data ? suggestedSize(current, options, info.data.suggested, oom) : null;
   const [picked, setPicked] = useState<MachineType | null>(null);
   const type = picked ?? preselected;
+  const pickedOption = options.find((size) => size.type === type) ?? null;
   // The words follow the size picked: a smaller one is a plain change of size.
   const larger = oom && (type === null || current === null || isSmaller(current, type));
   const [message, setMessage] = useState<string | null>(null);
@@ -342,12 +348,12 @@ function ResizeForm({ task, mode, onDone }: { task: TaskDetailDto; mode: "oom" |
       >
         <Select value={type ?? ""} onValueChange={(next) => next && setPicked(next as MachineType)}>
           <SelectTrigger id="ca-resize-size">
-            <SelectValue placeholder={info.data ? "Pick a size" : "Loading…"} />
+            <SelectValue placeholder={info.data ? "Pick a size" : "Loading…"}>{pickedOption ? optionName(pickedOption) : undefined}</SelectValue>
           </SelectTrigger>
           <SelectContent>
             {options.map((size) => (
               <SelectItem key={size.type} value={size.type} disabled={size.now || !size.available} textValue={size.label}>
-                <OptionLabel name={size.detail ? `${size.label} · ${size.detail}` : size.label} detail={size.now ? "Now" : size.available ? null : (size.reason ?? "Not on your boat plan")} />
+                <OptionLabel name={optionName(size)} detail={size.now ? "Now" : size.available ? null : (size.reason ?? "Not on your boat plan")} />
               </SelectItem>
             ))}
           </SelectContent>
@@ -407,7 +413,8 @@ export function ProjectSizeField({ value, onChange }: { value: MachineType | nul
     >
       <Select value={value ?? SETTING} onValueChange={(next) => next && onChange(next === SETTING ? null : (next as MachineType))}>
         <SelectTrigger id="ca-project-size" className="sm:max-w-[calc(50%-0.375rem)]">
-          <SelectValue />
+          {/* Only the name: a size the plan lacks would bring its reason into the trigger (the hint says it). */}
+          <SelectValue>{chosen !== null ? optionName(chosen) : `Same as the setting (${LABEL[setting]})`}</SelectValue>
         </SelectTrigger>
         <SelectContent>
           <SelectItem value={SETTING} textValue={`Same as the setting (${LABEL[setting]})`}>
@@ -415,7 +422,7 @@ export function ProjectSizeField({ value, onChange }: { value: MachineType | nul
           </SelectItem>
           {options.map((size) => (
             <SelectItem key={size.type} value={size.type} disabled={!size.available && size.type !== value} textValue={size.label}>
-              <OptionLabel name={size.detail ? `${size.label} · ${size.detail}` : size.label} detail={size.available ? null : (size.reason ?? "Not on your boat plan")} />
+              <OptionLabel name={optionName(size)} detail={size.available ? null : (size.reason ?? "Not on your boat plan")} />
             </SelectItem>
           ))}
         </SelectContent>

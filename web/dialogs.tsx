@@ -130,14 +130,16 @@ function MachineSelect({
   value: MachineType;
   onChange: (value: MachineType) => void;
 }) {
-  const sizes = useSandboxSizes().data?.sizes ?? null;
+  const sizes = useSandboxSizes().data?.sizes ?? MACHINE_TYPE_VALUES.map((type) => ({ type, label: MACHINE_LABEL[type], detail: "", available: true, reason: null }));
+  const current = sizes.find((size) => size.type === value) ?? null;
   return (
     <Select value={value} onValueChange={(next) => onChange(next as MachineType)}>
       <SelectTrigger id={id}>
-        <SelectValue />
+        {/* Only the name: a size the plan lacks would bring its reason into the trigger. */}
+        <SelectValue>{current ? (current.detail ? `${current.label} · ${current.detail}` : current.label) : null}</SelectValue>
       </SelectTrigger>
       <SelectContent>
-        {(sizes ?? MACHINE_TYPE_VALUES.map((type) => ({ type, label: MACHINE_LABEL[type], detail: "", available: true, reason: null }))).map((size) => (
+        {sizes.map((size) => (
           <SelectItem key={size.type} value={size.type} disabled={!size.available && size.type !== value} textValue={size.label}>
             <OptionLabel
               name={size.detail ? `${size.label} · ${size.detail}` : size.label}
