@@ -879,7 +879,7 @@ export class SandboxSizes {
       for (const threadId of threads) {
         if (busy) break;
         const state = await chat.state(threadId).catch(() => null);
-        busy = state !== null && !state.archived && ((state.status !== "idle" && state.status !== "error") || state.queued > 0 || state.backgroundAgents > 0);
+        busy = state !== null && !state.archived && ((state.status !== "idle" && state.status !== "error") || state.queued > 0 || state.backgroundAgents > 0 || (state.workflows ?? 0) > 0);
       }
       if (busy) return { blocker: new TaskError("A chat on this sandbox is still working.", "sandbox_busy", "Wait for its turn to end, or interrupt it, then change the size."), startsLeft: null, current };
     }

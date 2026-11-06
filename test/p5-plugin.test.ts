@@ -271,3 +271,24 @@ test("a ship conflict names the files everywhere, and the work it changed needs 
   const newer = await harness.runCli(["task", "ship", task.id], { threadId: "thr_orch" });
   assert.match(`${newer.stdout}${newer.stderr}`, /Not shipped: the task had a newer turn after the user last wrote here; show the user what changed and ask them to approve again\./);
 });
+
+test("a watchdog notice about a task isn't a report of its turn: the user's OK to ship still counts", async (t) => {
+  const { harness, finishAll } = await setup(t);
+  await harness.runCli(["project", "add", "--name", "Storefront", "--repo", "acme/storefront@master", "--environment", "storefront"]);
+  await harness.runCli(["project", "set", "storefront", "--delivery", "push"]);
+  const started = await harness.runCli(["task", "start", "--project", "storefront", "--title", "Sticky header", "--brief", "Do it.", "--json"], { threadId: "thr_orch" });
+  assert.equal(started.exitCode, 0, started.stderr || started.stdout);
+  const { task } = JSON.parse(started.stdout) as { task: { id: string } };
+  finishAll(REPORT);
+  await harness.runCli(["task", "show", task.id, "--refresh"]);
+  const outline = [
+    { id: "m1", role: "user", preview: "Make the header sticky", attachmentSummary: null },
+    { id: "m2", role: "user", preview: `[boat] Task ${task.id} finished a turn.`, attachmentSummary: null },
+    { id: "m3", role: "user", preview: "Looks good, ship it", attachmentSummary: null },
+    { id: "m4", role: "user", preview: `[boat] Watchdog: Task ${task.id}'s turn ("Sticky header") has shown no new activity for 31 minutes`, attachmentSummary: null },
+  ];
+  harness.sdk.stub("threads.conversationOutline", async () => ({ items: outline, maxSeq: outline.length }));
+  const shipped = await harness.runCli(["task", "ship", task.id], { threadId: "thr_orch" });
+  assert.equal(shipped.exitCode, 0, shipped.stderr || shipped.stdout);
+  assert.match(shipped.stdout, /Shipped 2 commits to master/);
+});

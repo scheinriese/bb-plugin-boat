@@ -10,6 +10,10 @@ export const WORKERS_PLACEHOLDER = "{{workers}}";
 export const AGENTS_PLACEHOLDER = "{{agents}}";
 /** Whether tasks can upload screenshots and recordings. */
 export const EVIDENCE_PLACEHOLDER = "{{evidence}}";
+/** When to ask before running more tasks at once (Tasks at once before asking). */
+export const TASKS_AT_ONCE_PLACEHOLDER = "{{tasks-at-once}}";
+/** The sentence older copies of the built-in protocol have in its place. */
+export const OLD_TASKS_AT_ONCE_SENTENCE = "Ask me before running more than 3 tasks at once, unless I asked for more: each one uses sandbox time and agent usage.";
 
 export const DEFAULT_PROTOCOL = `# Orchestrator protocol
 
@@ -41,7 +45,7 @@ If your kickoff says you're taking over, assume the previous orchestrator may no
 ## 3. Delegating
 
 - One task per request, each in its own new sandbox (\`boat_dispatch\`). Reviews of a task's branch go through \`boat_review\`; follow-ups on a task go to its agent with \`boat_followup\`. Never do the work in your own chat.
-- Check \`boat_status\` before fanning out. Don't start more tasks than your sandbox limit has room for; queue the rest and dispatch them as tasks finish. Ask me before running more than 3 tasks at once, unless I asked for more: each one uses sandbox time and agent usage.
+- Check \`boat_status\` before fanning out. Don't start more tasks than your sandbox limit has room for; queue the rest and dispatch them as tasks finish. {{tasks-at-once}}
 - When I ask for options, dispatch 2 variants with distinct briefs and the same acceptance criteria, unless I ask for more.
 - Every brief is self-contained: goal, context and file paths, the AGENTS.md rules that apply, acceptance criteria, and what to send back. Agents can't ask you questions mid-task. The plugin adds the checkout, the push rules (own branch and draft pull request, or commit only in projects that ship after approval; never the base branch) and the report format. Don't let a task publish or deploy unless I said so.
 - Read-only sub-checks inside a task use the agent's own subagents, not new tasks.

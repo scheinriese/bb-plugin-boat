@@ -5,7 +5,7 @@ import { z } from "zod";
 import { MACHINE_TYPES, type MachineType } from "./boat-api.ts";
 import { BoatError } from "./boat.ts";
 import { describeClose } from "./close-outcome.ts";
-import { agentLine, ago, decisionLines, limitsLine, overviewLink, taskDetail, taskNote, taskTable } from "./format.ts";
+import { agentLine, ago, decisionLines, limitsLine, overviewLink, taskDetail, taskNote, taskTable, tasksAtOnceLine } from "./format.ts";
 import { parseProjectRef, type Runtime } from "./runtime.ts";
 import { TaskError } from "./service.ts";
 import { explainBoatError } from "./setup.ts";
@@ -116,6 +116,7 @@ export function registerTools(runtime: Runtime): void {
           setup?.summary.replace("Run `bb boat doctor`.", "The user can run `bb boat doctor` for details.") ?? null,
           `boat: ${limitsLine(capacity.limits, capacity.active.length, capacity.cap)}`,
           capacity.free === null ? null : `Room for ${capacity.free} more ${capacity.free === 1 ? "sandbox" : "sandboxes"}`,
+          tasksAtOnceLine((await service.settings()).tasksBeforeAsking),
           project ? `Project: ${project.name} — ${project.repos.map((r) => `${r.repo}@${r.baseBranch}`).join(", ")}; environment ${project.environment ?? "default"}` : "Project: none (pass repo, or set one with `bb boat orchestrator on --project <id>`)",
           "",
           `Your open tasks (${mine.length}):`,

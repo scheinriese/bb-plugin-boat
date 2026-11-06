@@ -16,20 +16,36 @@ interface Machine {
   /** The chats on it, as bb lists them (an Error: bb can't list them). */
   threads: () => Record<string, unknown>[] | Error;
   phase?: string;
+  /** bb's connection to its daemon (default connected). */
+  status?: string;
+  /** Child chats of its chats, by parent id, as bb lists them. */
+  children?: Record<string, Record<string, unknown>[]>;
+  /** The background commands of its chats, by thread id, as bb's timeline describes them. */
+  commands?: Record<string, { description: string; summary: string | null; taskStatus: string }[]>;
 }
 
 /** bb's side: Boat sandbox machines and the chats on them. */
 function fakeBb(machines: () => Machine[]) {
   const suspended: string[] = [];
   const bb = {
+    pluginId: "boat",
     sdk: {
       hosts: {
         list: async () =>
-          machines().map((machine) => ({ id: machine.hostId, machineProviderId: MACHINE_PROVIDER_ID, lifecycle: { phase: machine.phase ?? "active", suspendedAt: null } })),
+          machines().map((machine) => ({
+            id: machine.hostId,
+            machineProviderId: MACHINE_PROVIDER_ID,
+            status: machine.status ?? "connected",
+            lifecycle: { phase: machine.phase ?? "active", suspendedAt: null },
+          })),
         experimental_suspend: async ({ hostId }: { hostId: string }) => void suspended.push(hostId),
       },
       threads: {
-        list: async ({ hostId }: { hostId: string }) => {
+        timeline: async ({ threadId }: { threadId: string }) => ({
+          activeBackgroundCommands: machines().flatMap((machine) => machine.commands?.[threadId] ?? []),
+        }),
+        list: async ({ hostId, parentThreadId }: { hostId?: string; parentThreadId?: string }) => {
+          if (parentThreadId !== undefined) return machines().flatMap((machine) => machine.children?.[parentThreadId] ?? []);
           const threads = machines().find((machine) => machine.hostId === hostId)?.threads() ?? [];
           if (threads instanceof Error) throw threads;
           return threads;
@@ -422,14 +438,17 @@ test("a turn is kept on for 12 hours at most; then boat's stop comes, and the ne
     await keep();
     env.time.advance(5 * MINUTE);
   }
-  // Hard stop after within the trial's cap (2 h), extended about every 95 minutes while under 12 hours.
-  assert.equal(env.boat.extended.length, 8);
+  // Hard stop after within the trial's cap (2 h), extended about every 95 minutes while under 12 hours;
+  // the last extends only reach to the 12 hours (half an hour at least), never 2 hours past them.
+  assert.ok(env.boat.extended.length >= 8 && env.boat.extended.length <= 12, String(env.boat.extended.length));
+  assert.ok(Date.parse(env.sandbox.archiveAfter!) <= start + KEEP_LIMIT_MS + 35 * MINUTE, env.sandbox.archiveAfter!);
+  assert.ok(env.boat.extended.at(-1)!.args[1] !== "7200", "the last extend is cut to what's left");
   assert.ok(env.time.now() - start >= KEEP_LIMIT_MS);
   // Not extended again: near its deadline bb suspends it (it resumes on the next message).
   assert.deepEqual(env.suspended, [env.task.hostId]);
   assert.deepEqual(
     env.notes().map((event) => event.text),
-    ["Kept the sandbox on while the agent works (2 more hours).", "Stopped keeping the sandbox on after 12 hours. It stops at its auto-stop; the next message resumes it."],
+    ["Kept the sandbox on while the agent works (2 more hours).", "Stopped keeping the sandbox on after 12 hours. bb suspends it before its auto-stop; the next message resumes it."],
   );
   assert.ok(infos.some((line) => /stopped keeping .* on after 12 hours/.test(line)));
 
@@ -440,8 +459,10 @@ test("a turn is kept on for 12 hours at most; then boat's stop comes, and the ne
   await env.service.sweep();
   env.sandbox.archiveAfter = new Date(env.time.now() + 10 * MINUTE).toISOString();
   env.time.advance(MINUTE);
+  const before = env.boat.extended.length;
   await keep();
-  assert.equal(env.boat.extended.length, 9);
+  assert.equal(env.boat.extended.length, before + 1);
+  assert.equal(env.boat.extended.at(-1)!.args[1], "7200", "a new turn gets the full Hard stop after again");
 });
 
 test("a machine isn't suspended under other work: a headless agent, a headless turn, a ship or wake in flight, a live preview", async () => {
@@ -509,4 +530,134 @@ test("the keeper's note doesn't hide a failover: a turn handed over once fails o
   await env.service.sweep();
   assert.equal(env.store.get(env.task.id)!.status, "failed");
   assert.equal(env.store.events(env.task.id, 200).filter((event) => event.kind === "failover").length, 1);
+});
+
+// ------------------------------------------------------- background work (0.1.2)
+
+/** A cloud orchestrator's machine near boat's deadline, with whatever its chat runs. */
+function orchestratorMachine(row: () => Record<string, unknown>, extra: Partial<Machine> = {}) {
+  const time = clock();
+  const boat = new FakeBoat();
+  const store = memoryStore();
+  const machine = { hostId: "host_orch", sandboxId: "", threads: () => [row()], ...extra } as Machine;
+  const { bb, suspended } = fakeBb(() => [machine]);
+  return {
+    time,
+    boat,
+    store,
+    machine,
+    suspended,
+    async start() {
+      const sandbox = await boat.create({ name: "bb machine orch", type: "small", ttlSeconds: 7200 });
+      machine.sandboxId = sandbox.id;
+      sandbox.archiveAfter = new Date(time.now() + 10 * MINUTE).toISOString();
+      return sandbox;
+    },
+    keeper: (deps: Partial<KeeperDeps> = {}) =>
+      createSandboxKeeper(bb, { boat: boat as unknown as BoatApi, store, settings: async () => defaultSettings(), signal: new AbortController().signal, log: () => undefined, now: time.now, ...deps }),
+  };
+}
+
+test("background commands and bb workflows keep a chat's sandbox on after its turn, like background agents", async () => {
+  assert.equal(threadWorking({ status: "idle", activity: { activeBackgroundCommandCount: 1 } }), true);
+  assert.equal(threadWorking({ status: "idle", activity: { activeWorkflowCount: 1 } }), true);
+  // Its machine is down: nothing of it runs.
+  assert.equal(threadWorking({ status: "idle", runtime: { displayStatus: "waiting-for-host" }, activity: { activeBackgroundCommandCount: 1 } }), false);
+
+  for (const activity of [{ activeBackgroundCommandCount: 1 }, { activeWorkflowCount: 1 }]) {
+    const env = orchestratorMachine(() => ({ id: "thr_orch", status: "idle", queuedWork: "none", activity }));
+    const sandbox = await env.start();
+    await env.keeper()();
+    assert.deepEqual(env.boat.extended, [{ id: sandbox.id, args: ["--ttl", "7200"] }], JSON.stringify(activity));
+    assert.deepEqual(env.suspended, []);
+  }
+});
+
+test("a child chat working elsewhere keeps its parent's sandbox on; one on another Boat sandbox doesn't", async () => {
+  const idle = () => ({ id: "thr_orch", status: "idle", queuedWork: "none", activity: { activeBackgroundAgentCount: 0 } });
+  const elsewhere = orchestratorMachine(idle, { children: { thr_orch: [{ id: "thr_sub", status: "active", environmentHostId: "host_laptop" }] } });
+  const sandbox = await elsewhere.start();
+  await elsewhere.keeper()();
+  assert.deepEqual(elsewhere.boat.extended, [{ id: sandbox.id, args: ["--ttl", "7200"] }]);
+
+  // A task chat in its own Boat sandbox (that one is kept on for itself), or the plugin's own: suspended as before.
+  const boatChild = orchestratorMachine(idle, {
+    children: { thr_orch: [{ id: "thr_task", status: "active", environmentHostId: "host_orch" }, { id: "thr_mine", status: "active", environmentHostId: "host_laptop", originPluginId: "boat" }] },
+  });
+  await boatChild.start();
+  await boatChild.keeper()();
+  assert.deepEqual(boatChild.boat.extended, []);
+  assert.deepEqual(boatChild.suspended, ["host_orch"]);
+});
+
+test("a machine bb has lost the connection to is never suspended on that (a daemon restart, a blip)", async () => {
+  const env = orchestratorMachine(() => ({ id: "thr_orch", status: "idle", runtime: { displayStatus: "waiting-for-host" } }), { status: "disconnected" });
+  await env.start();
+  await env.keeper()();
+  assert.deepEqual(env.suspended, []);
+  assert.deepEqual(env.boat.extended, []);
+});
+
+test("right before boat's stop the keeper suspends through bb even with a live preview, and extends for a dispatch in flight", async () => {
+  const env = await taskChat();
+  env.chat.finish(env.task.threadId!, "Done.");
+  await env.service.sweep();
+  env.store.upsertPreview({ taskId: env.task.id, sandboxId: env.sandbox.id, port: 3000, path: "/", command: null, url: "https://acme.example/preview", title: "Acme web", health: "up" });
+  // Ten minutes out: the preview keeps it on for now.
+  await env.keeper()();
+  assert.deepEqual(env.suspended, []);
+  // Four minutes out: boat would stop it behind bb's back; through bb the next message brings it back.
+  env.sandbox.archiveAfter = new Date(env.time.now() + 4 * MINUTE).toISOString();
+  await env.keeper()();
+  assert.deepEqual(env.suspended, [env.task.hostId]);
+
+  // A ship, dispatch or wake holding the sandbox at that moment is work: extended instead.
+  const held = await taskChat();
+  held.chat.finish(held.task.threadId!, "Done.");
+  await held.service.sweep();
+  held.sandbox.archiveAfter = new Date(held.time.now() + 4 * MINUTE).toISOString();
+  await held.keeper({ held: (id) => id === held.sandbox.id })();
+  assert.deepEqual(held.suspended, []);
+  assert.equal(held.boat.extended.length, 1);
+});
+
+test("a headless sandbox whose finished agent left processes computing is kept on; otherwise boat stops it as before", async () => {
+  const env = makeService({ settings: defaultSettings() });
+  const { task } = await env.service.launchTask({ title: "Benchmarks", role: "implement", brief: "Run them.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+  env.boat.finish(task.conversationId!, "Done.\n\n=== REPORT ===\nSTATUS: done\nPR: none\nBRANCH: boat/x\nSUMMARY: ran them\nTESTS: ok\nOPEN QUESTIONS: none\n=== END REPORT ===");
+  await env.service.sweep();
+  assert.equal(env.store.get(task.id)!.status, "idle");
+  const time = clock();
+  const sandbox = env.boat.sandboxes.get(task.sandboxId!)!;
+  sandbox.archiveAfter = new Date(time.now() + 10 * MINUTE).toISOString();
+  const { bb } = fakeBb(() => []);
+  let computing: "busy" | "maybe" | "no" = "no";
+  const keeper = () =>
+    createSandboxKeeper(bb, {
+      boat: env.boat as unknown as BoatApi,
+      store: env.store,
+      settings: async () => defaultSettings(),
+      signal: new AbortController().signal,
+      log: () => undefined,
+      now: time.now,
+      computing: async () => computing,
+    });
+  await keeper()();
+  assert.deepEqual(env.boat.extended, []);
+  computing = "maybe";
+  await keeper()();
+  assert.deepEqual(env.boat.extended, [{ id: sandbox.id, args: ["--ttl", "7200"] }]);
+  assert.match(env.store.events(task.id, 50).find((event) => event.kind === KEPT_ON_EVENT)!.text, /while processes the agent started are still running/);
+});
+
+test("any background command keeps a sandbox on past boat's stop, a dev server as much as a build", async () => {
+  for (const description of ["Start the Vite dev server", "Build the release bundle", "Wait for the preview to become ready"]) {
+    const env = orchestratorMachine(() => ({ id: "thr_orch", status: "idle", queuedWork: "none", activity: { activeBackgroundCommandCount: 1 } }), {
+      commands: { thr_orch: [{ description, summary: null, taskStatus: "running" }] },
+    });
+    const sandbox = await env.start();
+    await env.keeper()();
+    assert.deepEqual(env.boat.extended, [{ id: sandbox.id, args: ["--ttl", "7200"] }], description);
+    assert.deepEqual(env.suspended, [], description);
+  }
 });

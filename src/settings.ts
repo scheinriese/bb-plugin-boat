@@ -15,6 +15,7 @@ import { DEFAULT_EVIDENCE_UPLOADER, evidenceSourceProblem } from "./evidence.ts"
 export const NUMBER_RANGES = {
   maxActiveSandboxes: { min: 0, max: 1000, integer: true },
   stopIdleAfterMinutes: { min: 0, max: 1440, integer: true },
+  tasksBeforeAsking: { min: 0, max: 100, integer: true },
   relaySwitchAt: { min: 5, max: 100, integer: true },
   relaySwitchBackBelow: { min: 0, max: 95, integer: true },
   relayQuietMinutes: { min: 0, max: 240, integer: true },
@@ -108,9 +109,10 @@ export const SETTINGS = {
   stopIdleAfterMinutes: {
     type: "number",
     label: "Stop idle sandboxes after (min)",
-    description: "Stops a task's sandbox once its agent has waited this long, to save sandbox hours. The task picks up again on your next message. 0: never.",
+    description:
+      "A sandbox whose agent has finished and is waiting for you stops after this long, to save sandbox hours. Work still running, background jobs included, keeps it on. Your next message starts it again; anything the agent kept in memory or /tmp is lost. 60 is an hour; 0: never.",
     experimental_schema: range("stopIdleAfterMinutes"),
-    default: 30,
+    default: 60,
   },
   pushNotifications: {
     type: "boolean",
@@ -268,6 +270,14 @@ export const PLUGIN_SETTINGS = {
     experimental_optionLabels: { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" },
     default: "high",
   },
+  tasksBeforeAsking: {
+    section: "orchestrators",
+    type: "number",
+    label: "Tasks at once before asking",
+    description: "Orchestrators ask you before running more tasks than this at the same time: each one uses sandbox hours and agent usage. 0: never ask.",
+    experimental_schema: range("tasksBeforeAsking"),
+    default: 5,
+  },
   sidebarLayout: {
     section: "orchestrators",
     type: "select",
@@ -307,7 +317,7 @@ export const PLUGIN_SETTINGS = {
     section: "advanced",
     type: "boolean",
     label: "Make room at your sandbox limit",
-    description: "At the limit, stop the sandbox that has waited longest (all its agents idle) to start new work. Its tasks pick up again on your next message.",
+    description: "At the limit, stop the sandbox that has waited longest (all its agents idle, nothing running in the background) to start new work. Its tasks pick up again on your next message.",
     default: true,
   },
   deleteSandboxOnClose: {

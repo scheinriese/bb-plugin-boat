@@ -17,12 +17,14 @@ import type {
   Limits,
   PreparedRepo,
   PrepareOptions,
+  ProcessSample,
   Sandbox,
 } from "../src/boat-api.ts";
 import { BoatError } from "../src/boat.ts";
 import { SIZE_SPECS, isMachineType, type SizedProject } from "../src/memory.ts";
 import type { MachineTypeFacts } from "../src/setup.ts";
 import type { ChatRunner, ChatSpawn, ChatState, MachineState } from "../src/chat.ts";
+import { NO_WORK, addWork, hasWork, messagesWaiting, rowWork, turnRuns, type MachineActivity, type ThreadRow } from "../src/activity.ts";
 import { BoatService, type BoatSettings, type Notification, type ServiceHooks } from "../src/service.ts";
 import { TaskStore, type Runner } from "../src/store.ts";
 import type { ConnectStatus } from "../src/connect.ts";
@@ -421,6 +423,16 @@ export class FakeBoat {
     this.detached.push({ id, command });
     return { pid: 4242 };
   }
+  /** What `boat ps` shows per sandbox (none: boat shows no processes). */
+  processSamples = new Map<string, ProcessSample>();
+  processesError: Error | null = null;
+  /** Sandboxes `boat ps` was asked about. */
+  psCalls: string[] = [];
+  async processes(id: string): Promise<ProcessSample> {
+    this.psCalls.push(id);
+    if (this.processesError) throw this.processesError;
+    return this.processSamples.get(id) ?? { live: true, sampledAt: new Date().toISOString(), processes: [] };
+  }
   extended: { id: string; args: string[] }[] = [];
   async extend(id: string, args: string[]): Promise<Record<string, unknown>> {
     const ttl = args.indexOf("--ttl");
@@ -645,7 +657,37 @@ export class FakeChat implements ChatRunner {
   /** Machines with a chat at work (any thread on them). */
   busyMachines = new Set<string>();
   async machineBusy(hostId: string) {
-    return this.busyMachines.has(hostId);
+    const activity = await this.machineActivity(hostId);
+    return activity.turns || activity.waiting || hasWork(activity.background);
+  }
+  /** What bb reports running on a machine (default: nothing; an Error: bb can't say). */
+  activities = new Map<string, Partial<MachineActivity> | Error>();
+  async machineActivity(hostId: string): Promise<MachineActivity> {
+    const entry = this.activities.get(hostId);
+    if (entry instanceof Error) throw entry;
+    // The chats spawned there (and in their workspaces), as bb would list them.
+    const own = this.spawns.filter((spawn) => spawn.where.kind === "machine" && spawn.where.hostId === hostId);
+    const environments = new Set(own.map((spawn) => spawn.environmentId));
+    const here = [...own, ...this.spawns.filter((spawn) => spawn.where.kind === "environment" && environments.has(spawn.where.environmentId))];
+    const rows: ThreadRow[] = here
+      .map((spawn) => ({ id: spawn.threadId, state: this.states.get(spawn.threadId) }))
+      .filter((row) => row.state !== undefined && !row.state.archived)
+      .map(({ id, state }) => ({
+        id,
+        status: state!.status,
+        queuedWork: state!.queued > 0 ? "waiting" : "none",
+        activity: { activeBackgroundAgentCount: state!.backgroundAgents, activeBackgroundCommandCount: 0, activeWorkflowCount: 0 },
+      }));
+    let background = NO_WORK;
+    for (const row of rows) background = addWork(background, rowWork(row));
+    return {
+      rows,
+      children: [],
+      background,
+      turns: this.busyMachines.has(hostId) || rows.some(turnRuns),
+      waiting: rows.some(messagesWaiting),
+      ...entry,
+    };
   }
   /** Linked: suspend and resume act on the fake boat like bb's provider does. */
   private linked: { boat: FakeBoat; bringUp: (sandboxId: string) => Promise<unknown> } | null = null;
@@ -716,6 +758,7 @@ export function defaultSettings(overrides: Partial<BoatSettings> = {}): BoatSett
     sandboxTtlHours: 4,
     maxActiveSandboxes: 0,
     stopIdleAfterMinutes: 30,
+    tasksBeforeAsking: 5,
     freeSlotsWhenFull: true,
     deleteSandboxOnClose: true,
     reviewSandbox: "auto",
@@ -768,6 +811,14 @@ export function makeService(
   let settings = defaultSettings({ ...(options.chat ? { workerMode: "chat" as const } : {}), ...options.settings });
   const told: { threadId: string; text: string }[] = [];
   const warnings: string[] = [];
+  /** Notes a worker gets once with its next prompt after a stop (the watchdog's), per task. */
+  const resumeNotes = new Map<string, string>();
+  /** Machines the service suspended itself, and whether background work still ran. */
+  const planned: { hostId: string; underWork: boolean }[] = [];
+  /** Headless sandboxes the idle stop stopped while their processes still computed. */
+  const computingStopped: string[] = [];
+  /** Headless sandboxes the plugin stopped with nothing computing (planned stops). */
+  const plannedSandboxStops: string[] = [];
   let plan: MachineTypeFacts[] | null = options.plan ?? null;
   let projects: SizedProject[] = options.projects ?? [];
   const service = new BoatService(boat as unknown as BoatApi, store, {
@@ -785,6 +836,13 @@ export function makeService(
     tell: async (threadId, text) => {
       told.push({ threadId, text });
     },
+    resumeNote: {
+      peek: async (taskId) => resumeNotes.get(taskId) ?? null,
+      sent: async (taskId) => void resumeNotes.delete(taskId),
+    },
+    machineSuspended: (hostId, underWork) => void planned.push({ hostId, underWork }),
+    processesStopped: (sandboxId) => void computingStopped.push(sandboxId),
+    sandboxStopped: (sandboxId) => void plannedSandboxStops.push(sandboxId),
     sizeTiming: { checkMs: 200, pollMs: 1, stopMs: 200, startMs: 200, reconnectMs: 200, ...options.sizeTiming },
     ...(options.quotas ? { quotas: { read: async () => options.quotas! } } : {}),
     ...(options.evidence ? { evidence: options.evidence } : {}),
@@ -802,6 +860,10 @@ export function makeService(
     notifications,
     told,
     warnings,
+    resumeNotes,
+    planned,
+    computingStopped,
+    plannedSandboxStops,
     setSettings(next: Partial<BoatSettings>) {
       settings = { ...settings, ...next };
     },

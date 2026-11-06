@@ -104,6 +104,105 @@ export interface Limits {
   autoStopCapHours: number | null;
 }
 
+/** One process in `boat ps` (fields as boat names them; unknown ones null). */
+export interface SandboxProcess {
+  pid: number | null;
+  /** The full command line. */
+  command: string;
+  cpuPercent: number | null;
+  memoryMb: number | null;
+  /** The boat command it belongs to (cmd_…), if boat says. */
+  commandId: string | null;
+  parentPid?: number | null;
+  startedAt?: string | null;
+  /** The user it runs as ("root", "user"). */
+  user?: string | null;
+}
+
+/** `boat ps`: the sandbox's processes, live or (stopped) its last stored sample. */
+export interface ProcessSample {
+  /** False: boat shows its last stored sample (the sandbox is stopped, or its agent is older); null: boat didn't say. */
+  live: boolean | null;
+  sampledAt: string | null;
+  processes: SandboxProcess[];
+}
+
+/** At least this much CPU: the process is computing (a build, tests), not idling (a dev server, a watcher). */
+export const BUSY_CPU_PERCENT = 20;
+/**
+ * Programs always there in a sandbox, whatever the task (by executable
+ * name): boat's own (ascii-agent, ascii-lazyfs, …), bb's, the system's.
+ */
+const INFRASTRUCTURE_PROGRAMS =
+  /^(ascii[\w.-]*|boat|bb|bb-host-daemon|sshd|systemd[\w.-]*|\(sd-pam\)|init|containerd[\w.-]*|dockerd|journald|rsyslogd|dbus[\w.-]*|cron|crond|atd|agetty|udevd|polkitd|tailscaled|snapd|packagekitd|unattended-upgrade[s]?|multipathd|ps|top)$/i;
+/**
+ * The same by full command line, for programs run by an interpreter: only
+ * known entry points of bb's runtime (its host daemon and CLI, provider
+ * bridge and plugin host workers, a plugin's host entry) and of boat
+ * (ascii-lazyfs), and the plugin's memory sampler. Not a whole folder of
+ * bb's: task workspaces live under a bb machine's data folder too.
+ */
+const INFRASTRUCTURE_COMMANDS = [
+  /\/bb-app\/host-daemon\//,
+  /\/bb-app\/dist\/bb(-app|-host-daemon)?\.js\b/,
+  /\bbb-app\.js\b/,
+  /\bbb-provider-bridge-worker\.mjs\b/,
+  /\bbb-plugin-host-worker\.mjs\b/,
+  /\bbb-parcel-watcher-child\.mjs\b/,
+  /\/plugin-host-artifacts\/\S*\bhost\.mjs\b/,
+  /\/var\/lib\/ascii-lazy-bin\/ascii-lazyfs\b/,
+  /\/tmp\/boat-memory\//,
+];
+/** A bb workspace (or its worktrees): a process working there is the task's, whatever runs it. */
+const WORKSPACE = /\/host-data\/workspaces\/|\/\.bb-machines\/\S*\/(workspaces|worktrees)\//;
+
+/**
+ * One of boat's, bb's or the system's own processes, never the task's
+ * work. In doubt, it's work: a process with a workspace path in its
+ * command line always is.
+ */
+export function isInfrastructure(entry: Pick<SandboxProcess, "command">): boolean {
+  if (WORKSPACE.test(entry.command)) return false;
+  return INFRASTRUCTURE_PROGRAMS.test(programName(entry.command)) || INFRASTRUCTURE_COMMANDS.some((pattern) => pattern.test(entry.command));
+}
+
+/** A process's program: the executable's file name ("cc1", "node"). */
+export function programName(command: string): string {
+  const first = command.trim().split(/\s+/)[0] ?? "";
+  return first.slice(first.lastIndexOf("/") + 1);
+}
+
+/**
+ * Processes still computing in a sandbox whose agent has finished: what a
+ * headless task left running (a build, a test run). A stored sample (the
+ * sandbox isn't live) counts for nothing.
+ */
+export function busyProcesses(sample: ProcessSample | null): SandboxProcess[] {
+  if (sample === null || sample.live === false) return [];
+  return sample.processes.filter((entry) => (entry.cpuPercent ?? 0) >= BUSY_CPU_PERCENT && !isInfrastructure(entry));
+}
+
+export function parseProcessSample(records: JsonRecord[]): ProcessSample {
+  const last = records.at(-1) ?? {};
+  const body = rec(last.data) ?? last;
+  // One object with a list, or one record per process.
+  const listed = Array.isArray(body.processes) ? body.processes : records.filter((record) => num(record.pid) !== null || num(rec(record.data)?.pid) !== null).map((record) => rec(record.data) ?? record);
+  const processes = (listed as unknown[])
+    .map((raw) => rec(raw))
+    .filter((raw): raw is JsonRecord => raw !== null)
+    .map((raw) => ({
+      pid: num(raw.pid),
+      command: str(raw.command) ?? str(raw.cmd) ?? str(raw.name) ?? "",
+      cpuPercent: num(raw.cpuPercent) ?? num(raw.cpu),
+      memoryMb: num(raw.memoryMB) ?? num(raw.memoryMb) ?? num(raw.memMb),
+      commandId: str(raw.commandId),
+      parentPid: num(raw.parentPid),
+      startedAt: str(raw.startedAt),
+      user: str(raw.user),
+    }));
+  return { live: bool(body.live), sampledAt: str(body.sampledAt), processes };
+}
+
 export interface Conversation {
   id: string;
   running: boolean;
@@ -1196,6 +1295,12 @@ printf '%s\n' "$OUT" | tr -d '\r' | grep -i '^github-authentication-token-expira
           tools,
         };
       });
+  }
+
+  /** `boat ps`: what runs in the sandbox (its last stored sample when it's stopped). */
+  async processes(sandboxId: string, signal?: AbortSignal): Promise<ProcessSample> {
+    const result = await this.cli.run(["ps", sandboxId], { signal, timeoutMs: 30_000 });
+    return parseProcessSample(result.records);
   }
 
   async steer(sandboxId: string, conversationId: string, message: string, signal?: AbortSignal): Promise<void> {

@@ -418,7 +418,7 @@ function StepUpCard() {
         <Disclosure label="How it works" className="space-y-2">
           <ol className="list-decimal space-y-1 pl-4 text-xs text-pretty text-muted-foreground">
             <li>Pick a project and say what to get done, like “fix the three open checkout bugs”.</li>
-            <li>It splits the work into tasks and starts them (it asks before running more than 3 at once).</li>
+            <li>It splits the work into tasks and starts them (it asks before running more at once than Tasks at once before asking allows).</li>
             <li>{only === null ? "The other agent" : "A second session"} reviews each change before it reaches you.</li>
             <li>Questions show up here under Needs you; finished work under Ready to review.</li>
           </ol>

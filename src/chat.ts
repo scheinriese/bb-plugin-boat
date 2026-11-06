@@ -1,6 +1,7 @@
 // Worker chats: a task's agent runs as a regular bb chat on its boat sandbox.
 // The service decides what to do; this is how it asks bb to do it.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { hasWork, readMachineActivity, rowWork, type MachineActivity, type ThreadRow } from "./activity.ts";
 import { MACHINE_PROVIDER_ID, keepSandboxKey } from "./machine.ts";
 import { threadSection } from "./sections.ts";
 import type { Provider } from "./store.ts";
@@ -51,8 +52,10 @@ export interface ChatState {
   environmentId: string | null;
   /** Messages waiting to run (a queued follow-up, a provider retry). */
   queued: number;
-  /** Background agents (workflows) still running after the turn's reply. */
+  /** Background agents still running after the turn's reply. */
   backgroundAgents: number;
+  /** bb workflows still running after the turn's reply (bb's thread list; the thread page doesn't say). */
+  workflows?: number;
 }
 
 /** A bb machine as bb sees it (hosts.get): its lifecycle phase and connection. */
@@ -91,8 +94,14 @@ export interface ChatRunner {
   findMachine(sandboxId: string): Promise<string | null>;
   /** The machine's phase and connection (null: bb doesn't know it). */
   machineState(hostId: string): Promise<MachineState | null>;
-  /** Any chat on the machine is working (every thread on it, not only the plugin's). */
+  /** Any chat on the machine is working, a message waits there, or work runs in the background (every thread on it, not only the plugin's). */
   machineBusy(hostId: string): Promise<boolean>;
+  /**
+   * What bb reports running on the machine: turns, queued messages, and
+   * background work (background agents and commands, bb workflows, working
+   * child chats). Throws when bb can't list its chats.
+   */
+  machineActivity(hostId: string): Promise<MachineActivity>;
   spawn(args: ChatSpawn): Promise<{ threadId: string; environmentId: string | null }>;
   /** A chat the user composed in bb's own composer, placed in a worker's workspace. */
   spawnComposed(args: {
@@ -208,23 +217,13 @@ export function createChatRunner(bb: BbPluginApi): ChatRunner {
     },
 
     async machineBusy(hostId) {
-      const raw = (await bb.sdk.threads.list({ hostId } as never)) as unknown;
-      const threads = (Array.isArray(raw) ? raw : ((raw as { threads?: unknown[] } | null)?.threads ?? [])) as {
-        status?: string;
-        archivedAt?: unknown;
-        queuedMessageCount?: number;
-        activeBackgroundAgentCount?: number;
-      }[];
-      return threads.some(
-        (thread) =>
-          !thread.archivedAt &&
-          (thread.status === "active" ||
-            thread.status === "starting" ||
-            thread.status === "pending" ||
-            thread.status === "stopping" ||
-            (thread.queuedMessageCount ?? 0) > 0 ||
-            (thread.activeBackgroundAgentCount ?? 0) > 0),
-      );
+      // bb's list rows carry queuedWork and the activity counts (not the thread page's fields).
+      const activity = await readMachineActivity(bb, hostId, { children: false });
+      return activity.turns || activity.waiting || hasWork(activity.background);
+    },
+
+    machineActivity(hostId) {
+      return readMachineActivity(bb, hostId, { providerId: MACHINE_PROVIDER_ID });
     },
 
     async findMachine(sandboxId) {
@@ -327,13 +326,19 @@ export function createChatRunner(bb: BbPluginApi): ChatRunner {
         activeBackgroundAgentCount?: number;
       };
       if (thread.deletedAt) return null;
+      // The thread page has background agents only; bb's list row also counts its workflows.
+      const listed = (await bb.sdk.threads.list({ threadIds: [threadId], includeHidden: true } as never).catch(() => null)) as unknown;
+      const row = ((Array.isArray(listed) ? listed : ((listed as { threads?: unknown[] } | null)?.threads ?? [])) as ThreadRow[]).find((entry) => entry.id === threadId);
+      const work = row === undefined ? null : rowWork(row);
+      const agents = typeof thread.activeBackgroundAgentCount === "number" ? thread.activeBackgroundAgentCount : 0;
       return {
         status: (STATES.has(thread.status ?? "") ? thread.status : "idle") as ChatState["status"],
         updatedAt: asEpoch(thread.updatedAt),
         archived: Boolean(thread.archivedAt),
         environmentId: typeof thread.environmentId === "string" ? thread.environmentId : null,
         queued: typeof thread.queuedMessageCount === "number" ? thread.queuedMessageCount : 0,
-        backgroundAgents: typeof thread.activeBackgroundAgentCount === "number" ? thread.activeBackgroundAgentCount : 0,
+        backgroundAgents: Math.max(agents, work?.agents ?? 0),
+        workflows: work?.workflows ?? 0,
       };
     },
 

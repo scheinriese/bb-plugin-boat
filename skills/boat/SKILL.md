@@ -95,12 +95,14 @@ next size up (see Sandbox sizes).
 - `agents_at_limit` means every agent the user has is near its usage limit.
   Tell the user and wait for a reset (`bb boat relay status` shows usage).
 
-## Costs: ask before more than 3 at once
+## Costs: ask before starting many at once
 
 Each task uses sandbox time on the user's boat plan and agent usage on their
-subscription. Ask the user before you start more than 3 tasks at once,
-unless they asked for more. "Sandboxes at once" (`maxActiveSandboxes`,
-default 3) caps how many run; `bb boat status` shows the room left.
+subscription. Ask the user before you start more tasks at once than
+"Tasks at once before asking" allows (`tasksBeforeAsking`, default 5; 0:
+never ask), unless they asked for more. "Sandboxes at once"
+(`maxActiveSandboxes`, default 3) caps how many run; `bb boat status` shows
+both and the room left.
 
 ## Sandbox sizes
 

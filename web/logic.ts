@@ -303,6 +303,7 @@ export const PROTOCOL_PLACEHOLDERS: readonly Placeholder[] = [
   { token: "{{workers}}", meaning: "how tasks run, from How tasks run" },
   { token: "{{agents}}", meaning: "your agents, usage limits and Claude ↔ Codex switching" },
   { token: "{{evidence}}", meaning: "what to do with screenshots and recordings" },
+  { token: "{{tasks-at-once}}", meaning: "when to ask before running more tasks at once, from Tasks at once before asking" },
   { token: "{{model-tiers}}", meaning: "the model presets table (Settings → Models)" },
 ];
 

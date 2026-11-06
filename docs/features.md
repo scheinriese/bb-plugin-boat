@@ -189,23 +189,88 @@ confirm in the dialogs is a step in the UI, not a security boundary: an
 agent that already has bb access could send it too (see
 [SECURITY.md](../SECURITY.md)).
 
-Idle sandboxes stop on their own. Their files and agent conversations
-survive and resume on the next follow-up. Closing a task deletes its
-sandbox, unless another open task uses it.
+Idle sandboxes stop on their own: once a task's agent has finished and
+waited **Stop idle sandboxes after** (an hour by default), its sandbox
+stops. Their files and agent conversations survive and resume on the next
+follow-up; anything the agent kept in memory or `/tmp` doesn't. Closing a
+task deletes its sandbox, unless another open task uses it.
+
+Work still running counts, background jobs included. A chat whose turn has
+ended while work it started still runs (a background command, a bb
+workflow, background agents, a child chat working elsewhere) keeps its
+sandbox on: the idle stop waits, **Make room at your sandbox limit** picks
+another sandbox, and a task chat's turn stays open while its workflow
+runs. Every chat on the machine counts, not only the task's. A headless
+task whose agent has finished counts too while processes it left are
+still computing (`boat ps`: the same program busy in two readings a few
+minutes apart; after a first one, the idle stop waits for the second, and
+making room leaves it alone either way). boat's, bb's and the system's
+own processes there never count. Background work keeps a sandbox on for
+12 hours at most.
+
+Every background command counts, whatever it does or how it's described:
+a dev server or a watcher left running in the background keeps its sandbox
+on too, up to those 12 hours. Stop one when it's no longer needed, or start
+servers detached, as the briefs ask; a detached server keeps its sandbox on
+only while its preview is live, under the [preview rules](#previews).
 
 boat's own auto-stop (**Hard stop after**, within your plan's cap) only
 sees boat's headless agents at work, not a chat's. While a turn runs in a
 task chat, or in any chat on a Boat sandbox (a cloud orchestrator, a chat
-you started there), the plugin moves that stop out shortly before it comes,
-by up to Hard stop after (within the cap). The task's history says "Kept
-the sandbox on while the agent works", once a turn. A sandbox with no turn
-running is never kept on: once the turn ends, it stops when idle, as above.
-Waiting isn't working either: a chat waiting for a slot, for a retry after
-a usage limit, for its machine, or on you (after one more extend) lets bb
-suspend the machine, and your next message resumes it. A turn is kept on
-for 12 hours at most, then the sandbox stops. The plugin never suspends a
-machine while something else works in its sandbox: a headless agent, a
-ship, or a live preview.
+you started there), or background work runs there, the plugin moves that
+stop out shortly before it comes, by up to Hard stop after (within the
+cap). The task's history says "Kept the sandbox on while the agent works",
+once a turn. A sandbox with nothing running is never kept on: it stops
+when idle, as above. Waiting isn't working either: a chat waiting for a
+slot, for a retry after a usage limit, for its machine, or on you (after
+one more extend) lets bb suspend the machine, and your next message
+resumes it. A turn is kept on for 12 hours at most. When the plugin isn't
+keeping a sandbox on, it has bb suspend the machine before boat's stop
+comes (a live preview goes then too), so bb knows and resumes it on the
+next message. It never suspends a machine while something else works in
+its sandbox (a headless agent, a ship), or one bb has just lost the
+connection to (bb restarting its daemon there).
+
+### The watchdog
+
+A plain check from the bb machine, no AI, about once a minute (every 30
+seconds while a task runs, and at once when a message is queued for a
+machine that's offline):
+
+- **A stop behind bb's back.** When boat stops a chat's sandbox itself
+  (its auto-stop, a crash, the boat.dev dashboard), bb would keep the
+  machine as running and queue every message as "Waiting for … to be
+  ready". The plugin suspends the machine through bb to match, so the next
+  message resumes it.
+- **Messages waiting on a stopped machine.** A suspended machine with a
+  message waiting for it is resumed once the message has waited about a
+  minute, if bb hasn't resumed it already. Messages held for later on purpose (a retry at a usage
+  limit's reset, a slot under bb's limits) don't count.
+- **One `[boat] Watchdog:` message per incident** to the task's
+  orchestrator, with what happened and what the plugin did:
+  - a task's or orchestrator's sandbox stopped while background work was
+    running (and what ran), a headless task's included: one whose
+    finished agent left processes computing;
+  - a chat's messages waited more than 3 minutes on a stopped or
+    disconnected machine (10 while bb is resuming it), and whether the
+    plugin resumed it. An orchestrator whose own messages are stuck can't
+    read a message: you get a phone or desktop notice instead;
+  - a running turn showed no new transcript activity for 30 minutes (it
+    may be stuck; the plugin leaves it running).
+
+  Nothing for a normal stop (the idle stop after a finished turn with
+  nothing in the background).
+  Each incident goes out once, even across restarts, and waits while an
+  orchestrator is handed over to its successor.
+- **The worker hears about it.** After a stop that cut off background
+  work, the worker's next message, however it arrives, starts with a short
+  note: when it stopped, that its background jobs and `/tmp` were lost,
+  and to rerun what it still needs now. The plugin's own follow-ups carry
+  it in their text. A message you or the orchestrator type in the task
+  chat gets it as a note for the agent in front of it; a message going
+  straight to the worker waits 10 seconds once for that. Each stop gets
+  its own note, so a second interruption is told too. After a stop at
+  the 12-hour limit, the note says the job may have been stuck instead.
 
 ![A task chat: the worker's brief and progress, its parent orchestrator, and the boat sandbox it runs on](screenshots/worker-chat.png)
 

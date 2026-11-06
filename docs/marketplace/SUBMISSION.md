@@ -100,8 +100,8 @@ CLI, agent tools and skills, send-menu and New thread entry points, and a
   ChatGPT subscription connected in boat.dev. Task chats, chats on a Boat
   sandbox and cloud orchestrators need bb Connect.
 - At most 3 sandboxes run at once by default, and the plugin never turns on
-  boat's paid extra starts. Agents are told to ask before starting more
-  than 3 tasks at once.
+  boat's paid extra starts. Orchestrators are told to ask before running
+  more than 5 tasks at once (a setting).
 - Agents push branches and open pull requests with the GitHub access boat
   gives the sandbox. Ship pushes approved commits to a base branch, only
   after the user's approval (a click, or their message in the orchestrator

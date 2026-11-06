@@ -12,6 +12,7 @@ import {
   sandboxLine,
   taskDetail,
   taskTable,
+  tasksAtOnceLine,
 } from "./format.ts";
 import { ConfigError, applyImport, changeCount, exportConfig, planImport, summarize, summaryText } from "./config.ts";
 import { listLocalProjects } from "./local-projects.ts";
@@ -189,6 +190,7 @@ export function buildCli(runtime: Runtime) {
             const open = service.store.list({ statuses: OPEN_STATUSES });
             const orchestrator = ctx.threadId ? await runtime.isOrchestrator(ctx.threadId).catch(() => false) : false;
             const project = await runtime.projectForThread(ctx.threadId);
+            const tasksBeforeAsking = (await service.settings()).tasksBeforeAsking;
             // Per project: can boat's GitHub login reach its repos, and which secrets its environment has.
             const projects = project ? [project] : runtime.projects.list().map((entry) => toOrchestratorProject(entry));
             const access = await Promise.all(projects.map(async (entry) => ({ project: entry, access: await service.projectAccess(entry, ctx.signal) })));
@@ -199,6 +201,7 @@ export function buildCli(runtime: Runtime) {
               activeSandboxes: capacity?.active.length ?? 0,
               cap: capacity?.cap ?? null,
               freeSlots: capacity?.free ?? null,
+              tasksBeforeAsking,
               openTasks: open,
               thisThreadIsOrchestrator: orchestrator,
               access: access.map(({ project: entry, access: result }) => ({ project: entry.id, ...result })),
@@ -208,6 +211,7 @@ export function buildCli(runtime: Runtime) {
                 setup?.summary ?? null,
                 capacity ? `boat: ${limitsLine(capacity.limits, capacity.active.length, capacity.cap)}` : `boat: ${boatProblem ?? "not reachable"}`,
                 capacity?.limits?.summary ? `plan: ${capacity.limits.summary}` : null,
+                tasksAtOnceLine(tasksBeforeAsking),
                 ctx.threadId ? `this thread: ${orchestrator ? "orchestrator" : "not an orchestrator"}` : null,
                 project ? `project: ${project.name} (${project.repos.map((r) => `${r.repo}@${r.baseBranch}`).join(", ")}; environment ${project.environment ?? "default"})` : null,
                 // Headings only with something under them.

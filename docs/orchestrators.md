@@ -31,7 +31,8 @@ without one.
   starter.
 - **A tight budget.** An orchestrator uses agent usage and sandbox hours
   faster than single tasks: it starts several tasks, and a review for each.
-  It asks you before it runs more than 3 tasks at once.
+  It asks you before it runs more than 5 tasks at once (**Tasks at once
+  before asking**, under Settings → Orchestrators; 0: it never asks).
 
 ## Starting one
 
@@ -243,6 +244,7 @@ current settings. The editor highlights them and warns about unknown ones.
 | `{{workers}}` | How tasks run, from **How tasks run** and the project |
 | `{{agents}}` | Your agents, usage limits and Claude ↔ Codex switching |
 | `{{evidence}}` | What to do with screenshots and recordings (uploads on or off) |
+| `{{tasks-at-once}}` | When to ask you before running more tasks at once, from **Tasks at once before asking** |
 | `{{model-tiers}}` | The model presets table (Settings → Models). A protocol without it gets the table at the end |
 
 The orchestrator picks a [model preset](features.md#model-presets) for each

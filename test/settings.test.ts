@@ -1,7 +1,7 @@
 // Settings in two places: bb's short list and the plugin's own (kv), read
 // and written as one (`bb boat config get|set|reset`, the settings RPCs).
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -99,7 +99,7 @@ test("every other setting is the plugin's own, in a section; no setting is in bo
   assert.equal(PLUGIN_SETTINGS.orchestratorMachineType.label, "Size for chats on a Boat sandbox");
   // The orchestrator section: what they run as (agent, effort) first, then the sidebar, size, and full access right after size.
   const orchestrators = Object.entries(PLUGIN_SETTINGS).filter(([, spec]) => spec.section === "orchestrators").map(([key]) => key);
-  assert.deepEqual(orchestrators, ["relayPreferred", "orchestratorEffort", "sidebarLayout", "orchestratorMachineType", "cloudOrchestratorFullAccess"]);
+  assert.deepEqual(orchestrators, ["relayPreferred", "orchestratorEffort", "tasksBeforeAsking", "sidebarLayout", "orchestratorMachineType", "cloudOrchestratorFullAccess"]);
   // The agent setting kept its key (backups) but left the switching block: it decides where new orchestrators start too.
   assert.equal(PLUGIN_SETTINGS.relayPreferred.label, "Agent for orchestrators");
   assert.ok(!("group" in PLUGIN_SETTINGS.relayPreferred), "not only about switching");
@@ -248,7 +248,7 @@ test("bb boat config get|set|reset: one command for both places, with the same c
   assert.match(all.stdout, /\n\nUsage limits:\n {2}autoFailover = true\n/);
   assert.match(
     all.stdout,
-    /\n\nOrchestrators \(optional\):\n {2}relayPreferred = "claude"\n {2}orchestratorEffort = "high"\n {2}sidebarLayout = "sections"\n {2}orchestratorMachineType = "small"\n {2}cloudOrchestratorFullAccess = true\n/,
+    /\n\nOrchestrators \(optional\):\n {2}relayPreferred = "claude"\n {2}orchestratorEffort = "high"\n {2}tasksBeforeAsking = 5\n {2}sidebarLayout = "sections"\n {2}orchestratorMachineType = "small"\n {2}cloudOrchestratorFullAccess = true\n/,
   );
   assert.match(all.stdout, /maxActiveSandboxes = 0 {2}\(default 3\)/);
   const json = JSON.parse((await cli("config", "get", "--json")).stdout) as { settings: { key: string; where: string; section: string | null }[] };
@@ -408,4 +408,17 @@ test("sizes for pickers follow the plan; a fresh install runs at most 3 sandboxe
   assert.equal(overview.cap, 2);
   assert.equal((await cli("config", "set", "maxActiveSandboxes", "1")).exitCode, 0);
   assert.equal(((await harness.callRpc("overview", null)) as { cap: number | null }).cap, 1);
+});
+
+test("Stop idle sandboxes after: an hour by default, a plain description, and the docs agree", () => {
+  const spec = SETTINGS.stopIdleAfterMinutes;
+  assert.equal(spec.type, "number", "stored numbers and `bb plugin config boat set stopIdleAfterMinutes <n>` keep working");
+  assert.equal(spec.default, 60);
+  assert.match(spec.description, /^A sandbox whose agent has finished and is waiting for you stops after this long, to save sandbox hours\. Work still running, background jobs included, keeps it on\. Your next message starts it again; anything the agent kept in memory or \/tmp is lost\./);
+  const docs = readFileSync(new URL("../docs/settings.md", import.meta.url), "utf8");
+  assert.match(docs, /\| Stop idle sandboxes after \(min\) \| `stopIdleAfterMinutes` \| `60` \|/);
+  assert.match(docs, /\| Orchestrators \| Tasks at once before asking \| `tasksBeforeAsking` \| `5`; 0 never asks \|/);
+  for (const file of ["../README.md", "../docs/orchestrators.md", "../docs/marketplace/SUBMISSION.md", "../skills/boat/SKILL.md", "../skills/boat-orchestrator/SKILL.md"]) {
+    assert.doesNotMatch(readFileSync(new URL(file, import.meta.url), "utf8"), /more than 3 tasks/, file);
+  }
 });

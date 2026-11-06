@@ -179,6 +179,86 @@ export function limitsLine(limits: Limits | null, active: number, cap: number | 
   return parts.join(" · ");
 }
 
+// ------------------------------------------------------------------ watchdog
+
+/**
+ * How watchdog notices start. Not "[boat] Task …": a notice about a task
+ * isn't a report of its turn (the ship check counts those).
+ */
+export const WATCHDOG_PREFIX = "[boat] Watchdog:";
+/** How the note to a worker after a resume starts (it's put before the next message once). */
+export const RESUME_NOTE_PREFIX = "[boat] Your sandbox stopped";
+
+/** "14:05 UTC" (a date too when it isn't today). */
+export function clockTime(at: number, now = Date.now()): string {
+  const iso = new Date(at).toISOString();
+  const sameDay = iso.slice(0, 10) === new Date(now).toISOString().slice(0, 10);
+  return `${sameDay ? "" : `${iso.slice(0, 10)} `}${iso.slice(11, 16)} UTC`;
+}
+
+/** "4 minutes", "1 hour 5 minutes". */
+export function spanText(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return `${hours} ${hours === 1 ? "hour" : "hours"}${rest > 0 ? ` ${rest} ${rest === 1 ? "minute" : "minutes"}` : ""}`;
+}
+
+/**
+ * The note the worker gets with its next message after a stop that cut off
+ * background work. `capped`: the work had run as long as the plugin keeps a
+ * sandbox on for it, so it may have been stuck.
+ */
+export function resumeNoteText(stoppedAt: number, work: string, now = Date.now(), capped = false): string {
+  const what = `while work was running in the background${work ? ` (${work})` : ""}`;
+  if (capped) {
+    return `${RESUME_NOTE_PREFIX} at ${clockTime(stoppedAt, now)} ${what}, after it had run 12 hours, the most the plugin keeps a sandbox on for it. It is running again, but those background jobs and anything in /tmp were lost. Restart a job only if you still need it, and check first why it ran that long.`;
+  }
+  return `${RESUME_NOTE_PREFIX} at ${clockTime(stoppedAt, now)} ${what}. It is running again, but those background jobs and anything in /tmp were lost. Rerun what you still need now instead of waiting for their results.`;
+}
+
+/** Whose sandbox a notice is about: a task's, or the orchestrator's own. */
+export type NoticeSubject = { kind: "task"; taskId: string; title: string; sandboxId: string } | { kind: "own"; sandboxId: string };
+
+function subjectText(subject: NoticeSubject): string {
+  return subject.kind === "own" ? `Your own sandbox (${subject.sandboxId})` : `Task ${subject.taskId}'s sandbox (${subject.sandboxId}, "${subject.title}")`;
+}
+
+/**
+ * A sandbox stopped while background work ran there: what ran, who stopped
+ * it, what the plugin did. `capped`: after 12 hours of it (maybe stuck).
+ */
+export function stoppedNotice(input: { subject: NoticeSubject; work: string; stoppedAt: number; cause: string; did: string; now?: number; capped?: boolean; ahead?: boolean }): string {
+  const subject = input.subject;
+  const next = input.capped
+    ? subject.kind === "own"
+      ? "It had run 12 hours, the most the plugin keeps a sandbox on for background work, so it may have been stuck: restart it only if you still need it."
+      : `It had run 12 hours, the most the plugin keeps a sandbox on for background work, so it may have been stuck. The worker gets a note with its next message; follow up on ${subject.taskId} only if the job is still needed.`
+    : subject.kind === "own"
+      ? "Its background jobs and anything in /tmp are gone: rerun what you still need instead of waiting for their results."
+      : `The worker gets a note with its next message that its background jobs and /tmp were lost. Follow up on ${subject.taskId} (boat_followup) if it should rerun them now.`;
+  return `${WATCHDOG_PREFIX} ${subjectText(input.subject)} ${input.ahead ? "stops" : "stopped"} at ${clockTime(input.stoppedAt, input.now)} while work ${input.ahead ? "is" : "was"} running in the background${input.work ? ` (${input.work})` : ""}. ${input.cause} ${input.did} ${next}`;
+}
+
+/** Messages waited on a stopped or disconnected machine: for how long, and whether the plugin resumed it. */
+export function waitingNotice(input: { subject: NoticeSubject; waitedMs: number; machine: string; did: string }): string {
+  const whose = input.subject.kind === "own" ? "Your messages have" : `Messages to task ${input.subject.taskId} ("${input.subject.title}") have`;
+  return `${WATCHDOG_PREFIX} ${whose} waited ${spanText(input.waitedMs)} for its machine: sandbox ${input.subject.sandboxId} is ${input.machine}. ${input.did}`;
+}
+
+/** A running turn without new transcript activity for a while. */
+export function quietNotice(input: { taskId: string; title: string; quietMs: number; lastAt: number; now?: number }): string {
+  return `${WATCHDOG_PREFIX} Task ${input.taskId}'s turn ("${input.title}") has shown no new activity for ${spanText(input.quietMs)} (last at ${clockTime(input.lastAt, input.now)}); it may be stuck. The plugin left it running. Look at its transcript (boat_transcript), then steer it (boat_followup with steer), interrupt it (boat_interrupt), or leave it if a long quiet step is expected.`;
+}
+
+/** The Tasks at once before asking setting, for boat_status and `bb boat status`. */
+export function tasksAtOnceLine(tasksBeforeAsking: number): string {
+  const count = Number.isFinite(tasksBeforeAsking) && tasksBeforeAsking > 0 ? Math.floor(tasksBeforeAsking) : 0;
+  if (count === 0) return "Tasks at once before asking: never ask (start only what the work needs)";
+  return `Tasks at once before asking: ${count} (ask the user before running more than ${count} at once)`;
+}
+
 /** The message posted into an orchestrator thread when its workers finish a turn. */
 /** Kinds that start a turn; a failover after them means this turn was handed over. */
 const TURN_STARTS = new Set(["dispatched", "followup", "followup-switch", "failover", "moved-to-chat"]);

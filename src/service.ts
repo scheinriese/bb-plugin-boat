@@ -18,9 +18,12 @@ import {
   type ShipConflict,
   type ShipResult,
   type EnvironmentInfo,
+  busyProcesses,
+  programName,
   shellQuote,
 } from "./boat-api.ts";
 import { checkPreview, previewLink, previewView, type PreviewView } from "./previews.ts";
+import { KEEP_LIMIT_MS, describeWork, hasWork } from "./activity.ts";
 import { BOAT_GIT_ENV, aiProxyPrice, autoStopHours, withinAutoStopCap, type AiProxyState } from "./boat-api.ts";
 import { BoatError } from "./boat.ts";
 import { alwaysProtectedBranches, protectedBranches, type OrchestratorProject, type ProjectRepo } from "./projects.ts";
@@ -120,6 +123,8 @@ export interface BoatSettings {
   cloudOrchestratorFullAccess: boolean;
   /** Branches protected in every sandbox on top of main and master (the "Extra protected branches" setting). */
   extraProtectedBranches: string[];
+  /** Orchestrators ask the user before running more tasks than this at once (0: never ask). */
+  tasksBeforeAsking: number;
 }
 
 /** A notice that can't go out yet (its orchestrator is being handed over): tried again later. */
@@ -208,6 +213,22 @@ export interface ServiceHooks {
   sizePlanNow?(): PlanSize[] | null;
   /** Post a plain message into a chat (a move that ended after its caller stopped waiting). */
   tell?(threadId: string, text: string): Promise<void>;
+  /**
+   * The note a task's worker gets once with its next prompt after a stop
+   * cut off its background work (the watchdog's); absent: none.
+   */
+  resumeNote?: { peek(taskId: string): Promise<string | null>; sent(taskId: string): Promise<void> };
+  /**
+   * The plugin suspended a worker machine itself (the idle stop, making
+   * room, a stop someone asked for). underWork: background work still ran
+   * (the idle stop at its limit). The watchdog tells a planned stop from
+   * one that cut work off.
+   */
+  machineSuspended?(hostId: string, underWork: boolean): void;
+  /** The idle stop stopped a headless sandbox whose finished agent's processes still computed (at the 12-hour limit). */
+  processesStopped?(sandboxId: string, at: number): void;
+  /** The plugin stopped a headless sandbox with nothing computing there (the idle stop, making room): a planned stop. */
+  sandboxStopped?(sandboxId: string): void;
   /** Tests: the memory check's cap and the move's poll interval and waits (ms). */
   sizeTiming?: { checkMs?: number; pollMs?: number; stopMs?: number; startMs?: number; reconnectMs?: number };
 }
@@ -500,6 +521,11 @@ const TRANSITIONAL_STATES = new Set(["provisioning", "starting", "stopping", "ar
 const TRANSITION_WAIT_MS = 120_000;
 /** How long a turn may look finished in one endpoint but not the other. */
 const SETTLE_MS = 30_000;
+/** How long a `boat ps` reading of a sandbox is reused. */
+const PROCESS_CHECK_MS = 5 * 60_000;
+
+/** What `boat ps` says of a headless sandbox whose agent has finished. */
+export type Computing = "busy" | "maybe" | "no";
 
 /** A move to a chat whose task was closed or changed meanwhile. */
 class MoveCancelled extends Error {
@@ -715,15 +741,26 @@ export class BoatService {
           (a, b) =>
             Number(this.hasLivePreview(a.sandbox.id)) - Number(this.hasLivePreview(b.sandbox.id)) || a.lastTouched.localeCompare(b.lastTouched),
         );
-      const victim = candidates[0];
+      // Work the tasks don't show keeps a sandbox on: another chat on its machine,
+      // background work there, or (headless) processes the finished agent left
+      // computing, even after one reading. None left to stop: the limit says so.
+      let victim: (typeof candidates)[number] | undefined;
+      for (const entry of candidates) {
+        if (await this.machineBusy(entry.tasks)) continue;
+        if (!entry.tasks.some((task) => task.runner === "chat") && (await this.processesBusy(entry.sandbox.id)) !== "no") continue;
+        victim = entry;
+        break;
+      }
       if (victim !== undefined) {
         // A worker chat's machine is suspended through bb, which resumes it on the next message.
         const hostId = victim.tasks.find((task) => task.runner === "chat" && task.hostId !== null)?.hostId ?? null;
         if (hostId !== null && this.hooks.chat !== undefined) {
           await this.hooks.chat.suspendMachine(hostId);
           this.suspendedHosts.add(hostId);
+          this.hooks.machineSuspended?.(hostId, false);
         } else {
           await this.boat.stop(victim.sandbox.id, signal);
+          this.hooks.sandboxStopped?.(victim.sandbox.id);
         }
         for (const task of victim.tasks) {
           this.store.addEvent(task.id, "sandbox-stopped", "Sandbox stopped to make room for new work; it resumes on follow-up.");
@@ -1843,6 +1880,18 @@ export class BoatService {
     };
   }
 
+  /** bb suspended this worker machine (the watchdog brought bb's record in line): the idle stop leaves it. */
+  noteSuspended(hostId: string): void {
+    this.suspendedHosts.add(hostId);
+    this.backgroundSince.delete(hostId);
+  }
+
+  /** bb has this worker machine up again (the watchdog resumed it, or sees it connected): the idle stop watches it again. */
+  noteResumed(hostId: string): void {
+    this.suspendedHosts.delete(hostId);
+    this.backgroundSince.delete(hostId);
+  }
+
   /** A move to a task chat is running for this task. */
   isMovingToChat(taskId: string): boolean {
     return this.moves.has(taskId);
@@ -2021,17 +2070,21 @@ export class BoatService {
       await this.ensureRunning(task.sandboxId!, options.signal);
       // Now that the sandbox is up, its login can be asked directly.
       if (needsGithub) await this.assertGithubLogin(task, { signal: options.signal });
+      const note = await this.resumeNoteFor(task.id);
       const dispatch = await this.boat.prompt({
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
         // A new agent on a Deep task gets the working mode for its own tools.
-        prompt: composeFollowupPrompt(task.role, message, {
-          enteringDeep,
-          provider,
-          evidence: this.hasEvidence(task.id),
-          delivery: task.delivery,
-          sandboxNote: this.sizes.followupNote(task),
-        }),
+        prompt: this.withNote(
+          note,
+          composeFollowupPrompt(task.role, message, {
+            enteringDeep,
+            provider,
+            evidence: this.hasEvidence(task.id),
+            delivery: task.delivery,
+            sandboxNote: this.sizes.followupNote(task),
+          }),
+        ),
         provider,
         model,
         reasoningEffort,
@@ -2063,6 +2116,7 @@ export class BoatService {
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       }
       this.sizes.noteSent(task.id); // sizes
+      this.noteSent(task.id, note);
       if (newlyApproved) this.store.addEvent(task.id, "approval", "Frontier at max effort, approved by the user (follow-up)");
       this.markChangedSinceReview(task);
       if (agentNote !== null) this.store.addEvent(task.id, "agent", agentNote);
@@ -2136,7 +2190,9 @@ export class BoatService {
       if (claimed === null) throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       if (task.hostId !== null) this.suspendedHosts.delete(task.hostId);
       try {
-        await this.hooks.chat!.send(task.threadId!, composeEvidencePrompt(task.role, message, "chat"), { steer: false });
+        const note = await this.resumeNoteFor(task.id);
+        await this.hooks.chat!.send(task.threadId!, this.withNote(note, composeEvidencePrompt(task.role, message, "chat")), { steer: false });
+        this.noteSent(task.id, note);
       } catch (error) {
         this.store.transition(
           task.id,
@@ -2154,10 +2210,11 @@ export class BoatService {
     try {
       this.sizes.assertCanFollowup(task); // sizes
       await this.ensureRunning(task.sandboxId!, options.signal);
+      const note = await this.resumeNoteFor(task.id);
       const dispatch = await this.boat.prompt({
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
-        prompt: composeEvidencePrompt(task.role, message, "boat"),
+        prompt: this.withNote(note, composeEvidencePrompt(task.role, message, "boat")),
         provider: task.provider,
         model: task.model,
         reasoningEffort: task.reasoningEffort,
@@ -2168,12 +2225,28 @@ export class BoatService {
         await this.boat.interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       }
+      this.noteSent(task.id, note);
       this.store.addEvent(task.id, "followup", clip(`(evidence only) ${message}`, 2000));
       this.hooks.changed([task.id]);
       return updated;
     } finally {
       release();
     }
+  }
+
+  /** The note for the worker's next prompt after a stop that cut off its background work (null: none). */
+  private async resumeNoteFor(taskId: string): Promise<string | null> {
+    return (await this.hooks.resumeNote?.peek(taskId).catch(() => null)) ?? null;
+  }
+
+  /** The prompt with the note first. */
+  private withNote(note: string | null, prompt: string): string {
+    return note === null ? prompt : `${note}\n\n${prompt}`;
+  }
+
+  /** The note went out: the next prompt goes without it. */
+  private noteSent(taskId: string, note: string | null): void {
+    if (note !== null) void this.hooks.resumeNote?.sent(taskId).catch(() => undefined);
   }
 
   /** A follow-up in the worker's chat; another agent means a new chat in the same workspace. */
@@ -2220,20 +2293,25 @@ export class BoatService {
         await chat.stop(task.threadId!).catch(() => undefined);
         return this.store.update(task.id, { threadId }) ?? claimed;
       }
+      const note = await this.resumeNoteFor(task.id);
       await chat.send(
         task.threadId!,
-        composeFollowupPrompt(task.role, message, {
-          enteringDeep: next.enteringDeep,
-          provider: next.provider,
-          runner: "chat",
-          effort: next.reasoningEffort,
-          evidence: this.hasEvidence(task.id),
-          delivery: task.delivery,
-          sandboxNote: this.sizes.followupNote(task),
-        }),
+        this.withNote(
+          note,
+          composeFollowupPrompt(task.role, message, {
+            enteringDeep: next.enteringDeep,
+            provider: next.provider,
+            runner: "chat",
+            effort: next.reasoningEffort,
+            evidence: this.hasEvidence(task.id),
+            delivery: task.delivery,
+            sandboxNote: this.sizes.followupNote(task),
+          }),
+        ),
         { steer: false, ...(next.changesModel ? { model: next.model, effort: next.reasoningEffort } : {}) },
       );
       this.sizes.noteSent(task.id); // sizes
+      this.noteSent(task.id, note);
       return claimed;
     } catch (error) {
       // Nothing was sent: put the task back as it was.
@@ -2306,10 +2384,12 @@ export class BoatService {
             extraInstructions: this.standingInstructions(task, settings),
           }
         : {};
+    // A new agent in the same sandbox: a stop that cut off background work concerns it too.
+    const note = await this.resumeNoteFor(task.id);
     const spawned = await this.hooks.chat!.spawn({
       taskId: task.id,
       title: task.title,
-      prompt: composeHandoverPrompt({
+      prompt: this.withNote(note, composeHandoverPrompt({
         ...fromBoat,
         taskId: task.id,
         role: task.role,
@@ -2327,7 +2407,7 @@ export class BoatService {
         effort: next.reasoningEffort,
         evidence: this.hasEvidence(task.id),
         sandboxLine: this.sizes.lineFor(task, "chat"),
-      }),
+      })),
       provider: next.provider,
       model: next.model,
       effort: next.reasoningEffort,
@@ -2335,6 +2415,7 @@ export class BoatService {
       projectId: task.projectId,
       where: { kind: "environment", environmentId },
     });
+    this.noteSent(task.id, note);
     this.store.addEvent(task.id, "chat", spawned.threadId);
     this.recordChat(task.id, spawned.threadId, next.provider, next.model, next.reasoningEffort);
     return spawned.threadId;
@@ -2541,6 +2622,7 @@ export class BoatService {
     }
     const chat = this.hooks.chat!;
     if (action === "stop") {
+      // Someone asked for it: what ran there, the watchdog tells from what it saw.
       await chat.suspendMachine(hostId);
       this.suspendedHosts.add(hostId);
     } else if (action === "resume") {
@@ -4094,9 +4176,9 @@ export class BoatService {
       }
       return true;
     }
-    // Queued messages (a follow-up, a provider retry) and background agents
-    // (workflows) mean the work isn't over even when the chat reads idle.
-    const busy = (state.status !== "idle" && state.status !== "error") || state.queued > 0 || state.backgroundAgents > 0;
+    // Queued messages (a follow-up, a provider retry), background agents and
+    // bb workflows mean the work isn't over even when the chat reads idle.
+    const busy = (state.status !== "idle" && state.status !== "error") || state.queued > 0 || state.backgroundAgents > 0 || (state.workflows ?? 0) > 0;
     if (busy) {
       this.chatTurnSeen.add(task.id);
       if (task.hostId !== null) this.suspendedHosts.delete(task.hostId);
@@ -4439,6 +4521,43 @@ export class BoatService {
     }
   }
 
+  /** Worker machine → since when the idle stop sees background work there (its limit counts from then). */
+  private readonly backgroundSince = new Map<string, number>();
+
+  /** `boat ps` readings per sandbox: the busy programs (by executable name), reused a few minutes. */
+  private readonly processChecks = new Map<string, { at: number; busy: string[]; verdict: Computing }>();
+
+  /**
+   * Processes a headless task's finished agent left are still computing
+   * there (`boat ps`): "busy" when the same program was busy in two
+   * readings a few minutes apart (a build's compiler processes come and
+   * go, so by program, not pid); "maybe" after a first busy reading, until
+   * the next one decides. Unknown counts as "no".
+   */
+  async processesBusy(sandboxId: string, now = Date.now()): Promise<Computing> {
+    const cached = this.processChecks.get(sandboxId);
+    if (cached !== undefined && now - cached.at < PROCESS_CHECK_MS) return cached.verdict;
+    const sample = await this.boat.processes(sandboxId, this.hooks.lifecycle).catch(() => null);
+    const busy = [...new Set(busyProcesses(sample).map((entry) => programName(entry.command)))];
+    const again = cached !== undefined && now - cached.at < 4 * PROCESS_CHECK_MS && busy.some((name) => cached.busy.includes(name));
+    const verdict: Computing = busy.length === 0 ? "no" : again ? "busy" : "maybe";
+    this.processChecks.set(sandboxId, { at: now, busy, verdict });
+    for (const [id, entry] of this.processChecks) if (now - entry.at > 4 * PROCESS_CHECK_MS) this.processChecks.delete(id);
+    return verdict;
+  }
+
+  /**
+   * Work the plugin's own records don't show runs on a worker machine: a
+   * chat at work there (any thread), a queued message, or background work.
+   * Unknown counts as busy. (Not for headless sandboxes: see processesBusy.)
+   */
+  private async machineBusy(tasks: Task[]): Promise<boolean> {
+    const hostId = tasks.find((task) => task.runner === "chat" && task.hostId !== null)?.hostId ?? null;
+    if (hostId === null || this.hooks.chat === undefined) return false;
+    const activity = await this.hooks.chat.machineActivity(hostId).catch(() => null);
+    return activity === null || activity.turns || activity.waiting || hasWork(activity.background);
+  }
+
   /** Stop plugin-created sandboxes whose tasks have all been waiting for a while. */
   private async stopIdleSandboxes(settings: BoatSettings, sandboxes: Map<string, Sandbox>, now: number): Promise<void> {
     const threshold = settings.stopIdleAfterMinutes * 60_000;
@@ -4451,7 +4570,11 @@ export class BoatService {
       }
       for (const [hostId, tasks] of byHost) {
         if (this.suspendedHosts.has(hostId)) continue;
-        if (tasks.some((task) => task.status === "running" || task.status === "starting")) continue;
+        // A turn runs: background work after it is new work (its 12 hours start over).
+        if (tasks.some((task) => task.status === "running" || task.status === "starting")) {
+          this.backgroundSince.delete(hostId);
+          continue;
+        }
         // A wake, ship or dispatch holds the sandbox right now.
         if (tasks.some((task) => task.sandboxId !== null && this.claims.has(task.sandboxId))) continue;
         // A live preview the user hasn't looked at yet keeps the machine on.
@@ -4459,22 +4582,57 @@ export class BoatService {
         if (now - Math.max(...tasks.map((task) => Date.parse(task.updatedAt))) < threshold) continue;
         const sandbox = tasks[0]!.sandboxId === null ? undefined : sandboxes.get(tasks[0]!.sandboxId);
         if (sandbox !== undefined && sandbox.state !== "idle") continue;
-        // Any chat on the machine (an extra one the user opened, a reviewer) may still be at work.
+        // The task's chats (an extra one the user opened, a reviewer) may still be at work.
         const chats = [...new Set(tasks.flatMap((task) => this.store.chatThreads(task.id)))];
         let busy = false;
         for (const threadId of chats) {
           const state = await this.hooks.chat.state(threadId).catch(() => null);
-          if (state !== null && !state.archived && (state.status !== "idle" && state.status !== "error" || state.queued > 0 || state.backgroundAgents > 0)) {
+          if (state !== null && !state.archived && ((state.status !== "idle" && state.status !== "error") || state.queued > 0 || state.backgroundAgents > 0 || (state.workflows ?? 0) > 0)) {
             busy = true;
             break;
           }
         }
-        if (busy) continue;
+        if (busy) {
+          this.backgroundSince.delete(hostId);
+          continue;
+        }
+        // So may every other chat on the machine (a workflow's, one bb started),
+        // and work left running in the background (background commands, bb
+        // workflows, child chats).
+        let activity;
+        try {
+          activity = await this.hooks.chat.machineActivity(hostId);
+        } catch (error) {
+          // bb couldn't say: no stop on a guess.
+          this.hooks.log.warn(`idle stop ${hostId}: ${errorText(error)}`);
+          continue;
+        }
+        if (activity.turns || activity.waiting) {
+          this.backgroundSince.delete(hostId);
+          continue;
+        }
+        // Background work keeps it on, up to the keeper's limit from when the idle stop first saw it.
+        const background = hasWork(activity.background);
+        if (!background) this.backgroundSince.delete(hostId);
+        else {
+          const since = this.backgroundSince.get(hostId) ?? now;
+          this.backgroundSince.set(hostId, since);
+          if (now - since < KEEP_LIMIT_MS) continue;
+        }
         try {
           await this.hooks.chat.suspendMachine(hostId);
           this.suspendedHosts.add(hostId);
+          this.backgroundSince.delete(hostId);
+          this.hooks.machineSuspended?.(hostId, background);
+          const hours = Math.round(KEEP_LIMIT_MS / 3_600_000);
           for (const task of tasks) {
-            this.store.addEvent(task.id, "sandbox-stopped", `Machine suspended after ${settings.stopIdleAfterMinutes} idle minutes; bb resumes it on the next message.`);
+            this.store.addEvent(
+              task.id,
+              "sandbox-stopped",
+              background
+                ? `Machine suspended: ${describeWork(activity.background)} had been running in the background for ${hours} hours, the most the plugin keeps a sandbox on for it. bb resumes it on the next message.`
+                : `Machine suspended after ${settings.stopIdleAfterMinutes} idle minutes; bb resumes it on the next message.`,
+            );
           }
           this.hooks.changed(tasks.map((task) => task.id));
         } catch (error) {
@@ -4495,14 +4653,36 @@ export class BoatService {
       const tasks = this.store.liveSandboxTasks(sandboxId);
       // bb manages machines of worker chats (it suspends idle ones itself).
       if (tasks.some((entry) => entry.runner === "chat")) continue;
-      if (tasks.some((entry) => entry.status === "running" || entry.status === "starting")) continue;
+      if (tasks.some((entry) => entry.status === "running" || entry.status === "starting")) {
+        this.backgroundSince.delete(sandboxId);
+        continue;
+      }
       const latest = Math.max(...tasks.map((entry) => Date.parse(entry.updatedAt)));
       if (now - latest < threshold) continue;
+      // Processes the finished agent left computing (a build, tests) keep it on, up to
+      // the keeper's limit. A first busy reading waits for the next one to decide.
+      const computing = await this.processesBusy(sandboxId, now);
+      if (computing === "maybe") continue;
+      if (computing === "busy") {
+        const since = this.backgroundSince.get(sandboxId) ?? now;
+        this.backgroundSince.set(sandboxId, since);
+        if (now - since < KEEP_LIMIT_MS) continue;
+      }
+      this.backgroundSince.delete(sandboxId);
       try {
         await this.boat.stop(sandboxId, this.hooks.lifecycle);
+        const hours = Math.round(KEEP_LIMIT_MS / 3_600_000);
         for (const entry of tasks) {
-          this.store.addEvent(entry.id, "sandbox-stopped", `Sandbox stopped after ${settings.stopIdleAfterMinutes} idle minutes; it resumes on follow-up.`);
+          this.store.addEvent(
+            entry.id,
+            "sandbox-stopped",
+            computing === "busy"
+              ? `Sandbox stopped: processes the agent started had been computing for ${hours} hours, the most the plugin keeps a sandbox on for them. It resumes on follow-up.`
+              : `Sandbox stopped after ${settings.stopIdleAfterMinutes} idle minutes; it resumes on follow-up.`,
+          );
         }
+        if (computing === "busy") this.hooks.processesStopped?.(sandboxId, now);
+        else this.hooks.sandboxStopped?.(sandboxId);
         this.hooks.changed(tasks.map((entry) => entry.id));
       } catch (error) {
         this.hooks.log.warn(`idle stop ${sandboxId}: ${errorText(error)}`);
