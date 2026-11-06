@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BoatApi, Sandbox } from "../src/boat-api.ts";
-import { KEPT_ON_EVENT, createSandboxKeeper, threadWorking } from "../src/keeper.ts";
+import { BLOCKED_GRACE_MS, KEEP_LIMIT_MS, KEPT_ON_EVENT, STOPPING_GRACE_MS, createSandboxKeeper, threadWorking, type KeeperDeps } from "../src/keeper.ts";
 import { MACHINE_PROVIDER_ID } from "../src/machine.ts";
 import { FakeBoat, defaultSettings, makeService, memoryStore } from "./fakes.ts";
 
@@ -92,7 +92,7 @@ async function taskChat(settings = defaultSettings({ workerMode: "chat" })) {
   );
   const warnings: string[] = [];
   const changed: string[][] = [];
-  const keeper = () =>
+  const keeper = (extra: Partial<KeeperDeps> = {}) =>
     createSandboxKeeper(bb, {
       boat: env.boat as unknown as BoatApi,
       store: env.store,
@@ -101,6 +101,7 @@ async function taskChat(settings = defaultSettings({ workerMode: "chat" })) {
       log: (line) => warnings.push(line),
       changed: (ids) => changed.push(ids),
       now: time.now,
+      ...extra,
     });
   return {
     ...env,
@@ -196,9 +197,8 @@ test("a sandbox whose turns are over is never extended: bb suspends it, and the 
   assert.deepEqual(env.chat.suspended, [env.task.hostId]);
 });
 
-test("a chat that only reads idle still counts: background agents and queued work keep the sandbox on, an archived chat doesn't", async () => {
+test("a chat that only reads idle still counts when background agents work there; an archived chat doesn't", async () => {
   assert.equal(threadWorking({ status: "idle", activity: { activeBackgroundAgentCount: 1 } }), true);
-  assert.equal(threadWorking({ status: "idle", queuedWork: "waiting" }), true);
   assert.equal(threadWorking({ status: "stopping" }), true);
   assert.equal(threadWorking({ status: "active", archivedAt: 5 }), false);
   assert.equal(threadWorking({ status: "error" }), false);
@@ -348,4 +348,165 @@ test("the keeper leaves alone: a sandbox moving to a chat, a machine bb has down
   env.boat.sandboxes.get(task.sandboxId!)!.archiveAfter = new Date(Date.now() + 5 * MINUTE).toISOString();
   await createSandboxKeeper(fakeBb(() => []).bb, { ...deps, boat: env.boat as unknown as BoatApi, store: env.store, now: undefined })();
   assert.deepEqual(env.boat.extended, []);
+});
+
+test("waiting isn't working: a chat waiting for a slot, for a retry, on the user (past a grace), or for its machine isn't kept on", async () => {
+  // Waiting for a slot under bb's limits, or a queued message (a retry at a usage limit's reset).
+  assert.equal(threadWorking({ status: "pending" }), false);
+  assert.equal(threadWorking({ status: "idle", queuedWork: "waiting" }), false);
+  // A turn under way, with a message queued behind it: working.
+  assert.equal(threadWorking({ status: "active", queuedWork: "waiting" }), true);
+  // Blocked on the user: working for a grace, then not.
+  assert.equal(threadWorking({ status: "active", hasPendingInteraction: true }), true);
+  assert.equal(threadWorking({ status: "active", hasPendingInteraction: true }, BLOCKED_GRACE_MS + 1), false);
+  // A stop that hangs.
+  assert.equal(threadWorking({ status: "stopping" }, STOPPING_GRACE_MS + 1), false);
+  // Its machine is gone (bb's daemon there died) or not up: nothing there makes progress.
+  assert.equal(threadWorking({ status: "active", runtime: { displayStatus: "waiting-for-host" } }), false);
+  assert.equal(threadWorking({ status: "active", runtimeStatus: "provisioning" }), false);
+  assert.equal(threadWorking({ status: "idle", runtime: { displayStatus: "waiting-for-host" }, activity: { activeBackgroundAgentCount: 1 } }), false);
+
+  // The task's record says its turn runs (it mirrors bb's busy states), but bb lists the chat waiting.
+  for (const row of [
+    { status: "pending", queuedWork: "none" },
+    { status: "idle", queuedWork: "waiting" },
+    { status: "active", runtime: { displayStatus: "waiting-for-host" } },
+  ]) {
+    const env = await taskChat();
+    assert.equal(env.store.get(env.task.id)!.status, "running");
+    env.setThreads(() => [{ id: env.task.threadId, ...row }]);
+    await env.keeper()();
+    assert.deepEqual(env.boat.extended, [], JSON.stringify(row));
+    // bb suspends the machine (a dead daemon is skipped) and resumes it on the next message.
+    assert.deepEqual(env.suspended, [env.task.hostId], JSON.stringify(row));
+    assert.equal(env.notes().length, 0);
+  }
+});
+
+test("a chat waiting on the user, or stuck stopping, gets one more extend at most", async () => {
+  for (const row of [{ status: "active", hasPendingInteraction: true }, { status: "stopping" }]) {
+    const env = await taskChat();
+    extendsLikeBoat(env.boat, env.time.now);
+    env.setThreads(() => [{ id: env.task.threadId, ...row }]);
+    const keep = env.keeper();
+    await keep();
+    assert.equal(env.boat.extended.length, 1, JSON.stringify(row));
+    // Near the new deadline it still waits: no second extend; bb suspends it instead.
+    env.time.advance(100 * MINUTE);
+    await keep();
+    assert.equal(env.boat.extended.length, 1, JSON.stringify(row));
+    assert.deepEqual(env.suspended, [env.task.hostId], JSON.stringify(row));
+  }
+
+  // The user answers in time: the turn goes on, and so does the keeper.
+  const env = await taskChat();
+  extendsLikeBoat(env.boat, env.time.now);
+  let blocked = true;
+  env.setThreads(() => [{ id: env.task.threadId, status: "active", hasPendingInteraction: blocked }]);
+  const keep = env.keeper();
+  await keep();
+  blocked = false;
+  env.time.advance(100 * MINUTE);
+  await keep();
+  assert.equal(env.boat.extended.length, 2);
+  assert.deepEqual(env.suspended, []);
+});
+
+test("a turn is kept on for 12 hours at most; then boat's stop comes, and the next turn starts over", async () => {
+  const env = await taskChat();
+  extendsLikeBoat(env.boat, env.time.now);
+  const infos: string[] = [];
+  const keep = env.keeper({ info: (line) => infos.push(line) });
+  const start = env.time.now();
+  while (env.suspended.length === 0 && env.time.now() - start < KEEP_LIMIT_MS + 4 * 60 * MINUTE) {
+    await keep();
+    env.time.advance(5 * MINUTE);
+  }
+  // Hard stop after within the trial's cap (2 h), extended about every 95 minutes while under 12 hours.
+  assert.equal(env.boat.extended.length, 8);
+  assert.ok(env.time.now() - start >= KEEP_LIMIT_MS);
+  // Not extended again: near its deadline bb suspends it (it resumes on the next message).
+  assert.deepEqual(env.suspended, [env.task.hostId]);
+  assert.deepEqual(
+    env.notes().map((event) => event.text),
+    ["Kept the sandbox on while the agent works (2 more hours).", "Stopped keeping the sandbox on after 12 hours. It stops at its auto-stop; the next message resumes it."],
+  );
+  assert.ok(infos.some((line) => /stopped keeping .* on after 12 hours/.test(line)));
+
+  // A new turn (the chat's next message) is kept on again.
+  env.chat.finish(env.task.threadId!, "Done.");
+  await env.service.sweep();
+  await env.service.followup(env.task.id, "One more thing.");
+  await env.service.sweep();
+  env.sandbox.archiveAfter = new Date(env.time.now() + 10 * MINUTE).toISOString();
+  env.time.advance(MINUTE);
+  await keep();
+  assert.equal(env.boat.extended.length, 9);
+});
+
+test("a machine isn't suspended under other work: a headless agent, a headless turn, a ship or wake in flight, a live preview", async () => {
+  const env = await taskChat();
+  env.chat.finish(env.task.threadId!, "Done.");
+  await env.service.sweep();
+  assert.equal(env.store.get(env.task.id)!.status, "idle");
+
+  // boat says an agent of its own works there (a headless review in the same sandbox).
+  env.sandbox.state = "running";
+  await env.keeper()();
+  assert.deepEqual(env.suspended, []);
+  env.sandbox.state = "idle";
+
+  // The plugin has a headless turn running there (boat's list may lag).
+  const implementer = env.store.get(env.task.id)!;
+  env.store.insert({ ...implementer, id: "t_review", role: "review", runner: "boat", status: "running", parentTaskId: implementer.id, threadId: null, hostId: null });
+  await env.keeper()();
+  assert.deepEqual(env.suspended, []);
+  env.store.update("t_review", { status: "idle" });
+
+  // A ship, dispatch or wake holds the sandbox right now.
+  await env.keeper({ held: (id) => id === env.sandbox.id })();
+  assert.deepEqual(env.suspended, []);
+
+  // A live preview the user hasn't looked at yet.
+  const preview = env.store.upsertPreview({
+    taskId: env.task.id,
+    sandboxId: env.sandbox.id,
+    port: 3000,
+    path: "/",
+    command: null,
+    url: "https://acme.example/preview",
+    title: "Acme web",
+    health: "up",
+  });
+  await env.keeper()();
+  assert.deepEqual(env.suspended, []);
+  assert.deepEqual(env.boat.extended, [], "none of these is a chat at work");
+
+  // None of them any more: bb suspends it.
+  env.store.upsertPreview({ taskId: preview.taskId, sandboxId: preview.sandboxId, port: preview.port, path: preview.path, command: null, url: preview.url, title: preview.title, health: "down" });
+  await env.keeper()();
+  assert.deepEqual(env.suspended, [env.task.hostId]);
+});
+
+test("the keeper's note doesn't hide a failover: a turn handed over once fails on a second usage limit", async () => {
+  const env = await taskChat();
+  env.chat.finish(env.task.threadId!, "Claude usage limit reached, resets at 5pm", "error");
+  await env.service.sweep();
+  const switched = env.store.get(env.task.id)!;
+  assert.equal(switched.status, "running");
+  assert.equal(switched.provider, "codex");
+  assert.equal(env.store.events(env.task.id, 1).at(-1)!.kind, "failover");
+
+  // Codex works on near the deadline: kept on, without a note after the failover.
+  await env.keeper()();
+  assert.equal(env.boat.extended.length, 1);
+  assert.equal(env.notes().length, 0);
+  assert.equal(env.store.events(env.task.id, 1).at(-1)!.kind, "failover");
+
+  // Codex hits its limit too: one switch per turn, so the task fails.
+  await env.service.sweep();
+  env.chat.finish(switched.threadId!, "Codex usage limit reached, resets at 6pm", "error");
+  await env.service.sweep();
+  assert.equal(env.store.get(env.task.id)!.status, "failed");
+  assert.equal(env.store.events(env.task.id, 200).filter((event) => event.kind === "failover").length, 1);
 });

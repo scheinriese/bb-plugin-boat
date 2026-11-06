@@ -1782,6 +1782,11 @@ export class BoatService {
     return [...this.moves.values()].some((move) => move.sandboxId === sandboxId);
   }
 
+  /** A dispatch, ship or wake holds this sandbox right now (the machine keeper doesn't suspend it). */
+  holdsSandbox(sandboxId: string): boolean {
+    return this.claims.has(sandboxId);
+  }
+
   private assertNotMoving(taskId: string): void {
     if (this.moves.has(taskId)) throw new TaskError(`Task ${taskId} is moving to a task chat.`, "task_busy", "Try again once the chat is open (in about a minute).");
   }

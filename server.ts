@@ -418,6 +418,8 @@ export default async function plugin(bb: BbPluginApi) {
     changed: () => changed(),
     // A task moving to a chat there: the move keeps its sandbox up.
     skip: (sandboxId) => service.isMovingSandbox(sandboxId),
+    // A dispatch, ship or wake in flight there: never suspended under it.
+    held: (sandboxId) => service.holdsSandbox(sandboxId),
   });
 
   // Monitor: check running tasks, collect results, notify, stop idle sandboxes.

@@ -195,6 +195,12 @@ you started there), the plugin moves that stop out shortly before it comes,
 by up to Hard stop after (within the cap). The task's history says "Kept
 the sandbox on while the agent works", once a turn. A sandbox with no turn
 running is never kept on: once the turn ends, it stops when idle, as above.
+Waiting isn't working either: a chat waiting for a slot, for a retry after
+a usage limit, for its machine, or on you (after one more extend) lets bb
+suspend the machine, and your next message resumes it. A turn is kept on
+for 12 hours at most, then the sandbox stops. The plugin never suspends a
+machine while something else works in its sandbox: a headless agent, a
+ship, or a live preview.
 
 ## How work lands: pull requests, or ship after approval
 
