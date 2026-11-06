@@ -71,7 +71,7 @@ export const TAGS = {
 // ------------------------------------------------------------- setup checks
 // Mirrors src/setup.ts (the app can't import server modules).
 
-export const SETUP_CHECK_IDS = ["cli", "signed-in", "plan", "agents", "environment", "github", "connect", "gh"] as const;
+export const SETUP_CHECK_IDS = ["cli", "signed-in", "plan", "agents", "environment", "boat-credentials", "github", "connect", "gh"] as const;
 export const SETUP_CHECK_STATES = ["ok", "missing", "warning", "unknown", "optional"] as const;
 /**
  * Buttons a fix can offer. check-again: run the checks again (setup with

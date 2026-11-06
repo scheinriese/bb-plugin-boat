@@ -52,7 +52,7 @@ test("bb boat doctor: the checklist, exit 1 when something required is missing, 
   assert.equal(ok.exitCode, 0, ok.stderr || ok.stdout);
   const report = JSON.parse(ok.stdout) as { ok: boolean; checks: { id: string; state: string }[] };
   assert.equal(report.ok, true);
-  assert.deepEqual(report.checks.map((check) => check.id), ["cli", "signed-in", "plan", "agents", "environment", "github", "connect", "gh"]);
+  assert.deepEqual(report.checks.map((check) => check.id), ["cli", "signed-in", "plan", "agents", "environment", "boat-credentials", "github", "connect", "gh"]);
 
   patch({ signedOut: true });
   const out = await harness.runCli(["doctor"]);
@@ -61,6 +61,29 @@ test("bb boat doctor: the checklist, exit 1 when something required is missing, 
   assert.match(out.stdout, /✗ Signed in to boat\.dev: Not signed in yet\.\n {4}Sign in to boat\.dev: run this in a terminal, then check again\./);
   assert.match(out.stdout, /\$ boat onboard/);
   assert.equal(created().length, 0);
+});
+
+test("bb boat doctor warns about boat credentials in the environments workers use, and still passes", async (t) => {
+  const { harness, patch, created } = await setup(t, { boat: { boatCredentials: true } });
+  const added = await harness.runCli(["project", "add", "--name", "Storefront", "--repo", "acme/storefront@master", "--environment", "storefront"]);
+  assert.equal(added.exitCode, 0, added.stderr);
+  const out = await harness.runCli(["doctor"]);
+  assert.equal(out.exitCode, 0, out.stderr || out.stdout);
+  assert.match(out.stdout, /^Setup: ready, but check boat login in sandboxes\.\n/);
+  assert.match(out.stdout, /\n! boat login in sandboxes: "base" \(your default\) and "storefront" pass boat credentials into sandboxes/);
+  assert.match(out.stdout, /\n {4}\$ boat env set base --boat-credentials false && boat env set storefront --boat-credentials false\n/);
+  // The page's summary says the same; work isn't blocked.
+  const status = (await harness.callRpc("setup", { force: true })) as { ok: boolean; summary: string };
+  assert.equal(status.ok, true);
+  assert.equal(status.summary, "Setup: ready, but check boat login in sandboxes. Run `bb boat doctor`.");
+  assert.doesNotMatch(out.stdout, /fake_value/);
+  assert.equal(created().length, 0);
+
+  // Turned off: quiet again.
+  patch({ boatCredentials: false });
+  const fixed = await harness.runCli(["doctor"]);
+  assert.match(fixed.stdout, /^Setup: ready\.\n/);
+  assert.match(fixed.stdout, /\n✓ boat login in sandboxes: Your tasks' environments don't pass boat credentials into sandboxes\.\n/);
 });
 
 test("bb boat status starts with the setup line and skips empty headings", async (t) => {

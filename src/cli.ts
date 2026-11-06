@@ -155,7 +155,7 @@ export function buildCli(runtime: Runtime) {
       "Tasks are coding agents (Claude Code or Codex) in boat.dev sandboxes: headless in boat by default, or task chats you can open in bb. The chat that started a task is told when a turn finishes. New here? Run `bb boat doctor`, then `bb boat task start --test`. See the boat and boat-orchestrator skills.",
     commands: {
       doctor: cliCommand({
-        summary: "Check the setup: boat CLI, sign-in, plan, agent logins, environment, GitHub, bb Connect",
+        summary: "Check the setup: boat CLI, sign-in, plan, agent logins, environment, boat login in sandboxes, GitHub, bb Connect",
         description:
           "Read-only: never starts a sandbox. Exits 1 when something required is missing; each problem comes with its fix. Run it when a command fails with setup_required.",
         options: { json },

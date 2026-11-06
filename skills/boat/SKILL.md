@@ -132,7 +132,7 @@ size. Agents are told their sandbox's size.
 
 | Command | Use |
 | --- | --- |
-| `bb boat doctor` | Check the setup: boat CLI, sign-in, plan, agent logins, environment, GitHub, bb Connect. Read-only |
+| `bb boat doctor` | Check the setup: boat CLI, sign-in, plan, agent logins, environment, boat login in sandboxes, GitHub, bb Connect. Read-only |
 | `bb boat status` | Setup summary, plan, room for sandboxes, open tasks |
 | `bb boat task start --test` | The test task (no repo, changes nothing; `--agent codex` to test Codex) |
 | `bb boat task start --title "…" --brief "…" --tier build --reason "…"` | Start a task on this chat's project (repo, base branch, environment come from it). The model preset (`light`, `review`, `build`, `deep`, `frontier`) picks model and effort for the agent. Add `--project <id>`, `--repo owner/name`, `--agent codex`, `--effort`, `--model`, `--branch`, `--base`, `--role review`, `--sandbox <id>`, `--type small`, `--context-from t_…`, `--headless` (or `--chat`, see Task chats) |

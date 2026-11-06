@@ -89,6 +89,7 @@ export default async function plugin(bb: BbPluginApi) {
     return {
       agents: parseAgentsSetting(values.agents),
       environment: values.environment,
+      projectEnvironments: list.map((project) => project.environment).filter((name): name is string => name !== null && name !== ""),
       // Task chats are possible: for every repo, or for projects that run tasks as chats.
       connectNeeded: values.workers === "all" || (values.workers === "projects" && list.some((project) => project.workerMode === "chat")),
       ghNeeded: custom || list.some((project) => project.protocolPath !== null),

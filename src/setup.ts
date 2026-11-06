@@ -83,7 +83,7 @@ export function sandboxSizes(types: readonly string[], plan: PlanFacts | null): 
 // ---------------------------------------------------------------- types
 
 export type CheckState = "ok" | "missing" | "warning" | "unknown" | "optional";
-export const CHECK_IDS = ["cli", "signed-in", "plan", "agents", "environment", "github", "connect", "gh"] as const;
+export const CHECK_IDS = ["cli", "signed-in", "plan", "agents", "environment", "boat-credentials", "github", "connect", "gh"] as const;
 export type CheckId = (typeof CHECK_IDS)[number];
 /**
  * Buttons the UI can offer. check-again: refresh the checks; sign-in: run
@@ -184,6 +184,8 @@ export interface SetupSettings {
   agents: AgentsSetting;
   /** The environment for new sandboxes ("" = boat's default). */
   environment: string;
+  /** Environments projects name for their workers (the others use `environment`). */
+  projectEnvironments?: string[];
   /** Task chats (or cloud orchestrators) are in use: bb Connect is required. */
   connectNeeded: boolean;
   /** Project rules files or your own uploader script: gh on this computer is needed. */
@@ -334,6 +336,22 @@ export function profileFor(facts: BoatFacts, environment: EnvironmentFacts | nul
   const id = environment?.credentialProfileId ?? null;
   if (id !== null) return list.find((profile) => profile.id === id) ?? null;
   return list.find((profile) => profile.isDefault && profile.personal) ?? list.find((profile) => profile.isDefault) ?? null;
+}
+
+/**
+ * The environments the plugin's workers use, as boat lists them: the one new
+ * sandboxes use (Boat environment, else boat's default), then each project's.
+ */
+export function workerEnvironments(facts: BoatFacts, settings: Pick<SetupSettings, "environment" | "projectEnvironments">): EnvironmentFacts[] {
+  const list = facts.environments ?? [];
+  const named = (settings.projectEnvironments ?? []).map((name) => list.find((env) => env.name === name) ?? null);
+  const all = [environmentFor(facts, settings.environment), ...named].filter((env): env is EnvironmentFacts => env !== null);
+  return all.filter((env, index) => all.findIndex((other) => other.name === env.name) === index);
+}
+
+/** "a", "a and b", "a, b and c". */
+function names(items: readonly string[]): string {
+  return items.length <= 1 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }
 
 /**
@@ -586,7 +604,35 @@ export function buildChecks(facts: BoatFacts, context: CheckContext): SetupCheck
     }
   }
 
-  // 6. GitHub: only a sandbox can tell; the last check of a repo says what it saw.
+  // 6. boat credentials: the boat CLI's login, for the whole account, in workers' sandboxes. The plugin
+  // never needs it there: it runs boat on the bb machine, and task chats and cloud orchestrators reach it
+  // through bb Connect. A warning, never a failure.
+  const boatLogin = "boat login in sandboxes";
+  if (!signedIn) {
+    checks.push({ id: "boat-credentials", label: boatLogin, state: "unknown", required: false, detail: facts.cli.found ? needsSignIn : needsCli });
+  } else if (facts.environments === null) {
+    checks.push({ id: "boat-credentials", label: boatLogin, state: "unknown", required: false, detail: "Couldn't read your boat environments." });
+  } else {
+    const passing = workerEnvironments(facts, settings).filter((env) => env.passSandboxCredentials === true);
+    if (passing.length === 0) {
+      checks.push({ id: "boat-credentials", label: boatLogin, state: "ok", required: false, detail: "Your tasks' environments don't pass boat credentials into sandboxes." });
+    } else {
+      const which = passing.map((env) => `"${env.name}"${env.isDefault && named === "" ? " (your default)" : ""}`);
+      checks.push({
+        id: "boat-credentials",
+        label: boatLogin,
+        state: "warning",
+        required: false,
+        detail: `${names(which)} ${passing.length === 1 ? "passes" : "pass"} boat credentials into sandboxes: your boat CLI login, for your whole account. Workers there can start, stop and delete any of your sandboxes. The plugin doesn't need them: it runs boat on the machine that runs bb, and task chats and cloud orchestrators reach it through bb Connect.`,
+        fix: {
+          text: `Turn them off with the command below (running sandboxes keep them until \`boat env upgrade <env>\`). If workers in an environment really need boat, give them a scoped key instead, stored as a secret variable of that environment: \`boat api-key create --env <env id> --actions <only what's needed> --ttl <short>\`.`,
+          command: passing.map((env) => `boat env set ${env.name} --boat-credentials false`).join(" && "),
+        },
+      });
+    }
+  }
+
+  // 7. GitHub: only a sandbox can tell; the last check of a repo says what it saw.
   const access = context.repoAccess;
   const githubFix: SetupFix = { text: "Connect GitHub on boat.dev → Environment and give boat access to your repos.", url: ENVIRONMENT_URL };
   if (access === null) {
@@ -604,7 +650,7 @@ export function buildChecks(facts: BoatFacts, context: CheckContext): SetupCheck
     });
   }
 
-  // 7. bb Connect: only when task chats (or cloud orchestrators) need it.
+  // 8. bb Connect: only when task chats (or cloud orchestrators) need it.
   const connect = context.connect;
   const connectWhy = "Needed for task chats and cloud orchestrators.";
   if (connect?.state === "ready") checks.push({ id: "connect", label: "bb Connect", state: "ok", required: settings.connectNeeded, detail: `On. ${connectWhy}` });
@@ -623,7 +669,7 @@ export function buildChecks(facts: BoatFacts, context: CheckContext): SetupCheck
     checks.push({ id: "connect", label: "bb Connect", state: "optional", required: false, detail: `${connect?.state === "off" ? "Off. " : ""}Only for task chats and cloud orchestrators.` });
   }
 
-  // 8. gh on this computer: only for project rules files and your own uploader script.
+  // 9. gh on this computer: only for project rules files and your own uploader script.
   const gh = context.gh;
   if (!settings.ghNeeded || gh === null) {
     checks.push({ id: "gh", label: "GitHub CLI on this computer", state: "optional", required: false, detail: "Only for project rules files and your own uploader script." });

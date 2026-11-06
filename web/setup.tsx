@@ -28,7 +28,7 @@ const STATE_ICON: Record<SetupCheckDto["state"], { icon: string; className: stri
 };
 
 /** Rows that only matter later (the page folds them away while setup is open). */
-const LATER_IDS = new Set<SetupCheckDto["id"]>(["github", "connect", "gh"]);
+const LATER_IDS = new Set<SetupCheckDto["id"]>(["boat-credentials", "github", "connect", "gh"]);
 
 // ------------------------------------------------------------------ sign in
 
