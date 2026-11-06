@@ -372,6 +372,17 @@ test("the note goes in front of a message queued for the worker, for the agent o
   assert.equal(w.calls.updates.length, 1, "once");
 });
 
+test("a closed task's note is dropped", async () => {
+  const w = await world();
+  await w.kv.set(resumeNoteKey(w.task.id), { taskId: w.task.id, threadId: w.task.threadId, text: `${RESUME_NOTE_PREFIX} at 10:00 UTC.` });
+  const dog = w.watchdog();
+  await dog.load();
+  w.env.store.update(w.task.id, { status: "done" });
+  await dog.tick();
+  assert.equal(w.kv.data.has(resumeNoteKey(w.task.id)), false);
+  assert.deepEqual(dog.dispatch({ threadId: w.task.threadId!, attempt: "start-turn", text: "Hi", queued: [], originPluginId: null }), { action: "proceed" });
+});
+
 test("the dispatch hook holds a message straight to the worker once (so the note can go first), and nothing else", async () => {
   const w = await world();
   const dog = w.watchdog();

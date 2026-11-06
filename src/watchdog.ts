@@ -676,6 +676,13 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         }
       }
       await flush().catch((error: unknown) => deps.log(`watchdog: notices: ${message(error)}`));
+      // A closed task's note will never go out.
+      for (const note of [...notes.values()]) {
+        const task = deps.store.get(note.taskId);
+        if (task !== null && OPEN_STATUSES.includes(task.status)) continue;
+        notes.delete(note.threadId!);
+        await deps.kv.delete(resumeNoteKey(note.taskId)).catch(() => undefined);
+      }
     },
 
     async queued(entry) {
