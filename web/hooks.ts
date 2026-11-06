@@ -91,6 +91,11 @@ export function useModelTiers() {
   return experimental_useRpcQuery({ contract: rpcContract, method: "modelTiers", input: null });
 }
 
+/** What a new orchestrator starts with (agent, its Build model, effort) and which agents it can start on. */
+export function useOrchestratorChoices() {
+  return experimental_useRpcQuery({ contract: rpcContract, method: "orchestratorChoices", input: null });
+}
+
 /** Configured projects plus local bb projects, for the New orchestrator dialog. */
 export function useOrchestratorProjects() {
   return experimental_useRpcQuery({ contract: rpcContract, method: "orchestratorProjects", input: null });
