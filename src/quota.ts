@@ -183,10 +183,10 @@ async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: Abor
   return quotas;
 }
 
-/** "Claude 21% weekly (resets Thu 01:00)" */
+/** "Claude: 21% of the weekly limit used, resets 2026-11-12 01:00 UTC" */
 export function quotaLine(quota: AgentQuota | undefined, provider: Provider): string {
   const name = provider === "claude" ? "Claude" : "Codex";
   if (!quota) return `${name}: usage unknown`;
   const resets = quota.resetsAt ? `, resets ${new Date(quota.resetsAt).toISOString().slice(0, 16).replace("T", " ")} UTC` : "";
-  return `${name}: ${Math.round(quota.usedPercent)}% of the ${quota.window.toLowerCase()}${resets}`;
+  return `${name}: ${Math.round(quota.usedPercent)}% of the ${quota.window.toLowerCase()} used${resets}`;
 }
