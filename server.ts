@@ -13,6 +13,7 @@ import { BoatCli, resolveBoatBinary } from "./src/boat.ts";
 import { buildCli } from "./src/cli.ts";
 import { registerBoatMachine } from "./src/machine.ts";
 import { createSandboxKeeper } from "./src/keeper.ts";
+import { createWatchdog, type QueuedRow, type Watchdog } from "./src/watchdog.ts";
 import { notificationText } from "./src/format.ts";
 import { DEFAULT_TASKS_BEFORE_ASKING, isOrchestratorMetadata, orchestratorInstructions, projectInstructions } from "./src/orchestrator.ts";
 import { dirname, join } from "node:path";
@@ -199,6 +200,8 @@ export default async function plugin(bb: BbPluginApi) {
   const quotas = createQuotaReader(bb, { limits: () => limits.active() });
   // Set once the runtime exists (notices wait while an orchestrator is handed over).
   let runtimeRef: Runtime | null = null;
+  // Set once the watchdog exists (it keeps the note a worker gets after a stop).
+  let watchdogRef: Watchdog | null = null;
   // GitHub files through this machine's `gh` login (project rules, the evidence uploader).
   const readRepoFile = createRepoFileReader();
 
@@ -264,6 +267,10 @@ export default async function plugin(bb: BbPluginApi) {
     sizePlan: async (options) => (await setup.reading({ force: options?.fresh === true }).catch(() => null))?.plan?.machineTypes ?? null,
     sizePlanNow: () => setup.peek()?.facts.plan?.machineTypes ?? null,
     tell: (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(),
+    resumeNote: {
+      peek: (taskId) => watchdogRef?.noteFor(taskId) ?? Promise.resolve(null),
+      sent: (taskId) => watchdogRef?.noteSent(taskId) ?? Promise.resolve(),
+    },
     evidence: createEvidenceSource(readRepoFile, undefined, (error, at) =>
       bb.log.warn(`evidence uploader: GitHub refresh failed (${error instanceof Error ? error.message : String(error)}); installing the copy from ${new Date(at).toISOString()}`),
     ),
@@ -446,9 +453,49 @@ export default async function plugin(bb: BbPluginApi) {
     computing: (sandboxId) => service.processesBusy(sandboxId),
   });
 
+  // The watchdog: bb's record of Boat sandbox machines true to boat, chats
+  // waiting on a stopped machine resumed, and a [boat] notice per incident.
+  const watchdog = createWatchdog(bb, {
+    boat,
+    store: service.store,
+    kv: bb.storage.kv,
+    tell: (threadId, text) => runtime.tellOrchestrator(threadId, text),
+    // An orchestrator being handed over hears of it once its successor is in place.
+    deferred: (threadId) => runtime.isHandingOver(threadId),
+    notifyUser: (title, body) => pushNotice(title, body, { always: true }),
+    // A move, resize, dispatch, ship or wake there: the plugin is at it itself.
+    held: (sandboxId) => service.holdsSandbox(sandboxId),
+    suspended: (hostId) => service.noteSuspended(hostId),
+    resumed: (hostId) => service.noteResumed(hostId),
+    changed: () => changed(),
+    log: (line) => bb.log.warn(line),
+    info: (line) => bb.log.info(line),
+    signal: lifecycle.signal,
+  });
+  watchdogRef = watchdog;
+  // A message queued for a chat whose worker missed background work in a stop: the note goes in front.
+  // One queued for a machine that's offline: check at once instead of on the next pass.
+  bb.events.on("message.queued", (payload: unknown) => {
+    const entry = (payload as { entry?: QueuedRow }).entry;
+    if (entry === undefined || typeof entry.threadId !== "string") return;
+    if (entry.waitingOn?.kind === "host-offline") wakeMonitor();
+    void watchdog.queued(entry).catch(() => undefined);
+  });
+  // The same note for a message that would go straight to the worker: held a moment, once, to add it.
+  bb.experimental_hooks.on("message.dispatch", (context) =>
+    watchdog.dispatch({
+      threadId: context.thread.id,
+      attempt: context.attempt,
+      text: context.input.text,
+      queued: context.queuedMessages as unknown as QueuedRow[],
+      originPluginId: typeof context.originPluginId === "string" ? context.originPluginId : null,
+    }),
+  );
+
   // Monitor: check running tasks, collect results, notify, stop idle sandboxes.
   bb.background.service("monitor", {
     async start(signal) {
+      await watchdog.load().catch((error: unknown) => bb.log.warn(`watchdog notes: ${error instanceof Error ? error.message : String(error)}`));
       // bb stops services (with a short grace) before dispose hooks run, so
       // abort in-flight boat calls as soon as the service is stopped.
       signal.addEventListener("abort", () => lifecycle.abort(), { once: true });
@@ -477,6 +524,11 @@ export default async function plugin(bb: BbPluginApi) {
           await keepSandboxesOn();
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        try {
+          await watchdog.tick();
+        } catch (error) {
+          bb.log.warn(`watchdog failed: ${error instanceof Error ? error.message : String(error)}`);
         }
         // Running turns are checked often; waiting tasks (idle-stop, notices) slowly.
         const intervalMs = service.hasActiveWork() ? POLL_INTERVAL_MS : 60_000;

@@ -1867,6 +1867,16 @@ export class BoatService {
     };
   }
 
+  /** bb suspended this worker machine (the watchdog brought bb's record in line): the idle stop leaves it. */
+  noteSuspended(hostId: string): void {
+    this.suspendedHosts.add(hostId);
+  }
+
+  /** bb has this worker machine up again (the watchdog resumed it, or sees it connected): the idle stop watches it again. */
+  noteResumed(hostId: string): void {
+    this.suspendedHosts.delete(hostId);
+  }
+
   /** A move to a task chat is running for this task. */
   isMovingToChat(taskId: string): boolean {
     return this.moves.has(taskId);

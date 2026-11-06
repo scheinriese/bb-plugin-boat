@@ -48,6 +48,7 @@ import { DEFAULT_TIERS, parseTierMap, type TierMap } from "./tiers.ts";
 import { TaskError, type BoatService } from "./service.ts";
 import { OPEN_STATUSES } from "./store.ts";
 import { changedApprovalReason, changedSinceApproval } from "./ship-approval.ts";
+import { WATCHDOG_PREFIX } from "./format.ts";
 
 /** How a caller names a project: a configured one, or a local bb project. */
 export type ProjectRef = { kind: "boat"; id: string } | { kind: "local"; bbProjectId: string };
@@ -673,6 +674,8 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     const fromUser = (item: { preview: string }) => item.preview !== "" && !fromPlugin(item.preview);
     const reports: number[] = [];
     items.forEach((item, index) => {
+      // A watchdog notice is about a task, not a report of its turn.
+      if (item.preview.startsWith(WATCHDOG_PREFIX)) return;
       if (item.preview.startsWith("[boat]") && (item.preview.includes(taskId) || /^\[boat\] \d+ tasks finished a turn/.test(item.preview))) reports.push(index);
     });
     const reportedAt = reports.at(-1) ?? -1;
