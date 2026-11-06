@@ -150,9 +150,9 @@ of environments you use for repos you don't trust.
   chats only in projects that have **Run tasks as chats** on. **Run as a
   chat** and **Continue as a chat** warn you before they make a chat for
   any other repo.
-- boat's AI credentials proxy (`boat ai proxy on`, a paid boat feature)
-  gives sandboxes placeholder keys, so your real Claude and ChatGPT
-  credentials never enter them.
+- boat's AI credentials proxy (`boat ai proxy on`, a paid boat add-on:
+  `boat ai proxy` shows the price) gives sandboxes placeholder keys, so your
+  real Claude and ChatGPT credentials never enter them.
 
 More in [SECURITY.md](SECURITY.md): what the plugin runs, what it can reach
 and what it stores.

@@ -45,14 +45,17 @@ What we recommend:
   what's needed> --ttl <short>`), stored as a secret variable of that
   environment. The setup check warns while an environment your workers use
   passes boat credentials.
-- Turn on the AI proxy (`boat ai proxy on`): sandboxes get placeholder
-  keys, and real keys never enter them. A project's settings say when real
-  keys go in.
 - Put publish and deploy secrets only in the environments that need them,
   scoped to one bucket or service.
 - On GitHub, add a ruleset on your base branches that blocks force pushes
   and deletion. Requiring pull requests on a base branch blocks **Ship** in
   projects that ship after approval.
+
+An option, at a cost: without boat's AI proxy, workers can read your real
+Claude and ChatGPT keys. The proxy (`boat ai proxy on`) passes placeholders
+instead, so real keys never enter a sandbox. It's a paid boat add-on;
+`boat ai proxy` shows the price. A project's settings note when real keys
+go in.
 
 ## What the plugin can reach
 
@@ -66,8 +69,9 @@ rights of the user who runs bb. In particular, it uses:
   links from them. The setup checks only read (`boat status`,
   `boat limits`, `boat env list`, `boat ai profiles`) and are cached for
   about a minute. A project's access line reads `boat env info` and
-  `boat ai proxy` (without on or off, it only shows). The plugin checks your setup before it creates a sandbox,
-  so a broken setup doesn't use up starts.
+  `boat ai proxy` (without on or off, it only shows). The plugin checks
+  your setup before it creates a sandbox, so a broken setup doesn't use up
+  starts.
 - **Your `gh` login** on the bb machine, read-only: `gh auth status` for the
   setup check, a project's rules file and, if you configure one, your own
   evidence uploader script.
