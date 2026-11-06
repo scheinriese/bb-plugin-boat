@@ -70,6 +70,8 @@ export const taskMemorySchema = z.object({
       error: z.string().nullable(),
       /** A follow-up goes out once it's up. */
       withMessage: z.boolean(),
+      /** Failed after the size changed (bb didn't reconnect, the follow-up couldn't be sent): only the message is left to send. */
+      moved: z.boolean(),
     })
     .nullable(),
   /** Change sandbox size can be offered now: open, between turns, with a sandbox the plugin created. */

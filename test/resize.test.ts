@@ -354,3 +354,124 @@ test("orchestrators move up only, Large after a memory finding, XLarge and other
   assert.equal(result.to, "large");
   assert.equal(result.sent, true);
 });
+
+test("a resume that finished after the plugin gave up: the move happened, nothing claims the old size", async () => {
+  const env = makeService();
+  const task = await idleTask(env);
+  // boat's CLI timed out, but boat finished the resume onto Large.
+  env.boat.resumeLateError = (type) => (type ? new BoatError("boat call timed out after 180s", { code: "timeout" }) : null);
+  const result = await env.service.sizes.resize(request(task.id));
+  assert.equal(result.sent, true);
+  assert.deepEqual(stopsAndResumes(env), [`stop ${task.sandboxId}`, `resume ${task.sandboxId} ttl=7200 type=large`]);
+  assert.ok(!history(env, task.id).some((line) => /back on/.test(line)), JSON.stringify(history(env, task.id)));
+  assert.match(history(env, task.id).at(-1)!, /^The sandbox is now Large \(8 vCPU, 16 GB\); it was Default\./);
+  assert.equal(env.service.sizes.knownSize(env.store.get(task.id)!)?.type, "large");
+  assert.match(env.boat.prompts.at(-1)!.text, /## Sandbox\nThe sandbox moved to a larger machine: it's now Large/);
+});
+
+test("bb's setup fails after boat resumed the machine onto the new size: measured, so it reads as moved", async () => {
+  const env = makeService({ chat: true, linkedMachines: true });
+  const task = await idleTask(env);
+  env.chat.bootstrapFailures = 1;
+  const result = await env.service.sizes.resize(request(task.id));
+  assert.equal(result.sent, true);
+  assert.equal(env.boat.sandboxes.get(task.sandboxId!)!.machineType, "large");
+  assert.equal(env.service.sizes.knownSize(env.store.get(task.id)!)?.type, "large");
+  assert.ok(!history(env, task.id).some((line) => /back on/.test(line)), JSON.stringify(history(env, task.id)));
+  assert.match(env.chat.sends.at(-1)!.text, /## Sandbox\nThe sandbox moved to a larger machine: it's now Large/);
+});
+
+test("a rollback says the size it measured, and records it", async () => {
+  const env = makeService();
+  const task = await idleTask(env);
+  // The move's resume fails; the plain resume after it lands on Large anyway (boat finished the first one).
+  env.boat.resumeError = (type) => (type ? new BoatError("no capacity for large", { code: "no_capacity" }) : null);
+  env.boat.resumeLateError = () => null;
+  const original = env.boat.resume.bind(env.boat);
+  env.boat.resume = async (id, ttl, signal, type) => {
+    await original(id, ttl, signal, type);
+    if (!type) env.boat.sandboxes.get(id)!.machineType = "small";
+  };
+  const error = await refused(env.service.sizes.resize(request(task.id)), "resize_failed");
+  assert.match(error.message, /^Couldn't move the sandbox to Large: no capacity for large\. It's back on Small\./);
+  assert.equal(env.service.sizes.knownSize(env.store.get(task.id)!)?.type, "small");
+});
+
+test("the follow-up's own refusals come before the sandbox stops", async () => {
+  const env = makeService();
+  const task = await idleTask(env);
+  await refused(env.service.sizes.resize(request(task.id, { followup: { tier: "frontier", effort: "max", userApproved: false } })), "frontier_needs_approval");
+  assert.deepEqual(stopsAndResumes(env), []);
+  assert.equal(claims(env).size, 0);
+  // Without a message there's nothing to check.
+  const moved = await env.service.sizes.resize(request(task.id, { message: null, followup: { tier: "frontier", effort: "max", userApproved: false } }));
+  assert.equal(moved.to, "large");
+});
+
+test("while a move is being checked, nothing waits on it, and a refusal leaves no trace", async () => {
+  const env = makeService();
+  const task = await idleTask(env);
+  let open: () => void = () => undefined;
+  env.boat.limitsGate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const moving = env.service.sizes.resize(request(task.id));
+  await new Promise((resolve) => setImmediate(resolve));
+  await refused(env.service.followup(task.id, "Hello"), "sandbox_resizing", /may move to Large: that's being checked right now/);
+  const view = (await env.service.sizes.view(env.store.get(task.id)!))!;
+  assert.equal(view.resize, null);
+  assert.deepEqual(env.service.sizes.lines(env.store.get(task.id)!).filter((line) => /Moving/.test(line)), []);
+  env.boat.limitsValue = { ...env.boat.limitsValue, startsLeftToday: 0 };
+  open();
+  env.boat.limitsGate = null;
+  await refused(moving, "boat_start_limit");
+  assert.deepEqual(stopsAndResumes(env), []);
+  assert.deepEqual(env.told, []);
+  await env.service.followup(task.id, "Hello");
+});
+
+test("a move from the task page: the orchestrator hears of it once, and a failure is the user's to handle", async () => {
+  const env = makeService();
+  const task = await idleTask(env);
+  await env.service.sizes.resize(request(task.id, { message: null, waitMs: 0 }));
+  await env.service.sizes.settled();
+  const news = env.told.filter((entry) => entry.threadId === "thr_orch" && /is now Large/.test(entry.text));
+  assert.equal(news.length, 1, JSON.stringify(env.told));
+
+  const failing = makeService();
+  const other = await idleTask(failing);
+  failing.boat.resumeError = (type) => (type ? new BoatError("no capacity for large", { code: "no_capacity" }) : null);
+  let open: () => void = () => undefined;
+  failing.boat.resumeGate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  assert.equal((await failing.service.sizes.resize(request(other.id, { waitMs: 0 }))).pending, true);
+  open();
+  failing.boat.resumeGate = null;
+  await failing.service.sizes.settled();
+  const told = failing.told.find((entry) => entry.threadId === "thr_orch" && entry.text.startsWith(`[boat] Task ${other.id}:`));
+  assert.ok(told, JSON.stringify(failing.told));
+  assert.match(told.text, /the user's move to Large didn't finish\. Couldn't move the sandbox to Large: no capacity for large\. It's back on Default\. The follow-up wasn't sent\./);
+  assert.match(told.text, /decides what's next/);
+  assert.doesNotMatch(told.text, /Send it again/);
+});
+
+test("the follow-up fails after the move: the size is done, the page offers no second move, and the next follow-up says it moved", async () => {
+  const env = makeService();
+  const task = await idleTask(env);
+  const original = env.service.followup.bind(env.service);
+  let fail = true;
+  env.service.followup = async (id, message, options = {}) => {
+    if (fail && options.dryRun !== true) throw new TaskError("boat said no", "boat_error");
+    return original(id, message, options);
+  };
+  // The service's own reference: the sizes deps call it through the service.
+  const error = await refused(env.service.sizes.resize(request(task.id)), "resize_failed");
+  assert.equal(error.message, "The sandbox is Large now, but the follow-up couldn't be sent: boat said no. Send it again.");
+  const view = (await env.service.sizes.view(env.store.get(task.id)!))!;
+  assert.equal(view.resize?.state, "failed");
+  assert.equal(view.resize?.moved, true);
+  fail = false;
+  await env.service.followup(task.id, "Continue where you left off.");
+  assert.match(env.boat.prompts.at(-1)!.text, /## Sandbox\nThe sandbox moved to a larger machine: it's now Large/);
+});

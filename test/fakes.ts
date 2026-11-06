@@ -191,7 +191,10 @@ export class FakeBoat {
     return this.environmentNames;
   }
 
+  /** `boat limits` waits for this. */
+  limitsGate: Promise<void> | null = null;
   async limits(): Promise<Limits> {
+    if (this.limitsGate) await this.limitsGate;
     if (this.limitsError) throw this.limitsError;
     return { ...this.limitsValue, activeSandboxes: [...this.sandboxes.values()].filter((s) => s.state !== "stopped").length };
   }
@@ -260,6 +263,9 @@ export class FakeBoat {
   resumeGate: Promise<void> | null = null;
   /** Refuse a resume (null: allowed); `type` is the size asked for (null: keep it). */
   resumeError: (type: string | null) => Error | null = () => null;
+  private boots = 0;
+  /** The call fails after boat did the resume (a CLI timeout while boat finishes it). */
+  resumeLateError: (type: string | null) => Error | null = () => null;
   async resume(id: string, ttl: number | null, _signal?: AbortSignal, type?: string | null): Promise<void> {
     this.calls.push(`resume ${id} ttl=${ttl}${type ? ` type=${type}` : ""}`);
     this.checkAutoStop(ttl);
@@ -269,12 +275,18 @@ export class FakeBoat {
     const sandbox = this.sandboxes.get(id);
     if (sandbox) {
       sandbox.state = "idle";
+      // A new boot (processes ended at the stop): a new boot id, the kill counter and kernel log from 0.
+      this.boots += 1;
+      const boot = { bootId: `0f3c1d2e-aaaa-bbbb-cccc-${String(this.boots).padStart(12, "0")}`, bootTime: Math.floor(Date.now() / 1000), oomKills: 0, kernel: [], oomd: [] };
+      this.probes.set(id, { ...this.probe(id), ...boot });
       // Like boat: without --type the sandbox keeps its size.
       if (type && isMachineType(type)) {
         sandbox.machineType = type;
         this.probes.set(id, { ...this.probe(id), ...this.sizeFacts(type) });
       }
     }
+    const late = this.resumeLateError(type ?? null);
+    if (late) throw late;
   }
   prepared: { id: string; repo: string; checkout: CheckoutMode; options: PrepareOptions }[] = [];
   async prepareRepo(id: string, repo: string, checkout: CheckoutMode, options: PrepareOptions = {}): Promise<PreparedRepo> {
@@ -540,8 +552,12 @@ export class FakeChat implements ChatRunner {
     if (sandboxId === null) return;
     this.machineStates.set(hostId, { phase: "resuming", connected: false, message: null });
     try {
-      // Like bb's provider resume: the plugin's bringUp resumes the sandbox.
+      // Like bb's provider resume: the plugin's bringUp resumes the sandbox, then bb sets it up.
       await this.linked.bringUp(sandboxId);
+      if (this.bootstrapFailures > 0) {
+        this.bootstrapFailures -= 1;
+        throw new Error("bootstrap failed: ssh connection reset");
+      }
     } catch (error) {
       this.machineStates.set(hostId, { phase: "suspended", connected: false, message: error instanceof Error ? error.message : String(error) });
       throw error;
@@ -581,6 +597,8 @@ export class FakeChat implements ChatRunner {
   private reconnectAfter: number | null = null;
   /** The machine never reconnects after a resume. */
   neverReconnect = false;
+  /** bb's setup after the sandbox is up fails this many more times. */
+  bootstrapFailures = 0;
   link(boat: FakeBoat, bringUp: (sandboxId: string) => Promise<unknown>) {
     this.linked = { boat, bringUp };
   }

@@ -101,7 +101,8 @@ export interface ResizeResult {
   sent: boolean;
 }
 
-type Step = "stopping" | "starting" | "reconnecting" | "sending";
+/** checking: refusals that read boat or bb (nothing changed yet); then the move itself. */
+type Step = "checking" | "stopping" | "starting" | "reconnecting" | "sending";
 type Outcome = { ok: true; sent: boolean } | { ok: false; error: TaskError };
 
 interface Job {
@@ -172,7 +173,7 @@ export class SandboxSizes {
   /** Moves in progress, by sandbox. */
   private readonly jobs = new Map<string, Job>();
   /** The last failed move per task (shown until its next turn). */
-  private readonly failures = new Map<string, { from: MachineType | null; to: MachineType; error: string; turns: number }>();
+  private readonly failures = new Map<string, { from: MachineType | null; to: MachineType; error: string; turns: number; moved: boolean }>();
   /** A move's target: any resume of the sandbox meanwhile (ours, or bb's on a message) uses it. */
   private readonly pendingTypes = new Map<string, MachineType>();
   /** Why a resume onto the pending type failed (bb drives a chat machine's resume). */
@@ -680,23 +681,31 @@ export class SandboxSizes {
     if (sandboxId === null) return;
     const job = this.jobs.get(sandboxId);
     if (job === undefined || job.step === "sending") return;
+    if (job.step === "checking") throw this.checkingError(`Sandbox ${sandboxId}`, job);
     throw new TaskError(`Sandbox ${sandboxId} is moving to ${LABEL(job.to)} right now.`, "sandbox_resizing", hint);
   }
 
   assertCanFollowup(task: Pick<Task, "id" | "sandboxId">): void {
     const job = task.sandboxId === null ? undefined : this.jobs.get(task.sandboxId);
     if (job === undefined || job.step === "sending") return;
+    if (job.step === "checking") throw this.checkingError(`Task ${task.id}'s sandbox`, job);
     throw new TaskError(`Task ${task.id}'s sandbox is moving to ${LABEL(job.to)} right now.`, "sandbox_resizing", "Send the follow-up once it's up (a few minutes).");
   }
 
   assertNotResizing(task: Pick<Task, "id" | "sandboxId">, action: "close" | "ship"): void {
     const job = task.sandboxId === null ? undefined : this.jobs.get(task.sandboxId);
     if (job === undefined) return;
+    if (job.step === "checking") throw this.checkingError(`Task ${task.id}'s sandbox`, job);
     throw new TaskError(
       `Task ${task.id}'s sandbox is moving to ${LABEL(job.to)} right now.`,
       "sandbox_resizing",
       action === "close" ? "Close it once the move is done." : "Ship it once the move is done.",
     );
+  }
+
+  /** A move still being checked (a few seconds): it may yet be refused, so nothing waits for it. */
+  private checkingError(what: string, job: Job): TaskError {
+    return new TaskError(`${what} may move to ${LABEL(job.to)}: that's being checked right now.`, "sandbox_resizing", "Try again in a moment.");
   }
 
   /** The first reason a task's sandbox can't move now (sync checks; `type` null: any size). */
@@ -718,7 +727,9 @@ export class SandboxSizes {
       );
     }
     const job = this.jobs.get(sandboxId);
-    if (job !== undefined) return new TaskError(`Sandbox ${sandboxId} is already moving to ${LABEL(job.to)}.`, "sandbox_resizing", "Wait a few minutes.");
+    if (job !== undefined) {
+      return new TaskError(`Sandbox ${sandboxId} is already moving to ${LABEL(job.to)}.`, "sandbox_resizing", job.step === "checking" ? "Try again in a moment." : "Wait a few minutes.");
+    }
     const hint = "Wait for its turn to end, or interrupt it, then change the size.";
     if (task.status === "running") return new TaskError(`Task ${task.id} is still running.`, "sandbox_busy", hint);
     const others = this.deps.store.liveSandboxTasks(sandboxId).filter((other) => other.id !== task.id);
@@ -875,9 +886,17 @@ export class SandboxSizes {
    * Every task on the sandbox moves with it, and each one's history says so.
    */
   async resize(request: ResizeRequest): Promise<ResizeResult> {
-    const task = await this.deps.refresh(request.taskId);
-    // Registered before anything awaits: two moves, or a move and a follow-up, can't both pass.
-    const refused = this.blocker(task, { type: request.type, by: request.by, userApproved: request.userApproved, threadId: request.notifyThreadId });
+    const blocked = (task: Task) => this.blocker(task, { type: request.type, by: request.by, userApproved: request.userApproved, threadId: request.notifyThreadId });
+    let task = await this.deps.refresh(request.taskId);
+    let refused = blocked(task);
+    if (refused !== null) throw refused;
+    // The follow-up's own refusals (Frontier at max without an OK, an agent
+    // that isn't set up) come before the sandbox stops, not after it moved.
+    const text = request.message?.trim() ?? "";
+    if (text !== "") await this.deps.followup(task.id, text, { ...request.followup, dryRun: true });
+    // Registered before anything else awaits: two moves, or a move and a follow-up, can't both pass.
+    task = this.deps.store.get(task.id) ?? task;
+    refused = blocked(task);
     if (refused !== null) throw refused;
     const sandboxId = task.sandboxId!;
     const job: Job = {
@@ -885,7 +904,7 @@ export class SandboxSizes {
       taskId: task.id,
       from: null,
       to: request.type,
-      step: "stopping",
+      step: "checking",
       withMessage: Boolean(request.message?.trim()),
       moved: [],
       previews: this.livePreviews(sandboxId),
@@ -976,13 +995,14 @@ export class SandboxSizes {
         this.pendingTypes.delete(sandboxId);
         // Something may have started it meanwhile (a message to the task chat): say what it is now.
         const now = await this.measure(sandboxId);
-        if (now?.type === to) return await this.finish(job, request, now);
+        if (now.size?.type === to) return await this.finish(job, request, now);
+        if (now.size !== null) this.recordSize(job.moved, sandboxId, now.size, "resize", now.probe);
         if (chat !== undefined && hostId !== null && (await chat.machineState(hostId).catch(() => null))?.phase === "suspended") {
           await chat.resumeMachine(hostId).catch(() => undefined);
           this.deps.markResumed(hostId);
         }
         const why = stopError ?? "it didn't stop within 4 minutes";
-        return this.fail(job, request, `Couldn't move the sandbox to ${LABEL(to)}: ${trimDot(why)}. ${now?.type ? `It's still ${LABEL(now.type)}.` : "Its size didn't change."}`);
+        return this.fail(job, request, `Couldn't move the sandbox to ${LABEL(to)}: ${trimDot(why)}. ${now.size?.type ? `It's still ${LABEL(now.size.type)}.` : "Its size didn't change."}`);
       }
 
       // 2. Start it on the new size: ensureRunning resumes onto the pending type.
@@ -1030,20 +1050,24 @@ export class SandboxSizes {
         this.deps.markResumed(hostId);
         if (!back) {
           const now = await this.measure(sandboxId);
-          this.recordSize(job.moved, sandboxId, now ?? { type: to, cpus: null, memTotalKb: null }, "resize", null);
+          const type = now.size?.type ?? to;
+          this.recordSize(job.moved, sandboxId, now.size ?? { type: to, cpus: null, memTotalKb: null }, "resize", now.probe);
+          // The size changed even so: the next follow-up says it.
+          if (type === to) this.recordDone(job);
           return this.fail(
             job,
             request,
-            `The sandbox is ${LABEL(now?.type ?? to)} now, but bb didn't reconnect to it within 5 minutes. ${job.withMessage ? "Your message wasn't sent: open the task chat, or send it again." : "Open the task chat to check on it."}`,
+            `The sandbox is ${LABEL(type)} now, but bb didn't reconnect to it within 5 minutes. ${job.withMessage ? "Your message wasn't sent: open the task chat, or send it again." : "Open the task chat to check on it."}`,
+            { moved: type === to },
           );
         }
       }
 
       // 4. Check what boat started.
       const now = await this.measure(sandboxId);
-      if (now?.type && now.type !== to) {
-        this.recordSize(job.moved, sandboxId, now, "resize", null);
-        return this.fail(job, request, `boat started the sandbox again, but it's still ${LABEL(now.type)}.${job.withMessage ? " Your message wasn't sent." : ""}`);
+      if (now.size?.type && now.size.type !== to) {
+        this.recordSize(job.moved, sandboxId, now.size, "resize", now.probe);
+        return this.fail(job, request, `boat started the sandbox again, but it's still ${LABEL(now.size.type)}.${job.withMessage ? " Your message wasn't sent." : ""}`);
       }
       return await this.finish(job, request, now);
     } finally {
@@ -1056,27 +1080,45 @@ export class SandboxSizes {
     }
   }
 
-  /** The sandbox's size by asking it (null: no answer). */
-  private async measure(sandboxId: string): Promise<KnownSize | null> {
-    const read = await this.probe(sandboxId, {});
-    return this.sizeFromProbe(read?.probe ?? null);
+  /**
+   * The sandbox's size as it is now: boat's word for the type when it gives
+   * one (the sandbox's own answer can be faked from inside), the probe's for
+   * CPUs, memory and the out-of-memory baseline. `probe` false: only boat
+   * (a stopped sandbox isn't started to ask it).
+   */
+  private async measure(sandboxId: string, options: { probe?: boolean } = {}): Promise<{ size: KnownSize | null; probe: Probe | null }> {
+    const read = options.probe === false ? null : await this.probe(sandboxId, {});
+    const probe = read?.probe ?? null;
+    const measured = this.sizeFromProbe(probe);
+    const info = await within(this.deps.boat.findInfo(sandboxId, this.deps.hooks.lifecycle), this.timing.checkMs).catch(() => null);
+    const type = info?.machineType ?? null;
+    if (type === null) return { size: measured, probe };
+    // Facts that don't fit boat's type aren't kept.
+    const fits = measured?.type === type;
+    return { size: { type, cpus: fits ? measured!.cpus : null, memTotalKb: fits ? measured!.memTotalKb : null }, probe };
+  }
+
+  /** The move happened: every task on the sandbox records it (the next follow-up's note). */
+  private recordDone(job: Job): void {
+    for (const id of job.moved) this.record(id, { type: "resize", sandboxId: job.sandboxId, from: job.from, to: job.to, state: "done", error: null, byTask: job.taskId, at: Date.now() / 1000 });
   }
 
   /** The move is done: record it on every task, tell the other orchestrators, then send the follow-up. */
-  private async finish(job: Job, request: ResizeRequest, measured: KnownSize | null): Promise<Outcome> {
+  private async finish(job: Job, request: ResizeRequest, measured: { size: KnownSize | null; probe: Probe | null }): Promise<Outcome> {
     const { store } = this.deps;
-    const size: KnownSize = measured?.type ? measured : { type: job.to, cpus: measured?.cpus ?? null, memTotalKb: measured?.memTotalKb ?? null };
-    this.recordSize(job.moved, job.sandboxId, size, "resize", null);
+    const size: KnownSize = measured.size?.type ? measured.size : { type: job.to, cpus: measured.size?.cpus ?? null, memTotalKb: measured.size?.memTotalKb ?? null };
+    // With the probe: the new boot's out-of-memory counter is the next turn's baseline.
+    this.recordSize(job.moved, job.sandboxId, size, "resize", measured.probe);
     const previews = job.previews > 0 ? ` ${job.previews === 1 ? "Its preview stopped; Wake starts it again." : "Its previews stopped; Wake starts them again."}` : "";
     const line = `The sandbox is now ${sizeSummary({ type: job.to, cpus: null, memTotalKb: null })}${job.from ? `; it was ${LABEL(job.from)}` : ""}.${previews}`;
+    this.recordDone(job);
     for (const id of job.moved) {
-      this.record(id, { type: "resize", sandboxId: job.sandboxId, from: job.from, to: job.to, state: "done", error: null, byTask: job.taskId, at: Date.now() / 1000 });
       this.say(id, SIZE_KIND, line);
       // The idle timer starts again: a sandbox just moved isn't stopped as idle at once.
       store.update(id, {});
     }
     store.resetPreviewHealthForSandbox(job.sandboxId);
-    await this.tellOthers(job, request);
+    const told = await this.tellOthers(job, request);
     if (job.withMessage) {
       this.setStep(job, "sending");
       try {
@@ -1086,14 +1128,17 @@ export class SandboxSizes {
       }
       return { ok: true, sent: true };
     }
-    if (!job.callerWaiting) await this.tell(job, `[boat] Task ${job.taskId}'s sandbox is now ${sizeSummary(size)}. You can send it a follow-up.`);
+    const threadId = store.get(job.taskId)?.orchestratorThreadId ?? null;
+    if (!job.callerWaiting && (threadId === null || !told.has(threadId))) {
+      await this.tell(job, `[boat] Task ${job.taskId}'s sandbox is now ${sizeSummary(size)}. You can send it a follow-up.`);
+    }
     return { ok: true, sent: false };
   }
 
-  /** The other chats with tasks on the sandbox learn it moved (whoever asked knows). */
-  private async tellOthers(job: Job, request: ResizeRequest): Promise<void> {
+  /** The other chats with tasks on the sandbox learn it moved (whoever asked knows); returns the chats told. */
+  private async tellOthers(job: Job, request: ResizeRequest): Promise<Set<string>> {
     const tell = this.deps.hooks.tell;
-    if (tell === undefined) return;
+    if (tell === undefined) return new Set();
     const asker = this.deps.store.get(job.taskId);
     const threads = new Map<string, string[]>();
     for (const id of job.moved) {
@@ -1111,6 +1156,7 @@ export class SandboxSizes {
       const text = `[boat] Sandbox ${job.sandboxId} is now ${LABEL(job.to)} (${specText(job.to)})${job.from ? `; it was ${LABEL(job.from)}` : ""}. ${who} from ${request.by === "page" ? "the task page" : "a follow-up"}. Your tasks on it: ${ids.join(", ")}. Processes that were running there stopped (Wake restarts previews).${mine}${cost ? ` ${cost} Mention it in your next update.` : ""}`;
       await tell(threadId, text).catch((error) => this.deps.hooks.log.warn(`tell ${threadId}: ${message(error)}`));
     }
+    return new Set(threads.keys());
   }
 
   private async tell(job: Job, text: string): Promise<void> {
@@ -1121,6 +1167,12 @@ export class SandboxSizes {
     for (const target of targets) await tell?.(target, text).catch((error) => this.deps.hooks.log.warn(`tell ${target}: ${message(error)}`));
   }
 
+  /**
+   * Starting it on the new size failed: start it again as it was. What it is
+   * then is measured, not assumed: boat may have finished the resume after
+   * the plugin gave up on it (a timeout, bb's setup failing after it), and
+   * then the move happened after all.
+   */
   private async rollback(job: Job, request: ResizeRequest, hostId: string | null, reason: string): Promise<Outcome> {
     const chat = this.deps.hooks.chat;
     let back = false;
@@ -1139,26 +1191,44 @@ export class SandboxSizes {
     } catch (error) {
       this.deps.hooks.log.warn(`resize rollback ${job.sandboxId}: ${message(error)}`);
     }
-    const old = job.from === null ? "its old size" : LABEL(job.from);
-    return this.fail(
-      job,
-      request,
-      back
-        ? `Couldn't move the sandbox to ${LABEL(job.to)}: ${trimDot(reason)}. It's back on ${old}.`
-        : `Couldn't move the sandbox to ${LABEL(job.to)}: ${trimDot(reason)}. It's stopped; the next follow-up starts it again.`,
-    );
+    const now = await this.measure(job.sandboxId, { probe: back });
+    if (back && now.size?.type === job.to) return this.finish(job, request, now);
+    if (now.size !== null) this.recordSize(job.moved, job.sandboxId, now.size, "resize", now.probe);
+    const head = `Couldn't move the sandbox to ${LABEL(job.to)}: ${trimDot(reason)}.`;
+    if (!back) {
+      const what = now.size?.type === job.to ? ` It's ${LABEL(job.to)} now, but` : "";
+      if (now.size?.type === job.to) this.recordDone(job);
+      return this.fail(job, request, `${head}${what} ${what ? "it's" : "It's"} stopped; the next follow-up starts it again.`, { moved: now.size?.type === job.to });
+    }
+    const type = now.size?.type ?? job.from;
+    return this.fail(job, request, `${head} ${type === null ? "It's running again." : `It's back on ${LABEL(type)}.`}`);
   }
 
+  /**
+   * The move failed (`moved`: after the size changed, at reconnecting or
+   * sending). Every task's history says so, and a chat that stopped waiting
+   * is told.
+   */
   private async fail(job: Job, request: ResizeRequest, text: string, options: { moved?: boolean } = {}): Promise<Outcome> {
+    const moved = options.moved === true;
     for (const id of job.moved) {
-      this.record(id, { type: "resize", sandboxId: job.sandboxId, from: job.from, to: job.to, state: "failed", error: text.slice(0, 500), byTask: job.taskId, at: Date.now() / 1000 });
+      // A move that happened keeps its "done" record (the next follow-up's note).
+      if (!moved) this.record(id, { type: "resize", sandboxId: job.sandboxId, from: job.from, to: job.to, state: "failed", error: text.slice(0, 500), byTask: job.taskId, at: Date.now() / 1000 });
       this.say(id, SIZE_KIND, text);
     }
     const task = this.deps.store.get(job.taskId);
-    this.failures.set(job.taskId, { from: job.from, to: job.to, error: text, turns: task?.turns ?? 0 });
-    const unsent = job.withMessage && !text.includes("wasn't sent") ? " The follow-up wasn't sent." : "";
+    this.failures.set(job.taskId, { from: job.from, to: job.to, error: text, turns: task?.turns ?? 0, moved });
+    const unsent = job.withMessage && !/wasn't sent|couldn't be sent/.test(text) ? " The follow-up wasn't sent." : "";
     if (!job.callerWaiting) {
-      await this.tell(job, `[boat] Task ${job.taskId}: ${text}${unsent}${options.moved ? "" : " Send it again, with or without sandbox_size."}`);
+      // A move the user started on the task page is theirs to finish: the orchestrator only hears of it.
+      const next =
+        request.by === "page"
+          ? " The user started this move on the task page and decides what's next; don't send a follow-up for it."
+          : moved
+            ? ""
+            : " Send it again, with or without sandbox_size.";
+      const who = request.by === "page" ? `the user's move to ${LABEL(job.to)} didn't finish. ` : "";
+      await this.tell(job, `[boat] Task ${job.taskId}: ${who}${text}${unsent}${next}`);
     }
     return { ok: false, error: new TaskError(`${text}${unsent}`, "resize_failed") };
   }
@@ -1236,12 +1306,13 @@ export class SandboxSizes {
 
   private resizeView(task: Task): TaskMemoryDto["resize"] {
     const job = task.sandboxId === null ? undefined : this.jobs.get(task.sandboxId);
-    if (job !== undefined) {
-      return { state: "running", from: job.from, to: job.to, toSummary: `${LABEL(job.to)} (${specText(job.to)})`, step: job.step, error: null, withMessage: job.withMessage && job.taskId === task.id };
+    // A move still being checked may yet be refused: the page shows nothing until it starts.
+    if (job !== undefined && job.step !== "checking") {
+      return { state: "running", from: job.from, to: job.to, toSummary: `${LABEL(job.to)} (${specText(job.to)})`, step: job.step, error: null, withMessage: job.withMessage && job.taskId === task.id, moved: false };
     }
     const failure = this.failures.get(task.id);
     if (failure !== undefined && failure.turns === task.turns) {
-      return { state: "failed", from: failure.from, to: failure.to, toSummary: `${LABEL(failure.to)} (${specText(failure.to)})`, step: null, error: failure.error, withMessage: false };
+      return { state: "failed", from: failure.from, to: failure.to, toSummary: `${LABEL(failure.to)} (${specText(failure.to)})`, step: null, error: failure.error, withMessage: false, moved: failure.moved };
     }
     // A move the plugin lost (it restarted mid-move): it isn't running, whatever the record says.
     const last = this.sinceLastTurn(task.id, "resize");
@@ -1254,6 +1325,7 @@ export class SandboxSizes {
         step: null,
         error: `The move to ${LABEL(last.to)} didn't finish (the plugin restarted). Check the sandbox size, then send a follow-up.`,
         withMessage: false,
+        moved: false,
       };
     }
     return null;

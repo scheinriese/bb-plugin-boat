@@ -1597,6 +1597,8 @@ export class BoatService {
       userApproved?: boolean;
       /** Only ask for uploads: same agent and model, and the task keeps its review and ready state. */
       evidenceOnly?: boolean;
+      /** Only run the checks, send nothing (a move to another size checks its follow-up first; sizes). */
+      dryRun?: boolean;
       signal?: AbortSignal;
     } = {},
   ): Promise<Task> {
@@ -1654,7 +1656,7 @@ export class BoatService {
     // Pushing a branch or posting on a PR needs the sandbox's GitHub login.
     const needsGithub = task.delivery === "pr" && task.repo !== null;
     // A worker chat's machine is woken by the follow-up anyway: wake it now to check its login.
-    if (needsGithub) await this.assertGithubLogin(task, { signal: options.signal, resume: task.runner === "chat" });
+    if (needsGithub && options.dryRun !== true) await this.assertGithubLogin(task, { signal: options.signal, resume: task.runner === "chat" });
     // With one agent (Coding agents), the follow-up runs on it, with a note.
     const only = onlyAgent(settings.agents);
     // An agent at its switch point hands the follow-up to the other one (when
@@ -1699,6 +1701,7 @@ export class BoatService {
       reasoningEffort === task.reasoningEffort &&
       this.store.latestEvent(task.id, "approval") !== null;
     assertFrontierAllowed(settings.modelTiers, tier, model, reasoningEffort, options.userApproved === true || keepsApproval);
+    if (options.dryRun === true) return task;
     const newlyApproved =
       options.userApproved === true && !keepsApproval && needsFrontierApproval(settings.modelTiers, tier, model, reasoningEffort);
     const reason = options.reason?.trim()
