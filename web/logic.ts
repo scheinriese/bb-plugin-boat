@@ -369,7 +369,7 @@ export const EVIDENCE_VARIABLES: readonly { name: string; note: string }[] = [
 export const CONNECT_FIX = "Turn on bb Connect: sign in with `bb account login`, then run `bb connect on`.";
 
 export interface ChatControlInput {
-  /** How tasks run (useSettings().values.workers): boat, projects or all; undefined while it loads. */
+  /** How tasks run (useSettings().values.workers): boat, projects or all; undefined while it loads or when it can't be read. */
   workers: string | undefined;
   /** The task's repos as the server sees them ("owner/name"): the typed one (or the project's main repo) first, then the project's others. */
   repos: readonly string[];
@@ -467,7 +467,8 @@ export function chatChoice(
   },
 ): ChatChoice {
   const checked = control.possible ? (touched ?? control.trusted) : false;
-  const runner = control.loading || input.existingSandbox || input.taskChats === undefined ? null : checked ? "chat" : "boat";
+  // Unknown (the settings or the overview couldn't be read): the server's rules decide.
+  const runner = control.loading || input.existingSandbox || input.taskChats === undefined || input.workers === undefined ? null : checked ? "chat" : "boat";
   const warn = checked && !control.trusted && input.repoComplete;
   const headlessNote = !checked && input.workers === "projects" && !input.inProject && input.repos.length > 0 && input.repoComplete;
   return {

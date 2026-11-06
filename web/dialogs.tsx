@@ -244,7 +244,8 @@ export function NewTaskForm({
   // Run as a chat: follows the rules until the user ticks or clears it (null).
   const [chatTouched, setChatTouched] = useState<boolean | null>(null);
   const briefRef = useRef<HTMLTextAreaElement>(null);
-  const workers = useSettings().values?.workers;
+  const settingsState = useSettings();
+  const workers = settingsState.values?.workers;
   // Repository follows the bb project (the New thread screen's picker) until you edit it.
   const opener = useBbProjectRepo(bbProjectId);
   // null: no project picked (or opened from the page), so no repo; undefined: still loading.
@@ -296,7 +297,7 @@ export function NewTaskForm({
     taskChats: overview.data?.taskChats,
     connect: overview.data?.connect,
     existingSandbox,
-    loading: typeof workers !== "string" || (projects.data === undefined && !projects.error) || (overview.data === undefined && !overview.error),
+    loading: settingsState.isLoading || (projects.data === undefined && !projects.error) || (overview.data === undefined && !overview.error),
   };
   const chatRules = chatControl(chatInput);
   const chat = chatChoice(chatRules, chatTouched, { ...chatInput, inProject: project !== null });

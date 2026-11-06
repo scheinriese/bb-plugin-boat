@@ -564,3 +564,22 @@ test("a kept sandbox loses the moved task's old conversation when the task close
   await made.service.closeTask(task.id, { status: "done", keepSandbox: true });
   assert.ok(made.boat.execs.some((entry) => entry.script === `rm -rf '/home/user/.boat-tasks/${task.id}'`), JSON.stringify(made.boat.execs));
 });
+
+test("two moves at once: exactly one runs; something else holding the sandbox (a ship, a wake) holds the move off", async () => {
+  const made = env();
+  const task = await headless(made);
+  const results = await Promise.allSettled([move(made, task.id), move(made, task.id)]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  const failed = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+  assert.equal((failed.reason as TaskError).code, "task_busy");
+  assert.equal(made.chat.machines.length, 1);
+  assert.equal(made.chat.spawns.length, 1);
+
+  const other = await headless(made);
+  // What shipTask, a preview wake or a follow-up do while they work.
+  const release = (made.service as unknown as { claim(sandboxId: string): () => void }).claim(other.sandboxId!);
+  await refused(move(made, other.id), "task_busy", /Something is using the task's sandbox/);
+  assert.equal((await made.service.continueAsChatStatus(other.id)).blocked?.code, "task_busy");
+  release();
+  assert.equal((await move(made, other.id)).task.runner, "chat");
+});

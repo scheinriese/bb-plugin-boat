@@ -337,6 +337,8 @@ test("Run as a chat: not possible means off, disabled, the reason and the fix; t
   // Loading: unchecked, no runner (Start waits).
   const loading = chatForm({ loading: true, workers: undefined });
   assert.deepEqual([loading.choice.checked, loading.choice.runner], [false, null]);
+  // How tasks run can't be read: the server's rules decide.
+  assert.equal(chatForm({ workers: undefined }).choice.runner, null);
   // Outside projects, with projects only: today's headless note while off, the warning once ticked.
   assert.equal(chatForm({ repos: ["acme/other"] }, null, false).choice.note, "untrusted");
   assert.equal(chatForm({ repos: ["acme/other"], connect: { state: "off", fix: null } }, null, false).choice.note, "untrusted");
