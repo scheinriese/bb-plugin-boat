@@ -84,6 +84,8 @@ export interface Sandbox {
   stoppedAt: string | null;
   setupStatus: string | null;
   error: string | null;
+  /** Its size, when boat's JSON says (not verified that it does; the memory probe is what counts). */
+  machineType?: MachineType | null;
 }
 
 export interface Limits {
@@ -146,6 +148,7 @@ export function toSandbox(raw: JsonRecord): Sandbox {
     stoppedAt: str(raw.stoppedAt),
     setupStatus: str(raw.setupStatus),
     error: str(raw.error) ?? str(raw.setupError),
+    machineType: [raw.type, raw.machineType, raw.size].find((value): value is MachineType => typeof value === "string" && (MACHINE_TYPES as readonly string[]).includes(value)) ?? null,
   };
 }
 
@@ -660,9 +663,11 @@ export class BoatApi {
     await this.cli.run(["stop", id], { timeoutMs: 180_000, signal });
   }
 
-  async resume(id: string, ttlSeconds: number | null, signal?: AbortSignal): Promise<void> {
+  /** `type`: resume onto another size (`--type`); omitted, boat keeps the sandbox's size. */
+  async resume(id: string, ttlSeconds: number | null, signal?: AbortSignal, type?: MachineType | null): Promise<void> {
     const args = ["resume", id];
     if (ttlSeconds !== null) args.push("--ttl", String(Math.round(ttlSeconds)));
+    if (type) args.push("--type", type);
     await this.cli.run(args, { timeoutMs: 180_000, signal });
   }
 

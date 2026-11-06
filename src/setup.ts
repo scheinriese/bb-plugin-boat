@@ -10,6 +10,7 @@
 // are never kept, logged or returned; only the fields below are read.
 import { BoatError, bool, num, rec, str, type BoatRunOptions, type BoatRunResult, type JsonRecord } from "./boat.ts";
 import { autoStopCapFromLimits } from "./boat-api.ts";
+import { SIZE_ORDER, SIZE_SPECS, sizeDetail } from "./memory.ts";
 import type { ConnectCheck, ConnectStatus } from "./connect.ts";
 import { TaskError, type StartTaskInput } from "./service.ts";
 import type { Provider } from "./store.ts";
@@ -51,13 +52,10 @@ export const CLI_MISSING_STATUS = `The boat CLI was not found. Install it: run \
 
 // ---------------------------------------------------------------- sizes and auto-stop
 
-/** Sizes as `boat new --help` describes them (boat 1.0.89). */
-export const SIZE_FACTS: Record<string, { label: string; detail: string }> = {
-  small: { label: "Small", detail: "2 vCPU, 4 GB · half rate" },
-  default: { label: "Default", detail: "4 vCPU, 8 GB" },
-  large: { label: "Large", detail: "8 vCPU, 16 GB · double rate" },
-  xlarge: { label: "XLarge", detail: "16 vCPU, 32 GB" },
-};
+/** Sizes as `boat new --help` describes them (src/memory.ts holds the numbers). */
+export const SIZE_FACTS: Record<string, { label: string; detail: string }> = Object.fromEntries(
+  SIZE_ORDER.map((type) => [type, { label: SIZE_SPECS[type].label, detail: sizeDetail(type) }]),
+);
 
 export interface SandboxSize {
   type: string;

@@ -20,7 +20,9 @@ import type {
   Sandbox,
 } from "../src/boat-api.ts";
 import { BoatError } from "../src/boat.ts";
-import type { ChatRunner, ChatSpawn, ChatState } from "../src/chat.ts";
+import { SIZE_SPECS, isMachineType } from "../src/memory.ts";
+import type { MachineTypeFacts } from "../src/setup.ts";
+import type { ChatRunner, ChatSpawn, ChatState, MachineState } from "../src/chat.ts";
 import { BoatService, type BoatSettings, type Notification } from "../src/service.ts";
 import { TaskStore } from "../src/store.ts";
 import { DEFAULT_TIERS } from "../src/tiers.ts";
@@ -52,6 +54,94 @@ export function memoryStore(): TaskStore {
   const db = new DatabaseSync(":memory:");
   for (const statement of TaskStore.migrations()) db.exec(statement);
   return new TaskStore(() => db as unknown as Database.Database);
+}
+
+/** What a fake sandbox answers the memory probe (src/memory.ts). */
+export interface FakeProbe {
+  now: number | null;
+  bootId: string | null;
+  bootTime: number | null;
+  cpus: number | null;
+  memTotalKb: number | null;
+  memAvailableKb: number | null;
+  swapTotalKb: number;
+  swapFreeKb: number;
+  oomKills: number | null;
+  /** How the kernel log reads: journal, sudo, or none (not readable). */
+  klog: "journal" | "sudo" | "none";
+  /** The journal read timed out. */
+  klogTimedOut: boolean;
+  /** Kernel lines (oomLines builds kills). */
+  kernel: string[];
+  oomd: string[];
+  /** The sampler's file: "max total samples start last [swap] [pid]". */
+  peak: string | null;
+}
+
+export function defaultProbe(): FakeProbe {
+  return {
+    now: null,
+    bootId: "0f3c1d2e-aaaa-bbbb-cccc-123456789abc",
+    bootTime: 1_700_000_000,
+    cpus: 4,
+    memTotalKb: 8_131_944,
+    memAvailableKb: 6_000_000,
+    swapTotalKb: 2_097_148,
+    swapFreeKb: 2_097_148,
+    oomKills: 0,
+    klog: "journal",
+    klogTimedOut: false,
+    kernel: [],
+    oomd: [],
+    peak: null,
+  };
+}
+
+/**
+ * The probe's output for these facts. With the script, only what it asks
+ * for: the peak with a task, the kernel log with a window (lines from
+ * --since @<epoch> on).
+ */
+export function probeOutput(facts: Partial<FakeProbe>, script?: string): string {
+  const probe = { ...defaultProbe(), ...facts };
+  const now = probe.now ?? Math.floor(Date.now() / 1000);
+  const lines = [
+    "BOAT_MEM_PROBE 1",
+    `NOW ${now}`,
+    `BOOT ${probe.bootId ?? "-"} ${probe.bootTime ?? ""}`,
+    `CPUS ${probe.cpus ?? 0}`,
+    `MEM ${probe.memTotalKb ?? 0} ${probe.memAvailableKb ?? 0} ${probe.swapTotalKb} ${probe.swapFreeKb}`,
+    `OOM ${probe.oomKills ?? -1}`,
+  ];
+  if (script === undefined || script.includes("/tmp/boat-memory/")) lines.push(`PEAK ${probe.peak ?? "-"}`);
+  const since = script === undefined ? null : /--since @(\d+)/.exec(script)?.[1];
+  if (script === undefined || since !== null) {
+    lines.push(`KLOG ${probe.klog === "none" ? "-" : probe.klog}`);
+    if (probe.klog !== "none") {
+      const after = (line: string) => since === null || since === undefined || Number(line.split(" ")[0]) >= Number(since);
+      if (!probe.klogTimedOut) for (const line of probe.kernel.filter(after)) lines.push(`K ${line}`);
+      if (probe.klogTimedOut) lines.push("KLOG_TIMEOUT");
+      for (const line of probe.oomd.filter(after)) lines.push(`D ${line}`);
+    }
+  }
+  lines.push("END");
+  return `${lines.join("\n")}\n`;
+}
+
+const UNIT_PATHS = {
+  bb: { memcg: "/user.slice/user-1000.slice/user@1000.service/app.slice/bb-host-daemon-acme.service", adj: 200 },
+  agent: { memcg: "/system.slice/ascii-agent.service", adj: -900 },
+  command: { memcg: "/user.slice/user-1000.slice/user@1000.service/app.slice/ascii-cmd-0000.scope", adj: 0 },
+  other: { memcg: "/user.slice/user-1000.slice/session-1.scope", adj: 0 },
+} as const;
+
+/** A kill as the kernel logs it (two lines, host and cgroup names made up). */
+export function oomLines(kill: { at: number; pid: number; comm: string; unit: keyof typeof UNIT_PATHS; rssKb: number }): string[] {
+  const where = UNIT_PATHS[kill.unit];
+  return [
+    `${kill.at.toFixed(6)} box-node-test kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=${where.memcg},task=${kill.comm},pid=${kill.pid},uid=1000`,
+    `${(kill.at + 0.0001).toFixed(6)} box-node-test kernel: Out of memory: Killed process ${kill.pid} (${kill.comm}) total-vm:54751784kB, anon-rss:${kill.rssKb - 3072}kB, file-rss:3072kB, shmem-rss:0kB, UID:1000 pgtables:38764kB oom_score_adj:${where.adj}`,
+  ];
 }
 
 interface FakeConversation {
@@ -151,8 +241,10 @@ export class FakeBoat {
       stoppedAt: null,
       setupStatus: null,
       error: null,
+      machineType: isMachineType(options.type) ? options.type : null,
     };
     this.sandboxes.set(id, sandbox);
+    this.probes.set(id, this.probeFor(options.type));
     return sandbox;
   }
   async delete(id: string): Promise<void> {
@@ -164,11 +256,22 @@ export class FakeBoat {
     const sandbox = this.sandboxes.get(id);
     if (sandbox) sandbox.state = "stopped";
   }
-  async resume(id: string, ttl: number | null): Promise<void> {
-    this.calls.push(`resume ${id} ttl=${ttl}`);
+  /** Refuse a resume (null: allowed); `type` is the size asked for (null: keep it). */
+  resumeError: (type: string | null) => Error | null = () => null;
+  async resume(id: string, ttl: number | null, _signal?: AbortSignal, type?: string | null): Promise<void> {
+    this.calls.push(`resume ${id} ttl=${ttl}${type ? ` type=${type}` : ""}`);
     this.checkAutoStop(ttl);
+    const refused = this.resumeError(type ?? null);
+    if (refused) throw refused;
     const sandbox = this.sandboxes.get(id);
-    if (sandbox) sandbox.state = "idle";
+    if (sandbox) {
+      sandbox.state = "idle";
+      // Like boat: without --type the sandbox keeps its size.
+      if (type && isMachineType(type)) {
+        sandbox.machineType = type;
+        this.probes.set(id, { ...this.probe(id), ...this.sizeFacts(type) });
+      }
+    }
   }
   prepared: { id: string; repo: string; checkout: CheckoutMode; options: PrepareOptions }[] = [];
   async prepareRepo(id: string, repo: string, checkout: CheckoutMode, options: PrepareOptions = {}): Promise<PreparedRepo> {
@@ -318,9 +421,71 @@ export class FakeBoat {
   execs: { sandboxId: string; script: string }[] = [];
   /** Answers exec; the default succeeds silently. */
   execResult: (script: string) => { exitCode: number; stdout: string; stderr: string } = () => ({ exitCode: 0, stdout: "", stderr: "" });
-  async exec(sandboxId: string, script: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  async exec(sandboxId: string, script: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     this.execs.push({ sandboxId, script });
+    if (script.includes("BOAT_MEM_PROBE")) {
+      if (this.probeHang) {
+        // Like boat: a call runs until its signal aborts it.
+        await new Promise<void>((resolve) => {
+          if (options.signal?.aborted) return resolve();
+          options.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        throw new BoatError("boat call aborted", { code: "aborted" });
+      }
+      if (this.probeGate) await this.probeGate;
+      const probe = this.probes.get(sandboxId);
+      if (probe === undefined || this.probeBroken) return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 0, stdout: probeOutput(probe, script), stderr: "" };
+    }
     return this.execResult(script);
+  }
+
+  /** Each sandbox's memory facts (a new one: its size's). */
+  probes = new Map<string, FakeProbe>();
+  /** The probe never answers (until its signal aborts). */
+  probeHang = false;
+  /** The probe prints nothing usable. */
+  probeBroken = false;
+  /** The probe waits for this. */
+  probeGate: Promise<void> | null = null;
+  /** The probe of a sandbox (made if missing). */
+  probe(sandboxId: string): FakeProbe {
+    let probe = this.probes.get(sandboxId);
+    if (probe === undefined) {
+      probe = defaultProbe();
+      this.probes.set(sandboxId, probe);
+    }
+    return probe;
+  }
+  private sizeFacts(type: string): Pick<FakeProbe, "cpus" | "memTotalKb" | "memAvailableKb"> {
+    const spec = isMachineType(type) ? SIZE_SPECS[type] : SIZE_SPECS.default;
+    // A VM's MemTotal is a little under boat's GB.
+    const memTotalKb = Math.round(spec.memoryGb * 1_016_493);
+    return { cpus: spec.cpus, memTotalKb, memAvailableKb: Math.round(memTotalKb * 0.75) };
+  }
+  private probeFor(type: string): FakeProbe {
+    return { ...defaultProbe(), ...this.sizeFacts(type) };
+  }
+  /** Add a sandbox someone else made (the user's), with its size. */
+  addSandbox(id: string, type: string | null, state = "idle"): Sandbox {
+    const sandbox: Sandbox = {
+      id,
+      name: id,
+      state,
+      health: "ok",
+      url: null,
+      desktopUrl: null,
+      environment: "base",
+      createdAt: new Date().toISOString(),
+      archiveAfter: null,
+      stoppedAt: null,
+      setupStatus: null,
+      error: null,
+      machineType: type !== null && isMachineType(type) ? type : null,
+    };
+    this.sandboxes.set(id, sandbox);
+    this.probes.set(id, this.probeFor(type ?? "default"));
+    return sandbox;
   }
 }
 
@@ -349,6 +514,10 @@ export class FakeChat implements ChatRunner {
   suspended: string[] = [];
   async suspendMachine(hostId: string) {
     this.suspended.push(hostId);
+    if (this.linked === null) return;
+    const sandboxId = this.sandboxOf(hostId);
+    if (sandboxId !== null) await this.linked.boat.stop(sandboxId);
+    this.machineStates.set(hostId, { phase: "suspended", connected: false, message: null });
   }
   composed: { taskId: string; request: unknown; parentThreadId: string | null; environmentId: string; threadId: string }[] = [];
   async spawnComposed(args: { taskId: string; request: unknown; parentThreadId: string | null; projectId: string | null; environmentId: string }) {
@@ -363,9 +532,57 @@ export class FakeChat implements ChatRunner {
   resumed: string[] = [];
   async resumeMachine(hostId: string) {
     this.resumed.push(hostId);
+    if (this.linked === null) return;
+    const sandboxId = this.sandboxOf(hostId);
+    if (sandboxId === null) return;
+    this.machineStates.set(hostId, { phase: "resuming", connected: false, message: null });
+    try {
+      // Like bb's provider resume: the plugin's bringUp resumes the sandbox.
+      await this.linked.bringUp(sandboxId);
+    } catch (error) {
+      this.machineStates.set(hostId, { phase: "suspended", connected: false, message: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+    const connectsLater = this.neverReconnect || this.reconnectAfterPolls !== null;
+    this.reconnectAfter = this.neverReconnect ? null : this.reconnectAfterPolls;
+    this.machineStates.set(hostId, { phase: "active", connected: !connectsLater, message: null });
   }
   async findMachine(sandboxId: string) {
     return this.machines.find((machine) => machine.sandboxId === sandboxId && !this.removed.includes(machine.hostId))?.hostId ?? null;
+  }
+  /** bb's view of each machine (default: active and connected). */
+  machineStates = new Map<string, MachineState>();
+  machineStateCalls = 0;
+  async machineState(hostId: string): Promise<MachineState | null> {
+    this.machineStateCalls += 1;
+    const state = this.machineStates.get(hostId) ?? { phase: "active", connected: true, message: null };
+    // After a resume, bb reconnects only after a few looks.
+    if (state.phase === "active" && !state.connected && this.reconnectAfter !== null) {
+      this.reconnectAfter -= 1;
+      if (this.reconnectAfter <= 0) {
+        state.connected = true;
+        this.reconnectAfter = null;
+      }
+    }
+    return state;
+  }
+  /** Machines with a chat at work (any thread on them). */
+  busyMachines = new Set<string>();
+  async machineBusy(hostId: string) {
+    return this.busyMachines.has(hostId);
+  }
+  /** Linked: suspend and resume act on the fake boat like bb's provider does. */
+  private linked: { boat: FakeBoat; bringUp: (sandboxId: string) => Promise<unknown> } | null = null;
+  /** After a resume, machineState reports connected only after this many calls (null: at once). */
+  reconnectAfterPolls: number | null = null;
+  private reconnectAfter: number | null = null;
+  /** The machine never reconnects after a resume. */
+  neverReconnect = false;
+  link(boat: FakeBoat, bringUp: (sandboxId: string) => Promise<unknown>) {
+    this.linked = { boat, bringUp };
+  }
+  private sandboxOf(hostId: string): string | null {
+    return this.machines.find((machine) => machine.hostId === hostId)?.sandboxId ?? null;
   }
   async spawn(args: ChatSpawn) {
     const threadId = `thr_w${++this.next}`;

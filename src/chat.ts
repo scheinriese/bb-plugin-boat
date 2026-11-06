@@ -55,6 +55,15 @@ export interface ChatState {
   backgroundAgents: number;
 }
 
+/** A bb machine as bb sees it (hosts.get): its lifecycle phase and connection. */
+export interface MachineState {
+  /** active, creating, resuming, suspended, suspending, removing, destroyed (null: unknown). */
+  phase: string | null;
+  connected: boolean;
+  /** bb's lifecycle message (a failed resume says why). */
+  message: string | null;
+}
+
 export interface ChatRunner {
   /** Install bb on a prepared sandbox; returns the bb machine id. */
   attachMachine(args: { taskId: string; sandboxId: string; signal?: AbortSignal }): Promise<{ hostId: string }>;
@@ -65,6 +74,10 @@ export interface ChatRunner {
   resumeMachine(hostId: string): Promise<void>;
   /** The bb machine wrapping this sandbox, if any (e.g. one whose attach was cut short). */
   findMachine(sandboxId: string): Promise<string | null>;
+  /** The machine's phase and connection (null: bb doesn't know it). */
+  machineState(hostId: string): Promise<MachineState | null>;
+  /** Any chat on the machine is working (every thread on it, not only the plugin's). */
+  machineBusy(hostId: string): Promise<boolean>;
   spawn(args: ChatSpawn): Promise<{ threadId: string; environmentId: string | null }>;
   /** A chat the user composed in bb's own composer, placed in a worker's workspace. */
   spawnComposed(args: {
@@ -130,6 +143,43 @@ export function createChatRunner(bb: BbPluginApi): ChatRunner {
 
     async resumeMachine(hostId) {
       await bb.sdk.hosts.experimental_resume({ hostId } as never);
+    },
+
+    async machineState(hostId) {
+      let raw: unknown;
+      try {
+        raw = await bb.sdk.hosts.get({ hostId } as never);
+      } catch (error) {
+        if (isNotFound(error)) return null;
+        throw error;
+      }
+      const host = ((raw as { host?: unknown } | null)?.host ?? raw) as { status?: string; lifecycle?: { phase?: string; message?: string | null } | null } | null;
+      if (host === null) return null;
+      return {
+        phase: typeof host.lifecycle?.phase === "string" ? host.lifecycle.phase : null,
+        connected: host.status === "connected",
+        message: typeof host.lifecycle?.message === "string" && host.lifecycle.message !== "" ? host.lifecycle.message : null,
+      };
+    },
+
+    async machineBusy(hostId) {
+      const raw = (await bb.sdk.threads.list({ hostId } as never)) as unknown;
+      const threads = (Array.isArray(raw) ? raw : ((raw as { threads?: unknown[] } | null)?.threads ?? [])) as {
+        status?: string;
+        archivedAt?: unknown;
+        queuedMessageCount?: number;
+        activeBackgroundAgentCount?: number;
+      }[];
+      return threads.some(
+        (thread) =>
+          !thread.archivedAt &&
+          (thread.status === "active" ||
+            thread.status === "starting" ||
+            thread.status === "pending" ||
+            thread.status === "stopping" ||
+            (thread.queuedMessageCount ?? 0) > 0 ||
+            (thread.activeBackgroundAgentCount ?? 0) > 0),
+      );
     },
 
     async findMachine(sandboxId) {
