@@ -556,5 +556,5 @@ test("a review in a new sandbox gets at least its task's current size", async ()
   await env.service.sweep();
   const review = await env.service.launchTask(await env.service.reviewInput(task.id), 5_000);
   assert.equal(env.boat.created[1]!.type, "large");
-  assert.ok(env.store.events(review.task.id).some((event) => event.text === `Large sandbox, like task ${task.id}'s`));
+  assert.ok(env.store.events(review.task.id).some((event) => event.text === `Large sandbox, like task ${task.id}'s. Large costs twice as much per hour as Default.`));
 });

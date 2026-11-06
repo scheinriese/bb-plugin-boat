@@ -256,20 +256,35 @@ test("Select ignores the empty change Radix's hidden native select reports (it c
 });
 
 test("sandbox sizes on the page: cost, the follow-up, the preselected size, the peak's sentence", async () => {
-  const { costHint, isSmaller, peakSentence, resizeMessage, suggestedSize } = await import("../web/logic.ts");
+  const { costHint, isSmaller, peakSentence, projectSizeOnPlan, resizeMessage, suggestedSize } = await import("../web/logic.ts");
   assert.equal(costHint("large"), "Large costs twice as much per hour as Default.");
   assert.equal(costHint("small"), "Small costs half as much per hour as Default.");
+  // Against the size it is now; XLarge has no stated rate, so it only costs more.
+  assert.equal(costHint("large", "small"), "Large costs four times as much per hour as Small.");
+  assert.equal(costHint("xlarge", "large"), "XLarge costs more per hour than Large.");
+  assert.equal(costHint("large", "xlarge"), "Large costs less per hour than XLarge.");
   assert.doesNotMatch(costHint("xlarge"), /\$/);
   assert.equal(resizeMessage("large", false), "Continue where you left off. The sandbox is now Large (8 vCPU, 16 GB).");
   assert.equal(resizeMessage("large", true), "Continue where you left off. The sandbox is now Large (8 vCPU, 16 GB). Run heavy test suites one at a time.");
   const all = (["small", "default", "large", "xlarge"] as const).map((type) => ({ type, available: true }));
   const trial = all.map((size) => ({ ...size, available: size.type === "small" || size.type === "default" }));
-  assert.equal(suggestedSize("default", all, "large"), "large");
-  assert.equal(suggestedSize("default", all, null), "large");
-  assert.equal(suggestedSize("default", trial, null), "small");
-  assert.equal(suggestedSize("xlarge", all, null), "small");
+  // After running out of memory: the next size up the plan allows, never a smaller one.
+  assert.equal(suggestedSize("default", all, "large", true), "large");
+  assert.equal(suggestedSize("default", all, null, true), "large");
+  assert.equal(suggestedSize("default", trial, null, true), null);
+  assert.equal(suggestedSize("xlarge", all, null, true), null);
+  assert.equal(suggestedSize("large", all.map((size) => ({ ...size, available: size.type !== "xlarge" })), "small", true), null);
+  // Otherwise the user picks (no XLarge one click away).
+  assert.equal(suggestedSize("large", all, "xlarge", false), null);
   assert.equal(isSmaller("small", "default"), true);
   assert.equal(isSmaller("large", null), false);
+  // The New task form: a project size the plan lacks falls back like the server's.
+  const sizes = trial.map((size) => ({ ...size, reason: size.available ? null : "not during the free trial" }));
+  assert.deepEqual(projectSizeOnPlan("large", "default", sizes), { type: "default", blocked: { type: "large", reason: "not during the free trial" } });
+  assert.deepEqual(projectSizeOnPlan("small", "default", sizes), { type: "small", blocked: null });
+  assert.deepEqual(projectSizeOnPlan(null, "default", sizes), { type: "default", blocked: null });
+  assert.deepEqual(projectSizeOnPlan("xlarge", "large", sizes), { type: "default", blocked: { type: "xlarge", reason: "not during the free trial" } });
+  assert.deepEqual(projectSizeOnPlan("large", "default", null), { type: "large", blocked: null });
 
   const rec = (reason: "near-limit" | "out-of-memory" | "fits" | "largest", extra: Record<string, unknown> = {}) => ({
     type: reason === "fits" ? ("default" as const) : reason === "largest" ? ("xlarge" as const) : ("large" as const),
@@ -280,18 +295,18 @@ test("sandbox sizes on the page: cost, the follow-up, the preselected size, the 
     planReason: null,
     ...extra,
   });
-  const peak = { shared: false };
+  const peak = { shared: false, percent: 79 };
   assert.equal(peakSentence({ peak, recommendation: rec("fits"), project: null }), "Recommended size: Default. The check fits with room to spare.");
   assert.equal(
     peakSentence({ peak, recommendation: rec("near-limit"), project: null }),
-    "Recommended size: Large. The sandbox used over 75% of its memory during the check. Next time, pick Large under More options in New task.",
+    "Recommended size: Large. The sandbox used 79% of its memory during the check. Next time, pick Large under More options in New task.",
   );
   assert.match(peakSentence({ peak, recommendation: rec("out-of-memory"), project: { name: "Web app", effective: "default" } }), /^Recommended size: Large\. The sandbox ran out of memory during the check\.$/);
   assert.equal(peakSentence({ peak, recommendation: rec("largest"), project: null }), "XLarge is the largest size. Run fewer tests at once.");
   assert.equal(
     peakSentence({ peak, recommendation: rec("near-limit", { allowed: false, planReason: "not during the free trial; the first payment unlocks it" }), project: null }),
-    "Recommended size: Large. The sandbox used over 75% of its memory during the check. Your boat plan doesn't include Large: not during the free trial; the first payment unlocks it.",
+    "Recommended size: Large. The sandbox used 79% of its memory during the check. Your boat plan doesn't include Large: not during the free trial; the first payment unlocks it.",
   );
   assert.match(peakSentence({ peak, recommendation: rec("near-limit"), project: { name: "Web app", effective: "large" } }), /Web app already uses Large sandboxes\.$/);
-  assert.match(peakSentence({ peak: { shared: true }, recommendation: rec("near-limit"), project: null }), /Other tasks worked on this sandbox meanwhile, so part of it is theirs\./);
+  assert.match(peakSentence({ peak: { shared: true, percent: 79 }, recommendation: rec("near-limit"), project: null }), /Other tasks worked on this sandbox meanwhile, so part of it is theirs\./);
 });

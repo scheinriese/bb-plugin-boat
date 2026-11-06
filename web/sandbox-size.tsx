@@ -3,7 +3,7 @@
 // progress or one that failed, a measured turn's peak memory, the size in
 // the Sandbox row with Change size…, the dialog that moves a sandbox, and a
 // project's Sandbox size field.
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { experimental_useRpcMutation, experimental_useRpcQuery } from "@get-bb/plugin-sdk/app";
 import { MACHINE_TYPE_VALUES, rpcContract, type TaskDetailDto } from "../contract";
@@ -22,10 +22,15 @@ import { Disclosure, Field, InlineAlert, showError } from "./ui";
 type Memory = NonNullable<TaskDetailDto["memory"]>;
 const LABEL: Record<MachineType, string> = { small: "Small", default: "Default", large: "Large", xlarge: "XLarge" };
 
-/** "Use Large for Web app": saves the project's size, says what the plan thinks of it. */
+/**
+ * "Use Large for Web app": saves the project's size, says what the plan
+ * thinks of it. XLarge for every task of a project asks first (it costs the
+ * most); `confirm` is the dialog for that.
+ */
 function useProjectSize() {
   const set = experimental_useRpcMutation({ contract: rpcContract, method: "setProjectSize" });
-  const apply = async (projectId: string, type: MachineType) => {
+  const [asking, setAsking] = useState<{ projectId: string; name: string } | null>(null);
+  const save = async (projectId: string, type: MachineType) => {
     try {
       const saved = await set.mutate({ projectId, machineType: type });
       if (saved.allowed) toast.success(`${saved.name} now uses ${LABEL[type]} sandboxes`);
@@ -34,7 +39,51 @@ function useProjectSize() {
       showError(error);
     }
   };
-  return { apply, pending: set.isPending };
+  const apply = (project: { id: string; name: string }, type: MachineType) => {
+    if (type === "xlarge") setAsking({ projectId: project.id, name: project.name });
+    else void save(project.id, type);
+  };
+  const confirm = (
+    <Dialog open={asking !== null} onOpenChange={(open) => (open ? undefined : setAsking(null))}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Use XLarge for {asking?.name}?</DialogTitle>
+          <DialogDescription className="text-pretty">
+            Every new task of {asking?.name} and its reviews then starts on {sizeName("xlarge")}. {costHint("xlarge", "large")}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setAsking(null)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={set.isPending}
+            onClick={() => {
+              const target = asking;
+              setAsking(null);
+              if (target !== null) void save(target.projectId, "xlarge");
+            }}
+          >
+            Use XLarge
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+  return { apply, pending: set.isPending, confirm };
+}
+
+/** After a move starts, focus goes to its status card (the button that opened the dialog is gone), else to the sandbox's size. */
+function focusAfterMove(pending: boolean): void {
+  const until = Date.now() + (pending ? 2_000 : 0);
+  const tick = () => {
+    const status = document.getElementById("ca-resize-status");
+    if (status !== null) return status.focus();
+    if (Date.now() < until) return void requestAnimationFrame(tick);
+    document.getElementById("ca-sandbox-size")?.focus();
+  };
+  tick();
 }
 
 /** A button whose label wraps on a narrow screen instead of overflowing it. */
@@ -59,7 +108,13 @@ export function SandboxSizePanel({ task }: { task: TaskDetailDto }) {
       sending: "Sending your message",
     }[memory.resize.step ?? "stopping"];
     body.push(
-      <div key="moving" role="status" className="flex items-start gap-3 rounded-lg border border-border bg-card px-4 py-3">
+      <div
+        key="moving"
+        id="ca-resize-status"
+        role="status"
+        tabIndex={-1}
+        className="flex items-start gap-3 rounded-lg border border-border bg-card px-4 py-3 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
         <Icon name="Loading" className="mt-0.5 size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />
         <div className="min-w-0 flex-1 space-y-0.5">
           <p className="text-sm font-medium text-pretty text-foreground">Moving the sandbox to {memory.resize.toSummary}…</p>
@@ -73,7 +128,8 @@ export function SandboxSizePanel({ task }: { task: TaskDetailDto }) {
     body.push(
       <InlineAlert key="failed">
         <p>{memory.resize.error}</p>
-        {memory.canResize ? (
+        {/* After the size changed only the message is left: the reply box below sends it. */}
+        {memory.canResize && !memory.resize.moved ? (
           <div className="mt-2 flex flex-wrap gap-2">
             <Button variant="outline" size="sm" className="h-7" onClick={() => setResizing("general")}>
               Try again…
@@ -86,28 +142,31 @@ export function SandboxSizePanel({ task }: { task: TaskDetailDto }) {
 
   if (memory.oom !== null && !moving) {
     const next = memory.next;
-    const offerProject = memory.project !== null && next !== null && next.available && memory.project.effective !== next.type;
+    // Moved since: nothing to continue onto.
+    const canContinue = memory.canResize && memory.oom.movedTo === null;
+    // Only ever a larger size for the project, never a smaller one.
+    const offerProject = memory.project !== null && next !== null && next.available && isSmaller(memory.project.effective, next.type);
     body.push(
       <InlineAlert key="oom">
-        <p className="whitespace-pre-wrap">{memory.oom.cause ? memory.oom.message : (task.error ?? memory.oom.message)}</p>
+        <p className="whitespace-pre-wrap">{memory.oom.message}</p>
         {memory.oom.original ? (
           <Disclosure label="Original error" className="mt-2">
             <p className="whitespace-pre-wrap break-words text-xs">{memory.oom.original}</p>
           </Disclosure>
         ) : null}
-        {next !== null && !next.available ? (
+        {next !== null && !next.available && memory.oom.movedTo === null ? (
           <p className="mt-2 text-xs text-pretty">
             Your boat plan doesn't include {next.label}: {next.reason?.replace(/[.\s]+$/, "") ?? "not on your plan"}.
           </p>
-        ) : next !== null && (memory.canResize || offerProject) ? (
+        ) : next !== null && (canContinue || offerProject) ? (
           <div className="mt-2 flex flex-wrap gap-2">
-            {memory.canResize ? (
+            {canContinue ? (
               <Button size="sm" className={WRAPPING} onClick={() => setResizing("oom")}>
                 Continue on a larger sandbox…
               </Button>
             ) : null}
             {offerProject ? (
-              <Button variant="outline" size="sm" className={WRAPPING} disabled={project.pending} onClick={() => void project.apply(memory.project!.id, next.type)}>
+              <Button variant="outline" size="sm" className={WRAPPING} disabled={project.pending} onClick={() => project.apply(memory.project!, next.type)}>
                 Use {next.label} for {memory.project!.name} from now on
               </Button>
             ) : null}
@@ -131,7 +190,7 @@ export function SandboxSizePanel({ task }: { task: TaskDetailDto }) {
           <p className="text-xs text-pretty text-muted-foreground">{peakSentence(memory)}</p>
         </div>
         {offerProject ? (
-          <Button size="sm" className={cn("shrink-0 self-start sm:self-auto", WRAPPING)} disabled={project.pending} onClick={() => void project.apply(memory.project!.id, rec.type)}>
+          <Button size="sm" className={cn("shrink-0 self-start sm:self-auto", WRAPPING)} disabled={project.pending} onClick={() => project.apply(memory.project!, rec.type)}>
             Use {rec.label} for {memory.project!.name}
           </Button>
         ) : null}
@@ -139,11 +198,12 @@ export function SandboxSizePanel({ task }: { task: TaskDetailDto }) {
     );
   }
 
-  if (body.length === 0 && resizing === null) return null;
+  if (body.length === 0 && resizing === null) return project.confirm;
   return (
     <>
       {body}
       <ResizeDialog task={task} mode={resizing ?? "general"} open={resizing !== null} onOpenChange={(open) => setResizing(open ? (resizing ?? "general") : null)} />
+      {project.confirm}
     </>
   );
 }
@@ -158,7 +218,7 @@ export function SandboxSizeLabel({ task }: { task: TaskDetailDto }) {
   return (
     <>
       {memory.size !== null ? (
-        <span className="text-xs text-muted-foreground">
+        <span id="ca-sandbox-size" tabIndex={-1} className="rounded-sm text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
           {memory.size.label} · {memory.size.summary}
         </span>
       ) : null}
@@ -179,14 +239,35 @@ export function SandboxSizeLabel({ task }: { task: TaskDetailDto }) {
 // ------------------------------------------------------------------ the dialog
 
 export function ResizeDialog({ task, mode, open, onOpenChange }: { task: TaskDetailDto; mode: "oom" | "general"; open: boolean; onOpenChange: (open: boolean) => void }) {
+  // A move started: the button that opened the dialog goes away, so focus goes to what replaces it.
+  const started = useRef<boolean | null>(null);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">{open ? <ResizeForm task={task} mode={mode} onDone={() => onOpenChange(false)} /> : null}</DialogContent>
+      <DialogContent
+        className="sm:max-w-md"
+        onAfterCloseAutoFocus={() => {
+          if (started.current === null) return;
+          const pending = started.current;
+          started.current = null;
+          focusAfterMove(pending);
+        }}
+      >
+        {open ? (
+          <ResizeForm
+            task={task}
+            mode={mode}
+            onDone={(pending) => {
+              started.current = pending ?? null;
+              onOpenChange(false);
+            }}
+          />
+        ) : null}
+      </DialogContent>
     </Dialog>
   );
 }
 
-function ResizeForm({ task, mode, onDone }: { task: TaskDetailDto; mode: "oom" | "general"; onDone: () => void }) {
+function ResizeForm({ task, mode, onDone }: { task: TaskDetailDto; mode: "oom" | "general"; onDone: (started?: boolean) => void }) {
   const info = experimental_useRpcQuery({ contract: rpcContract, method: "sandboxResizeInfo", input: { id: task.id } });
   const sizes = useSandboxSizes().data?.sizes ?? null;
   const resize = experimental_useRpcMutation({ contract: rpcContract, method: "resizeSandbox" });
@@ -196,11 +277,14 @@ function ResizeForm({ task, mode, onDone }: { task: TaskDetailDto; mode: "oom" |
     ...size,
     now: size.type === current,
   }));
-  const preselected = info.data ? suggestedSize(current, options, info.data.suggested) : null;
+  // Only after running out of memory, and only a larger size: otherwise the user picks.
+  const preselected = info.data ? suggestedSize(current, options, info.data.suggested, oom) : null;
   const [picked, setPicked] = useState<MachineType | null>(null);
   const type = picked ?? preselected;
+  // The words follow the size picked: a smaller one is a plain change of size.
+  const larger = oom && (type === null || current === null || isSmaller(current, type));
   const [message, setMessage] = useState<string | null>(null);
-  const text = message ?? (type ? resizeMessage(type, oom) : "");
+  const text = message ?? (type ? resizeMessage(type, larger) : "");
   const blocker = info.data?.blocker ?? null;
   const others = info.data?.others ?? [];
   const previews = info.data?.previews ?? 0;
@@ -214,7 +298,7 @@ function ResizeForm({ task, mode, onDone }: { task: TaskDetailDto; mode: "oom" |
       const result = await resize.mutate({ id: task.id, type, message: text.trim() || null });
       if (result.pending) toast.success(`Moving the sandbox to ${LABEL[type]}…`);
       else toast.success(result.sent ? `Sandbox is now ${LABEL[type]}. Follow-up sent` : `Sandbox is now ${LABEL[type]}`);
-      onDone();
+      onDone(result.pending);
     } catch (error) {
       showError(error);
     }
@@ -230,7 +314,7 @@ function ResizeForm({ task, mode, onDone }: { task: TaskDetailDto; mode: "oom" |
   return (
     <form onSubmit={submit} className="grid gap-4">
       <DialogHeader>
-        <DialogTitle>{oom ? "Continue on a larger sandbox" : "Change sandbox size"}</DialogTitle>
+        <DialogTitle>{larger ? "Continue on a larger sandbox" : "Change sandbox size"}</DialogTitle>
         <DialogDescription className="text-pretty">
           {current !== null ? `“${task.title}” runs on ${sizeName(current)}. ` : `“${task.title}”'s sandbox `}
           {current !== null ? "The sandbox stops and starts again on the size you pick." : "stops and starts again on the size you pick."} Its files stay;
@@ -249,7 +333,7 @@ function ResizeForm({ task, mode, onDone }: { task: TaskDetailDto; mode: "oom" |
         hint={
           type === null ? null : (
             <>
-              {costHint(type)}
+              {costHint(type, current)}
               {isSmaller(type, current) ? ` boat refuses to shrink a sandbox whose data doesn't fit; it then stays on ${LABEL[current!]}.` : ""}
               {startsLeft !== null && startsLeft <= 5 ? ` This uses one of your ${plural(startsLeft, "boat start")} left.` : ""}
             </>
@@ -285,7 +369,7 @@ function ResizeForm({ task, mode, onDone }: { task: TaskDetailDto; mode: "oom" |
         <Textarea id="ca-resize-message" rows={3} value={text} onChange={(event) => setMessage(event.target.value)} onKeyDown={submitOnModEnter} className="resize-y" />
       </Field>
       <DialogFooter>
-        <Button type="button" variant="outline" onClick={onDone}>
+        <Button type="button" variant="outline" onClick={() => onDone()}>
           Cancel
         </Button>
         <SubmitButton pending={resize.isPending} disabled={type === null || blocker !== null || info.data === undefined} icon="ComputerCloud">

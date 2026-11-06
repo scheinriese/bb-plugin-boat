@@ -76,7 +76,7 @@ import {
   useSettingRows,
   useStoredFlag,
 } from "./hooks";
-import { STARTERS, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
+import { STARTERS, projectSizeOnPlan, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
 import { Disclosure, Field, IconButton, InlineAlert, Kbd, RichText, SUGGEST_INPUT, ThreadName, showError } from "./ui";
 
@@ -269,8 +269,13 @@ export function NewTaskForm({
   const repoOwner =
     typedRepo === "" ? null : (projectList.find((entry) => entry.repos.some((each) => shortRepo(each.repo).toLowerCase() === typedRepo)) ?? null);
   const project = (chosenProject === null ? repoOwner : projectList.find((entry) => entry.id === chosenProject)) ?? null;
-  // A project's size, else the setting; the server applies it unless a size is picked here.
-  const effectiveMachine: MachineType = machineType ?? (starter === "test" ? "small" : (project?.machineType ?? defaults?.machineType ?? "default"));
+  // A project's size, else the setting; the server applies it unless a size is picked here
+  // (a project size the plan lacks falls back, as on the server, and says so).
+  const planSizes = useSandboxSizes().data?.sizes ?? null;
+  const projectSize = projectSizeOnPlan(project?.machineType ?? null, defaults?.machineType ?? "default", planSizes);
+  const effectiveMachine: MachineType = machineType ?? (starter === "test" ? "small" : projectSize.type);
+  const blockedSize = machineType === null && starter !== "test" && project !== null ? projectSize.blocked : null;
+  const sizeName = (type: MachineType) => MACHINE_LABEL[type].split(" · ")[0];
   // With a project, an empty repo means its main repo, and a project repo gets its own base branch.
   const projectRepo =
     project === null
@@ -550,7 +555,18 @@ export function NewTaskForm({
                 </Select>
               </Field>
               {sandbox === NEW_SANDBOX ? (
-                <Field label="Size" htmlFor={`${uid}-machine`}>
+                <Field
+                  label="Size"
+                  htmlFor={`${uid}-machine`}
+                  hint={
+                    blockedSize !== null && project !== null ? (
+                      <span className="text-warning-text">
+                        {project.name} uses {sizeName(blockedSize.type)} sandboxes, but your boat plan doesn't include {sizeName(blockedSize.type)}
+                        {blockedSize.reason ? ` (${blockedSize.reason.replace(/[.\s]+$/, "")})` : ""}. This task starts on {sizeName(effectiveMachine)}.
+                      </span>
+                    ) : null
+                  }
+                >
                   <MachineSelect id={`${uid}-machine`} value={effectiveMachine} onChange={setMachineType} />
                 </Field>
               ) : null}
