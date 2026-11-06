@@ -253,8 +253,7 @@ export const PLUGIN_SETTINGS = {
     section: "orchestrators",
     type: "select",
     label: "Agent for orchestrators",
-    description:
-      "New orchestrators start on it while it's connected, else on the agent that is; the New orchestrator dialog can pick the other. Claude ↔ Codex switching brings them back to it once it has room.",
+    description: "New orchestrators start on it (on the other one while it isn't connected). Claude ↔ Codex switching brings them back to it once it has room.",
     options: ["claude", "codex"],
     experimental_optionLabels: { claude: "Claude Code", codex: "Codex" },
     default: "claude",
@@ -264,7 +263,7 @@ export const PLUGIN_SETTINGS = {
     type: "select",
     label: "Effort for orchestrators",
     description:
-      "Orchestrators mostly read reports, plan and start tasks; the tasks do the heavy work at their own preset's effort. Higher effort uses your limits faster, since an orchestrator stays open and wakes after every task turn. The model is the Build preset's for its agent (see Models).",
+      "Orchestrators mostly read reports, plan and start tasks; the tasks do the heavy work at their own preset. Higher effort uses your limits faster: an orchestrator stays open and wakes after every task turn. Model: the Build preset's for its agent.",
     options: [...ORCHESTRATOR_EFFORTS],
     experimental_optionLabels: { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" },
     default: "high",
