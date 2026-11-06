@@ -562,8 +562,9 @@ conflict() {
   echo "BOAT_SHIP_ERROR $1 conflict"
   echo "BOAT_SHIP_DETAIL head $(git rev-parse HEAD 2>/dev/null)"
   echo "BOAT_SHIP_DETAIL base $(git rev-parse "$2" 2>/dev/null)"
-  local FILES=()
-  mapfile -t FILES < <(printf '%s\\n' "$3" | grep -v '^$')
+  # A plain loop, not mapfile: bash 3.2 (macOS's /bin/bash) has no mapfile.
+  local FILES=() LINE
+  while IFS= read -r LINE; do [ -n "$LINE" ] && FILES+=("$LINE"); done <<< "$3"
   if [ "\${#FILES[@]}" -gt 0 ]; then
     printf 'BOAT_SHIP_DETAIL file %s\\n' "\${FILES[@]:0:${SHIP_CONFLICT_FILES}}"
     [ "\${#FILES[@]}" -gt ${SHIP_CONFLICT_FILES} ] && echo "BOAT_SHIP_DETAIL more $((\${#FILES[@]} - ${SHIP_CONFLICT_FILES}))"

@@ -197,8 +197,9 @@ test("Markdown-like file names and commit subjects from a real conflict stay lit
 });
 
 test("a long nested path is clipped in the message, and reaches git whole", () => {
-  const long = `${Array.from({ length: 12 }, (_, index) => `${String(index).padStart(2, "0")}${"d".repeat(197)}`).join("/")}/file.txt`;
-  assert.ok(long.length > 2400);
+  // Long enough to clip many times over, short enough for macOS (paths up to 1024 bytes, temp folder included).
+  const long = `${Array.from({ length: 3 }, (_, index) => `${String(index).padStart(2, "0")}${"d".repeat(197)}`).join("/")}/file.txt`;
+  assert.ok(long.length > 600);
   const { worker, conflict } = conflictIn([long], "Touch the deep file");
   assert.deepEqual(conflict.files, [long]);
   // git log found the base commit through the whole path.
