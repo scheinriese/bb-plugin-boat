@@ -40,6 +40,8 @@ export interface BriefInput {
   effort?: string | null;
   /** The sandbox has evidence-upload: ask for screenshots and recordings to be uploaded. */
   evidence?: boolean;
+  /** The Environment line about the sandbox's size and sharing it (src/memory.ts sandboxLine). */
+  sandboxLine?: string | null;
 }
 
 /**
@@ -152,9 +154,9 @@ function pushRules(workspace: WorkspaceInfo): string {
 /** Visual evidence outlives the sandbox (the user's wording). */
 export const EVIDENCE_NOTE = `- This sandbox is deleted after your task, so files left only here are lost. Before finishing, upload the screenshots, screen recordings and other visual evidence you made or reported: \`evidence-upload <files or folders> --name <short label>\`. Paste the list of links it prints into your report, never sandbox paths. Skip builds, caches and raw frame dumps. If evidence-upload fails or the keys are missing, say so in the report. Run it from your checkout, so the upload is filed under the repo and branch.`;
 
-/** The Environment section: where the worker runs, plus the evidence rule when the sandbox has the uploader. */
-function environmentNotes(runner: "chat" | "boat" | undefined, evidence: boolean | undefined): string {
-  return `${runner === "chat" ? CHAT_NOTES : ENVIRONMENT_NOTES}${evidence ? `\n${EVIDENCE_NOTE}` : ""}`;
+/** The Environment section: where the worker runs, the evidence rule when the sandbox has the uploader, and its size. */
+function environmentNotes(runner: "chat" | "boat" | undefined, evidence: boolean | undefined, sandboxLine?: string | null): string {
+  return `${runner === "chat" ? CHAT_NOTES : ENVIRONMENT_NOTES}${evidence ? `\n${EVIDENCE_NOTE}` : ""}${sandboxLine ? `\n${sandboxLine}` : ""}`;
 }
 
 /** With the uploader, the report block names the evidence (links stay above it, where they're clickable). */
@@ -186,7 +188,7 @@ You are an independent code reviewer. Another agent implemented the change below
 ${workspace.join("\n") || "- No repository was prepared. Find the code from the brief."}
 
 ## Environment
-${environmentNotes(input.runner, input.evidence)}
+${environmentNotes(input.runner, input.evidence, input.sandboxLine)}
 
 ## How to review
 ${
@@ -218,7 +220,7 @@ You are an autonomous software engineer. Deliver the task below end to end.
 ${workspace.join("\n") || "- No repository was prepared. Set one up as the brief says."}
 
 ## Environment
-${environmentNotes(input.runner, input.evidence)}
+${environmentNotes(input.runner, input.evidence, input.sandboxLine)}
 
 ## Definition of done
 1. Implement the change on the working branch. Keep the scope tight; do not refactor unrelated code.
@@ -254,7 +256,7 @@ ${fenced(withEvidenceLine(REPORT_CONTRACT, input.evidence), input.runner)}
 ${workspace.join("\n") || "- No repository was prepared."}
 
 ## Environment
-${environmentNotes(input.runner, input.evidence)}
+${environmentNotes(input.runner, input.evidence, input.sandboxLine)}
 
 ${customRules}
 ## Brief
@@ -292,6 +294,8 @@ export function composeFollowupPrompt(
     effort?: string | null;
     evidence?: boolean;
     delivery?: "pr" | "push";
+    /** The sandbox moved to another size since the last turn (src/memory.ts movedNote). */
+    sandboxNote?: string | null;
   } = {},
 ): string {
   const contract = fenced(withEvidenceLine(role === "review" ? REVIEW_CONTRACT : REPORT_CONTRACT, options.evidence), options.runner);
@@ -308,7 +312,7 @@ export function composeFollowupPrompt(
   return `# Follow-up from the orchestrator
 
 ${message.trim()}
-${options.enteringDeep ? `\n## Working mode\n${deepMode(options.provider, options.runner, options.effort ?? null)}\n` : ""}
+${options.sandboxNote ? `\n## Sandbox\n${options.sandboxNote}\n` : ""}${options.enteringDeep ? `\n## Working mode\n${deepMode(options.provider, options.runner, options.effort ?? null)}\n` : ""}
 ${delivery}
 
 ${contract}
@@ -333,6 +337,8 @@ export function composeHandoverPrompt(input: {
   provider?: string | null;
   effort?: string | null;
   evidence?: boolean;
+  /** The Environment line about the sandbox's size (src/memory.ts sandboxLine). */
+  sandboxLine?: string | null;
 }): string {
   const contract = fenced(withEvidenceLine(input.role === "review" ? REVIEW_CONTRACT : REPORT_CONTRACT, input.evidence), "chat");
   const from = input.fromThreadId ? `@thread:${input.fromThreadId}` : "the previous chat";
@@ -349,7 +355,7 @@ ${why} You share its workspace and checkout. Check the current state first (git 
 ${workspaceLines(input.workspace).join("\n") || "- See the original brief."}
 
 ## Environment
-${environmentNotes("chat", input.evidence)}
+${environmentNotes("chat", input.evidence, input.sandboxLine)}
 ${rules}
 ## Original brief
 ${input.brief.trim()}

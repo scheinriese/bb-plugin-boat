@@ -20,10 +20,10 @@ import type {
   Sandbox,
 } from "../src/boat-api.ts";
 import { BoatError } from "../src/boat.ts";
-import { SIZE_SPECS, isMachineType } from "../src/memory.ts";
+import { SIZE_SPECS, isMachineType, type SizedProject } from "../src/memory.ts";
 import type { MachineTypeFacts } from "../src/setup.ts";
 import type { ChatRunner, ChatSpawn, ChatState, MachineState } from "../src/chat.ts";
-import { BoatService, type BoatSettings, type Notification } from "../src/service.ts";
+import { BoatService, type BoatSettings, type Notification, type ServiceHooks } from "../src/service.ts";
 import { TaskStore } from "../src/store.ts";
 import { DEFAULT_TIERS } from "../src/tiers.ts";
 
@@ -668,6 +668,14 @@ export function makeService(
     checkPreview?: (link: string) => Promise<"up" | "down" | "unknown">;
     /** The setup checks before a sandbox (default: none). */
     preflight?: (input: PreflightInput) => Promise<void>;
+    /** The plan's sandbox sizes (default: unknown, boat decides). */
+    plan?: MachineTypeFacts[] | null;
+    /** Stored projects with sizes. */
+    projects?: SizedProject[];
+    /** Task chat machines suspend and resume like bb's provider (through the service's bringUp). */
+    linkedMachines?: boolean;
+    /** The memory check's cap and the move's waits (ms; small defaults keep tests fast). */
+    sizeTiming?: ServiceHooks["sizeTiming"];
   } = {},
 ) {
   const boat = new FakeBoat();
@@ -675,6 +683,10 @@ export function makeService(
   const store = memoryStore();
   const notifications: Notification[] = [];
   let settings = defaultSettings({ ...(options.chat ? { workerMode: "chat" as const } : {}), ...options.settings });
+  const told: { threadId: string; text: string }[] = [];
+  const warnings: string[] = [];
+  let plan: MachineTypeFacts[] | null = options.plan ?? null;
+  let projects: SizedProject[] = options.projects ?? [];
   const service = new BoatService(boat as unknown as BoatApi, store, {
     settings: async () => settings,
     lifecycle: new AbortController().signal,
@@ -682,21 +694,37 @@ export function makeService(
     notify: async (notification) => {
       notifications.push(notification);
     },
-    log: { info: () => undefined, warn: () => undefined },
+    log: { info: () => undefined, warn: (message) => void warnings.push(message) },
     ...(chat ? { chat } : {}),
+    projects: () => projects,
+    sizePlan: async () => plan,
+    sizePlanNow: () => plan,
+    tell: async (threadId, text) => {
+      told.push({ threadId, text });
+    },
+    sizeTiming: { checkMs: 200, pollMs: 1, stopMs: 200, startMs: 200, reconnectMs: 200, ...options.sizeTiming },
     ...(options.quotas ? { quotas: { read: async () => options.quotas! } } : {}),
     ...(options.evidence ? { evidence: options.evidence } : {}),
     ...(options.preflight ? { preflight: options.preflight } : {}),
     checkPreview: options.checkPreview ?? (async () => "up" as const),
   });
+  if (chat && options.linkedMachines) chat.link(boat, (sandboxId) => service.bringUp(sandboxId));
   return {
     chat: chat!,
     boat,
     store,
     service,
     notifications,
+    told,
+    warnings,
     setSettings(next: Partial<BoatSettings>) {
       settings = { ...settings, ...next };
+    },
+    setPlan(next: MachineTypeFacts[] | null) {
+      plan = next;
+    },
+    setProjects(next: SizedProject[]) {
+      projects = next;
     },
   };
 }

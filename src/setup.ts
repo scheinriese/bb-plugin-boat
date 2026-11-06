@@ -786,6 +786,8 @@ export function testTaskInput(notifyThreadId: string | null): StartTaskInput {
     reason: "Test task: checks the setup",
     // It makes no screenshots, and a failing uploader would read like a setup problem.
     evidence: false,
+    // It proves the peak-memory measurement works too.
+    measureMemory: true,
     orchestratorThreadId: notifyThreadId,
   };
 }

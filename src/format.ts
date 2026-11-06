@@ -4,6 +4,7 @@ import type { PreviewView } from "./previews.ts";
 import { dashboardUrl, type Limits, type Sandbox } from "./boat-api.ts";
 import type { Decision, Task, TaskEvent } from "./store.ts";
 import { tierSummary } from "./tiers.ts";
+import { HIDDEN_EVENT_KINDS, memoryNoticeLines } from "./memory.ts";
 
 /** App link to an orchestrator's overview on the Cloud agents page. */
 export function overviewLink(threadId: string | null | undefined): string {
@@ -110,6 +111,8 @@ export function taskDetail(
     evidence?: string[];
     /** The task's previews. */
     previews?: PreviewView[];
+    /** Its sandbox's size, memory findings and moves (src/sandbox-size.ts lines). */
+    memory?: string[];
   } = {},
 ): string {
   const lines = [
@@ -129,6 +132,7 @@ export function taskDetail(
   }
   if (task.runner === "chat" && task.threadId) lines.push(`Chat: @thread:${task.threadId} (a regular bb chat; you or the user can write in it)`);
   if (task.sandboxId) lines.push(`Sandbox: ${task.sandboxId}${task.ownsSandbox ? "" : " (shared)"}   ${dashboardUrl(task.sandboxId)}`);
+  for (const line of options.memory ?? []) lines.push(line);
   if (task.conversationId) lines.push(`Conversation: ${task.conversationId}`);
   if (task.parentTaskId) lines.push(`Parent task: ${task.parentTaskId}`);
   if (task.orchestratorThreadId) lines.push(`Dispatched by: @thread:${task.orchestratorThreadId}`);
@@ -142,7 +146,7 @@ export function taskDetail(
   }
   if (events.length > 0) {
     lines.push("", "History:");
-    for (const event of events.filter((entry) => entry.kind !== "chat-info" && entry.kind !== "evidence-links").slice(-15)) lines.push(`  ${event.at.slice(11, 19)}  ${event.kind}: ${eventText(event).split("\n")[0]}`);
+    for (const event of events.filter((entry) => !HIDDEN_EVENT_KINDS.has(entry.kind) && entry.kind !== "evidence-links").slice(-15)) lines.push(`  ${event.at.slice(11, 19)}  ${event.kind}: ${eventText(event).split("\n")[0]}`);
   }
   return lines.join("\n");
 }
@@ -200,6 +204,8 @@ export function notificationText(
     tasks.length === 1
       ? `[boat] Task ${tasks[0]!.id} finished a turn.`
       : `[boat] ${tasks.length} tasks finished a turn.`;
+  // One move of a shared sandbox moves every task on it: the notice says so once.
+  const oomSandboxes = new Map<string, string>();
   const blocks = tasks.map((task) => {
     const head = `### ${task.id} · ${task.role} · ${task.status === "failed" ? "FAILED" : "ready for you"} — ${task.title}`;
     const meta = [
@@ -219,6 +225,14 @@ export function notificationText(
         : "";
     const evidence = evidenceLine(task.result, uploaderFor(task.id));
     const preview = previewFor(task.id);
+    const memory = memoryNoticeLines(task, eventsFor(task.id));
+    let oom = memory.oom;
+    if (oom !== null && oom.startsWith("Out of memory:") && task.sandboxId !== null) {
+      const first = oomSandboxes.get(task.sandboxId);
+      if (first === undefined) oomSandboxes.set(task.sandboxId, task.id);
+      else oom = `Out of memory: same sandbox as ${first}. One \`boat_followup\` with \`sandbox_size\` on ${first} moves both; follow up on ${task.id} once it's up.`;
+    }
+    const memoryText = `${oom ? `\n${oom}` : ""}${memory.peak ? `\n${memory.peak}` : ""}`;
     const delivery =
       task.delivery !== "push" || task.role === "review" || task.status === "failed"
         ? ""
@@ -233,7 +247,7 @@ export function notificationText(
           .join("\n")}`
       : "(The worker sent no final message.)";
     const body = task.status === "failed" ? `Error: ${task.error ?? "unknown"}\n\n${quoted}` : quoted;
-    return `${head}\n${meta}${preview ? `\nPreview: ${preview}` : ""}${delivery}${handover}${evidence}\n\n${body}`;
+    return `${head}\n${meta}${preview ? `\nPreview: ${preview}` : ""}${delivery}${handover}${evidence}${memoryText}\n\n${body}`;
   });
   const next = [
     "Before acting, reconcile every open task with `boat_tasks` (`bb boat task list --mine`), not only these. Then, per task:",

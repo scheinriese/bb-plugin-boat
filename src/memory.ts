@@ -842,3 +842,53 @@ export function governingProject<T extends SizedProject>(projects: readonly T[],
   const lower = repo.toLowerCase();
   return projects.find((project) => project.repos[0]?.repo.toLowerCase() === lower) ?? null;
 }
+
+// ------------------------------------------------------------------ the notice
+
+/** The task's newest memory record of a type among these events. */
+function latestData<T extends MemoryData["type"]>(events: readonly Pick<TaskEvent, "kind" | "text">[], type: T): Extract<MemoryData, { type: T }> | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (event.kind !== DATA_KIND) continue;
+    const data = decodeData(event.text);
+    if (data?.type === type) return data as Extract<MemoryData, { type: T }>;
+  }
+  return null;
+}
+
+/**
+ * The orchestrator notice's lines about memory for this turn: an
+ * out-of-memory kill with what to do about it (the plan decides: move up
+ * with boat_followup's sandbox_size, ask the user for XLarge or a bigger
+ * plan, or run fewer tests), and a measured turn's peak.
+ */
+export function memoryNoticeLines(task: { id: string; turns: number }, events: readonly Pick<TaskEvent, "kind" | "text">[]): { oom: string | null; peak: string | null } {
+  const oom = latestData(events, "oom");
+  let oomLine: string | null = null;
+  if (oom !== null && oom.turn === task.turns) {
+    if (!oom.certain) {
+      oomLine = "The sandbox may have run out of memory during this turn (its kernel counted an out-of-memory kill, but its log isn't readable there). If the agent's tests were cut short, ask it to run fewer at once.";
+    } else {
+      const size = oom.machineType === null ? "The sandbox" : `The ${SIZE_SPECS[oom.machineType].label} sandbox (${SIZE_SPECS[oom.machineType].memoryGb} GB)`;
+      const head = `Out of memory: ${size} ran out of memory during this turn.`;
+      if (oom.machineType === "xlarge") oomLine = `${head} XLarge is the largest size: ask the agent to run fewer tests at once.`;
+      else if (oom.next === null) oomLine = `${head} Ask the agent to run fewer tests at once.`;
+      else if (!oom.nextAllowed) {
+        const label = SIZE_SPECS[oom.next].label;
+        oomLine = `${head} Your boat plan doesn't include ${label}${oom.nextReason ? ` (${oom.nextReason.replace(/[.\s]+$/, "")})` : ""}, so ask the agent to run fewer tests at once, or ask the user about a bigger plan.`;
+      } else if (oom.next === "xlarge") {
+        oomLine = `${head} Ask the agent to run fewer tests at once, or, only after the user's OK, move it to XLarge and continue: \`boat_followup\` with \`sandbox_size: "xlarge"\` and \`user_approved\` (\`bb boat task followup ${task.id} --type xlarge --user-approved --message "…"\`).`;
+      } else {
+        const label = SIZE_SPECS[oom.next].label;
+        oomLine = `${head} Ask the agent to run fewer tests at once, or move it to a larger sandbox and continue: \`boat_followup\` with \`sandbox_size: "${oom.next}"\` (\`bb boat task followup ${task.id} --type ${oom.next} --message "…"\`). ${label === "Large" ? "Large costs twice as much per hour as Default; mention it in your next update." : ""}`.trimEnd();
+      }
+    }
+  }
+  const peak = latestData(events, "peak");
+  let peakText: string | null = null;
+  if (peak !== null && peak.turn === task.turns) {
+    const recommendation = peak.recommended && peak.reason ? { type: peak.recommended, reason: peak.reason, allowed: peak.allowed, planReason: peak.planReason } : null;
+    peakText = `${peakLine({ peakKb: peak.peakKb, memTotalKb: peak.memTotalKb, machineType: peak.machineType, swapKb: peak.swapKb }, recommendation)}${peak.shared ? " Other tasks worked on this sandbox meanwhile." : ""}`;
+  }
+  return { oom: oomLine, peak: peakText };
+}

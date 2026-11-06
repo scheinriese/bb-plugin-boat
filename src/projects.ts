@@ -2,7 +2,7 @@
 // sandboxes can't see local files, so every repo is cloned from GitHub.
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { DEFAULT_PROTECTED_BRANCHES, assertBranch, invalidBranchNames, normalizeRepo, parseBranchList } from "./boat-api.ts";
+import { DEFAULT_PROTECTED_BRANCHES, MACHINE_TYPES, assertBranch, invalidBranchNames, normalizeRepo, parseBranchList, type MachineType } from "./boat-api.ts";
 
 /** Longest project instructions (they go into every brief of the project's tasks). */
 export const MAX_PROJECT_INSTRUCTIONS = 10_000;
@@ -28,6 +28,8 @@ export const projectInputSchema = z.object({
   protectedBranches: z.union([z.array(z.string().max(200)).max(50), z.string().max(2000)]).optional(),
   /** Added to the brief of every task of this project. */
   instructions: z.string().max(MAX_PROJECT_INSTRUCTIONS).optional(),
+  /** Size of its new task sandboxes; null: the Default sandbox size setting; absent: unchanged. */
+  machineType: z.enum(MACHINE_TYPES).nullable().optional(),
 });
 export type ProjectInput = z.infer<typeof projectInputSchema>;
 
@@ -56,6 +58,8 @@ export interface BoatProject {
   protectedBranches: string[];
   /** Added to the brief of every task of this project ("" for none). */
   instructions: string;
+  /** Size of new task sandboxes for this project (and their reviews); null: the Default sandbox size setting. */
+  machineType: MachineType | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -116,6 +120,7 @@ export function normalizeProject(input: ProjectInput, existing?: BoatProject | n
     delivery: parsed.delivery ?? existing?.delivery ?? "pr",
     protectedBranches: protectedList,
     instructions: parsed.instructions !== undefined ? parsed.instructions.trim() : (existing?.instructions ?? ""),
+    machineType: parsed.machineType !== undefined ? parsed.machineType : (existing?.machineType ?? null),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -155,6 +160,7 @@ function withDefaults(project: BoatProject): BoatProject {
     delivery: project.delivery === "push" ? "push" : "pr",
     protectedBranches: Array.isArray(project.protectedBranches) ? project.protectedBranches.filter((name) => typeof name === "string") : [],
     instructions: typeof project.instructions === "string" ? project.instructions : "",
+    machineType: (MACHINE_TYPES as readonly unknown[]).includes(project.machineType) ? project.machineType : null,
   };
 }
 
