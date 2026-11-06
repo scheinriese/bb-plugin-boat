@@ -4,12 +4,14 @@ import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BoatApi } from "../src/boat-api.ts";
 import type { BoatCli } from "../src/boat.ts";
-import { MACHINE_PROVIDER_ID, keepBoatMachines, registerBoatMachine } from "../src/machine.ts";
+import { MACHINE_PROVIDER_ID, keepBoatMachines, keepSandboxKey, registerBoatMachine } from "../src/machine.ts";
 import { defaultSettings, makeService } from "./fakes.ts";
 
 type Provider = {
   create(args: unknown): Promise<{ status: string; resource?: { sandboxId: string; key: string }; message?: string }>;
   resume(args: unknown): Promise<unknown>;
+  remove(args: unknown): Promise<{ status: string; message?: string }>;
+  reconcileCleanup(args: unknown): Promise<{ status: string; message?: string }>;
 };
 
 function setup(settings: Parameters<typeof makeService>[0] = {}) {
@@ -53,7 +55,7 @@ function setup(settings: Parameters<typeof makeService>[0] = {}) {
     report,
     signal: new AbortController().signal,
   });
-  return { ...fake, provider: () => provider!, args };
+  return { ...fake, provider: () => provider!, args, kv: (bb.storage.kv as unknown as { values: Map<string, unknown> }).values };
 }
 
 test("cloud orchestrator sandboxes are small, whatever the worker size", async () => {
@@ -126,4 +128,48 @@ test("a busy chat's Boat sandbox is kept on within the plan's auto-stop cap", as
   fake.boat.autoStopCapSeconds = 7200;
   await keep();
   assert.deepEqual(fake.boat.extended.at(-1), { id: sandbox.id, args: ["--ttl", "7200"] });
+});
+
+test("a machine for a move to a chat keeps its sandbox: removal and cleanup leave it alone while the keep flag is set", async () => {
+  const { boat, provider, args, kv } = setup();
+  const prepared = await boat.create({ name: "bb t_1 fix", type: "default" });
+  const key = "task-t_1-m1";
+  const result = await provider().create({ ...args(key), inputs: { sandboxId: prepared.id, taskId: "t_1", keepSandbox: true } });
+  assert.equal(result.status, "created", result.message);
+  assert.equal(kv.get(keepSandboxKey(key)), prepared.id, "create sets the flag");
+  assert.equal((await provider().remove({ resource: result.resource })).status, "removed");
+  assert.equal((await provider().reconcileCleanup({ key })).status, "removed");
+  assert.ok(!boat.calls.some((call) => call.startsWith("delete ")), boat.calls.join("\n"));
+  assert.ok(boat.sandboxes.has(prepared.id));
+  // The move is done (the flag cleared): removing the machine deletes its sandbox, like any task chat's.
+  kv.delete(keepSandboxKey(key));
+  assert.equal((await provider().remove({ resource: result.resource })).status, "removed");
+  assert.ok(boat.calls.includes(`delete ${prepared.id}`));
+  // Without the flag, cleanup deletes too (today's behaviour).
+  const other = await boat.create({ name: "bb t_2 fix", type: "default" });
+  await provider().create({ ...args("task-t_2"), inputs: { sandboxId: other.id, taskId: "t_2" } });
+  assert.equal((await provider().reconcileCleanup({ key: "task-t_2" })).status, "removed");
+  assert.ok(boat.calls.includes(`delete ${other.id}`));
+});
+
+test("the machine keeper leaves a sandbox alone while a task moves to a chat there", async () => {
+  const fake = makeService();
+  const sandbox = await fake.boat.create({ name: "worker", type: "small", ttlSeconds: 7200 });
+  sandbox.archiveAfter = new Date(Date.now() + 5 * 60_000).toISOString();
+  const suspended: string[] = [];
+  const bb = {
+    sdk: {
+      hosts: {
+        list: async () => [{ id: "host_1", machineProviderId: MACHINE_PROVIDER_ID, lifecycle: { phase: "active", suspendedAt: null } }],
+        experimental_suspend: async ({ hostId }: { hostId: string }) => void suspended.push(hostId),
+      },
+      threads: { list: async () => [] },
+    },
+    experimental_machines: { getResource: async () => ({ sandboxId: sandbox.id, key: "task-t_1-m1" }) },
+  } as unknown as BbPluginApi;
+  const deps = { boat: fake.boat as unknown as BoatApi, settings: async () => defaultSettings(), signal: new AbortController().signal, log: () => undefined };
+  await keepBoatMachines(bb, { ...deps, skip: (id) => id === sandbox.id });
+  assert.deepEqual(suspended, []);
+  await keepBoatMachines(bb, deps);
+  assert.deepEqual(suspended, ["host_1"]);
 });

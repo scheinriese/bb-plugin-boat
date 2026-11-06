@@ -260,7 +260,8 @@ export class FakeBoat {
     const events: ChatEvent[] = [];
     let ts = 1;
     for (const turn of conversation.prompts) {
-      events.push({ type: "prompt", promptId: turn.promptId, conversationId, status: turn.status, content: null, error: turn.error ?? null, timestamp: ts++, tools: [] });
+      // Like boat: prompt events carry the prompt's text.
+      events.push({ type: "prompt", promptId: turn.promptId, conversationId, status: turn.status, content: turn.text, error: turn.error ?? null, timestamp: ts++, tools: [] });
       events.push({ type: "response", promptId: turn.promptId, conversationId, status: null, content: "", error: null, timestamp: ts++, tools: ["Bash"] });
       if (turn.reply !== null) {
         events.push({ type: "response", promptId: turn.promptId, conversationId, status: null, content: turn.reply, error: null, timestamp: ts++, tools: [] });
@@ -327,8 +328,20 @@ export class FakeBoat {
 
 /** bb's side of worker chats, in memory. */
 export class FakeChat implements ChatRunner {
-  machines: { taskId: string; sandboxId: string; hostId: string }[] = [];
+  machines: { taskId: string; sandboxId: string; hostId: string; key: string; keepSandbox?: true }[] = [];
   removed: string[] = [];
+  /** Machines a failed move took back (bb forgot them; their sandbox stays). */
+  detached: { hostId: string; key: string }[] = [];
+  /** Keys whose sandbox must outlive the machine (the provider's keep flag). */
+  kept = new Map<string, string>();
+  settled: string[] = [];
+  files: { hostId: string; path: string; content: string }[] = [];
+  writeError: Error | null = null;
+  spawnError: Error | null = null;
+  /** An attach waits for this (a move held mid-attach). */
+  attachGate: Promise<void> | null = null;
+  /** With attachError: bb made the machine before the attach failed. */
+  attachLeftover = false;
   spawns: (ChatSpawn & { threadId: string; environmentId: string })[] = [];
   sends: { threadId: string; text: string; steer: boolean; model?: string | null; effort?: string | null }[] = [];
   stopped: string[] = [];
@@ -338,14 +351,39 @@ export class FakeChat implements ChatRunner {
   attachError: Error | null = null;
   private next = 0;
 
-  async attachMachine(args: { taskId: string; sandboxId: string }) {
-    if (this.attachError) throw this.attachError;
+  async attachMachine(args: { taskId: string; sandboxId: string; keepSandbox?: boolean }) {
+    const key = args.keepSandbox ? `task-${args.taskId}-m${this.machines.length + this.detached.length + 1}` : `task-${args.taskId}`;
+    if (args.keepSandbox) this.kept.set(key, args.sandboxId);
+    if (this.attachGate) await this.attachGate;
+    if (this.attachError) {
+      if (this.attachLeftover) this.machines.push({ taskId: args.taskId, sandboxId: args.sandboxId, hostId: `host_${++this.next}`, key, keepSandbox: true });
+      throw this.attachError;
+    }
     const hostId = `host_${++this.next}`;
-    this.machines.push({ taskId: args.taskId, sandboxId: args.sandboxId, hostId });
-    return { hostId };
+    this.machines.push({ taskId: args.taskId, sandboxId: args.sandboxId, hostId, key, ...(args.keepSandbox ? { keepSandbox: true as const } : {}) });
+    return { hostId, key };
   }
   async removeMachine(hostId: string) {
     this.removed.push(hostId);
+  }
+  async detachMachine(hostId: string, key: string) {
+    this.detached.push({ hostId, key });
+  }
+  async protectSandbox(key: string, sandboxId: string) {
+    if (this.kept.has(key)) return false;
+    this.kept.set(key, sandboxId);
+    return true;
+  }
+  async settleMachine(key: string) {
+    this.settled.push(key);
+    this.kept.delete(key);
+  }
+  async machineKey(hostId: string) {
+    return this.machines.find((machine) => machine.hostId === hostId)?.key ?? null;
+  }
+  async writeFile(hostId: string, path: string, content: string) {
+    if (this.writeError) throw this.writeError;
+    this.files.push({ hostId, path, content });
   }
   suspended: string[] = [];
   async suspendMachine(hostId: string) {
@@ -366,9 +404,14 @@ export class FakeChat implements ChatRunner {
     this.resumed.push(hostId);
   }
   async findMachine(sandboxId: string) {
-    return this.machines.find((machine) => machine.sandboxId === sandboxId && !this.removed.includes(machine.hostId))?.hostId ?? null;
+    return (
+      this.machines.find(
+        (machine) => machine.sandboxId === sandboxId && !this.removed.includes(machine.hostId) && !this.detached.some((entry) => entry.hostId === machine.hostId),
+      )?.hostId ?? null
+    );
   }
   async spawn(args: ChatSpawn) {
+    if (this.spawnError) throw this.spawnError;
     const threadId = `thr_w${++this.next}`;
     const environmentId = args.where.kind === "environment" ? args.where.environmentId : `env_${this.next}`;
     this.spawns.push({ ...args, threadId, environmentId });

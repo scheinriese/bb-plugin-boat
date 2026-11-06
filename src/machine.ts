@@ -20,11 +20,24 @@ const inputsSchema = z
     sandboxId: z.string().regex(/^bx_[A-Za-z0-9]+$/).optional(),
     /** The task whose worker chat runs on it. */
     taskId: z.string().max(64).optional(),
+    /**
+     * The sandbox holds a headless task's work (Continue as a chat): removing
+     * this machine, or a failed creation, never deletes it until the move is done.
+     */
+    keepSandbox: z.boolean().optional(),
   })
   .strict();
 
 /** kv key remembering which sandbox an adopting machine took (cleanup only gets the key). */
 const adoptedKey = (key: string) => `machineSandbox:${key}`;
+
+/**
+ * kv key set while a machine's sandbox must survive the machine (a headless
+ * task moving to a chat): remove and cleanup then leave the sandbox alone.
+ * Only a finished move clears it (ChatRunner.settleMachine); a failed try's
+ * flag stays, so a late removal can't delete the task's work.
+ */
+export const keepSandboxKey = (key: string) => `machineKeep:${key}`;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -99,7 +112,14 @@ const KEEP_MARGIN_MS = 20 * 60_000;
 /** Run from the monitor: keep busy machine sandboxes alive, suspend idle ones before boat stops them. */
 export async function keepBoatMachines(
   bb: BbPluginApi,
-  deps: { boat: BoatApi; settings: () => Promise<BoatSettings>; signal: AbortSignal; log: (message: string) => void },
+  deps: {
+    boat: BoatApi;
+    settings: () => Promise<BoatSettings>;
+    signal: AbortSignal;
+    log: (message: string) => void;
+    /** Sandboxes to leave alone (a task moving to a chat there). */
+    skip?: (sandboxId: string) => boolean;
+  },
 ): Promise<void> {
   const hosts = ((await bb.sdk.hosts.list()) as unknown as {
     id: string;
@@ -113,6 +133,7 @@ export async function keepBoatMachines(
   for (const host of hosts) {
     const resource = resourceSchema.safeParse(await bb.experimental_machines.getResource(host.id));
     if (!resource.success) continue;
+    if (deps.skip?.(resource.data.sandboxId)) continue;
     const sandbox = sandboxes.find((entry) => entry.id === resource.data.sandboxId);
     if (sandbox === undefined || sandbox.archiveAfter === null) continue;
     if (Date.parse(sandbox.archiveAfter) - Date.now() > KEEP_MARGIN_MS) continue;
@@ -147,6 +168,13 @@ export function registerBoatMachine(
   },
 ): void {
   const { boat, cli, service } = deps;
+
+  /** The machine's sandbox holds a headless task's work: bb forgets the machine, the sandbox stays. */
+  async function keptSandbox(key: string): Promise<boolean> {
+    if (typeof (await bb.storage.kv.get<string>(keepSandboxKey(key))) !== "string") return false;
+    await bb.storage.kv.delete(adoptedKey(key)).catch(() => undefined);
+    return true;
+  }
 
   async function findByKey(key: string) {
     const adopted = await bb.storage.kv.get<string>(adoptedKey(key));
@@ -194,6 +222,7 @@ export function registerBoatMachine(
         if (adopt !== null) {
           // A worker chat's sandbox: the plugin already created and prepared it.
           if (sandbox === null) throw new Error(`boat sandbox ${adopt} no longer exists`);
+          if (parsed.success && parsed.data.keepSandbox) await bb.storage.kv.set(keepSandboxKey(key), adopt);
           await bb.storage.kv.set(adoptedKey(key), adopt);
           report.step("Using the prepared boat sandbox");
           if (!ACTIVE_STATES.has(sandbox.state)) sandbox = await service.bringUp(adopt, signal);
@@ -233,6 +262,7 @@ export function registerBoatMachine(
     },
     async reconcileCleanup({ key }) {
       try {
+        if (await keptSandbox(key)) return { status: "removed" as const };
         const sandbox = await findByKey(key);
         if (sandbox !== null) await boat.delete(sandbox.id);
         return { status: "removed" as const };
@@ -262,6 +292,7 @@ export function registerBoatMachine(
     async remove({ resource }) {
       try {
         const { sandboxId, key } = resourceSchema.parse(resource);
+        if (await keptSandbox(key)) return { status: "removed" as const };
         await boat.delete(sandboxId);
         await bb.storage.kv.delete(adoptedKey(key)).catch(() => undefined);
         return { status: "removed" as const };

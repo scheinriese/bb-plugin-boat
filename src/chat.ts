@@ -1,7 +1,7 @@
 // Worker chats: a task's agent runs as a regular bb chat on its boat sandbox.
 // The service decides what to do; this is how it asks bb to do it.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
+import { MACHINE_PROVIDER_ID, keepSandboxKey } from "./machine.ts";
 import { threadSection } from "./sections.ts";
 import type { Provider } from "./store.ts";
 
@@ -56,8 +56,23 @@ export interface ChatState {
 }
 
 export interface ChatRunner {
-  /** Install bb on a prepared sandbox; returns the bb machine id. */
-  attachMachine(args: { taskId: string; sandboxId: string; signal?: AbortSignal }): Promise<{ hostId: string }>;
+  /**
+   * Install bb on a prepared sandbox; returns the bb machine id and the key it
+   * was created with. keepSandbox: the sandbox holds a headless task's work
+   * (Continue as a chat): a new key per try, and the sandbox outlives the
+   * machine until settleMachine.
+   */
+  attachMachine(args: { taskId: string; sandboxId: string; signal?: AbortSignal; keepSandbox?: boolean }): Promise<{ hostId: string; key: string }>;
+  /** Undo an attach made with keepSandbox: bb forgets the machine, the sandbox stays. */
+  detachMachine(hostId: string, key: string): Promise<void>;
+  /** Keep a machine's sandbox when the machine goes (for a move that reuses it). Returns false when it was kept already. */
+  protectSandbox(key: string, sandboxId: string): Promise<boolean>;
+  /** The move is done: removing the machine deletes its sandbox again, like any task chat's. */
+  settleMachine(key: string): Promise<void>;
+  /** The key a machine was created with (null: unknown). */
+  machineKey(hostId: string): Promise<string | null>;
+  /** Write a file on a bb machine (parent folders created, only the owner can read it). */
+  writeFile(hostId: string, path: string, content: string): Promise<void>;
   /** Remove a machine (bb deletes its sandbox through the machine provider). */
   removeMachine(hostId: string): Promise<void>;
   /** Suspend a machine through bb (boat stops the sandbox; bb resumes it on the next message). */
@@ -105,17 +120,47 @@ function isNotFound(error: unknown): boolean {
 
 export function createChatRunner(bb: BbPluginApi): ChatRunner {
   return {
-    async attachMachine({ taskId, sandboxId, signal }) {
+    async attachMachine({ taskId, sandboxId, signal, keepSandbox }) {
+      const key = keepSandbox ? `task-${taskId}-m${Date.now().toString(36)}` : `task-${taskId}`;
+      // Before bb runs the provider: a failed or cut-short creation can't delete the sandbox.
+      if (keepSandbox) await bb.storage.kv.set(keepSandboxKey(key), sandboxId);
       const host = (await bb.sdk.hosts.experimental_create({
         machineProviderId: MACHINE_PROVIDER_ID,
-        inputs: { sandboxId, taskId },
-        key: `task-${taskId}`,
+        inputs: keepSandbox ? { sandboxId, taskId, keepSandbox: true } : { sandboxId, taskId },
+        key,
         wait: true,
         ...(signal ? { signal } : {}),
       })) as unknown as { id?: string; hostId?: string; host?: { id?: string } };
       const hostId = host.id ?? host.hostId ?? host.host?.id;
       if (typeof hostId !== "string") throw new Error("bb did not return the new machine's id");
-      return { hostId };
+      return { hostId, key };
+    },
+
+    async detachMachine(hostId, key) {
+      const resource = (await bb.experimental_machines.getResource(hostId).catch(() => null)) as { sandboxId?: string } | null;
+      if (typeof resource?.sandboxId === "string") await bb.storage.kv.set(keepSandboxKey(key), resource.sandboxId);
+      await bb.sdk.hosts.delete({ hostId } as never).catch((error: unknown) => {
+        if (!isNotFound(error)) throw error;
+      });
+    },
+
+    async protectSandbox(key, sandboxId) {
+      if (typeof (await bb.storage.kv.get<string>(keepSandboxKey(key))) === "string") return false;
+      await bb.storage.kv.set(keepSandboxKey(key), sandboxId);
+      return true;
+    },
+
+    async settleMachine(key) {
+      await bb.storage.kv.delete(keepSandboxKey(key));
+    },
+
+    async machineKey(hostId) {
+      const resource = (await bb.experimental_machines.getResource(hostId).catch(() => null)) as { key?: unknown } | null;
+      return typeof resource?.key === "string" ? resource.key : null;
+    },
+
+    async writeFile(hostId, path, content) {
+      await bb.sdk.files.write({ hostId, path, content, contentEncoding: "utf8", createParents: true, mode: 0o600 } as never);
     },
 
     async removeMachine(hostId) {

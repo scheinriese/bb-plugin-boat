@@ -46,7 +46,7 @@ test("a worker is a bb chat on its prepared sandbox, nested under the orchestrat
   // The plugin created and prepared the sandbox (checkout, branch, push guard), then bb adopted it.
   assert.equal(env.boat.created.length, 1);
   assert.ok(env.boat.prepared.some((entry) => entry.repo === "acme/web"));
-  assert.deepEqual(env.chat.machines, [{ taskId: task.id, sandboxId: task.sandboxId!, hostId: "host_1" }]);
+  assert.deepEqual(env.chat.machines, [{ taskId: task.id, sandboxId: task.sandboxId!, hostId: "host_1", key: `task-${task.id}` }]);
   const spawn = env.chat.spawns[0]!;
   assert.equal(spawn.parentThreadId, "thr_orch");
   assert.equal(spawn.provider, "claude");
@@ -234,7 +234,7 @@ test("the bb runner spawns chats with the right environment and execution option
     },
   } as unknown as BbPluginApi;
   const runner = createChatRunner(bb);
-  assert.deepEqual(await runner.attachMachine({ taskId: "t_1", sandboxId: "bx_1" }), { hostId: "host_9" });
+  assert.deepEqual(await runner.attachMachine({ taskId: "t_1", sandboxId: "bx_1" }), { hostId: "host_9", key: "task-t_1" });
   assert.deepEqual(calls[0]!.args, { machineProviderId: "boat-sandbox", inputs: { sandboxId: "bx_1", taskId: "t_1" }, key: "task-t_1", wait: true });
   await runner.spawn({
     taskId: "t_1",
@@ -509,4 +509,59 @@ test("an extra chat at work keeps its machine from being suspended", async () =>
   } finally {
     Date.now = realNow;
   }
+});
+
+test("the bb runner's moves: a per-try key with the keep flag set first, detach, settle, the key, and files", async () => {
+  const calls: { method: string; args: unknown }[] = [];
+  const kv = new Map<string, unknown>();
+  const bb = {
+    pluginId: "boat",
+    storage: {
+      kv: {
+        get: async (key: string) => kv.get(key),
+        set: async (key: string, value: unknown) => {
+          calls.push({ method: "kv.set", args: key });
+          kv.set(key, value);
+        },
+        delete: async (key: string) => void kv.delete(key),
+      },
+    },
+    experimental_machines: { getResource: async () => ({ sandboxId: "bx_1", key: "task-t_1-mabc" }) },
+    sdk: {
+      hosts: {
+        experimental_create: async (args: unknown) => {
+          calls.push({ method: "hosts.create", args });
+          return { id: "host_9" };
+        },
+        delete: async (args: unknown) => {
+          calls.push({ method: "hosts.delete", args });
+          throw new Error("host not found (404)");
+        },
+      },
+      files: { write: async (args: unknown) => void calls.push({ method: "files.write", args }) },
+    },
+  } as unknown as BbPluginApi;
+  const runner = createChatRunner(bb);
+  const { hostId, key } = await runner.attachMachine({ taskId: "t_1", sandboxId: "bx_1", keepSandbox: true });
+  assert.equal(hostId, "host_9");
+  assert.match(key, /^task-t_1-m[0-9a-z]+$/);
+  // The flag is set before bb runs the provider.
+  assert.deepEqual(calls[0], { method: "kv.set", args: `machineKeep:${key}` });
+  const create = calls[1]!.args as { key: string; inputs: Record<string, unknown> };
+  assert.equal(create.key, key);
+  assert.deepEqual(create.inputs, { sandboxId: "bx_1", taskId: "t_1", keepSandbox: true });
+  assert.equal(await runner.machineKey("host_9"), "task-t_1-mabc");
+  // Detach tolerates a machine bb already forgot, and keeps the flag.
+  await runner.detachMachine("host_9", key);
+  assert.deepEqual(calls.at(-1), { method: "hosts.delete", args: { hostId: "host_9" } });
+  assert.equal(kv.get(`machineKeep:${key}`), "bx_1");
+  assert.equal(await runner.protectSandbox(key, "bx_1"), false, "already kept");
+  await runner.settleMachine(key);
+  assert.equal(kv.has(`machineKeep:${key}`), false);
+  assert.equal(await runner.protectSandbox(key, "bx_1"), true);
+  await runner.writeFile("host_9", "/home/user/.boat-tasks/t_1/conversation.md", "# hi");
+  assert.deepEqual(calls.at(-1), {
+    method: "files.write",
+    args: { hostId: "host_9", path: "/home/user/.boat-tasks/t_1/conversation.md", content: "# hi", contentEncoding: "utf8", createParents: true, mode: 0o600 },
+  });
 });

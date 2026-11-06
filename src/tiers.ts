@@ -144,3 +144,32 @@ export function tierTable(tiers: TierMap): string {
 export function choiceFor(tiers: TierMap, tier: Tier, provider: Provider): TierChoice {
   return tiers[tier][provider];
 }
+
+/**
+ * A headless task's model and effort as bb's ids, for the chat that
+ * continues it (Continue as a chat). A tier gets its own bb model back (and
+ * Ultracode or Ultra, which boat capped at max) when the task still runs it.
+ * Otherwise a model id boat reported is kept only when it's a clean id for
+ * the task's agent; an alias, a dated id or another agent's model becomes the
+ * tier's model, or bb's default (null). note: why the model changed.
+ */
+export function chatChoiceFromBoat(
+  provider: Provider,
+  model: string | null,
+  effort: string | null,
+  tier: string | null,
+  tiers: TierMap,
+): { model: string | null; effort: string | null; note: string | null } {
+  const choice = isTier(tier) ? choiceFor(tiers, tier, provider) : null;
+  const sameModel = choice !== null && (model === null || model === choice.model || boatModelId(provider, choice.model) === model);
+  if (choice !== null && sameModel && (effort === null || boatEffort(choice.effort) === effort)) return { model: choice.model, effort: choice.effort, note: null };
+  if (model === null) return { model: null, effort, note: null };
+  const clean = modelAgent(model) === provider && /^[a-z][a-z0-9.-]*$/i.test(model) && !/-\d{8}$/.test(model);
+  if (clean) return { model: bbModelId(provider, model), effort, note: null };
+  const fallback = choice?.model ?? null;
+  return {
+    model: fallback,
+    effort: fallback !== null ? (choice?.effort ?? effort) : effort,
+    note: `boat reported the model as "${model}", which a chat may not take; the chat uses ${fallback ?? "bb's default model"}`,
+  };
+}

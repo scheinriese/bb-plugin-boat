@@ -63,8 +63,9 @@ function modeSection(
   provider: string | null | undefined,
   runner: "chat" | "boat" = "boat",
   effort: string | null = null,
+  title = "Working mode",
 ): string {
-  return tier === "deep" ? `\n## Working mode\n${deepMode(provider, runner, effort)}\n` : "";
+  return tier === "deep" ? `\n## ${title}\n${deepMode(provider, runner, effort)}\n` : "";
 }
 
 const CHAT_NOTES = `- You run in a bb chat on a disposable boat.dev cloud sandbox. Work autonomously: the orchestrator can't answer mid-task, so make reasonable decisions, note them under OPEN QUESTIONS, and keep going. The user may also write to you in this chat; follow them.
@@ -327,24 +328,35 @@ export function composeHandoverPrompt(input: {
   workspace: WorkspaceInfo;
   fromProvider: string;
   fromThreadId: string | null;
-  why: "usage-limit" | "switch";
+  /** from-boat: the user moved a headless task into this chat (Continue as a chat). */
+  why: "usage-limit" | "switch" | "from-boat";
   message: string | null;
   tier?: string | null;
   provider?: string | null;
   effort?: string | null;
   evidence?: boolean;
+  /** The headless conversation from before a move to a chat (a file outside the repo). */
+  transcriptPath?: string | null;
+  /** from-boat: the agent's latest report, already clipped. */
+  latestReport?: string | null;
+  /** from-boat: the settings' and the project's standing instructions. */
+  extraInstructions?: string;
 }): string {
   const contract = fenced(withEvidenceLine(input.role === "review" ? REVIEW_CONTRACT : REPORT_CONTRACT, input.evidence), "chat");
+  if (input.why === "from-boat") return composeFromBoatPrompt(input, contract);
   const from = input.fromThreadId ? `@thread:${input.fromThreadId}` : "the previous chat";
   const why =
     input.why === "usage-limit"
       ? `The previous agent (${input.fromProvider}, in ${from}) stopped because it hit a usage limit.`
       : `The orchestrator moved this task from ${input.fromProvider} (${from}) to you.`;
   const rules = input.role === "review" ? "" : `\n## Push rules\n${pushRules(input.workspace)}\n`;
+  const earlier = input.transcriptPath
+    ? `\nThe task ran headless before it moved to a bb chat; that conversation is in \`${input.transcriptPath}\`, outside the repo (read it if you need the history; don't commit it).\n`
+    : "";
   return `# Taking over task ${input.taskId}: ${input.title}
 
 ${why} You share its workspace and checkout. Check the current state first (git status, git log, tests), then continue where it stopped and finish the task as briefed.
-
+${earlier}
 ## Workspace
 ${workspaceLines(input.workspace).join("\n") || "- See the original brief."}
 
@@ -354,6 +366,46 @@ ${rules}
 ## Original brief
 ${input.brief.trim()}
 ${input.message?.trim() ? `\n## Message from the orchestrator\n${input.message.trim()}\n` : ""}${modeSection(input.tier, input.provider, "chat", input.effort ?? null)}
+${contract}
+`;
+}
+
+/** Clip like the service's report clip, without importing it (the caller usually clipped already). */
+function clipReport(text: string, max = 8_000): string {
+  return text.length <= max ? text : `…${text.slice(text.length - max + 1)}`;
+}
+
+/**
+ * A headless task moved into a bb chat (Continue as a chat): same sandbox and
+ * checkout, the conversation so far in a file outside the repo. The first
+ * turn only reads up; the next message says how to go on.
+ */
+function composeFromBoatPrompt(input: Parameters<typeof composeHandoverPrompt>[0], contract: string): string {
+  const rules = input.role === "review" ? "" : `\n## Push rules\n${pushRules(input.workspace)}\n`;
+  const report = input.latestReport?.trim() ? clipReport(input.latestReport.trim()) : "(none yet)";
+  const block = input.role === "review" ? "review" : "report";
+  return `# Continuing task ${input.taskId} in a bb chat: ${input.title}
+
+This task ran headless in a boat conversation (${input.fromProvider}) until now. It moved into this bb chat, so the user can follow your work and write to you here; follow-ups come here too. The headless conversation has stopped. You work in the same sandbox and checkout.
+
+## The conversation so far
+It's in \`${input.transcriptPath ?? "(not written)"}\`, outside the repo: the prompts, the agent's messages and which tools it used. Read it first, the end first: the newest turns are last. Don't commit it or copy it into the repo.
+
+## Latest report
+${report}
+
+## Workspace
+${workspaceLines(input.workspace).join("\n") || "- See the original brief."}
+
+## Environment
+${environmentNotes("chat", input.evidence)}
+${rules}
+## Original brief
+${input.brief.trim()}
+${input.extraInstructions?.trim() ? `\n## Standing instructions\n${input.extraInstructions.trim()}\n` : ""}${modeSection(input.tier, input.provider, "chat", input.effort ?? null, "Working mode (from the next message on)")}
+## What to do now
+Read the conversation, then check the current state (git status, git log). Don't change, commit or push anything in this turn: reply with a short summary of where the task stands and what you'd do next, then end with the ${block} block, updated if the state differs from the latest report. The next message says how to go on.
+
 ${contract}
 `;
 }
