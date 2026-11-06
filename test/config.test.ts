@@ -551,6 +551,30 @@ test("the settings section's RPCs: export, preview (changes nothing) and import"
   assert.equal((await exported()).projects.length, 3);
 });
 
+test("Effort for orchestrators in a backup: exported, imported, checked, and kept when a file doesn't have it", async (t) => {
+  const { harness, exported, importFile, cli } = await setup();
+  t.after(() => harness.lifecycle.dispose());
+  assert.equal((await exported()).settings.orchestratorEffort, "high");
+  const file = (settings: Record<string, unknown>) => ({ format: CONFIG_FORMAT, version: 2, settings });
+
+  const set = await importFile(file({ orchestratorEffort: "low", relayPreferred: "codex" }));
+  assert.equal(set.exitCode, 0, set.stderr);
+  assert.match(set.stdout, /relayPreferred: "claude" → "codex"/);
+  assert.match(set.stdout, /orchestratorEffort: "high" → "low"/);
+  assert.equal((await cli(["config", "get", "orchestratorEffort"])).stdout, "low\n");
+
+  // A file from before the setting leaves it as it is.
+  const older = await importFile(file({ workers: "boat" }));
+  assert.equal(older.exitCode, 0, older.stderr);
+  assert.equal((await exported()).settings.orchestratorEffort, "low");
+
+  // A level it doesn't offer: the whole file is refused.
+  const bad = await importFile(file({ orchestratorEffort: "max", workers: "all" }));
+  assert.notEqual(bad.exitCode, 0);
+  assert.match(bad.stderr + bad.stdout, /orchestratorEffort must be one of low, medium, high, xhigh/);
+  assert.equal((await exported()).settings.workers, "boat", "nothing from a refused file");
+});
+
 test("parseConfigText: a byte-order mark is fine; problems are listed one per line", () => {
   const parsed = parseConfigText(`\uFEFF${JSON.stringify({ format: CONFIG_FORMAT, version: 1 })}`);
   assert.equal(parsed.version, 1);

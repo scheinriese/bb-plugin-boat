@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import plugin from "../server.ts";
-import type { OrchestratorChoicesDto } from "../contract.ts";
+import { TAGS, type OrchestratorChoicesDto } from "../contract.ts";
+import { orchestratorRpcMethods } from "../contract-orchestrator.ts";
 import {
   agentUnavailable,
   choiceSummary,
@@ -97,6 +98,8 @@ test("what the dialog is told: both agents with their models, which can start, t
   assert.equal(one.mainAgent, "claude");
   assert.equal(one.effort, "medium");
   assert.deepEqual(one.agents.map((agent) => [agent.provider, agent.available, agent.reason]), [["claude", false, "Not connected in boat.dev"], ["codex", true, null]]);
+  // The dialog refetches when settings, model presets or the agents boat.dev reports change.
+  assert.deepEqual(orchestratorRpcMethods.orchestratorChoices.tags(), [TAGS.settings, TAGS.protocol, TAGS.setup]);
   // Switching only runs with both agents.
   assert.equal(orchestratorChoices(both({ relay: { ...both().relay, enabled: true } }), "high").switching, true);
   assert.equal(orchestratorChoices(both({ relay: { ...both().relay, enabled: true }, agents: "claude", agentsSetting: "claude" }), "high").switching, false);
