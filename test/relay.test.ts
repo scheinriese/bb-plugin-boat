@@ -552,6 +552,25 @@ test("a successor starts with the other agent's Build model at Effort for orches
   assert.deepEqual([successor.providerId, successor.model, successor.reasoningLevel], ["codex", "gpt-6.2", "medium"]);
 });
 
+test("the switch back to Claude starts with Claude's Build model (bb's id) at Effort for orchestrators, and the plain title", async (t) => {
+  const { harness, threads } = await relayHost(t, { claude: 20, codex: 93 }, { orchestratorEffort: "low" });
+  // boat's form of the id in the presets table.
+  await harness.callRpc("saveModelTiers", {
+    tiers: { ...DEFAULT_TIERS, build: { claude: { model: "opus-5-6", effort: "max" }, codex: { model: "gpt-6.2", effort: "max" } } },
+  });
+  await harness.callRpc("startOrchestrator", { project: { kind: "boat", id: "storefront" }, prompt: "Ship it", title: null, hostId: null, cloud: false, provider: "codex" });
+  const first = harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as Record<string, unknown>;
+  assert.deepEqual([first.providerId, first.model, first.reasoningLevel], ["codex", "gpt-6.2", "low"]);
+  Object.assign(threads.get("thr_old")!, { providerId: "codex", title: "Storefront · Codex" });
+  const note = JSON.parse((await harness.runCli(["relay", "check", "--json"])).stdout) as { actions: { kind: string; to?: string }[] };
+  assert.deepEqual(note.actions.map((action) => [action.kind, action.to]), [["requested-handoff", "claude"]]);
+  threads.get("thr_old")!.updatedAt = Date.now() + 1_000;
+  const second = JSON.parse((await harness.runCli(["relay", "check", "--json"])).stdout) as { actions: { kind: string }[] };
+  assert.deepEqual(second.actions.map((action) => action.kind), ["took-over"]);
+  const successor = harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as Record<string, unknown>;
+  assert.deepEqual([successor.providerId, successor.model, successor.reasoningLevel, successor.title], ["claude-code", "claude-opus-5-6", "low", "Storefront"]);
+});
+
 test("Auto-detect: while boat.dev can't be read, the relay never moves an orchestrator to an agent it last reported missing", async (t) => {
   const { harness, threads } = await relayHost(t, { claude: 93, codex: 12 }, { agents: "auto" });
   const patchBoat = (changes: Record<string, unknown>) => {
