@@ -9,6 +9,10 @@ tasks and get each change reviewed.
 This is a community plugin. It is not made by or affiliated with boat.dev or
 bb. The workflow is inspired by Conductor's cloud workflow.
 
+A short demo with demo data (the chat replies are scripted):
+
+https://github.com/user-attachments/assets/769a7fcc-e995-48c4-b4fa-097ea47a7b97
+
 ![The Cloud agents page: work ready to review, running tasks, previews and sandboxes](docs/screenshots/overview.png)
 
 ![One task: its pull request, preview link and the agent's report](docs/screenshots/task.png)
