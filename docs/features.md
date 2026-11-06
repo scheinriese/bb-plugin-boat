@@ -345,8 +345,8 @@ grey out the sizes your boat plan doesn't include, with boat's reason.
   to XLarge (from the command line too), and XLarge for a project set from
   an agent's chat. On the page, picking XLarge is the OK.
 - **Measure instead of guess.** "Check this repo runs in a sandbox" (and
-  the test task) samples the sandbox's memory in use every second during
-  its first turn. The plugin measures it, not the agent (page cache doesn't
+  the test task, or `bb boat task start --measure-memory`) samples the
+  sandbox's memory in use every second during its first turn. The plugin measures it, not the agent (page cache doesn't
   count; swap does). The finished task shows the peak and a recommended
   size, for example "Peak memory: 6.1 of 8 GB. Recommended size: Large."
   The rule: the next size up when the peak reached 75% of the sandbox's

@@ -521,6 +521,10 @@ export function buildCli(runtime: Runtime) {
               "Run as a task chat the user can open and type into (needs bb Connect). Only for repos in a project with Run tasks as chats on, or any repo with How tasks run set to As chats everywhere",
           },
           headless: { type: "boolean", description: "Run headless in boat, whatever How tasks run says" },
+          "measure-memory": {
+            type: "boolean",
+            description: "Measure the first turn's peak memory and recommend a sandbox size (what Check this repo runs in a sandbox does)",
+          },
           "context-from": {
             type: "string",
             repeatable: true,
@@ -591,6 +595,7 @@ export function buildCli(runtime: Runtime) {
                 projectId: ctx.projectId ?? null,
                 // Never a confirm: a repo the rules don't trust needs the user (the page, or a project).
                 runner: options.chat ? "chat" : options.headless ? "boat" : null,
+                measureMemory: options["measure-memory"] === true,
                 signal: ctx.signal,
               },
               runtime.launchWaitMs,

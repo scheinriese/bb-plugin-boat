@@ -110,6 +110,10 @@ New sandboxes use the project's size, else the "Default sandbox size"
 setting (`machineType`); pass `--type` only when the work needs another
 size. Agents are told their sandbox's size.
 
+- To find the right size for a repo, start a check with
+  `bb boat task start ... --type large --measure-memory`: the finished task
+  shows its peak memory and a recommended size.
+
 - Out of memory: continue on the size the `[boat]` message names with
   `bb boat task followup <id> --type <size> --message "…"`. It moves the
   sandbox and continues: files stay, running processes and previews stop,
