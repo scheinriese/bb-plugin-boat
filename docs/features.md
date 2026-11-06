@@ -200,8 +200,8 @@ sandbox on: the idle stop waits, **Make room at your sandbox limit** picks
 another sandbox, and a task chat's turn stays open while its workflow
 runs. Every chat on the machine counts, not only the task's. A headless
 task whose agent has finished counts too while processes it left are
-still computing (`boat ps`: the same process busy in two readings a few
-minutes apart). Background work keeps a sandbox on for 12 hours at most;
+still computing (`boat ps`: the same program busy in two readings a few
+minutes apart; after a first one, the idle stop waits for the second). Background work keeps a sandbox on for 12 hours at most;
 a job that never ends (a dev server started in the background) runs into
 that limit, so start servers detached, as the briefs ask.
 
@@ -224,7 +224,9 @@ connection to (bb restarting its daemon there).
 
 ### The watchdog
 
-A plain check from the bb machine, no AI, every 30 seconds:
+A plain check from the bb machine, no AI, about once a minute (every 30
+seconds while a task runs, and at once when a message is queued for a
+machine that's offline):
 
 - **A stop behind bb's back.** When boat stops a chat's sandbox itself
   (its auto-stop, a crash, the boat.dev dashboard), bb would keep the
@@ -232,8 +234,8 @@ A plain check from the bb machine, no AI, every 30 seconds:
   ready". The plugin suspends the machine through bb to match, so the next
   message resumes it.
 - **Messages waiting on a stopped machine.** A suspended machine with a
-  message waiting for it is resumed after 45 seconds, if bb hasn't resumed
-  it already. Messages held for later on purpose (a retry at a usage
+  message waiting for it is resumed once the message has waited about a
+  minute, if bb hasn't resumed it already. Messages held for later on purpose (a retry at a usage
   limit's reset, a slot under bb's limits) don't count.
 - **One `[boat] Watchdog:` message per incident** to the task's
   orchestrator, with what happened and what the plugin did:

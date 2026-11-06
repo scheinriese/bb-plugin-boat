@@ -104,13 +104,17 @@ export function messagesWaiting(row: ThreadRow): boolean {
   return isOpen(row) && row.queuedWork === "waiting";
 }
 
-/** A child chat counts while its turn runs or while its own background work does. */
+/**
+ * A child chat counts while its turn runs or while its own background work
+ * does; not while it only waits on the user (an approval, a question).
+ */
 export function childWorking(row: ThreadRow): boolean {
   if (!isOpen(row)) return false;
   const display = row.runtime?.displayStatus ?? row.runtimeStatus;
   // Its machine is down: nothing of it is running.
   if (display === "waiting-for-host" || display === "provisioning") return false;
-  return row.status === "active" || row.status === "starting" || hasWork(rowWork(row));
+  if (hasWork(rowWork(row))) return true;
+  return (row.status === "active" || row.status === "starting") && row.hasPendingInteraction !== true;
 }
 
 /** What bb reports running on one machine. */

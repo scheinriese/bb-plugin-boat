@@ -66,6 +66,8 @@ test("bb's runner reads the list rows' fields: queued work and the activity coun
       { id: "thr_sub", status: "active", environmentHostId: "host_local", originPluginId: null },
       { id: "thr_task", status: "active", environmentHostId: "host_1", originPluginId: null },
       { id: "thr_mine", status: "active", environmentHostId: "host_local", originPluginId: "boat" },
+      // One waiting on the user's approval doesn't keep its parent's sandbox on either.
+      { id: "thr_asks", status: "active", hasPendingInteraction: true, environmentHostId: "host_local", originPluginId: null },
     ],
   };
   const bb = {

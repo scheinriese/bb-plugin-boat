@@ -578,3 +578,19 @@ test("a headless sandbox stopped at the limit while still computing: the orchest
   const note = await dog.noteFor(task.id);
   assert.match(note!, /Restart a job only if you still need it/);
 });
+
+test("messages waiting on a machine bb lost the connection to while its sandbox runs: told after 3 minutes, the sandbox left alone", async () => {
+  const w = await world();
+  const dog = w.watchdog();
+  w.host.status = "disconnected";
+  w.sandbox.state = "idle";
+  w.setRow({ queuedWork: "waiting" });
+  w.queued.set(w.task.threadId!, [{ id: "q1", threadId: w.task.threadId!, content: [], createdAt: w.now(), updatedAt: w.now(), state: "waiting", waitingOn: { kind: "host-offline" } }]);
+  await dog.tick();
+  w.advance(4 * MINUTE);
+  await dog.tick();
+  assert.equal(w.told.length, 1);
+  assert.match(w.told[0]!.text, /is running, but bb has lost its connection to it\. The plugin left it alone/);
+  assert.deepEqual(w.calls.suspend, []);
+  assert.deepEqual(w.calls.resume, []);
+});
