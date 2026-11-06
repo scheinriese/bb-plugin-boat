@@ -223,8 +223,9 @@ task, a single task is quicker and cheaper.
 
 [docs/orchestrators.md](docs/orchestrators.md) covers when to use one,
 starting one (**New orchestrator…**, or **Coordinate from this chat…** in a
-chat's menu), cloud orchestrators and full access, Claude ↔ Codex
-switching, and the orchestrator protocol.
+chat's menu) and the agent, model and effort it runs with, cloud
+orchestrators and full access, Claude ↔ Codex switching, and the
+orchestrator protocol.
 
 ## Documentation
 

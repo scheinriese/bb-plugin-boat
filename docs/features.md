@@ -25,6 +25,12 @@ The page in bb's sidebar changes with what you have:
 - **With an orchestrator:** **Needs you** (decisions only you can make) and
   **Orchestrators** move to the top.
 
+Until you have an orchestrator, a "Coordinate a project with an
+orchestrator" card says what one does (**How it works** unfolds the steps)
+and has **Set up an orchestrator**. Its × hides it for your account, on
+every device; Settings → Plugins → Boat Cloud Agents → Orchestrators →
+**Show the orchestrator card again** brings it back.
+
 The header has **New task**, and a ⋯ menu with **New sandbox**, **New chat
 in a Boat sandbox** and **New orchestrator…**. Each task opens a page with
 its report, review, transcript, previews, history and a reply box, plus
@@ -184,6 +190,20 @@ Idle sandboxes stop on their own. Their files and agent conversations
 survive and resume on the next follow-up. Closing a task deletes its
 sandbox, unless another open task uses it.
 
+boat's own auto-stop (**Hard stop after**, within your plan's cap) only
+sees boat's headless agents at work, not a chat's. While a turn runs in a
+task chat, or in any chat on a Boat sandbox (a cloud orchestrator, a chat
+you started there), the plugin moves that stop out shortly before it comes,
+by up to Hard stop after (within the cap). The task's history says "Kept
+the sandbox on while the agent works", once a turn. A sandbox with no turn
+running is never kept on: once the turn ends, it stops when idle, as above.
+Waiting isn't working either: a chat waiting for a slot, for a retry after
+a usage limit, for its machine, or on you (after one more extend) lets bb
+suspend the machine, and your next message resumes it. A turn is kept on
+for 12 hours at most, then the sandbox stops. The plugin never suspends a
+machine while something else works in its sandbox: a headless agent, a
+ship, or a live preview.
+
 ## How work lands: pull requests, or ship after approval
 
 Each project picks one (Projects → "How work lands", or
@@ -206,7 +226,8 @@ Each project picks one (Projects → "How work lands", or
   - The plugin rebases the commits onto the latest base branch and pushes.
     It never forces. Uncommitted changes, files the agent never added, or
     conflicts stop it before anything is pushed. Then the task closes and
-    its sandbox is deleted.
+    its sandbox is deleted, unless another open task (its review, say)
+    still uses it; the message after Ship or Close names that task.
   - Until it ships, the sandbox holds the only copy. Closing or cancelling
     such a task asks you to discard the work, and `bb boat sandbox delete`
     refuses. A task with nothing to ship closes like any other. boat deletes stopped sandboxes after 14 days, so after 10 days

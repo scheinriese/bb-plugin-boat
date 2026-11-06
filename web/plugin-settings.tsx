@@ -4,17 +4,20 @@
 // files. Rows look and behave like bb's own settings list: switches and
 // selects save at once, text and numbers when you leave the field.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import { experimental_useRpcMutation } from "@get-bb/plugin-sdk/app";
 import { rpcContract, rpcErrorInfo, type SandboxSizeDto, type SettingDto } from "../contract";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { useSandboxSizes, useSettingRows } from "./hooks";
-import { EVIDENCE_VARIABLES, evidenceMode, type EvidenceMode } from "./logic";
+import { PROVIDER_LABEL } from "./format";
+import { useOrchestratorCardHidden, useOrchestrators, useSandboxSizes, useSettingRows } from "./hooks";
+import { EVIDENCE_VARIABLES, ORCHESTRATOR_CARD_RULE, cardShownToast, evidenceMode, type EvidenceMode } from "./logic";
 import { ModelPresetsEditor, ProtocolEditor } from "./protocol-settings";
 import { SetupChecklist } from "./setup";
-import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch } from "./ui";
+import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, focusNeighbour, showError } from "./ui";
 
 type SettingValue = string | number | boolean;
 
@@ -437,20 +440,60 @@ export function ModelsSettings() {
 const SIZE_KEYS = new Set(["orchestratorMachineType"]);
 
 export function OrchestratorsSettings() {
-  const { rows, error } = useSectionRows("orchestrators");
+  const { rows, data, error } = useSectionRows("orchestrators");
   const saver = useSaveSetting();
   const sizes = useSandboxSizes().data?.sizes;
+  const only = data?.onlyAgent ?? null;
+  const extra = (row: SettingDto) => {
+    if (SIZE_KEYS.has(row.key)) return { sizes };
+    // Greyed out with one agent: say which one runs them.
+    if (row.key === "relayPreferred" && only !== null) return { describe: `Coding agents uses only ${PROVIDER_LABEL[only]} now, so it runs every orchestrator.` };
+    return {};
+  };
   return (
     <div className="space-y-3">
       <Loading error={error} rows={rows.length} />
       {rows.length > 0 ? (
         <SettingsCard>
-          <Rows rows={rows} saver={saver} extra={(row) => (SIZE_KEYS.has(row.key) ? { sizes } : {})} />
+          <Rows rows={rows} saver={saver} extra={extra} />
+          <OrchestratorCardRow />
         </SettingsCard>
       ) : null}
       <SubHeading description="The shared rules every orchestrator loads. A project's own rules file is read after it.">Protocol</SubHeading>
       <ProtocolEditor />
     </div>
+  );
+}
+
+/** Only while the Cloud agents page's orchestrator card is hidden (its ×): brings it back, on every device. */
+function OrchestratorCardRow() {
+  const [hidden, setHidden] = useOrchestratorCardHidden();
+  const orchestrators = useOrchestrators(hidden === true);
+  if (hidden !== true) return null;
+  // Not known yet: say nothing the page might not show.
+  const hasOrchestrator = orchestrators.data?.orchestrators.some((entry) => !entry.archived) ?? true;
+  return (
+    <SettingField
+      label="Orchestrator card"
+      description={`Hidden. ${ORCHESTRATOR_CARD_RULE}`}
+      control={
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7"
+          onClick={(event) => {
+            // The row goes at once: keep keyboard focus nearby.
+            focusNeighbour(event.currentTarget);
+            setHidden(false).then(() => {
+              const { title, description } = cardShownToast(hasOrchestrator);
+              toast.success(title, description ? { description } : undefined);
+            }, showError);
+          }}
+        >
+          Show the orchestrator card again
+        </Button>
+      }
+    />
   );
 }
 

@@ -10,14 +10,18 @@ import { rpcErrorInfo, type SettingsResultDto } from "../contract.ts";
 import plugin from "../server.ts";
 import {
   ALL_SETTINGS,
+  ORCHESTRATOR_EFFORTS,
   PLUGIN_SETTINGS,
   SETTINGS,
   SETTING_SECTIONS,
   crossFieldProblems,
   parseSettingText,
   runnersFor,
+  settingProblem,
   workersFromLegacy,
 } from "../src/settings.ts";
+import { ORCHESTRATOR_EFFORT_VALUES } from "../contract.ts";
+import { EFFORTS } from "../src/tiers.ts";
 import { PLUGIN_SETTINGS_KEY, SettingsError, createSettingsStore, pluginValues } from "../src/settings-store.ts";
 import { autoStopHours } from "../src/boat-api.ts";
 import { createTestHost } from "./fakes.ts";
@@ -93,15 +97,44 @@ test("every other setting is the plugin's own, in a section; no setting is in bo
   assert.equal(PLUGIN_SETTINGS.cloudOrchestratorFullAccess.section, "orchestrators");
   assert.equal(PLUGIN_SETTINGS.cloudOrchestratorFullAccess.default, true);
   assert.equal(PLUGIN_SETTINGS.orchestratorMachineType.label, "Size for chats on a Boat sandbox");
-  // The orchestrator section: size, then full access right after it.
+  // The orchestrator section: what they run as (agent, effort) first, then the sidebar, size, and full access right after size.
   const orchestrators = Object.entries(PLUGIN_SETTINGS).filter(([, spec]) => spec.section === "orchestrators").map(([key]) => key);
-  assert.deepEqual(orchestrators, ["sidebarLayout", "orchestratorMachineType", "cloudOrchestratorFullAccess"]);
+  assert.deepEqual(orchestrators, ["relayPreferred", "orchestratorEffort", "sidebarLayout", "orchestratorMachineType", "cloudOrchestratorFullAccess"]);
+  // The agent setting kept its key (backups) but left the switching block: it decides where new orchestrators start too.
+  assert.equal(PLUGIN_SETTINGS.relayPreferred.label, "Agent for orchestrators");
+  assert.ok(!("group" in PLUGIN_SETTINGS.relayPreferred), "not only about switching");
+  assert.deepEqual(PLUGIN_SETTINGS.relayPreferred.experimental_optionLabels, { claude: "Claude Code", codex: "Codex" });
+  assert.match(PLUGIN_SETTINGS.relayEnabled.description, /moves back to the Agent for orchestrators/);
   const retired = /\b(workers?|slots?|tiers?|relay|implementer|usage window|boat conversations?)\b/i;
   for (const [key, descriptor] of Object.entries(ALL_SETTINGS)) {
     const labels = descriptor.type === "select" ? Object.values(descriptor.experimental_optionLabels ?? {}) : [];
     for (const text of [descriptor.label, descriptor.description ?? "", ...labels]) assert.doesNotMatch(text, retired, `${key}: ${text}`);
     assert.doesNotMatch(descriptor.description ?? "", /boatPath|pollInterval/, key);
   }
+});
+
+test("Effort for orchestrators: High by default, the four levels Claude Code and Codex both take, and nothing else", () => {
+  const spec = PLUGIN_SETTINGS.orchestratorEffort;
+  assert.equal(spec.section, "orchestrators");
+  assert.equal(spec.label, "Effort for orchestrators");
+  assert.equal(spec.default, "high");
+  assert.deepEqual(spec.options, ["low", "medium", "high", "xhigh"]);
+  assert.deepEqual([...ORCHESTRATOR_EFFORTS], spec.options);
+  // The app's copy of the levels (it can't import server modules).
+  assert.deepEqual([...ORCHESTRATOR_EFFORT_VALUES], spec.options);
+  assert.deepEqual(spec.experimental_optionLabels, { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" });
+  // Each is one of the plugin's effort levels (low, medium, high, xhigh: Claude Code and Codex both take them in bb).
+  for (const level of spec.options) assert.ok((EFFORTS as readonly string[]).includes(level), level);
+  assert.match(spec.description, /wakes after every task turn/);
+  // Where the model comes from, and that it's the one Build tasks use.
+  assert.match(spec.description, /Build preset model, as for Build tasks \(Models, above\)/);
+  assert.match(PLUGIN_SETTINGS.relaySwitchBackBelow.description, /under this much of its usage limit/);
+  // Stored values: a level it doesn't offer falls back to High.
+  assert.equal(pluginValues({}).orchestratorEffort, "high");
+  assert.equal(pluginValues({ orchestratorEffort: "xhigh" }).orchestratorEffort, "xhigh");
+  for (const bad of ["max", "ultra", "ultracode", "none", "High", 3, null]) assert.equal(pluginValues({ orchestratorEffort: bad }).orchestratorEffort, "high", String(bad));
+  assert.equal(settingProblem("orchestratorEffort", spec, "max"), "orchestratorEffort must be one of low, medium, high, xhigh");
+  assert.equal(settingProblem("orchestratorEffort", spec, "medium"), null);
 });
 
 test("stored values: invalid ones fall back to the default; the cross-field rule; text values from the CLI", () => {
@@ -213,7 +246,10 @@ test("bb boat config get|set|reset: one command for both places, with the same c
   assert.equal(all.exitCode, 0, all.stderr);
   assert.match(all.stdout, /^bb's settings list \(Settings → Plugins → Boat Cloud Agents\):\n {2}agents = "auto"\n {2}workers = "boat"/);
   assert.match(all.stdout, /\n\nUsage limits:\n {2}autoFailover = true\n/);
-  assert.match(all.stdout, /\n\nOrchestrators \(optional\):\n {2}sidebarLayout = "sections"\n {2}orchestratorMachineType = "small"\n {2}cloudOrchestratorFullAccess = true\n/);
+  assert.match(
+    all.stdout,
+    /\n\nOrchestrators \(optional\):\n {2}relayPreferred = "claude"\n {2}orchestratorEffort = "high"\n {2}sidebarLayout = "sections"\n {2}orchestratorMachineType = "small"\n {2}cloudOrchestratorFullAccess = true\n/,
+  );
   assert.match(all.stdout, /maxActiveSandboxes = 0 {2}\(default 3\)/);
   const json = JSON.parse((await cli("config", "get", "--json")).stdout) as { settings: { key: string; where: string; section: string | null }[] };
   assert.deepEqual(json.settings.slice(0, 10).map((row) => row.key), Object.keys(SETTINGS));
@@ -239,6 +275,13 @@ test("bb boat config get|set|reset: one command for both places, with the same c
   assert.equal((await cli("config", "get", "relaySwitchBackBelow")).stdout, "50\n");
   const choice = await cli("config", "set", "sidebarLayout", "sideways");
   assert.match(choice.stderr, /sidebarLayout must be one of sections, pinned, plain/);
+  // Effort for orchestrators: the four levels only.
+  assert.equal((await cli("config", "set", "orchestratorEffort", "medium")).stdout, 'Set orchestratorEffort = "medium"  (default "high")\n');
+  const max = await cli("config", "set", "orchestratorEffort", "max");
+  assert.notEqual(max.exitCode, 0);
+  assert.match(max.stderr, /orchestratorEffort must be one of low, medium, high, xhigh/);
+  assert.equal((await cli("config", "get", "orchestratorEffort")).stdout, "medium\n");
+  assert.equal((await cli("config", "reset", "orchestratorEffort")).stdout, 'Reset orchestratorEffort = "high"\n');
   assert.match((await cli("config", "set", "autoFailover", "off")).stdout, /^Set autoFailover = false {2}\(default true\)/);
 
   // bb's list goes through bb (its own checks too).
@@ -323,6 +366,10 @@ test("the settings RPCs: rows for every section, saving several at once (all or 
   assert.equal(row(one, "relayEnabled").disabledReason, "Needs both Claude and Codex");
   assert.equal(row(one, "autoFailover").disabledReason, "Needs both Claude and Codex");
   assert.equal(row(one, "avoidExtraUsage").disabledReason, null, "it still applies to one agent");
+  // With one agent there's nothing to pick; the one agent runs every orchestrator. Effort still applies.
+  assert.equal(row(one, "relayPreferred").disabledReason, "Needs both Claude and Codex");
+  assert.equal(row(one, "relayPreferred").section, "orchestrators");
+  assert.equal(row(one, "orchestratorEffort").disabledReason, null);
 });
 
 test("sizes for pickers follow the plan; a fresh install runs at most 3 sandboxes at once", async (t) => {

@@ -742,6 +742,11 @@ export class SandboxSizes {
   }
 
   /** Refuses work on a sandbox that's moving (a follow-up, a close, a ship). The move's own follow-up goes through. */
+  /** A move to another size is under way for this sandbox (checking, stopping, resuming or sending). */
+  isResizing(sandboxId: string): boolean {
+    return this.jobs.has(sandboxId);
+  }
+
   assertSandboxNotResizing(sandboxId: string | null, hint = "Try again once it's up (a few minutes)."): void {
     if (sandboxId === null) return;
     const job = this.jobs.get(sandboxId);

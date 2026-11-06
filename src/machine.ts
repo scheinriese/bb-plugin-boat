@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { ACTIVE_STATES, MACHINE_TYPES, autoStopHours, withinAutoStopCap, type BoatApi, type MachineType } from "./boat-api.ts";
+import { ACTIVE_STATES, MACHINE_TYPES, type BoatApi, type MachineType } from "./boat-api.ts";
 import { BoatError, type BoatCli } from "./boat.ts";
 import type { BoatService, BoatSettings } from "./service.ts";
 import type { ConnectCheck } from "./connect.ts";
@@ -95,63 +95,6 @@ export function sshExecutor(cli: BoatCli, sandboxId: string): MachineExecutor {
       });
     },
   };
-}
-
-/**
- * Machine sandboxes always keep an auto-stop deadline (within the plan's cap
- * from `boat limits`); keepBoatMachines extends it while a chat is busy and
- * otherwise lets bb suspend the machine, which resumes on the next message.
- */
-async function machineTtlSeconds(boat: BoatApi, settings: () => Promise<BoatSettings>): Promise<number> {
-  const limits = await boat.limits().catch(() => null);
-  return Math.round(autoStopHours((await settings()).sandboxTtlHours, limits?.autoStopCapHours ?? null, 0.5) * 3600);
-}
-
-const KEEP_MARGIN_MS = 20 * 60_000;
-
-/** Run from the monitor: keep busy machine sandboxes alive, suspend idle ones before boat stops them. */
-export async function keepBoatMachines(
-  bb: BbPluginApi,
-  deps: {
-    boat: BoatApi;
-    settings: () => Promise<BoatSettings>;
-    signal: AbortSignal;
-    log: (message: string) => void;
-    /** Sandboxes to leave alone (a task moving to a chat there). */
-    skip?: (sandboxId: string) => boolean;
-  },
-): Promise<void> {
-  const hosts = ((await bb.sdk.hosts.list()) as unknown as {
-    id: string;
-    machineProviderId: string | null;
-    lifecycle?: { phase?: string; suspendedAt?: number | null } | null;
-  }[]).filter(
-    (host) => host.machineProviderId === MACHINE_PROVIDER_ID && host.lifecycle?.phase === "active" && !host.lifecycle?.suspendedAt,
-  );
-  if (hosts.length === 0) return;
-  const sandboxes = await deps.boat.list({ signal: deps.signal });
-  for (const host of hosts) {
-    const resource = resourceSchema.safeParse(await bb.experimental_machines.getResource(host.id));
-    if (!resource.success) continue;
-    if (deps.skip?.(resource.data.sandboxId)) continue;
-    const sandbox = sandboxes.find((entry) => entry.id === resource.data.sandboxId);
-    if (sandbox === undefined || sandbox.archiveAfter === null) continue;
-    if (Date.parse(sandbox.archiveAfter) - Date.now() > KEEP_MARGIN_MS) continue;
-    const threads = (await bb.sdk.threads.list({ hostId: host.id })) as unknown as { status?: string }[];
-    const busy = (Array.isArray(threads) ? threads : []).some(
-      (thread) => thread.status === "active" || thread.status === "starting" || thread.status === "pending",
-    );
-    try {
-      if (busy) {
-        await withinAutoStopCap(await machineTtlSeconds(deps.boat, deps.settings), (ttl) => deps.boat.extend(sandbox.id, ["--ttl", String(ttl)], deps.signal));
-      } else {
-        // bb drains the machine, calls our suspend (boat stop), and resumes it on demand.
-        await bb.sdk.hosts.experimental_suspend({ hostId: host.id });
-      }
-    } catch (error) {
-      deps.log(`keep machine ${host.id}: ${message(error)}`);
-    }
-  }
 }
 
 export function registerBoatMachine(

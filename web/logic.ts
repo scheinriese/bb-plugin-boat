@@ -589,3 +589,59 @@ export function peakSentence(memory: {
   else if (rec.reason !== "largest" && memory.project === null && rec.type !== rec.current && rec.allowed) parts.push(`Next time, pick ${rec.label} under More options in New task.`);
   return parts.join(" ");
 }
+
+// ------------------------------------------------------------------ Close and Ship toasts
+
+/** What Close or Ship did to the task's sandbox (closeTask and shipTask). */
+export type SandboxOutcome = "deleted" | "kept" | "gone" | "none";
+
+/** The server's reason a sandbox stayed, as a sentence: "Task t_9 still uses it." (null: none). */
+export function keptSentence(keptBecause: string | null): string | null {
+  const reason = keptBecause?.trim() ?? "";
+  return reason === "" ? null : `${reason.charAt(0).toUpperCase()}${reason.slice(1)}.`;
+}
+
+/** After Close: "Closed t_1 · sandbox kept", and why it was kept. */
+export function closeToast(input: { taskId: string; cancelled: boolean; sandbox: SandboxOutcome; keptBecause: string | null }): {
+  title: string;
+  description: string | null;
+} {
+  const note = input.sandbox === "deleted" ? " · sandbox deleted" : input.sandbox === "kept" ? " · sandbox kept" : "";
+  return {
+    title: `${input.cancelled ? "Cancelled" : "Closed"} ${input.taskId}${note}`,
+    description: input.sandbox === "kept" ? keptSentence(input.keptBecause) : null,
+  };
+}
+
+/** After Ship: whether the task closed, and what happened to its sandbox (kept: why); "stays open" only when it really does. */
+export function shipOutcome(input: { status: TaskDto["status"]; sandbox: SandboxOutcome; keptBecause: string | null }): string {
+  if (input.status !== "done" && input.status !== "cancelled") {
+    return input.status === "running" || input.status === "starting" ? "The task stays open: a new turn started." : "The task stays open.";
+  }
+  if (input.sandbox === "deleted") return "The task is closed and its sandbox deleted.";
+  if (input.sandbox === "kept") return input.keptBecause ? `The task is closed; its sandbox is kept: ${input.keptBecause}.` : "The task is closed; its sandbox is kept.";
+  return "The task is closed.";
+}
+
+// ------------------------------------------------------------------ The orchestrator card
+
+/** When the Cloud agents page shows the orchestrator card (unless it's hidden). */
+export const ORCHESTRATOR_CARD_RULE = "The Cloud agents page shows it while you have no orchestrator.";
+
+/** After the card's ×: what was hidden, and the Settings button that brings it back (in its own words). */
+export function cardHiddenToast(): { title: string; description: string } {
+  return {
+    title: "Orchestrator card hidden. New orchestrator stays in the ⋯ menu at the top.",
+    description: "Show the orchestrator card again in Settings → Plugins → Boat Cloud Agents → Orchestrators.",
+  };
+}
+
+/**
+ * After Show the orchestrator card again: "back on the page" only when it
+ * is (no orchestrator yet; unknown counts as having one).
+ */
+export function cardShownToast(hasOrchestrator: boolean): { title: string; description: string | null } {
+  return hasOrchestrator
+    ? { title: "The orchestrator card is shown again", description: ORCHESTRATOR_CARD_RULE }
+    : { title: "The orchestrator card is back on the Cloud agents page", description: null };
+}

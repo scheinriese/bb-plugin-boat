@@ -4,6 +4,7 @@ import type { PluginAgentToolResult } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { MACHINE_TYPES, type MachineType } from "./boat-api.ts";
 import { BoatError } from "./boat.ts";
+import { describeClose } from "./close-outcome.ts";
 import { agentLine, ago, decisionLines, limitsLine, overviewLink, taskDetail, taskNote, taskTable } from "./format.ts";
 import { parseProjectRef, type Runtime } from "./runtime.ts";
 import { TaskError } from "./service.ts";
@@ -498,7 +499,7 @@ export function registerTools(runtime: Runtime): void {
           discard: params.discard === true,
           signal: ctx.signal,
         });
-        return `Task ${result.task.id} is ${result.task.status}. Sandbox: ${result.sandbox}.`;
+        return (await describeClose(service, result, { asked: params.keep_sandbox === true })).text;
       }),
   });
 
@@ -522,7 +523,7 @@ export function registerTools(runtime: Runtime): void {
         runtime.changed();
         return [
           ...result.shipped.map((entry) => `Shipped ${entry.commits} commit${entry.commits === 1 ? "" : "s"} to ${entry.baseBranch} (${entry.sha.slice(0, 7)}).`),
-          result.sandbox === "deleted" ? `Task ${result.task.id} is closed; its sandbox is deleted.` : `Task ${result.task.id} stays open.`,
+          (await describeClose(service, result)).text,
         ].join("\n");
       }),
   });

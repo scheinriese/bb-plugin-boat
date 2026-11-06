@@ -18,9 +18,12 @@ import { toast } from "sonner";
 import { experimental_useRpcMutation, useBbContext, useBbNavigate, useSettings } from "@get-bb/plugin-sdk/app";
 import {
   MACHINE_TYPE_VALUES,
+  ORCHESTRATOR_EFFORT_VALUES,
   rpcContract,
   rpcErrorInfo,
   type LocalProjectDto,
+  type OrchestratorChoicesDto,
+  type OrchestratorEffortDto,
   type ProjectDto,
   type ProjectRefDto,
   type TaskDto,
@@ -52,10 +55,13 @@ import { cn } from "@/lib/utils";
 import {
   MACHINE_LABEL,
   PROVIDER_LABEL,
+  PROVIDER_SHORT,
   ROLE_LABEL,
   capitalize,
+  effortLabel,
   environmentLabel,
   isSandboxActive,
+  modelName,
   plural,
   reposLabel,
   shortRepo,
@@ -67,6 +73,7 @@ import {
   useBbProjectRepo,
   useCloudAgentsNavigation,
   useHosts,
+  useOrchestratorChoices,
   useOrchestratorProjects,
   useOrchestrators,
   useOverview,
@@ -76,7 +83,7 @@ import {
   useSettingRows,
   useStoredFlag,
 } from "./hooks";
-import { STARTERS, chatChoice, chatControl, projectSizeOnPlan, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
+import { STARTERS, chatChoice, chatControl, closeToast, projectSizeOnPlan, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
 import { Disclosure, Field, IconButton, InlineAlert, Kbd, RichText, SUGGEST_INPUT, ThreadName, showError } from "./ui";
 
@@ -966,6 +973,12 @@ function NewOrchestratorForm({ projectId, onDone }: { projectId: string | null; 
   const [where, setWhere] = useState<string | null>(null);
   const [takeOver, setTakeOver] = useState<TakeOver | null>(null);
   const [addingProject, setAddingProject] = useState(false);
+  // Agent and effort: the settings' (Settings → Orchestrators) until picked here.
+  const choices = useOrchestratorChoices();
+  const [agentPick, setAgentPick] = useState<Provider | null>(null);
+  const [effortPick, setEffortPick] = useState<OrchestratorEffortDto | null>(null);
+  const agent = agentPick ?? choices.data?.provider ?? null;
+  const effort = effortPick ?? choices.data?.effort ?? null;
 
   const hostList = hosts.data?.hosts ?? [];
   const primary = hostList.find((host) => host.primary) ?? hostList[0];
@@ -1057,6 +1070,9 @@ function NewOrchestratorForm({ projectId, onDone }: { projectId: string | null; 
         takeOverThreadId: takeOver?.threadId ?? null,
         takeOverText: takeOver?.file?.text ?? null,
         takeOverFileName: takeOver?.file?.name ?? null,
+        // What the line above Take over shows (null until it's known: then the server's same defaults).
+        provider: agent,
+        effort,
       });
       toast.success(cloud ? "Cloud orchestrator starting" : "Orchestrator started");
       if (movedTaskIds.length > 0) toast.success(`Moved ${plural(movedTaskIds.length, "task")}`);
@@ -1223,6 +1239,9 @@ function NewOrchestratorForm({ projectId, onDone }: { projectId: string | null; 
           </InlineAlert>
         ) : null}
       </div>
+      {choices.data !== undefined && agent !== null && effort !== null ? (
+        <AgentSection choices={choices.data} agent={agent} effort={effort} onAgent={setAgentPick} onEffort={setEffortPick} />
+      ) : null}
       <TakeOverSection value={takeOver} onChange={setTakeOver} />
       {/* Portaled; its form stops its submit event, so it never reaches this one. */}
       <NewProjectDialog
@@ -1330,6 +1349,89 @@ function LocalBranchWarning({
 
 const DISCLOSURE_BUTTON =
   "inline-flex items-center gap-1.5 rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/**
+ * What the orchestrator starts with, as one line ("Claude Code · Opus 5.5 ·
+ * High effort") that unfolds into an agent and an effort pick for this one.
+ * The model is the agent's Build preset model; agents it can't start on
+ * are greyed out with the reason.
+ */
+function AgentSection({
+  choices,
+  agent,
+  effort,
+  onAgent,
+  onEffort,
+}: {
+  choices: OrchestratorChoicesDto;
+  agent: Provider;
+  effort: OrchestratorEffortDto;
+  onAgent: (agent: Provider) => void;
+  onEffort: (effort: OrchestratorEffortDto) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const model = choices.agents.find((entry) => entry.provider === agent)?.model ?? null;
+  const summary = [PROVIDER_LABEL[agent], model ? modelName(model) : null, `${effortLabel(effort)} effort`].filter(Boolean).join(" · ");
+  const main = choices.mainAgent;
+  return (
+    <div className="space-y-2">
+      <button type="button" aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => setOpen((value) => !value)} className={DISCLOSURE_BUTTON}>
+        <Icon name="ChevronRight" className={cn("size-3.5 transition-transform duration-150", open && "rotate-90")} aria-hidden />
+        <span className="sr-only">Agent, model and effort: </span>
+        {summary}
+      </button>
+      {open ? (
+        <div id={panelId} className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-2">
+          <Field label="Agent" htmlFor="ca-orch-agent">
+            <Select value={agent} onValueChange={(next) => onAgent(next as Provider)}>
+              <SelectTrigger id="ca-orch-agent">
+                <SelectValue>{PROVIDER_LABEL[agent]}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {choices.agents.map((entry) => (
+                  <SelectItem
+                    key={entry.provider}
+                    value={entry.provider}
+                    disabled={!entry.available && entry.provider !== agent}
+                    textValue={PROVIDER_LABEL[entry.provider]}
+                  >
+                    <OptionLabel
+                      name={`${PROVIDER_LABEL[entry.provider]}${entry.provider === choices.provider ? " (default)" : ""}`}
+                      detail={entry.available ? modelName(entry.model) : entry.reason}
+                    />
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Effort" htmlFor="ca-orch-effort">
+            <Select value={effort} onValueChange={(next) => onEffort(next as OrchestratorEffortDto)}>
+              <SelectTrigger id="ca-orch-effort">
+                <SelectValue>{effortLabel(effort)}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {ORCHESTRATOR_EFFORT_VALUES.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {effortLabel(value)}
+                    {value === choices.effort ? " (default)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <p className="text-xs text-pretty text-muted-foreground sm:col-span-2">
+            The model is the agent's Build preset model, as for Build tasks (Settings → Models). Higher effort uses your limits faster: an
+            orchestrator wakes after every task turn. Default agent and effort: Settings → Orchestrators.
+            {choices.switching && agent !== main
+              ? ` Claude ↔ Codex switching moves it to ${PROVIDER_LABEL[main]} once ${PROVIDER_SHORT[main]} has room.`
+              : null}
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /** Optional: inherit a previous orchestrator's open tasks and/or a handoff file. */
 function TakeOverSection({
@@ -1630,9 +1732,8 @@ function CloseTaskForm({ task, onDone }: { task: TaskDto; onDone: () => void }) 
     event.preventDefault();
     try {
       const result = await close.mutate({ id: task.id, cancel, keepSandbox, discard: unshipped && !keepSandbox });
-      const sandboxNote =
-        result.sandbox === "deleted" ? " · sandbox deleted" : result.sandbox === "kept" ? " · sandbox kept" : "";
-      toast.success(`${cancel ? "Cancelled" : "Closed"} ${task.id}${sandboxNote}`);
+      const { title, description } = closeToast({ taskId: task.id, cancelled: cancel, sandbox: result.sandbox, keptBecause: result.keptBecause });
+      toast.success(title, description ? { description } : undefined);
       onDone();
     } catch (error) {
       if (!unshipped && rpcErrorInfo(error).code === "unshipped_work") {
@@ -1654,7 +1755,7 @@ function CloseTaskForm({ task, onDone }: { task: TaskDto; onDone: () => void }) 
             : unshipped
               ? "If this work hasn't shipped, closing throws it away: its commits exist only in the sandbox. To keep it, use Ship instead."
               : `The task is marked done. Its ${task.prUrl ? "PR and report stay" : "report stays"} available here.`}
-          {ownsSandbox ? " Its sandbox is deleted unless you keep it." : ""}
+          {ownsSandbox ? " Its sandbox is deleted unless you keep it or another open task still uses it." : ""}
         </DialogDescription>
       </DialogHeader>
       {ownsSandbox ? (

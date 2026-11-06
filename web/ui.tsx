@@ -495,6 +495,22 @@ export function RichText({ text, className }: { text: string; className?: string
   );
 }
 
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Before a control with focus disappears (a card hidden, a row that goes
+ * away): move focus to the closest focusable element before `gone` (else
+ * after it), where Shift+Tab would have gone, so keyboard and screen-reader
+ * users keep their place instead of starting over from the top.
+ */
+export function focusNeighbour(gone: Element | null): void {
+  if (gone === null || !gone.contains(document.activeElement)) return;
+  const others = Array.from(document.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((node) => !gone.contains(node) && node.getClientRects().length > 0);
+  const before = others.filter((node) => node.compareDocumentPosition(gone) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const target = before.at(-1) ?? others.find((node) => node.compareDocumentPosition(gone) & Node.DOCUMENT_POSITION_PRECEDING);
+  target?.focus();
+}
+
 /** A failed action as a toast: the plugin's message, and what to do under it (with links). */
 export function showError(error: unknown) {
   const info = rpcErrorInfo(error);

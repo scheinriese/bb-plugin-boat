@@ -11,7 +11,8 @@ import { TAGS } from "./contract.ts";
 import { BoatApi, parseBranchList, type MachineType } from "./src/boat-api.ts";
 import { BoatCli, resolveBoatBinary } from "./src/boat.ts";
 import { buildCli } from "./src/cli.ts";
-import { keepBoatMachines, registerBoatMachine } from "./src/machine.ts";
+import { registerBoatMachine } from "./src/machine.ts";
+import { createSandboxKeeper } from "./src/keeper.ts";
 import { notificationText } from "./src/format.ts";
 import { ORCHESTRATOR_INSTRUCTIONS, isOrchestratorMetadata, projectInstructions } from "./src/orchestrator.ts";
 import { dirname, join } from "node:path";
@@ -411,6 +412,21 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.active", onThread("active"));
   bb.events.on("thread.archived", onThread("archived"));
 
+  // boat's auto-stop doesn't see a bb chat working: keep its sandbox on while a turn runs.
+  const keepSandboxesOn = createSandboxKeeper(bb, {
+    boat,
+    store: service.store,
+    settings: readSettings,
+    signal: lifecycle.signal,
+    log: (line) => bb.log.warn(line),
+    info: (line) => bb.log.info(line),
+    changed: () => changed(),
+    // A task moving to a chat there: the move keeps its sandbox up.
+    skip: (sandboxId) => service.isMovingSandbox(sandboxId),
+    // A dispatch, ship or wake in flight there: never suspended under it.
+    held: (sandboxId) => service.holdsSandbox(sandboxId),
+  });
+
   // Monitor: check running tasks, collect results, notify, stop idle sandboxes.
   bb.background.service("monitor", {
     async start(signal) {
@@ -439,14 +455,7 @@ export default async function plugin(bb: BbPluginApi) {
           }
         }
         try {
-          await keepBoatMachines(bb, {
-            boat,
-            settings: readSettings,
-            signal: lifecycle.signal,
-            log: (line) => bb.log.warn(line),
-            // A task moving to a chat there: the move keeps its sandbox up.
-            skip: (sandboxId) => service.isMovingSandbox(sandboxId),
-          });
+          await keepSandboxesOn();
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
         }

@@ -86,13 +86,14 @@ const EVERY_SETTING = {
   autoFailover: false,
   avoidExtraUsage: false,
   relayEnabled: true,
-  relayPreferred: "codex",
   relaySwitchAt: 85,
   relaySwitchBackBelow: 40,
   relayQuietMinutes: 15,
   implementModel: "gpt-6.1-sol",
   reviewModel: "claude-opus-5-5",
   reasoningEffort: "high",
+  relayPreferred: "codex",
+  orchestratorEffort: "medium",
   sidebarLayout: "pinned",
   orchestratorMachineType: "default",
   cloudOrchestratorFullAccess: false,
@@ -316,8 +317,8 @@ test("a version 1 backup with every old setting imports into today's settings", 
   assert.equal(dry.exitCode, 0, dry.stderr);
   assert.match(dry.stdout, /From an older backup: workers from workerMode "chat" and adhocWorkerMode "boat": "projects"/);
   assert.match(dry.stdout, /Ignored, no longer settings: pollIntervalSeconds/);
-  // The one setting newer than the file is named, with the value it keeps.
-  assert.match(dry.stdout, /Not in the file, stays as it is: cloudOrchestratorFullAccess = true\n/);
+  // The settings newer than the file are named, with the values they keep (the defaults here).
+  assert.match(dry.stdout, /Not in the file, stay as they are: orchestratorEffort = "high", cloudOrchestratorFullAccess = true\n/);
   assert.doesNotMatch(dry.stdout, /Skipped, not settings of this version/);
 
   const result = await importFile(file);
@@ -337,7 +338,7 @@ test("a version 1 backup with every old setting imports into today's settings", 
 
   // The effective settings are the intended ones: the file's values by today's keys, defaults for the rest.
   const { workerMode: _w, adhocWorkerMode: _a, pollIntervalSeconds: _p, ...rest } = V1_SETTINGS;
-  const intended = { ...rest, workers: "projects", cloudOrchestratorFullAccess: true };
+  const intended = { ...rest, workers: "projects", orchestratorEffort: "high", cloudOrchestratorFullAccess: true };
   const after = await exported();
   assert.deepEqual(after.settings, Object.fromEntries(Object.keys(ALL_SETTINGS).map((key) => [key, intended[key as keyof typeof intended]])));
   assert.equal(after.version, 2);
@@ -551,6 +552,30 @@ test("the settings section's RPCs: export, preview (changes nothing) and import"
   const done = (await harness.callRpc("importConfig", { text, replaceProjects: false })) as { changes: number };
   assert.equal(done.changes, preview.changes);
   assert.equal((await exported()).projects.length, 3);
+});
+
+test("Effort for orchestrators in a backup: exported, imported, checked, and kept when a file doesn't have it", async (t) => {
+  const { harness, exported, importFile, cli } = await setup();
+  t.after(() => harness.lifecycle.dispose());
+  assert.equal((await exported()).settings.orchestratorEffort, "high");
+  const file = (settings: Record<string, unknown>) => ({ format: CONFIG_FORMAT, version: 2, settings });
+
+  const set = await importFile(file({ orchestratorEffort: "low", relayPreferred: "codex" }));
+  assert.equal(set.exitCode, 0, set.stderr);
+  assert.match(set.stdout, /relayPreferred: "claude" → "codex"/);
+  assert.match(set.stdout, /orchestratorEffort: "high" → "low"/);
+  assert.equal((await cli(["config", "get", "orchestratorEffort"])).stdout, "low\n");
+
+  // A file from before the setting leaves it as it is.
+  const older = await importFile(file({ workers: "boat" }));
+  assert.equal(older.exitCode, 0, older.stderr);
+  assert.equal((await exported()).settings.orchestratorEffort, "low");
+
+  // A level it doesn't offer: the whole file is refused.
+  const bad = await importFile(file({ orchestratorEffort: "max", workers: "all" }));
+  assert.notEqual(bad.exitCode, 0);
+  assert.match(bad.stderr + bad.stdout, /orchestratorEffort must be one of low, medium, high, xhigh/);
+  assert.equal((await exported()).settings.workers, "boat", "nothing from a refused file");
 });
 
 test("parseConfigText: a byte-order mark is fine; problems are listed one per line", () => {

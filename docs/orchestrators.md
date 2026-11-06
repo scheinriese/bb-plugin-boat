@@ -45,9 +45,10 @@ without one.
      card). Pick the project and say what to get done.
    - From a chat you already have: the chat's menu → **Coordinate from this
      chat…**, then pick the project. The orchestrator's tools and
-     instructions reach the chat's agent at its next session. **Stop
-     coordinating…** in the same menu undoes it (`bb boat orchestrator on
-     --project <id>` and `bb boat orchestrator off` do the same).
+     instructions reach the chat's agent at its next session; the chat
+     keeps its own agent, model and effort. **Stop coordinating…** in the
+     same menu undoes it (`bb boat orchestrator on --project <id>` and
+     `bb boat orchestrator off` do the same).
    - From the command line:
      ```sh
      bb boat orchestrator new --project web-app --prompt "Fix the three open checkout bugs: one pull request each"
@@ -56,6 +57,10 @@ without one.
    (`--machine <host id>`), or **In the cloud** (a Boat sandbox; `--cloud`,
    needs bb Connect). Without a choice, it runs in the cloud when bb Connect
    is set up, and on this computer otherwise.
+4. **Check what it runs as.** Under Where, one line says it, for example
+   "Claude Code · Opus 5.5 · High effort". Click it to pick another agent
+   or effort for this orchestrator; an agent it can't start on is greyed
+   out with the reason. See [Agent, model and effort](#agent-model-and-effort).
 
 "Take over from" in the dialog, or `--take-over <thread>`, moves a previous
 orchestrator's open tasks to the new one, with its last message.
@@ -72,6 +77,47 @@ Once you have an orchestrator, the Cloud agents page puts **Needs you** and
 - With task chats, they sit in the sidebar under their orchestrator
   (**Orchestrators in the sidebar**: sections by project, pinned, or no
   grouping).
+
+## Agent, model and effort
+
+Every orchestrator you start (from the dialog, the command line or a
+take-over) gets them explicitly:
+
+- **Agent:** **Agent for orchestrators** (Claude Code by default), or the
+  other one while boat.dev reports it as not connected. With one agent
+  (**Coding agents**), always that one.
+- **Model:** the agent's Build preset model, the one Build tasks use
+  (Settings → Models). Changing it there changes it for Build tasks too;
+  for orchestrators alone, use `--model`.
+- **Effort:** **Effort for orchestrators**: Low, Medium, High (the default)
+  or Extra high. An orchestrator mostly reads reports, plans and starts
+  tasks; the tasks do the heavy work at their own preset. Higher effort uses
+  your limits faster, since an orchestrator stays open and wakes after
+  every task turn.
+
+Change the defaults in Settings → Orchestrators (optional), or:
+
+```sh
+bb boat config set relayPreferred codex       # Agent for orchestrators
+bb boat config set orchestratorEffort medium  # Effort for orchestrators
+```
+
+For one orchestrator, pick in the dialog, or on the command line:
+
+```sh
+bb boat orchestrator new --project web-app --prompt "…" --provider codex --effort xhigh
+bb boat orchestrator new --project web-app --prompt "…" --model claude-fable-5-1   # a model picks its agent
+```
+
+`--provider` takes `claude-code` (or `claude`) and `codex`, and `--model`
+takes boat's ids too (`opus-5-5`); what you name wins over the settings.
+The command prints what it started with.
+
+[Claude ↔ Codex switching](#claude--codex-switching) starts an orchestrator
+on the other agent, with that agent's Build preset model at **Effort for
+orchestrators**. If you picked another effort for one orchestrator, it
+keeps it on both agents; a model you named comes back whenever it runs on
+that model's agent again.
 
 ## Cloud orchestrators
 
@@ -132,13 +178,15 @@ Codex.
 
 - Near a usage limit (**Switch at**, 90% of the fullest usage limit by
   default), the plugin asks the orchestrator for a handoff note, then
-  starts an orchestrator on the other agent in the same workspace. Open
-  tasks, decisions, task chats and your waiting messages move to it.
+  starts an orchestrator on the other agent in the same workspace (which
+  model and effort: see [Agent, model and effort](#agent-model-and-effort)).
+  Open tasks, decisions, task chats and your waiting messages move to it.
 - New tasks also start on the agent with room.
-- Once the **Main agent for orchestrators** is below **Switch back below**
-  (50%) again, and the orchestrator has been quiet for **Wait before
-  switching back** (10 minutes), it switches back. After any switch there's
-  a 30-minute pause.
+- Once the **Agent for orchestrators** (Settings → Orchestrators) is below
+  **Switch back below** (50%) again, and the orchestrator has been quiet
+  for **Wait before switching back** (10 minutes), it switches back. That
+  includes an orchestrator you started on the other agent. After any
+  switch there's a 30-minute pause.
 - **Switch back below** must be at least 5 under **Switch at**, so
   orchestrators don't bounce between agents.
 - Usage readings come from bb's Provider usage (the Account Pooler for the

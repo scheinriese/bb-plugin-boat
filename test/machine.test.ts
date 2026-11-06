@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BoatApi } from "../src/boat-api.ts";
 import type { BoatCli } from "../src/boat.ts";
-import { MACHINE_PROVIDER_ID, keepBoatMachines, keepSandboxKey, registerBoatMachine } from "../src/machine.ts";
+import { keepSandboxKey, registerBoatMachine } from "../src/machine.ts";
 import { defaultSettings, makeService } from "./fakes.ts";
 
 type Provider = {
@@ -102,34 +102,6 @@ test("a worker chat's machine adopts the prepared sandbox instead of creating on
   assert.equal(boat.created.length, before);
 });
 
-test("a busy chat's Boat sandbox is kept on within the plan's auto-stop cap", async () => {
-  const fake = makeService();
-  const sandbox = await fake.boat.create({ name: "orchestrator", type: "small", ttlSeconds: 7200 });
-  sandbox.archiveAfter = new Date(Date.now() + 5 * 60_000).toISOString();
-  const bb = {
-    sdk: {
-      hosts: { list: async () => [{ id: "host_1", machineProviderId: MACHINE_PROVIDER_ID, lifecycle: { phase: "active", suspendedAt: null } }] },
-      threads: { list: async () => [{ status: "active" }] },
-    },
-    experimental_machines: { getResource: async () => ({ sandboxId: sandbox.id, key: "k" }) },
-  } as unknown as BbPluginApi;
-  const keep = (settings = defaultSettings()) =>
-    keepBoatMachines(bb, { boat: fake.boat as unknown as BoatApi, settings: async () => settings, signal: new AbortController().signal, log: () => undefined });
-
-  // Hard stop after 4 h; the trial's cap (2 h, from boat limits) wins.
-  await keep();
-  assert.deepEqual(fake.boat.extended.at(-1), { id: sandbox.id, args: ["--ttl", "7200"] });
-  // boat reports a different cap.
-  fake.boat.limitsValue = { ...fake.boat.limitsValue, autoStopCapHours: 3 };
-  await keep();
-  assert.deepEqual(fake.boat.extended.at(-1), { id: sandbox.id, args: ["--ttl", "10800"] });
-  // boat can't be read: the setting, then the cap boat names when it refuses.
-  fake.boat.limitsError = new Error("boat.dev didn't answer");
-  fake.boat.autoStopCapSeconds = 7200;
-  await keep();
-  assert.deepEqual(fake.boat.extended.at(-1), { id: sandbox.id, args: ["--ttl", "7200"] });
-});
-
 test("a machine for a move to a chat keeps its sandbox: removal and cleanup leave it alone while the keep flag is set", async () => {
   const { boat, provider, args, kv } = setup();
   const prepared = await boat.create({ name: "bb t_1 fix", type: "default" });
@@ -150,26 +122,4 @@ test("a machine for a move to a chat keeps its sandbox: removal and cleanup leav
   await provider().create({ ...args("task-t_2"), inputs: { sandboxId: other.id, taskId: "t_2" } });
   assert.equal((await provider().reconcileCleanup({ key: "task-t_2" })).status, "removed");
   assert.ok(boat.calls.includes(`delete ${other.id}`));
-});
-
-test("the machine keeper leaves a sandbox alone while a task moves to a chat there", async () => {
-  const fake = makeService();
-  const sandbox = await fake.boat.create({ name: "worker", type: "small", ttlSeconds: 7200 });
-  sandbox.archiveAfter = new Date(Date.now() + 5 * 60_000).toISOString();
-  const suspended: string[] = [];
-  const bb = {
-    sdk: {
-      hosts: {
-        list: async () => [{ id: "host_1", machineProviderId: MACHINE_PROVIDER_ID, lifecycle: { phase: "active", suspendedAt: null } }],
-        experimental_suspend: async ({ hostId }: { hostId: string }) => void suspended.push(hostId),
-      },
-      threads: { list: async () => [] },
-    },
-    experimental_machines: { getResource: async () => ({ sandboxId: sandbox.id, key: "task-t_1-m1" }) },
-  } as unknown as BbPluginApi;
-  const deps = { boat: fake.boat as unknown as BoatApi, settings: async () => defaultSettings(), signal: new AbortController().signal, log: () => undefined };
-  await keepBoatMachines(bb, { ...deps, skip: (id) => id === sandbox.id });
-  assert.deepEqual(suspended, []);
-  await keepBoatMachines(bb, deps);
-  assert.deepEqual(suspended, ["host_1"]);
 });

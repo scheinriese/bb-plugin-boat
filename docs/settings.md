@@ -33,9 +33,13 @@ In this order:
 3. **Usage limits:** what happens near a usage limit. The rows that need
    both agents are greyed out with one.
 4. **Models:** the model presets, and models for tasks without one.
-5. **Orchestrators (optional):** the sidebar, the size of chats on a Boat
-   sandbox, full access for cloud orchestrators, and the orchestrator
-   protocol.
+5. **Orchestrators (optional):** the agent and effort new orchestrators
+   start with, the sidebar, the size of chats on a Boat sandbox, full
+   access for cloud orchestrators, and the orchestrator protocol. With one
+   agent, **Agent for orchestrators** is greyed out: that agent runs them.
+   While you've hidden the orchestrator card on the Cloud agents page,
+   **Show the orchestrator card again** brings it back (the page shows it
+   while you have no orchestrator).
 6. **Advanced** (collapsed).
 7. **Back up and restore.**
 
@@ -45,13 +49,14 @@ In this order:
 | Usage limits | When an agent hits its limit mid-task, continue with the other one | `autoFailover` | on |
 | Usage limits | Don't start work on paid extra usage | `avoidExtraUsage` | on |
 | Usage limits | Claude ↔ Codex switching for orchestrators | `relayEnabled` | off |
-| Usage limits | Main agent for orchestrators | `relayPreferred` | `claude` |
 | Usage limits | Switch at (% of a usage limit) | `relaySwitchAt` | `90` |
 | Usage limits | Switch back below (%) | `relaySwitchBackBelow` | `50` (at least 5 below Switch at) |
 | Usage limits | Wait before switching back (min) | `relayQuietMinutes` | `10` |
 | Models | Model for tasks | `implementModel` | empty (the Build preset's model) |
 | Models | Model for reviews | `reviewModel` | empty (the Review preset's model) |
 | Models | Effort | `reasoningEffort` | `default` (boat's) |
+| Orchestrators | Agent for orchestrators | `relayPreferred` | `claude` (Claude Code); `codex` |
+| Orchestrators | Effort for orchestrators | `orchestratorEffort` | `high`; `low`, `medium`, `xhigh` |
 | Orchestrators | Orchestrators in the sidebar | `sidebarLayout` | `sections` |
 | Orchestrators | Size for chats on a Boat sandbox | `orchestratorMachineType` | `small` |
 | Orchestrators | Full access for cloud orchestrators | `cloudOrchestratorFullAccess` | on |
@@ -66,9 +71,14 @@ Each row in the plugin's settings has a short description. For example:
 
 ```sh
 bb boat config set relaySwitchAt 85
+bb boat config set orchestratorEffort medium
 bb boat config set cloudOrchestratorFullAccess false
 bb boat config reset relaySwitchAt
 ```
+
+**Agent for orchestrators** was "Main agent for orchestrators" under Usage
+limits; it kept its key, so backups still set it. What both orchestrator
+settings do: [Agent, model and effort](orchestrators.md#agent-model-and-effort).
 
 ## Back up and restore
 
@@ -85,7 +95,8 @@ bb boat config import boat-config.json
 
 - The file holds every setting (bb's list and the plugin's own), your
   projects, your model presets and your custom orchestrator protocol. It
-  holds no tasks, sandboxes, chats or secrets.
+  holds no tasks, sandboxes, chats or secrets, and no page state such as a
+  hidden orchestrator card.
 - Import merges: it adds and updates projects and keeps the others. It
   applies the file, then prints what changed (settings old → new, projects
   added, updated or removed, presets, protocol). Run it with `--dry-run`
