@@ -179,6 +179,13 @@ export function limitsLine(limits: Limits | null, active: number, cap: number | 
   return parts.join(" · ");
 }
 
+/** The Tasks at once before asking setting, for boat_status and `bb boat status`. */
+export function tasksAtOnceLine(tasksBeforeAsking: number): string {
+  const count = Number.isFinite(tasksBeforeAsking) && tasksBeforeAsking > 0 ? Math.floor(tasksBeforeAsking) : 0;
+  if (count === 0) return "Tasks at once before asking: never ask (start only what the work needs)";
+  return `Tasks at once before asking: ${count} (ask the user before running more than ${count} at once)`;
+}
+
 /** The message posted into an orchestrator thread when its workers finish a turn. */
 /** Kinds that start a turn; a failover after them means this turn was handed over. */
 const TURN_STARTS = new Set(["dispatched", "followup", "followup-switch", "failover", "moved-to-chat"]);

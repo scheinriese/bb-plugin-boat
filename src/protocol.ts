@@ -4,7 +4,16 @@
 // followed by the project's own rules file from its main repo.
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { AGENTS_PLACEHOLDER, DEFAULT_PROTOCOL, EVIDENCE_PLACEHOLDER, TIER_TABLE_PLACEHOLDER, WORKERS_PLACEHOLDER } from "./default-protocol.ts";
+import {
+  AGENTS_PLACEHOLDER,
+  DEFAULT_PROTOCOL,
+  EVIDENCE_PLACEHOLDER,
+  OLD_TASKS_AT_ONCE_SENTENCE,
+  TASKS_AT_ONCE_PLACEHOLDER,
+  TIER_TABLE_PLACEHOLDER,
+  WORKERS_PLACEHOLDER,
+} from "./default-protocol.ts";
+import { DEFAULT_TASKS_BEFORE_ASKING } from "./orchestrator.ts";
 import type { RepoFileReader } from "./github.ts";
 import type { OrchestratorProject } from "./projects.ts";
 import { AGENT_NAME, onlyAgent, otherAgent } from "./relay.ts";
@@ -65,7 +74,7 @@ export type ProtocolSettings = Pick<
   BoatSettings,
   "workerMode" | "agents" | "implementProvider" | "relay" | "avoidExtraUsage" | "autoFailover" | "evidenceUploader"
 > &
-  Partial<Pick<BoatSettings, "adhocWorkerMode">>;
+  Partial<Pick<BoatSettings, "adhocWorkerMode" | "tasksBeforeAsking">>;
 
 /**
  * The shared protocol with its placeholders filled in: the tier table and,
@@ -82,7 +91,12 @@ export function renderSharedProtocol(text: string, tiers: TierMap, settings?: Pr
     .split(AGENTS_PLACEHOLDER)
     .join(agentsText(settings))
     .split(EVIDENCE_PLACEHOLDER)
-    .join(evidenceText(settings));
+    .join(evidenceText(settings))
+    .split(TASKS_AT_ONCE_PLACEHOLDER)
+    .join(tasksAtOnceText(settings))
+    // A saved copy of the older built-in protocol follows the setting too.
+    .split(OLD_TASKS_AT_ONCE_SENTENCE)
+    .join(tasksAtOnceText(settings));
   if (filled.includes(TIER_TABLE_PLACEHOLDER)) return filled.split(TIER_TABLE_PLACEHOLDER).join(table);
   return `${filled.trimEnd()}\n\n## Model presets (from the plugin settings)\n\n${table}\n`;
 }
@@ -149,6 +163,14 @@ export function agentsText(settings?: Omit<ProtocolSettings, "workerMode" | "evi
     );
   }
   return lines.join("\n");
+}
+
+/** `{{tasks-at-once}}`: when to ask before running more tasks at once (Tasks at once before asking; 0: never). */
+export function tasksAtOnceText(settings?: Pick<ProtocolSettings, "tasksBeforeAsking">): string {
+  const value = settings?.tasksBeforeAsking ?? DEFAULT_TASKS_BEFORE_ASKING;
+  const count = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  if (count === 0) return "You don't need to ask me before running several tasks at once, but each one uses sandbox time and agent usage: start only what the work needs.";
+  return `Ask me before running more than ${count} ${count === 1 ? "task" : "tasks"} at once, unless I asked for more: each one uses sandbox time and agent usage.`;
 }
 
 /** `{{evidence}}`: what to do about screenshots and recordings (a bullet in "Acting on reports"). */

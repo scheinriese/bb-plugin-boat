@@ -59,13 +59,15 @@ check every open task (finished, failed, waiting on the user, running), then
 act. A missed report must never stall work. Don't poll in a loop: you're
 messaged when a task finishes a turn.
 
-## Costs: ask before more than 3 at once
+## Costs: ask before starting many at once
 
 Each task uses sandbox time on the user's boat plan and agent usage on their
 subscription, and every implementation gets a review on top. Check
 `boat_status` before starting several, don't start more than there's room
-for, and ask the user before running more than 3 tasks at once, unless they
-asked for more. Queue the rest and start them as tasks finish.
+for, and ask the user before running more tasks at once than "Tasks at once
+before asking" allows (your instructions and `boat_status` name the number;
+0 means you needn't ask), unless they asked for more. Queue the rest and
+start them as tasks finish.
 
 ## Agents and usage limits
 

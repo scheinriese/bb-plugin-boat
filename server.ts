@@ -14,7 +14,7 @@ import { buildCli } from "./src/cli.ts";
 import { registerBoatMachine } from "./src/machine.ts";
 import { createSandboxKeeper } from "./src/keeper.ts";
 import { notificationText } from "./src/format.ts";
-import { ORCHESTRATOR_INSTRUCTIONS, isOrchestratorMetadata, projectInstructions } from "./src/orchestrator.ts";
+import { DEFAULT_TASKS_BEFORE_ASKING, isOrchestratorMetadata, orchestratorInstructions, projectInstructions } from "./src/orchestrator.ts";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createChatRunner } from "./src/chat.ts";
@@ -136,6 +136,7 @@ export default async function plugin(bb: BbPluginApi) {
       notConnectedAgents: agentsSetting === "auto" ? setup.lastMissingAgents(values.environment) : [],
       cloudOrchestratorFullAccess: values.cloudOrchestratorFullAccess,
       extraProtectedBranches: parseBranchList(values.extraProtectedBranches),
+      tasksBeforeAsking: values.tasksBeforeAsking,
       modelTiers: parseTierMap(await bb.storage.kv.get<unknown>(MODEL_TIERS_KEY)),
       // How tasks run: chats possible at all (workerMode), and for repos outside your projects.
       ...runnersFor(values.workers),
@@ -327,6 +328,21 @@ export default async function plugin(bb: BbPluginApi) {
   registerTools(runtime);
   registerRpc(runtime);
 
+  // Tasks at once before asking, for the instructions (bb asks for them synchronously).
+  let tasksBeforeAsking = await settings
+    .get()
+    .then((values) => values.tasksBeforeAsking)
+    .catch(() => DEFAULT_TASKS_BEFORE_ASKING);
+  settings.onChange((keys) => {
+    if (!keys.includes("tasksBeforeAsking")) return;
+    void settings
+      .get()
+      .then((values) => {
+        tasksBeforeAsking = values.tasksBeforeAsking;
+      })
+      .catch(() => undefined);
+  });
+
   // Orchestrator threads get the boat tools, the playbook skill, and standing
   // instructions; every thread can use the general `boat` skill and CLI.
   bb.agents.configure((context) => {
@@ -335,7 +351,7 @@ export default async function plugin(bb: BbPluginApi) {
         tools: [...TOOL_NAMES],
         skills: ["boat", "boat-orchestrator"],
         // bb caps instructions at 4096 characters; the full protocol comes from boat_protocol.
-        instructions: `${ORCHESTRATOR_INSTRUCTIONS}${projectInstructions(parseOrchestratorProject(context.pluginMetadata.project))}`.slice(0, 4096),
+        instructions: `${orchestratorInstructions(tasksBeforeAsking)}${projectInstructions(parseOrchestratorProject(context.pluginMetadata.project))}`.slice(0, 4096),
       };
     }
     // Another chat in a worker's workspace learns where it is and who else works there.

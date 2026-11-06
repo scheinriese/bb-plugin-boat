@@ -120,6 +120,8 @@ export interface BoatSettings {
   cloudOrchestratorFullAccess: boolean;
   /** Branches protected in every sandbox on top of main and master (the "Extra protected branches" setting). */
   extraProtectedBranches: string[];
+  /** Orchestrators ask the user before running more tasks than this at once (0: never ask). */
+  tasksBeforeAsking: number;
 }
 
 /** A notice that can't go out yet (its orchestrator is being handed over): tried again later. */

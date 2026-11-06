@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { EFFORT_VALUES, TIER_VALUES, tierMapSchema } from "../contract.ts";
-import { AGENTS_PLACEHOLDER, DEFAULT_PROTOCOL, EVIDENCE_PLACEHOLDER, TIER_TABLE_PLACEHOLDER, WORKERS_PLACEHOLDER } from "../src/default-protocol.ts";
+import { AGENTS_PLACEHOLDER, DEFAULT_PROTOCOL, EVIDENCE_PLACEHOLDER, TASKS_AT_ONCE_PLACEHOLDER, TIER_TABLE_PLACEHOLDER, WORKERS_PLACEHOLDER } from "../src/default-protocol.ts";
 import { createRepoFileReader } from "../src/github.ts";
 import { ORCHESTRATOR_INSTRUCTIONS, kickoffPrompt } from "../src/orchestrator.ts";
 import type { OrchestratorProject } from "../src/projects.ts";
@@ -223,7 +223,7 @@ test("the built-in protocol is adapted to boat: tools, tiers, reconcile on wake"
 test("the built-in protocol is generic: no personal setup, setting-dependent facts are placeholders", () => {
   // The owner-specific effort guidance (a media pipeline) is gone.
   assert.doesNotMatch(DEFAULT_PROTOCOL, /pipeline|intake|receipts|re-crops/i);
-  for (const placeholder of [WORKERS_PLACEHOLDER, AGENTS_PLACEHOLDER, EVIDENCE_PLACEHOLDER]) assert.ok(DEFAULT_PROTOCOL.includes(placeholder), placeholder);
+  for (const placeholder of [WORKERS_PLACEHOLDER, AGENTS_PLACEHOLDER, EVIDENCE_PLACEHOLDER, TASKS_AT_ONCE_PLACEHOLDER]) assert.ok(DEFAULT_PROTOCOL.includes(placeholder), placeholder);
   // Facts that depend on the settings aren't stated as fixed.
   assert.doesNotMatch(DEFAULT_PROTOCOL, /Claude is the default agent|regular bb chat on its own boat sandbox|links last 7 days/);
 });

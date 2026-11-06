@@ -99,7 +99,7 @@ test("every other setting is the plugin's own, in a section; no setting is in bo
   assert.equal(PLUGIN_SETTINGS.orchestratorMachineType.label, "Size for chats on a Boat sandbox");
   // The orchestrator section: what they run as (agent, effort) first, then the sidebar, size, and full access right after size.
   const orchestrators = Object.entries(PLUGIN_SETTINGS).filter(([, spec]) => spec.section === "orchestrators").map(([key]) => key);
-  assert.deepEqual(orchestrators, ["relayPreferred", "orchestratorEffort", "sidebarLayout", "orchestratorMachineType", "cloudOrchestratorFullAccess"]);
+  assert.deepEqual(orchestrators, ["relayPreferred", "orchestratorEffort", "tasksBeforeAsking", "sidebarLayout", "orchestratorMachineType", "cloudOrchestratorFullAccess"]);
   // The agent setting kept its key (backups) but left the switching block: it decides where new orchestrators start too.
   assert.equal(PLUGIN_SETTINGS.relayPreferred.label, "Agent for orchestrators");
   assert.ok(!("group" in PLUGIN_SETTINGS.relayPreferred), "not only about switching");
@@ -248,7 +248,7 @@ test("bb boat config get|set|reset: one command for both places, with the same c
   assert.match(all.stdout, /\n\nUsage limits:\n {2}autoFailover = true\n/);
   assert.match(
     all.stdout,
-    /\n\nOrchestrators \(optional\):\n {2}relayPreferred = "claude"\n {2}orchestratorEffort = "high"\n {2}sidebarLayout = "sections"\n {2}orchestratorMachineType = "small"\n {2}cloudOrchestratorFullAccess = true\n/,
+    /\n\nOrchestrators \(optional\):\n {2}relayPreferred = "claude"\n {2}orchestratorEffort = "high"\n {2}tasksBeforeAsking = 5\n {2}sidebarLayout = "sections"\n {2}orchestratorMachineType = "small"\n {2}cloudOrchestratorFullAccess = true\n/,
   );
   assert.match(all.stdout, /maxActiveSandboxes = 0 {2}\(default 3\)/);
   const json = JSON.parse((await cli("config", "get", "--json")).stdout) as { settings: { key: string; where: string; section: string | null }[] };

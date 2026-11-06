@@ -716,6 +716,7 @@ export function defaultSettings(overrides: Partial<BoatSettings> = {}): BoatSett
     sandboxTtlHours: 4,
     maxActiveSandboxes: 0,
     stopIdleAfterMinutes: 30,
+    tasksBeforeAsking: 5,
     freeSlotsWhenFull: true,
     deleteSandboxOnClose: true,
     reviewSandbox: "auto",

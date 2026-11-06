@@ -15,6 +15,7 @@ import { DEFAULT_EVIDENCE_UPLOADER, evidenceSourceProblem } from "./evidence.ts"
 export const NUMBER_RANGES = {
   maxActiveSandboxes: { min: 0, max: 1000, integer: true },
   stopIdleAfterMinutes: { min: 0, max: 1440, integer: true },
+  tasksBeforeAsking: { min: 0, max: 100, integer: true },
   relaySwitchAt: { min: 5, max: 100, integer: true },
   relaySwitchBackBelow: { min: 0, max: 95, integer: true },
   relayQuietMinutes: { min: 0, max: 240, integer: true },
@@ -269,7 +270,14 @@ export const PLUGIN_SETTINGS = {
     experimental_optionLabels: { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high" },
     default: "high",
   },
-
+  tasksBeforeAsking: {
+    section: "orchestrators",
+    type: "number",
+    label: "Tasks at once before asking",
+    description: "Orchestrators ask you before running more tasks than this at the same time: each one uses sandbox hours and agent usage. 0: never ask.",
+    experimental_schema: range("tasksBeforeAsking"),
+    default: 5,
+  },
   sidebarLayout: {
     section: "orchestrators",
     type: "select",
