@@ -52,6 +52,7 @@ async function world(options: { resumeFails?: boolean } = {}) {
   let row: Record<string, unknown> = { id: task.threadId, status: "idle", queuedWork: "none", activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 0, activeWorkflowCount: 0 } };
   const queued = new Map<string, QueuedRow[]>();
   const events = new Map<string, { createdAt: number }[]>();
+  const commands = new Map<string, { description: string; summary: string | null; taskStatus: string }[]>();
   const calls = { suspend: [] as string[], resume: [] as string[], updates: [] as { queuedMessageId: string; input: unknown[] }[] };
   let failSuspend: () => boolean = () => false;
   const bb = {
@@ -78,6 +79,7 @@ async function world(options: { resumeFails?: boolean } = {}) {
           update: async (args: { queuedMessageId: string; input: unknown[] }) => void calls.updates.push(args),
         },
         events: { list: async ({ threadId }: { threadId: string }) => events.get(threadId) ?? [] },
+        timeline: async ({ threadId }: { threadId: string }) => ({ activeBackgroundCommands: commands.get(threadId) ?? [] }),
       },
     },
     experimental_machines: { getResource: async () => ({ sandboxId: sandbox.id, key: `task-${task.id}` }) },
@@ -105,6 +107,7 @@ async function world(options: { resumeFails?: boolean } = {}) {
     host,
     queued,
     events,
+    commands,
     calls,
     kv,
     told,
@@ -674,4 +677,18 @@ test("the dispatch hold's own row takes the note; a deleted carrier lets the nex
   await dog.cancelled(heldRow);
   assert.notEqual(await dog.noteFor(w.task.id), null);
   assert.equal(dog.dispatch(inline).action, "wait");
+});
+
+test("a stop that only ended a dev server running in the background isn't an incident", async () => {
+  const w = await world();
+  const dog = w.watchdog();
+  w.setRow({ activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 1, activeWorkflowCount: 0 } });
+  w.commands.set(w.task.threadId!, [{ description: "npm run dev -- --host 0.0.0.0", summary: null, taskStatus: "running" }]);
+  await dog.tick();
+  w.boatStops();
+  w.advance(MINUTE);
+  await dog.tick();
+  assert.deepEqual(w.calls.suspend, [w.host.id], "bb's record is still brought in line");
+  assert.equal(w.told.length, 0);
+  assert.equal(await dog.noteFor(w.task.id), null);
 });

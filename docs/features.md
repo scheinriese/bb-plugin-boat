@@ -201,9 +201,17 @@ another sandbox, and a task chat's turn stays open while its workflow
 runs. Every chat on the machine counts, not only the task's. A headless
 task whose agent has finished counts too while processes it left are
 still computing (`boat ps`: the same program busy in two readings a few
-minutes apart; after a first one, the idle stop waits for the second). Background work keeps a sandbox on for 12 hours at most;
-a job that never ends (a dev server started in the background) runs into
-that limit, so start servers detached, as the briefs ask.
+minutes apart; after a first one, the idle stop waits for the second, and
+making room leaves it alone either way). boat's, bb's and the system's
+own processes there never count. Background work keeps a sandbox on for
+12 hours at most.
+
+A server left running in the background (a dev server, a preview, a
+watcher) isn't background work: nothing waits for it to end. Like any
+preview, it keeps its sandbox on only while its preview is live, under the
+[preview rules](#previews). The plugin tells a server from a finite job (a
+build, a test run) by bb's description of the command, like "Start the
+Vite dev server" or `npm run dev`; when bb can't say, the command counts.
 
 boat's own auto-stop (**Hard stop after**, within your plan's cap) only
 sees boat's headless agents at work, not a chat's. While a turn runs in a
@@ -240,7 +248,8 @@ machine that's offline):
 - **One `[boat] Watchdog:` message per incident** to the task's
   orchestrator, with what happened and what the plugin did:
   - a task's or orchestrator's sandbox stopped while background work was
-    running (and what ran);
+    running (and what ran), a headless task's included: one whose
+    finished agent left processes computing;
   - a chat's messages waited more than 3 minutes on a stopped or
     disconnected machine (10 while bb is resuming it), and whether the
     plugin resumed it. An orchestrator whose own messages are stuck can't
@@ -249,16 +258,17 @@ machine that's offline):
     may be stuck; the plugin leaves it running).
 
   Nothing for a normal stop (the idle stop after a finished turn with
-  nothing in the background). Each incident goes out once, even across
-  restarts, and waits while an orchestrator is handed over to its
-  successor.
+  nothing in the background, or a stop that only ended a dev server).
+  Each incident goes out once, even across restarts, and waits while an
+  orchestrator is handed over to its successor.
 - **The worker hears about it.** After a stop that cut off background
   work, the worker's next message, however it arrives, starts with a short
   note: when it stopped, that its background jobs and `/tmp` were lost,
   and to rerun what it still needs now. The plugin's own follow-ups carry
   it in their text. A message you or the orchestrator type in the task
   chat gets it as a note for the agent in front of it; a message going
-  straight to the worker waits 10 seconds once for that. After a stop at
+  straight to the worker waits 10 seconds once for that. Each stop gets
+  its own note, so a second interruption is told too. After a stop at
   the 12-hour limit, the note says the job may have been stuck instead.
 
 ## How work lands: pull requests, or ship after approval

@@ -21,7 +21,7 @@
 // jobs and /tmp were lost, and to rerun what it still needs.
 import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { KEEP_LIMIT_MS, NO_WORK, addWork, describeWork, hasWork, messagesWaiting, rowWork, threadsOnMachine, type BackgroundWork, type ThreadRow } from "./activity.ts";
+import { KEEP_LIMIT_MS, NO_WORK, addWork, describeWork, hasWork, messagesWaiting, rowWork, threadsOnMachine, withoutServers, type BackgroundWork, type ThreadRow } from "./activity.ts";
 import { ACTIVE_STATES, busyProcesses, type BoatApi, type Sandbox } from "./boat-api.ts";
 import { RESUME_NOTE_PREFIX, WATCHDOG_PREFIX, quietNotice, resumeNoteText, stoppedNotice, waitingNotice, type NoticeSubject } from "./format.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
@@ -605,7 +605,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       if (running && upNow.get(host.id) !== true) deps.resumed?.(host.id);
       upNow.set(host.id, running);
       if (running) {
-        remember(host.id, rows, at);
+        // A dev server cut off isn't lost work: what's remembered leaves servers out.
+        remember(host.id, await withoutServers(bb, rows), at);
         resumed.delete(host.id);
         problems.delete(host.id);
         tries.delete(host.id);
@@ -620,7 +621,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
           // Reported once per stop: a retry of a failed suspend only tries again.
           const first = count === 0;
           // Not seen up since a restart of the plugin: what bb last knew runs there.
-          if (first && !seen.has(host.id)) remember(host.id, rows, stoppedAt);
+          if (first && !seen.has(host.id)) remember(host.id, await withoutServers(bb, rows), stoppedAt);
           const hadWork = first && seen.has(host.id);
           const done = await reconcile(host, sandboxId, at);
           const cause = "boat stopped it (its auto-stop, a crash or the boat.dev dashboard), not bb.";

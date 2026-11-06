@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { KEEP_LIMIT_MS, NO_WORK, describeWork, rowWork, type ThreadRow } from "../src/activity.ts";
+import { KEEP_LIMIT_MS, NO_WORK, describeWork, isServerCommand, readMachineActivity, rowWork, type ThreadRow } from "../src/activity.ts";
 import { busyProcesses, isInfrastructure, parseProcessSample } from "../src/boat-api.ts";
 import { createChatRunner } from "../src/chat.ts";
 import { makeService } from "./fakes.ts";
@@ -292,4 +292,53 @@ test("the idle stop tells the watchdog when it stops a headless sandbox with not
   await later(5 * MINUTE, () => env.service.sweep());
   assert.ok(env.boat.calls.includes(`stop ${task.sandboxId}`));
   assert.deepEqual(env.plannedSandboxStops, [task.sandboxId]);
+});
+
+test("servers started in the background are told from finite jobs by bb's description of them", () => {
+  for (const text of [
+    "Start the Vite dev server",
+    "Run dev server on port 5173",
+    "npm run dev -- --host 0.0.0.0 --port 4321",
+    "pnpm preview",
+    "Start the API server",
+    "python3 -m http.server 8000",
+    "Launch the preview",
+    "npx vite --host",
+    "Run tsc in watch mode",
+    "jest --watch",
+    "rails server -b 0.0.0.0",
+    "serve -s dist",
+  ]) {
+    assert.equal(isServerCommand(text), true, text);
+  }
+  for (const text of ["Run the full test suite", "cargo bench", "Run server tests", "npm run build", "vite build", "Run vitest", "Build the site", "pytest -x tests/server", "Wait for the migration to finish"]) {
+    assert.equal(isServerCommand(text), false, text);
+  }
+});
+
+test("a dev server left running in the background isn't background work; a test run next to it is", async () => {
+  const commands: Record<string, { description: string; summary: string | null; taskStatus: string }[]> = {
+    thr_worker: [
+      { description: "Start the Vite dev server", summary: null, taskStatus: "running" },
+      { description: "Run the full test suite", summary: null, taskStatus: "running" },
+    ],
+    thr_preview: [{ description: "npm run dev -- --port 4321", summary: "Serving on :4321", taskStatus: "running" }],
+  };
+  const rows: Record<string, ThreadRow[]> = {
+    host_1: [{ id: "thr_worker", status: "idle", queuedWork: "none", activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 2, activeWorkflowCount: 0 } }],
+    host_2: [{ id: "thr_preview", status: "idle", queuedWork: "none", activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 1, activeWorkflowCount: 0 } }],
+  };
+  const bb = {
+    pluginId: "boat",
+    sdk: {
+      hosts: { list: async () => [] },
+      threads: {
+        list: async (args: { hostId?: string }) => (args.hostId ? (rows[args.hostId] ?? []) : []),
+        timeline: async ({ threadId }: { threadId: string }) => ({ activeBackgroundCommands: commands[threadId] ?? [] }),
+      },
+    },
+  } as unknown as BbPluginApi;
+  assert.equal((await readMachineActivity(bb, "host_1")).background.commands, 1);
+  // Only a dev server: nothing in the background keeps the machine on (a live preview does, under its own rules).
+  assert.deepEqual((await readMachineActivity(bb, "host_2")).background, NO_WORK);
 });

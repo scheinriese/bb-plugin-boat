@@ -20,6 +20,8 @@ interface Machine {
   status?: string;
   /** Child chats of its chats, by parent id, as bb lists them. */
   children?: Record<string, Record<string, unknown>[]>;
+  /** The background commands of its chats, by thread id, as bb's timeline describes them. */
+  commands?: Record<string, { description: string; summary: string | null; taskStatus: string }[]>;
 }
 
 /** bb's side: Boat sandbox machines and the chats on them. */
@@ -39,6 +41,9 @@ function fakeBb(machines: () => Machine[]) {
         experimental_suspend: async ({ hostId }: { hostId: string }) => void suspended.push(hostId),
       },
       threads: {
+        timeline: async ({ threadId }: { threadId: string }) => ({
+          activeBackgroundCommands: machines().flatMap((machine) => machine.commands?.[threadId] ?? []),
+        }),
         list: async ({ hostId, parentThreadId }: { hostId?: string; parentThreadId?: string }) => {
           if (parentThreadId !== undefined) return machines().flatMap((machine) => machine.children?.[parentThreadId] ?? []);
           const threads = machines().find((machine) => machine.hostId === hostId)?.threads() ?? [];
@@ -643,4 +648,21 @@ test("a headless sandbox whose finished agent left processes computing is kept o
   await keeper()();
   assert.deepEqual(env.boat.extended, [{ id: sandbox.id, args: ["--ttl", "7200"] }]);
   assert.match(env.store.events(task.id, 50).find((event) => event.kind === KEPT_ON_EVENT)!.text, /while processes the agent started are still running/);
+});
+
+test("a dev server left in the background doesn't keep a sandbox on past boat's stop; a build does", async () => {
+  const server = orchestratorMachine(() => ({ id: "thr_orch", status: "idle", queuedWork: "none", activity: { activeBackgroundCommandCount: 1 } }), {
+    commands: { thr_orch: [{ description: "Start the Vite dev server", summary: null, taskStatus: "running" }] },
+  });
+  await server.start();
+  await server.keeper()();
+  assert.deepEqual(server.boat.extended, []);
+  assert.deepEqual(server.suspended, ["host_orch"]);
+
+  const build = orchestratorMachine(() => ({ id: "thr_orch", status: "idle", queuedWork: "none", activity: { activeBackgroundCommandCount: 1 } }), {
+    commands: { thr_orch: [{ description: "Build the release bundle", summary: null, taskStatus: "running" }] },
+  });
+  const sandbox = await build.start();
+  await build.keeper()();
+  assert.deepEqual(build.boat.extended, [{ id: sandbox.id, args: ["--ttl", "7200"] }]);
 });

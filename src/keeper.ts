@@ -22,7 +22,7 @@
 // "running"), a dispatch, ship or wake in flight, or a live preview.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { KEEP_LIMIT_MS, hasWork, rowWork, workingChildren, type ThreadRow } from "./activity.ts";
+import { KEEP_LIMIT_MS, hasWork, rowWork, withoutServers, workingChildren, type ThreadRow } from "./activity.ts";
 import { ACTIVE_STATES, autoStopHours, withinAutoStopCap, type BoatApi } from "./boat-api.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import type { BoatSettings } from "./service.ts";
@@ -215,7 +215,8 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
   async function threadsOn(hostId: string): Promise<ThreadRow[] | null> {
     try {
       const raw = (await bb.sdk.threads.list({ hostId, includeHidden: true })) as unknown;
-      return (Array.isArray(raw) ? raw : ((raw as { threads?: unknown[] } | null)?.threads ?? [])) as ThreadRow[];
+      // A dev server in the background follows the preview rules, not the background work's.
+      return await withoutServers(bb, (Array.isArray(raw) ? raw : ((raw as { threads?: unknown[] } | null)?.threads ?? [])) as ThreadRow[]);
     } catch (error) {
       deps.log(`keep ${hostId} on: ${error instanceof Error ? error.message : String(error)}`);
       return null;
