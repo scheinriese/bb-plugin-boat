@@ -60,7 +60,9 @@ files and the agent's conversation survive.
 
 ## Task chats and headless tasks
 
-- `--headless` on `task start` always works (quick checks nobody opens).
+- `--headless` on `task start` works everywhere (quick checks nobody opens),
+  except in a sandbox that runs bb for a repo the rules don't trust
+  (`untrusted_sandbox`: use a new sandbox).
 - `--chat` only when the user asked for a task chat, and only for repos in
   a project with Run tasks as chats on (or any repo with How tasks run set
   to As chats everywhere). On `untrusted_repo`, don't retry and don't work

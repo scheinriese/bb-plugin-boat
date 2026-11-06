@@ -128,6 +128,11 @@ one. New installs start with none.
 - **As chats everywhere:** every task is a task chat, unless its project
   has **Run tasks as chats** off.
 
+A task becomes a chat only if every repo it clones may: a project's other
+repo that's also in a project with **Run tasks as chats** off makes its
+tasks headless (New task and the task's history say so). A sandbox that
+runs bb, or had it installed, takes no other repo, headless or not.
+
 Open a task chat to watch every step or write to it; the plugin treats your
 turn as part of the task. Ultracode (Claude) and Ultra (Codex) work there.
 Task chats need bb Connect and take about a minute longer to start. Their
@@ -140,14 +145,19 @@ checkout, with the brief, the latest report and the messages so far (in a
 file outside the repo). The headless conversation stops, follow-ups go to
 the chat, and the chat's first turn only reads up and sums up where the
 task stands. There's no way back. For repos your projects don't run as
-chats, the dialog warns and asks you to confirm. It isn't offered while
-the turn runs, without bb Connect, or for a sandbox shared with another
-open task or lent by you; start a new task as a chat with
-`--context-from <id>` there instead.
+chats (the task's own, or one another task ran in that sandbox before),
+the dialog names them and asks you to confirm. It waits while the turn
+runs, without bb Connect, or while another open task shares the sandbox.
+It isn't offered for a sandbox you lent, one where another chat's bb runs,
+or a review in its open task's sandbox; start a new task as a chat
+instead (`--context-from <id>` gives it this one's brief and report).
 
 A single task can also go its own way: `--chat` or `--headless` on
 `bb boat task start` (Run as a chat in New task). Agents only get `--chat`
-for repos the rules trust; for any other repo you decide, on the page.
+where the rules would make the task a chat anyway; for any other repo you
+decide, on the page. That confirm is a step in the UI, not a security
+boundary: an agent that already has bb access could send it too (see
+SECURITY.md).
 
 Idle sandboxes stop on their own. Their files and agent conversations
 survive and resume on the next follow-up. Closing a task deletes its

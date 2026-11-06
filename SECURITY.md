@@ -48,13 +48,27 @@ rights of the user who runs bb. In particular, it uses:
   agents, not a security boundary. Protect your base branches on GitHub.
 - **bb machine credentials** in the sandboxes of task chats, chats on a
   Boat sandbox and cloud orchestrators. Those sandboxes run bb's daemon,
-  connected to your bb through bb Connect. Task chats are opt-in (How tasks
-  run). New orchestrators run in such a sandbox by default once bb Connect
-  is set up (`--local` or "This computer" keeps them on the bb machine), and
-  with full access in their sandbox unless you turn off **Full access for
-  cloud orchestrators** (`cloudOrchestratorFullAccess`). An agent that a
-  hostile repo talks into misbehaving could use those credentials. Keep
-  **How tasks run** on **In boat** (the default) for repos you don't trust.
+  connected to your bb through bb Connect. Task chats are opt-in: How tasks
+  run and your projects' **Run tasks as chats** decide per repo. You can
+  also make a single task a chat: **Run as a chat** in New task, or
+  **Continue as a chat** on a headless task's page, which installs bb into
+  the task's existing sandbox (where other tasks may have run before) and
+  writes its conversation to `~/.boat-tasks` there. For repos the rules
+  don't run as chats, both warn and need your confirm, and agents' `bb boat
+  task start --chat` and `bb boat task continue-as-chat` are refused. That
+  confirm is a step in the UI, not a security boundary: any bb client can
+  send it through the plugin's RPC, including an agent that already has bb
+  access (a task chat, or a cloud orchestrator). A sandbox that runs bb, or
+  had it installed, takes no repo the rules don't trust, headless or not.
+  New orchestrators run in such a sandbox by default once bb Connect is set
+  up (`--local` or "This computer" keeps them on the bb machine), and with
+  full access in their sandbox unless you turn off **Full access for cloud
+  orchestrators** (`cloudOrchestratorFullAccess`). An agent that a hostile
+  repo talks into misbehaving could use those credentials. Keep **How tasks
+  run** on **In boat** (the default) for repos you don't trust, and don't
+  confirm the warning for them. That keeps them away from bb's credentials
+  as long as no agent with bb access works for them; it isn't enough on its
+  own once one does.
 - **Other bb plugins**, through bb: usage readings (Account Pooler, the
   Claude Code and Codex providers), Push notifications and bb Connect's
   status, when installed.
