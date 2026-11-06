@@ -327,7 +327,11 @@ export class FakeBoat {
     return "base";
   }
   async environmentInfo(name: string) {
-    return { name, secretNames: ["A_KEY"], secretFiles: [], repos: [], passGithub: true, passSecrets: true, passAgentsCredentials: true, proxyAiCredentials: false };
+    return { name, secretNames: ["A_KEY"], secretFiles: [], repos: [], passGithub: true, passSecrets: true, passAgentsCredentials: true, passSandboxCredentials: false, proxyAiCredentials: false };
+  }
+  aiProxyOn: boolean | null = true;
+  async aiProxy() {
+    return this.aiProxyOn;
   }
   prompts: { provider: string; model: string | null; effort: string | null; text: string }[] = [];
   async prompt(options: {

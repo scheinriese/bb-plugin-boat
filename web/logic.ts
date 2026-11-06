@@ -645,3 +645,22 @@ export function cardShownToast(hasOrchestrator: boolean): { title: string; descr
     ? { title: "The orchestrator card is shown again", description: ORCHESTRATOR_CARD_RULE }
     : { title: "The orchestrator card is back on the Cloud agents page", description: null };
 }
+
+// ------------------------------------------------------------------ project access
+
+/**
+ * What a project's environment passes in that its workers could misuse, for
+ * the warning notes on its access line: boat credentials (the boat CLI's
+ * login, for the whole account), and real AI keys when the AI proxy is off
+ * (only when agent logins go in at all). Unknowns show nothing.
+ */
+export function accessWarnings(access: {
+  passSandboxCredentials: boolean | null;
+  passAgentsCredentials: boolean | null;
+  aiProxy: boolean | null;
+}): ("boat-credentials" | "real-ai-keys")[] {
+  const notes: ("boat-credentials" | "real-ai-keys")[] = [];
+  if (access.passSandboxCredentials === true) notes.push("boat-credentials");
+  if (access.passAgentsCredentials === true && access.aiProxy === false) notes.push("real-ai-keys");
+  return notes;
+}

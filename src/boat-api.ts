@@ -253,8 +253,23 @@ export interface EnvironmentInfo {
   passGithub: boolean | null;
   passSecrets: boolean | null;
   passAgentsCredentials: boolean | null;
+  /** boat credentials: the in-sandbox boat CLI login, for the whole account. */
+  passSandboxCredentials: boolean | null;
+  /** With "Safe for third parties": AI logins still go in, as proxy placeholders. */
   proxyAiCredentials: boolean | null;
   safeForThirdParties: boolean | null;
+}
+
+/**
+ * `boat ai proxy --json` (no state given: it only shows). On, sandboxes get
+ * placeholder AI keys and real keys never enter them. null: couldn't tell.
+ */
+export function parseAiProxy(raw: JsonRecord): boolean | null {
+  const nested = rec(raw.proxy) ?? rec(raw.aiProxy);
+  const enabled = bool(raw.enabled) ?? bool(nested?.enabled);
+  if (enabled !== null) return enabled;
+  const state = str(raw.state) ?? str(nested?.state);
+  return state === "on" ? true : state === "off" ? false : null;
 }
 
 /** A sandbox port on a stable HTTPS URL (`boat host`); a private one carries its token in the query. */
@@ -944,9 +959,15 @@ printf '%s\n' "$OUT" | tr -d '\r' | grep -i '^github-authentication-token-expira
       passGithub: bool(effective.passGithub) ?? bool(env.passGithub),
       passSecrets: bool(effective.passSecrets) ?? bool(env.passSecrets),
       passAgentsCredentials: bool(effective.passAgentsCredentials) ?? bool(env.passAgentsCredentials),
+      passSandboxCredentials: bool(effective.passSandboxCredentials) ?? bool(env.passSandboxCredentials),
       proxyAiCredentials: bool(env.proxyAiCredentials),
       safeForThirdParties: bool(env.safeForThirdParties),
     };
+  }
+
+  /** The account's AI credentials proxy (read-only: `boat ai proxy` without on or off). */
+  async aiProxy(signal?: AbortSignal): Promise<boolean | null> {
+    return parseAiProxy(await this.cli.json(["ai", "proxy"], { timeoutMs: 30_000, signal }));
   }
 
   /**

@@ -816,7 +816,7 @@ export const rpcContract = defineRpcContract({
       keptBecause: z.string().nullable(),
     }),
   },
-  /** What a project's workers can reach: GitHub access per repo, and the environment's secret NAMES (never values). */
+  /** What a project's workers can reach: GitHub access per repo, the environment's secret NAMES (never values), and what else it passes in. */
   projectAccess: {
     input: z.object({ projectId: z.string() }),
     output: z.object({
@@ -826,7 +826,12 @@ export const rpcContract = defineRpcContract({
       secretFiles: z.array(z.string()),
       passGithub: z.boolean().nullable(),
       passSecrets: z.boolean().nullable(),
+      passAgentsCredentials: z.boolean().nullable(),
+      /** boat credentials: the boat CLI's login, for the whole account (workers could start, stop and delete any sandbox). */
+      passSandboxCredentials: z.boolean().nullable(),
       proxyAiCredentials: z.boolean().nullable(),
+      /** Sandboxes get placeholder AI keys (`boat ai proxy on`); false: real keys go in; null: couldn't tell. */
+      aiProxy: z.boolean().nullable(),
       repos: z.array(
         z.object({
           repo: z.string(),

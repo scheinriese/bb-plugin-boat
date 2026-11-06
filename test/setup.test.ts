@@ -32,7 +32,7 @@ import {
   type SetupSettings,
 } from "../src/setup.ts";
 import { TaskError } from "../src/service.ts";
-import { BoatApi, TRIAL_AUTO_STOP_HOURS, autoStopCapFromLimits, autoStopCapFromText, withinAutoStopCap } from "../src/boat-api.ts";
+import { BoatApi, TRIAL_AUTO_STOP_HOURS, autoStopCapFromLimits, autoStopCapFromText, parseAiProxy, withinAutoStopCap } from "../src/boat-api.ts";
 
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/boat-json/${name}`, import.meta.url), "utf8")) as JsonRecord;
 
@@ -91,6 +91,7 @@ test("boat's JSON parses as the plugin needs it (real shapes, no variable values
     passAgentsCredentials: true,
     passGithub: true,
     passSecrets: true,
+    passSandboxCredentials: true,
     credentialProfileId: null,
   });
   assert.doesNotMatch(JSON.stringify(environments), /fake_value|EXAMPLE_TOKEN/, "variable values are dropped");
@@ -106,6 +107,48 @@ test("the effective toggles count, not the raw ones (Safe for third parties)", (
   const [base] = parseEnvironments(raw);
   assert.equal(base!.passGithub, false);
   assert.equal(base!.passAgentsCredentials, false);
+  assert.equal(base!.passSandboxCredentials, true, "the raw toggle when effective doesn't say");
+  environments[0] = { ...environments[0], effective: { passSandboxCredentials: false }, passSandboxCredentials: true };
+  assert.equal(parseEnvironments(raw)[0]!.passSandboxCredentials, false);
+  environments[0] = { name: "bare" };
+  assert.equal(parseEnvironments(raw)[0]!.passSandboxCredentials, null, "unknown, not false");
+});
+
+test("boat credentials and the AI proxy, as boat reports them (env info, `boat ai proxy`)", async () => {
+  assert.equal(parseAiProxy({ enabled: true, pricing: { dailyDollars: 0 } }), true);
+  assert.equal(parseAiProxy({ enabled: false }), false);
+  assert.equal(parseAiProxy({ proxy: { enabled: true } }), true);
+  assert.equal(parseAiProxy({ state: "off" }), false);
+  assert.equal(parseAiProxy({ event: "error", code: "api_key_action_forbidden" }), null);
+
+  const seen: string[][] = [];
+  const answers: Record<string, JsonRecord> = {
+    "ai proxy": { enabled: false },
+    "env info web": {
+      environment: {
+        name: "web",
+        envContents: "EXAMPLE_TOKEN=fake_value_123\n",
+        effective: { passAgentsCredentials: true, passGithub: true, passSecrets: true, passSandboxCredentials: false },
+        passSandboxCredentials: true,
+        proxyAiCredentials: false,
+        safeForThirdParties: false,
+      },
+    },
+  };
+  const api = new BoatApi({
+    json: async (args: string[]) => {
+      seen.push(args);
+      return answers[args.join(" ")]!;
+    },
+  } as unknown as BoatCli);
+  assert.equal(await api.aiProxy(), false);
+  // Only shown: no on or off.
+  assert.deepEqual(seen[0], ["ai", "proxy"]);
+  const info = await api.environmentInfo("web");
+  assert.equal(info.passSandboxCredentials, false, "the effective toggle wins");
+  assert.equal(info.passAgentsCredentials, true);
+  assert.deepEqual(info.secretNames, ["EXAMPLE_TOKEN"]);
+  assert.doesNotMatch(JSON.stringify(info), /fake_value/);
 });
 
 test("agents come from the environment's credential profile", () => {

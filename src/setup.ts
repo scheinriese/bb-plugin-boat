@@ -152,6 +152,8 @@ export interface EnvironmentFacts {
   passAgentsCredentials: boolean | null;
   passGithub: boolean | null;
   passSecrets: boolean | null;
+  /** boat credentials: the in-sandbox boat CLI login, for the whole account. */
+  passSandboxCredentials: boolean | null;
   /** null: the account's default credential profile. */
   credentialProfileId: string | null;
 }
@@ -287,6 +289,7 @@ export function parseEnvironments(raw: JsonRecord): EnvironmentFacts[] {
         passAgentsCredentials: toggle("passAgentsCredentials"),
         passGithub: toggle("passGithub"),
         passSecrets: toggle("passSecrets"),
+        passSandboxCredentials: toggle("passSandboxCredentials"),
         credentialProfileId: str(entry.credentialProfileId),
       };
     });
