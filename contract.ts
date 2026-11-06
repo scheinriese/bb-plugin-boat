@@ -524,6 +524,8 @@ export const rpcContract = defineRpcContract({
       }),
       /** bb Connect (cloud orchestrators and worker chats need it): ready, off, or unknown; fix says how to set it up. */
       connect: z.object({ state: z.enum(["ready", "off", "unknown"]), fix: z.string().nullable() }),
+      /** This bb can run task chats (the plugin's chat runner is there). */
+      taskChats: z.boolean(),
     }),
     tags: () => [TAGS.overview, TAGS.sandboxes],
   },
@@ -679,6 +681,13 @@ export const rpcContract = defineRpcContract({
       notifyThreadId: z.string().nullable(),
       /** Project defaults for repo, base branch and environment. */
       projectId: z.string().nullable().optional(),
+      /** "chat": a task chat; "boat": headless in boat; null or absent: How tasks run and the repo's project decide. */
+      runner: z.enum(["chat", "boat"]).nullable().optional(),
+      /**
+       * The repos the user saw the warning for and started as a task chat anyway
+       * ([] for a task with no repo); null or absent: no warning confirmed.
+       */
+      confirmUntrustedChat: z.array(z.string().trim().max(200)).max(20).nullable().optional(),
     }),
     output: launchResult,
   },

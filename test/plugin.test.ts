@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { makePluginAgentConfigurationContext } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server.ts";
+import { rpcErrorInfo } from "../contract.ts";
 import { createTestHost } from "./fakes.ts";
 
 const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
@@ -808,4 +809,86 @@ test("the page's sandboxes say what uses them, and a sandbox can be saved as a s
   assert.equal(saved.name, "web-ready");
   assert.ok((state().snapshots as { name: string }[]).some((entry) => entry.name === "web-ready"));
   await assert.rejects(harness.callRpc("saveSnapshot", { sandboxId, name: "no spaces" }), /isn't a snapshot name/);
+});
+
+test("Run as a chat: --chat only for repos the rules trust, --headless always; the RPC takes the user's confirm", async (t) => {
+  const { harness, state } = await setup({ workers: "projects" });
+  t.after(() => harness.lifecycle.dispose());
+  stubConnect(harness, { paired: true, enabled: true });
+  assert.equal((await harness.runCli(["project", "add", "--name", "Web app", "--repo", "acme/web@main"])).exitCode, 0);
+  const sandboxes = () => Object.keys(state().sandboxes ?? {}).length;
+
+  // An agent can't make an untrusted repo a chat.
+  const untrusted = await harness.runCli(["task", "start", "--title", "x", "--repo", "acme/api", "--brief", "b", "--chat", "--json"], { threadId: "thr_orch" });
+  assert.notEqual(untrusted.exitCode, 0);
+  const error = JSON.parse(untrusted.stdout).error as { code: string; hint: string };
+  assert.equal(error.code, "untrusted_repo");
+  assert.match(error.hint, /the user decides/);
+  assert.equal(sandboxes(), 0);
+
+  const both = await harness.runCli(["task", "start", "--title", "x", "--repo", "acme/web", "--brief", "b", "--chat", "--headless"], { threadId: "thr_orch" });
+  assert.notEqual(both.exitCode, 0);
+  const test = await harness.runCli(["task", "start", "--test", "--chat", "--json"], { threadId: "thr_orch" });
+  assert.equal(JSON.parse(test.stdout).error.code, "invalid_value");
+  assert.match(JSON.parse(test.stdout).error.message, /drop --chat/);
+
+  // The RPC: the dialog's confirm lets it through to the next check (bb Connect, off here).
+  stubConnect(harness, { paired: false, enabled: true });
+  const trustedOff = await harness.runCli(["task", "start", "--title", "x", "--project", "web-app", "--brief", "b", "--chat", "--json"], { threadId: "thr_orch" });
+  assert.equal(JSON.parse(trustedOff.stdout).error.code, "connect_required");
+  assert.match(JSON.parse(trustedOff.stdout).error.hint, /--headless/);
+  const input = {
+    title: "x",
+    brief: "b",
+    role: "implement",
+    repo: "acme/api",
+    branch: null,
+    baseBranch: null,
+    provider: null,
+    model: null,
+    sandbox: null,
+    machineType: null,
+    notifyThreadId: null,
+  };
+  await assert.rejects(harness.callRpc("startTask", { ...input, runner: "chat" }), (failure: unknown) => rpcErrorInfo(failure).code === "untrusted_repo");
+  await assert.rejects(
+    harness.callRpc("startTask", { ...input, runner: "chat", confirmUntrustedChat: ["acme/api"] }),
+    (failure: unknown) => rpcErrorInfo(failure).code === "connect_required",
+  );
+  assert.equal(sandboxes(), 0);
+  const headless = (await harness.callRpc("startTask", { ...input, repo: "acme/web", runner: "boat" })) as { task: { id: string; runner: string } };
+  assert.equal(headless.task.runner, "boat");
+  // The fake plan has two sandboxes.
+  assert.equal((await harness.runCli(["task", "close", headless.task.id, "--cancel"])).exitCode, 0);
+
+  const overview = (await harness.callRpc("overview", null)) as { taskChats: boolean };
+  assert.equal(overview.taskChats, true);
+
+  // Everywhere, bb Connect off: --headless still starts; the agent tool can ask for headless, never for a chat.
+  assert.equal((await harness.runCli(["config", "set", "workers", "all"])).exitCode, 0);
+  const cli = await harness.runCli(["task", "start", "--title", "y", "--repo", "acme/api", "--brief", "b", "--headless", "--json"], { threadId: "thr_orch" });
+  assert.equal(cli.exitCode, 0, cli.stderr || cli.stdout);
+  assert.equal(JSON.parse(cli.stdout).task.runner, "boat");
+  assert.equal((await harness.runCli(["task", "close", JSON.parse(cli.stdout).task.id, "--cancel"])).exitCode, 0);
+  const tool = toolText(
+    await harness.callAgentTool(
+      "boat_dispatch",
+      { title: "Quick check", brief: "Check it.", repo: "acme/api", tier: "light", reason: "Quick", headless: true },
+      { threadId: "thr_orch" },
+    ),
+  );
+  assert.match(tool, /dispatched/);
+  const quick = (JSON.parse((await harness.runCli(["task", "list", "--json"])).stdout) as { id: string; title: string; runner: string }[]).find((task) => task.title === "Quick check");
+  assert.equal(quick?.runner, "boat");
+  assert.equal((await harness.runCli(["task", "close", quick!.id, "--cancel"])).exitCode, 0);
+  // A made-up runner on the tool is dropped: the rules decide (headless for an untrusted repo).
+  assert.equal((await harness.runCli(["config", "set", "workers", "projects"])).exitCode, 0);
+  stubConnect(harness, { paired: true, enabled: true });
+  await harness.callAgentTool(
+    "boat_dispatch",
+    { title: "Sneaky", brief: "b", repo: "acme/api", tier: "light", reason: "x", runner: "chat", chat: true } as never,
+    { threadId: "thr_orch" },
+  );
+  const sneaky = (JSON.parse((await harness.runCli(["task", "list", "--json"])).stdout) as { title: string; runner: string }[]).find((task) => task.title === "Sneaky");
+  assert.equal(sneaky?.runner, "boat");
 });

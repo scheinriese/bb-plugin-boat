@@ -185,7 +185,7 @@ export function registerRpc(runtime: Runtime): void {
   const latestReview = (task: Task) =>
     task.role === "implement" ? reviewState(runtime.service.store.latestEvent(task.id, "review")?.text) : null;
   /** A task for the UI, with its review state and whether it's ready for the user. */
-  const untrusted = (task: Task) => runtime.service.store.latestEvent(task.id, "trust") !== null;
+  const untrusted = (task: Task) => task.runner === "boat" && runtime.service.store.latestEvent(task.id, "trust") !== null;
   const { bb, service } = runtime;
 
   // Chat titles for task sources, read in batches and kept a minute.
@@ -333,9 +333,10 @@ export function registerRpc(runtime: Runtime): void {
           boatError: null,
           defaults,
           connect,
+          taskChats: service.canRunChats(),
         };
       } catch (error) {
-        return { limits: null, activeSandboxes: 0, cap: null, freeSlots: null, boatError: message(error), defaults, connect };
+        return { limits: null, activeSandboxes: 0, cap: null, freeSlots: null, boatError: message(error), defaults, connect, taskChats: service.canRunChats() };
       }
     },
 
@@ -535,6 +536,9 @@ export function registerRpc(runtime: Runtime): void {
             machineType: (input.machineType as MachineType | null) ?? null,
             orchestratorThreadId: input.notifyThreadId,
             project: input.projectId ? await runtime.resolveProject({ kind: "boat", id: input.projectId }) : null,
+            runner: input.runner ?? null,
+            // Like Ship: the user's click past the warning is the confirm.
+            confirmUntrustedChat: input.confirmUntrustedChat ?? null,
           },
           runtime.launchWaitMs,
         );

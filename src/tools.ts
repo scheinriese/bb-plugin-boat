@@ -151,6 +151,10 @@ export function registerTools(runtime: Runtime): void {
       sandbox: z.string().optional().describe('"new" (default) or an existing sandbox id'),
       machine_type: z.enum(MACHINE_TYPES).optional().describe("Size for a new sandbox"),
       context_from: z.array(z.string()).optional().describe("Task ids whose brief, branch, PR and report the agent should see"),
+      headless: z
+        .boolean()
+        .optional()
+        .describe("true: run headless in boat even where tasks would run as chats (quick checks nobody opens). There's no way to ask for a chat here: the user decides that."),
     }),
     execute: (params, ctx) =>
       attempt(async () => {
@@ -180,6 +184,8 @@ export function registerTools(runtime: Runtime): void {
             machineType: (params.machine_type as MachineType | undefined) ?? null,
             orchestratorThreadId: ctx.threadId,
             projectId: ctx.projectId,
+            // Headless or the rules; never an explicit chat.
+            runner: params.headless === true ? "boat" : null,
             signal: ctx.signal,
           },
           runtime.launchWaitMs,

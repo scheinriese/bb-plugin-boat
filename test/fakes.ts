@@ -22,7 +22,8 @@ import type {
 import { BoatError } from "../src/boat.ts";
 import type { ChatRunner, ChatSpawn, ChatState } from "../src/chat.ts";
 import { BoatService, type BoatSettings, type Notification } from "../src/service.ts";
-import { TaskStore } from "../src/store.ts";
+import { TaskStore, type Runner } from "../src/store.ts";
+import type { ConnectStatus } from "../src/connect.ts";
 import { DEFAULT_TIERS } from "../src/tiers.ts";
 
 /**
@@ -451,6 +452,10 @@ export function makeService(
     checkPreview?: (link: string) => Promise<"up" | "down" | "unknown">;
     /** The setup checks before a sandbox (default: none). */
     preflight?: (input: PreflightInput) => Promise<void>;
+    /** bb Connect's status (default: not checked). */
+    connect?: ConnectStatus | (() => ConnectStatus);
+    /** How the plugin's projects run this repo's tasks (default: no project has it). */
+    repoWorkerMode?: (repo: string) => Runner | null;
   } = {},
 ) {
   const boat = new FakeBoat();
@@ -470,6 +475,8 @@ export function makeService(
     ...(options.quotas ? { quotas: { read: async () => options.quotas! } } : {}),
     ...(options.evidence ? { evidence: options.evidence } : {}),
     ...(options.preflight ? { preflight: options.preflight } : {}),
+    ...(options.connect ? { connect: async () => (typeof options.connect === "function" ? options.connect() : options.connect!) } : {}),
+    ...(options.repoWorkerMode ? { repoWorkerMode: options.repoWorkerMode } : {}),
     checkPreview: options.checkPreview ?? (async () => "up" as const),
   });
   return {

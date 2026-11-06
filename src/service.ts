@@ -218,8 +218,15 @@ export interface StartTaskInput {
   environment?: string | null;
   /** Saved snapshot for a new sandbox (default: the project's). */
   snapshot?: string | null;
-  /** Run headless in boat whatever the settings say (the test task). */
+  /** "chat": a task chat; "boat": headless in boat; null: How tasks run and the repo's project decide. */
   runner?: Runner | null;
+  /**
+   * With runner "chat" for repos the rules don't run as chats: the repos the
+   * user was warned about (New task on the Cloud agents page); [] for a task
+   * with no repo. null: no warning was confirmed. A UI affordance, not a
+   * security boundary: any client of the plugin's RPC can send it.
+   */
+  confirmUntrustedChat?: string[] | null;
   /** false: no evidence uploader in the sandbox (the test task); default: as the settings say. */
   evidence?: boolean;
   signal?: AbortSignal;
@@ -238,6 +245,14 @@ export class TaskError extends Error {
 }
 
 const RESULT_LIMIT = 16_000;
+/** The setup checklist's fix for bb Connect, when the connect plugin gives none. */
+const CONNECT_FIX = "Turn on bb Connect: sign in with `bb account login`, then run `bb connect on`.";
+
+/** "acme/x isn't in a project that runs tasks as chats" (or How tasks run is In boat). */
+function trustText(trust: ChatTrust): string {
+  if (trust.workersBoat) return "How tasks run is set to In boat";
+  return `${trust.untrustedRepos.join(", ")} ${trust.untrustedRepos.length === 1 ? "isn't" : "aren't"} in a project that runs tasks as chats`;
+}
 const USAGE_LIMIT_PATTERN =
   /usage limit|rate[ -]?limit|limit reached|quota|out of credits|credit balance|too many requests|\b429\b|hit your (usage )?limit/i;
 const LIMIT_NOTICE_PATTERN = /usage limit reached|hit your (usage )?limit|limit will reset|out of (extra )?usage|out of credits/i;
@@ -296,6 +311,40 @@ export function surelyNewSandbox(input: Pick<StartTaskInput, "sandbox" | "role">
     if (mode === "same" || mode === "auto") return false;
   }
   return true;
+}
+
+/** Whether the rules alone may run these repos as a task chat, and the repos they don't. */
+export interface ChatTrust {
+  trusted: boolean;
+  /** Repos no rule runs as task chats (all of them when How tasks run is In boat). */
+  untrustedRepos: string[];
+  /** How tasks run is In boat: no task becomes a chat on its own. */
+  workersBoat: boolean;
+}
+
+/**
+ * A task chat's sandbox can reach this bb, so the rules alone allow one only
+ * when How tasks run allows chats and every repo is in a project with Run
+ * tasks as chats on (or, outside projects, How tasks run is As chats
+ * everywhere). A task with no repo needs only the first. Only the plugin's
+ * own projects count (repoMode), never a thread's project metadata.
+ */
+export function chatTrust(
+  repos: readonly string[],
+  settings: Pick<BoatSettings, "workerMode" | "adhocWorkerMode">,
+  repoMode: (repo: string) => Runner | null,
+): ChatTrust {
+  if (settings.workerMode !== "chat") return { trusted: false, untrustedRepos: [...repos], workersBoat: true };
+  const untrustedRepos = repos.filter((repo) => (repoMode(repo) ?? settings.adhocWorkerMode) !== "chat");
+  return { trusted: untrustedRepos.length === 0, untrustedRepos, workersBoat: false };
+}
+
+/** The user's confirm (the repos they were warned about) covers every repo the rules don't trust. */
+export function confirmCovers(confirmed: readonly string[] | null | undefined, trust: ChatTrust): boolean {
+  if (trust.trusted) return true;
+  if (confirmed === null || confirmed === undefined) return false;
+  const seen = new Set(confirmed.map((repo) => repo.trim().toLowerCase()));
+  return trust.untrustedRepos.every((repo) => seen.has(repo.toLowerCase()));
 }
 
 /** Where a review runs: push work only in the implementer's sandbox (its commits exist nowhere else). */
@@ -848,7 +897,10 @@ export class BoatService {
       repo === null
         ? null
         : (this.hooks.repoWorkerMode?.(repo) ?? (project !== null && projectEntry !== null ? project.workerMode : null));
-    const runner = this.chooseRunner(input, parent, settings, projectMode, repo);
+    const repos = [repo, ...extraRepos.map((entry) => entry.repo)].filter((entry): entry is string => entry !== null);
+    const runner = this.chooseRunner(input, parent, settings, projectMode, repo, repos);
+    // What the rules alone would have picked (null: they'd refuse), for the history.
+    const ruleRunner = input.runner == null ? runner : this.tryRules(input, parent, settings, projectMode, repo, repos);
     // A worker chat runs bb in its sandbox, which reaches this bb through bb Connect.
     if (runner === "chat" && this.hooks.connect) {
       const connect = await this.hooks.connect();
@@ -856,7 +908,9 @@ export class BoatService {
         throw new TaskError(
           "Task chats need bb Connect, and it isn't set up on this bb.",
           "connect_required",
-          `${connect.fix ? `${connect.fix} ` : ""}Or run tasks in boat: \`bb boat config set workers boat\` (Settings → Plugins → Boat Cloud Agents → How tasks run).`,
+          input.runner === "chat"
+            ? `${connect.fix ?? CONNECT_FIX} Or start it headless (--headless, or Run as a chat off in New task).`
+            : `${connect.fix ? `${connect.fix} ` : ""}Or run tasks in boat: \`bb boat config set workers boat\` (Settings → Plugins → Boat Cloud Agents → How tasks run).`,
         );
       }
     }
@@ -869,6 +923,7 @@ export class BoatService {
     }
     const untrusted =
       runner === "boat" &&
+      input.runner == null &&
       repo !== null &&
       projectMode === null &&
       this.hooks.chat !== undefined &&
@@ -971,6 +1026,22 @@ export class BoatService {
     if (untrusted) {
       this.store.addEvent(id, "trust", `${repo} isn't one of your projects: the task runs headless in boat, with no access to your bb.`);
     }
+    if (input.runner != null && ruleRunner !== null && ruleRunner !== runner && input.evidence !== false) {
+      this.store.addEvent(
+        id,
+        "runner",
+        runner === "chat"
+          ? "Runs as a task chat, as asked (How tasks run would run it headless)"
+          : "Runs headless in boat, as asked (How tasks run would make it a task chat)",
+      );
+    }
+    if (input.runner == null && runner === "boat" && parent?.runner === "chat" && this.userMadeChat(parent)) {
+      this.store.addEvent(id, "runner", `Runs headless: task ${parent.id} is a task chat only because the user asked, so its reviews don't get this bb's reach`);
+    }
+    if (runner === "chat" && input.runner === "chat") {
+      const trust = this.chatTrust(repos, settings);
+      if (!trust.trusted) this.store.addEvent(id, "trust-confirmed", `${trustText(trust)}; started as a task chat after the warning in New task (its sandbox can reach this bb).`);
+    }
     if (input.userApproved === true && needsFrontierApproval(settings.modelTiers, tier, model, reasoningEffort)) {
       this.store.addEvent(id, "approval", "Frontier at max effort, approved by the user");
     }
@@ -990,6 +1061,70 @@ export class BoatService {
     return { task, run };
   }
 
+  /** The rules' trust for these repos (the plugin's projects and How tasks run). */
+  chatTrust(repos: readonly string[], settings: Pick<BoatSettings, "workerMode" | "adhocWorkerMode">): ChatTrust {
+    return chatTrust(repos, settings, (repo) => this.hooks.repoWorkerMode?.(repo) ?? null);
+  }
+
+  /** This bb can run task chats at all (the chat runner is there). */
+  canRunChats(): boolean {
+    return this.hooks.chat !== undefined;
+  }
+
+  /** A task chat the user made against the rules (a confirmed start or move): its reviews don't follow it. */
+  private userMadeChat(task: Task): boolean {
+    return this.store.latestEvent(task.id, "trust-confirmed") !== null;
+  }
+
+  private tryRules(
+    input: StartTaskInput,
+    parent: Task | null,
+    settings: BoatSettings,
+    projectMode: Runner | null,
+    repo: string | null,
+    repos: readonly string[],
+  ): Runner | null {
+    try {
+      return this.chooseRunner({ ...input, runner: null }, parent, settings, projectMode, repo, repos);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * An explicit "chat": this bb runs task chats, a named sandbox already runs
+   * bb, and the rules trust the repos or the user confirmed the warning.
+   */
+  private explicitChat(input: StartTaskInput, settings: BoatSettings, repos: readonly string[]): Runner {
+    if (this.hooks.chat === undefined) throw new TaskError("This bb can't run task chats.", "chat_unavailable", "Start it headless instead (drop --chat).");
+    const choice = (input.sandbox ?? "").trim();
+    if (choice !== "" && choice !== "new" && choice !== "same" && choice !== "auto" && this.store.hostForSandbox(choice) === null) {
+      throw new TaskError(`Sandbox ${choice} doesn't run bb, so a task chat can't start there.`, "sandbox_not_chat", "Use a new sandbox, or start it headless.");
+    }
+    const trust = this.chatTrust(repos, settings);
+    if (!confirmCovers(input.confirmUntrustedChat, trust)) throw this.untrustedRepoError(trust, "start", input.confirmUntrustedChat != null);
+    return "chat";
+  }
+
+  /** A task chat the rules don't allow and the user didn't confirm (or confirmed for other repos). */
+  private untrustedRepoError(trust: ChatTrust, via: "start" | "move", confirmedOther: boolean): TaskError {
+    const repo = trust.untrustedRepos[0] ?? null;
+    const what = via === "start" ? "start as a task chat" : "continue as a task chat";
+    const message = confirmedOther
+      ? `The task's repos changed after the warning: ${trust.untrustedRepos.join(", ")} ${trust.untrustedRepos.length === 1 ? "isn't" : "aren't"} in a project that runs tasks as chats.`
+      : trust.workersBoat
+        ? `How tasks run is set to In boat, so ${repo === null ? "a task" : repo} can't ${what} here.`
+        : this.hooks.repoWorkerMode?.(repo ?? "") === "boat"
+          ? `${repo}'s project runs its tasks headless (Run tasks as chats is off), so it can't ${what} here.`
+          : `${repo} isn't in one of your projects with Run tasks as chats on, so it can't ${what} here.`;
+    const hint = confirmedOther
+      ? "Check the warning again, then try again."
+      : via === "start"
+        ? "A task chat's sandbox can reach this bb, so the user decides: Run as a chat in New task on the Cloud agents page asks them, or they add the repo to a project with Run tasks as chats on (Settings → Plugins → Boat Cloud Agents → Projects). Or run it headless: drop --chat."
+        : "A task chat's sandbox can reach this bb, so the user decides: Continue as a chat on the task's page asks them, or they add the repo to a project with Run tasks as chats on (Settings → Plugins → Boat Cloud Agents → Projects).";
+    return new TaskError(message, "untrusted_repo", hint);
+  }
+
   /** Workers are bb chats unless the setting, a boat sandbox or the implementer says otherwise. */
   private chooseRunner(
     input: StartTaskInput,
@@ -997,9 +1132,14 @@ export class BoatService {
     settings: BoatSettings,
     projectMode: Runner | null,
     repo: string | null,
+    repos: readonly string[] = repo === null ? [] : [repo],
   ): Runner {
     if (input.runner === "boat") return "boat";
+    if (input.runner === "chat") return this.explicitChat(input, settings, repos);
     if (this.hooks.chat === undefined || settings.workerMode !== "chat") return "boat";
+    // A task the user made a chat against the rules: its reviews run headless,
+    // so no more sandboxes get this bb's reach without their say.
+    if (parent !== null && parent.runner === "chat" && this.userMadeChat(parent)) return "boat";
     // Worker chats hold bb machine credentials: only for repos you trust. A
     // review follows its implementer; a task without a repo clones no code.
     const trusted: Runner = parent !== null ? parent.runner : repo === null ? "chat" : (projectMode ?? settings.adhocWorkerMode);
@@ -1295,6 +1435,9 @@ export class BoatService {
 
       // A sandbox with no bb machine (a boat conversation's) can't host a chat.
       if (task.runner === "chat" && reuse !== null && !(sharesParentCheckout && parent?.environmentId) && this.store.hostForSandbox(reuse) === null) {
+        if (input.runner === "chat") {
+          throw new TaskError(`Sandbox ${reuse} doesn't run bb, so a task chat can't start there.`, "sandbox_not_chat", "Use a new sandbox, or start it headless.");
+        }
         task = this.store.update(id, { runner: "boat", model: boatModelId(provider, task.model), reasoningEffort: boatEffort(task.reasoningEffort) }) ?? task;
         this.store.addEvent(id, "runner", `Sandbox ${reuse} has no bb machine; running headless in boat`);
       }

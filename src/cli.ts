@@ -474,6 +474,12 @@ export function buildCli(runtime: Runtime) {
           "user-approved": userApproved,
           sandbox: { type: "string", description: "new (default), or an existing sandbox id to run in" },
           type: { type: "enum", values: MACHINE_TYPES, description: "Machine size for a new sandbox" },
+          chat: {
+            type: "boolean",
+            description:
+              "Run as a task chat the user can open and type into (needs bb Connect). Only for repos in a project with Run tasks as chats on, or any repo with How tasks run set to As chats everywhere",
+          },
+          headless: { type: "boolean", description: "Run headless in boat, whatever How tasks run says" },
           "context-from": {
             type: "string",
             repeatable: true,
@@ -487,15 +493,20 @@ export function buildCli(runtime: Runtime) {
         constraints: [
           { kind: "at-most-one", options: ["brief", "brief-file"] },
           { kind: "at-most-one", options: ["notify-thread", "no-notify"] },
+          { kind: "at-most-one", options: ["chat", "headless"] },
         ],
         async run({ options }, ctx) {
           return guard(async () => {
             const notify = options["no-notify"] ? null : (options["notify-thread"] ?? ctx.threadId ?? null);
             if (options.test) {
-              const others = (["title", "brief", "brief-file", "repo", "branch", "base", "pr", "project", "sandbox", "context-from"] as const).filter((key) => {
-                const value = options[key];
-                return Array.isArray(value) ? value.length > 0 : value !== undefined && value !== "";
-              });
+              const others = [
+                ...(["title", "brief", "brief-file", "repo", "branch", "base", "pr", "project", "sandbox", "context-from"] as const).filter((key) => {
+                  const value = options[key];
+                  return Array.isArray(value) ? value.length > 0 : value !== undefined && value !== "";
+                }),
+                // The test task always runs headless.
+                ...(options.chat === true ? (["chat"] as const) : []),
+              ];
               if (others.length > 0) {
                 throw new PluginCliError(`--test starts a fixed test task; drop ${others.map((key) => `--${key}`).join(", ")}.`, { code: "invalid_value" });
               }
@@ -537,6 +548,8 @@ export function buildCli(runtime: Runtime) {
                 machineType: (options.type as MachineType | undefined) ?? null,
                 orchestratorThreadId: notify,
                 projectId: ctx.projectId ?? null,
+                // Never a confirm: a repo the rules don't trust needs the user (the page, or a project).
+                runner: options.chat ? "chat" : options.headless ? "boat" : null,
                 signal: ctx.signal,
               },
               runtime.launchWaitMs,
