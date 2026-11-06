@@ -2623,9 +2623,9 @@ export class BoatService {
     }
     const chat = this.hooks.chat!;
     if (action === "stop") {
+      // Someone asked for it: what ran there, the watchdog tells from what it saw.
       await chat.suspendMachine(hostId);
       this.suspendedHosts.add(hostId);
-      this.hooks.machineSuspended?.(hostId, false);
     } else if (action === "resume") {
       await chat.resumeMachine(hostId);
       this.suspendedHosts.delete(hostId);
@@ -3519,7 +3519,6 @@ export class BoatService {
     if (hostId !== null) {
       await this.hooks.chat!.suspendMachine(hostId);
       this.suspendedHosts.add(hostId);
-      this.hooks.machineSuspended?.(hostId, false);
     } else {
       await this.boat.stop(sandboxId, signal);
     }

@@ -141,6 +141,8 @@ export interface KeeperDeps {
   suspended?: (hostId: string, underWork: boolean) => void;
   /** A headless sandbox still computing reached the 12 hours: boat stops it at this deadline (epoch ms). */
   stopsComputing?: (sandboxId: string, deadline: number) => void;
+  /** …and boat's stop came. */
+  stoppedComputing?: (sandboxId: string, at: number) => void;
   now?: () => number;
 }
 
@@ -323,6 +325,8 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
       if (deps.skip?.(sandboxId) || retryAt.has(sandboxId) || extendedAt.has(sandboxId)) continue;
       const sandbox = sandboxes.get(sandboxId);
       if (sandbox === undefined || !ACTIVE_STATES.has(sandbox.state)) {
+        // A headless sandbox it stopped keeping on at the limit: boat's stop came.
+        if (candidate.headless && streaks.get(sandboxId)?.ended) deps.stoppedComputing?.(sandboxId, now);
         streaks.delete(sandboxId);
         continue;
       }

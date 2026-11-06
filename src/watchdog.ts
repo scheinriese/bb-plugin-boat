@@ -131,7 +131,7 @@ export interface Watchdog {
    * compute (the plugin at its 12-hour limit for them): the orchestrator
    * hears once, the worker gets the note with its next follow-up.
    */
-  headlessStopped(input: { sandboxId: string; stoppedAt: number; how: "idle-stop" | "auto-stop" }): Promise<void>;
+  headlessStopped(input: { sandboxId: string; stoppedAt: number; how: "idle-stop" | "auto-stop" | "stopped" }): Promise<void>;
   /** The message.dispatch hook's decision for a pending note (sync, never throws). */
   dispatch(context: { threadId: string; attempt: string; text: string; queued: QueuedRow[]; originPluginId: string | null }):
     | { action: "proceed" }
@@ -258,8 +258,18 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
     outbox.push({ ...notice, queuedAt: now() });
   }
 
+  let flushing: Promise<void> | null = null;
+
+  /** One flush at a time. */
+  function flush(): Promise<void> {
+    flushing ??= sendOutbox().finally(() => {
+      flushing = null;
+    });
+    return flushing;
+  }
+
   /** Send what can go out: not twice for one incident, not during a handover, not into a chat whose machine is down. */
-  async function flush(): Promise<void> {
+  async function sendOutbox(): Promise<void> {
     if (outbox.length === 0) return;
     const at = now();
     const sent = await sentLog();
@@ -325,6 +335,13 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
     });
   }
 
+  /** A message held for later on purpose; the plugin's own short hold (to add the note) isn't one. */
+  function forLater(row: QueuedRow): boolean {
+    const wait = row.waitingOn as { kind?: string; pluginId?: string } | null | undefined;
+    if (wait?.kind === "plugin" && wait.pluginId === bb.pluginId) return false;
+    return row.state === "scheduled" || (typeof row.sendAt === "number" && row.sendAt > now());
+  }
+
   /**
    * Put the note in front of a queued message (its own blocks stay as they
    * were; the note is for the agent only). True: the row carries it now.
@@ -332,7 +349,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   async function prepend(note: ResumeNote, row: QueuedRow): Promise<boolean> {
     if (noteBlock(row.content)) return true;
     // Not one for later (a retry at a limit's reset): the note goes with the next message that runs.
-    if (row.editable === false || row.state === "scheduled" || (typeof row.sendAt === "number" && row.sendAt > now())) return false;
+    if (row.editable === false || forLater(row)) return false;
     await bb.sdk.threads.queuedMessages.update({
       threadId: row.threadId,
       queuedMessageId: row.id,
@@ -356,7 +373,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       }
     }
     const rows = rowsOf(await bb.sdk.threads.queuedMessages.list({ threadId } as never).catch(() => []));
-    const due = (row: QueuedRow) => row.editable !== false && row.state !== "scheduled" && !(typeof row.sendAt === "number" && row.sendAt > now());
+    const due = (row: QueuedRow) => row.editable !== false && !forLater(row);
     const row = rows.find((candidate) => candidate.id === preferred?.id && due(candidate)) ?? rows.find(due);
     if (row === undefined) return null;
     return (await prepend(note, row).catch(() => false)) ? row.id : null;
@@ -550,6 +567,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       problems.delete(id);
       upNow.delete(id);
       tries.delete(id);
+      atLimit.delete(id);
     }
     let resumes = 0;
     for (const host of hosts) {
@@ -577,6 +595,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         resumed.delete(host.id);
         problems.delete(host.id);
         tries.delete(host.id);
+        atLimit.delete(host.id);
       } else if (up && STOPPED_STATES.has(sandbox.state) && !connected) {
         // boat stopped it behind bb's back: bb would wait for it forever.
         const stoppedAt = typeof host.lastSeenAt === "number" ? host.lastSeenAt : at;
@@ -597,11 +616,14 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
           }
           if (first) await stoppedUnderWork(host.id, sandboxId, rows, stoppedAt, cause, done.did, true);
         }
-      } else if ((phase === "suspended" || phase === "suspending") && seen.has(host.id)) {
+      } else if (phase === "suspended" || phase === "suspending") {
         // Suspended under background work: by the plugin at its limit, or by bb or someone's click.
-        const stoppedAt = host.lifecycle?.suspendedAt ?? at;
-        const cause = atLimit.delete(host.id) ? "The plugin suspended it: that's the most it keeps a sandbox on for background work." : "bb suspended the machine.";
-        await stoppedUnderWork(host.id, sandboxId, rows, stoppedAt, cause, "bb resumes it on the next message.", false);
+        const byPlugin = atLimit.delete(host.id);
+        if (seen.has(host.id)) {
+          const stoppedAt = host.lifecycle?.suspendedAt ?? at;
+          const cause = byPlugin ? "The plugin suspended it: that's the most it keeps a sandbox on for background work." : "bb suspended the machine.";
+          await stoppedUnderWork(host.id, sandboxId, rows, stoppedAt, cause, "bb resumes it on the next message.", false);
+        }
       }
 
       // Messages waiting for the machine while it's down.
@@ -786,7 +808,10 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       const note = carrying.note;
       delivered.delete(note.taskId);
       await deps.kv.set(resumeNoteKey(note.taskId), note).catch(() => undefined);
-      if (note.threadId !== null) notes.set(note.threadId, note);
+      if (note.threadId !== null) {
+        notes.set(note.threadId, note);
+        held.delete(note.threadId);
+      }
       deps.store.addEvent(note.taskId, "watchdog", "The message that carried the note about the stop was deleted; the next message gets it.");
       deps.changed?.([note.taskId]);
     },
@@ -835,11 +860,17 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       const tasks = deps.store.list({ statuses: OPEN_STATUSES, limit: 1000 }).filter((task) => task.sandboxId === sandboxId && task.runner !== "chat");
       if (tasks.length === 0) return;
       const work = "processes the agent started";
+      // boat's stop came: the orchestrator heard beforehand; now the worker gets the note.
+      if (how === "stopped") {
+        await noteTasks(tasks, `stopped:${sandboxId}:headless`, stoppedAt, work, true);
+        return;
+      }
       const incident = `stopped:${sandboxId}:${Math.floor(stoppedAt / 60_000)}`;
-      const cause = how === "idle-stop" ? "The plugin stopped it: that's the most it keeps a sandbox on for them." : "boat stops it at its auto-stop: the plugin no longer keeps it on for them.";
+      const ahead = how === "auto-stop";
+      const cause = ahead ? "boat stops it at its auto-stop: the plugin no longer keeps it on for them." : "The plugin stopped it: that's the most it keeps a sandbox on for them.";
       const did = "The next follow-up resumes it.";
-      event(tasks, `The sandbox stopped while work was running in the background (${work}). ${cause}`);
-      await noteTasks(tasks, incident, stoppedAt, work, true);
+      event(tasks, ahead ? `The sandbox stops at its auto-stop while ${work} still compute: the plugin no longer keeps it on for them.` : `The sandbox stopped while work was running in the background (${work}). ${cause}`);
+      if (!ahead) await noteTasks(tasks, `stopped:${sandboxId}:headless`, stoppedAt, work, true);
       const told = new Set<string>();
       for (const task of tasks) {
         if (task.orchestratorThreadId === null || told.has(task.orchestratorThreadId)) continue;
@@ -847,7 +878,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         const text = stoppedNotice({ subject: { kind: "task", taskId: task.id, title: task.title, sandboxId }, work, stoppedAt, cause, did, now: now(), capped: true, ahead: stoppedAt > now() });
         post({ threadId: task.orchestratorThreadId, taskId: task.id, gapMs: STOP_NOTICE_GAP_MS, incident, subject: `stopped:${sandboxId}`, text });
       }
-      await flush().catch(() => undefined);
+      // The monitor's next pass sends it.
     },
 
     planned(hostId, underWork) {

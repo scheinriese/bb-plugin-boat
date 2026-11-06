@@ -573,6 +573,8 @@ test("a headless sandbox stopped at the limit while still computing: the orchest
   const at = Date.now();
   await dog.headlessStopped({ sandboxId: task.sandboxId!, stoppedAt: at, how: "idle-stop" });
   await dog.headlessStopped({ sandboxId: task.sandboxId!, stoppedAt: at, how: "idle-stop" });
+  await dog.tick();
+  await dog.tick();
   assert.equal(told.length, 1);
   assert.match(told[0]!, /while work was running in the background \(processes the agent started\)\. The plugin stopped it/);
   const note = await dog.noteFor(task.id);
@@ -593,4 +595,43 @@ test("messages waiting on a machine bb lost the connection to while its sandbox 
   assert.match(w.told[0]!.text, /is running, but bb has lost its connection to it\. The plugin left it alone/);
   assert.deepEqual(w.calls.suspend, []);
   assert.deepEqual(w.calls.resume, []);
+});
+
+test("boat's coming stop of a headless sandbox still computing: told ahead; the note only once it has stopped", async () => {
+  const env = makeService();
+  const { task } = await env.service.launchTask({ title: "Soak", role: "implement", brief: "Run it.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+  const told: string[] = [];
+  const dog = createWatchdog({ pluginId: "boat" } as unknown as BbPluginApi, {
+    boat: env.boat as unknown as BoatApi,
+    store: env.store,
+    kv: memoryKv(),
+    tell: async (_threadId, text) => void told.push(text),
+    log: () => undefined,
+  });
+  const deadline = Date.now() + 20 * MINUTE;
+  await dog.headlessStopped({ sandboxId: task.sandboxId!, stoppedAt: deadline, how: "auto-stop" });
+  await dog.tick();
+  assert.equal(told.length, 1);
+  assert.match(told[0]!, /sandbox \([^)]*\) stops at \d\d:\d\d UTC while work is running in the background/);
+  assert.equal(await dog.noteFor(task.id), null, "nothing was lost yet");
+  await dog.headlessStopped({ sandboxId: task.sandboxId!, stoppedAt: deadline, how: "stopped" });
+  assert.match((await dog.noteFor(task.id))!, /Restart a job only if you still need it/);
+});
+
+test("the dispatch hold's own row takes the note; a deleted carrier lets the next message be held again", async () => {
+  const w = await world();
+  await w.kv.set(resumeNoteKey(w.task.id), { taskId: w.task.id, threadId: w.task.threadId, text: `${RESUME_NOTE_PREFIX} at 10:00 UTC.` });
+  const dog = w.watchdog();
+  await dog.load();
+  const inline = { threadId: w.task.threadId!, attempt: "start-turn", text: "Hi", queued: [], originPluginId: null };
+  assert.equal(dog.dispatch(inline).action, "wait");
+  // bb queues it behind the plugin's 10-second wait; message.queued puts the note in.
+  const heldRow: QueuedRow = { id: "q1", threadId: w.task.threadId!, content: [{ type: "text", text: "Hi" }], updatedAt: 3, editable: true, state: "waiting", sendAt: w.now() + 10_000, waitingOn: { kind: "plugin", pluginId: "boat" } as QueuedRow["waitingOn"] };
+  await dog.queued(heldRow);
+  assert.equal(w.calls.updates.at(-1)?.queuedMessageId, "q1");
+  assert.equal(await dog.noteFor(w.task.id), null);
+  // The user deletes it: the note is pending again, and the next direct send is held for it once more.
+  await dog.cancelled(heldRow);
+  assert.notEqual(await dog.noteFor(w.task.id), null);
+  assert.equal(dog.dispatch(inline).action, "wait");
 });

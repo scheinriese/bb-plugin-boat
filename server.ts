@@ -456,6 +456,7 @@ export default async function plugin(bb: BbPluginApi) {
     // The watchdog tells the keeper's planned stops from ones that cut work off.
     suspended: (hostId, underWork) => watchdogRef?.planned(hostId, underWork),
     stopsComputing: (sandboxId, deadline) => void watchdogRef?.headlessStopped({ sandboxId, stoppedAt: deadline, how: "auto-stop" }).catch(() => undefined),
+    stoppedComputing: (sandboxId, at) => void watchdogRef?.headlessStopped({ sandboxId, stoppedAt: at, how: "stopped" }).catch(() => undefined),
   });
 
   // The watchdog: bb's record of Boat sandbox machines true to boat, chats
