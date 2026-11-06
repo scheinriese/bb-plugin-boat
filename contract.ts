@@ -725,6 +725,8 @@ export const rpcContract = defineRpcContract({
       untrusted: z.boolean(),
       /** The repos the warning names (all of them with How tasks run In boat). */
       untrustedRepos: z.array(z.string()),
+      /** Of those, the ones other tasks ran in this sandbox before. */
+      otherRepos: z.array(z.string()),
       /** How tasks run is In boat. */
       workersBoat: z.boolean(),
       /** bb already runs on the sandbox (no install). */

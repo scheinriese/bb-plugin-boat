@@ -293,6 +293,47 @@ test("refused: no chat runner, bb Connect off, an untrusted repo from the CLI", 
   assert.match(made.store.latestEvent(outside.id, "trust-confirmed")!.text, /Your projects don't run tasks on acme\/other as chats; moved to a task chat after the warning/);
 });
 
+test("a sandbox other tasks used: their repos count for the move, closed tasks' too", async () => {
+  const made = env();
+  // An untrusted repo ran headless there first; its task closed and kept the sandbox.
+  const evil = await headless(made, { repo: "acme/evil" });
+  await made.service.closeTask(evil.id, { status: "done", keepSandbox: true });
+  const task = await headless(made, { sandbox: evil.sandboxId });
+  assert.equal(task.repo, "acme/web");
+  const status = await made.service.continueAsChatStatus(task.id);
+  assert.deepEqual([status.offered, status.blocked, status.untrusted], [true, null, true]);
+  assert.deepEqual([status.untrustedRepos, status.otherRepos], [["acme/evil"], ["acme/evil"]]);
+  // From the CLI: refused, naming what ran there.
+  await refused(move(made, task.id, { via: "cli" }), "untrusted_repo", /Another task ran acme\/evil in this task's sandbox/);
+  // A confirm that leaves it out isn't enough.
+  await refused(move(made, task.id, { confirmUntrusted: [] }), "untrusted_repo");
+  nothingMade(made);
+  // The user's tick on the page, for exactly that repo.
+  const { task: moved } = await move(made, task.id, { confirmUntrusted: ["acme/evil"] });
+  assert.equal(moved.runner, "chat");
+  assert.match(made.store.latestEvent(task.id, "trust-confirmed")!.text, /acme\/evil/);
+  // Its reviews don't follow it into chats either.
+  await made.service.sweep();
+  made.chat.finish(moved.threadId!, REPORT);
+  await made.service.sweep();
+  const review = await made.service.launchTask(await made.service.reviewInput(task.id, { sandbox: "new" }), 5_000);
+  assert.equal(review.task.runner, "boat");
+});
+
+test("the Untrusted repo badge goes once bb was installed on the task's sandbox, even when the move failed", async () => {
+  const made = env();
+  // The rules ran it headless: outside your projects.
+  const task = await headless(made, { repo: "acme/other", runner: null });
+  assert.equal(task.runner, "boat");
+  assert.equal(made.service.untrustedRepo(task), true);
+  made.chat.spawnError = new Error("spawn failed");
+  await assert.rejects(move(made, task.id, { confirmUntrusted: ["acme/other"] }), /spawn failed/);
+  const after = made.store.get(task.id)!;
+  assert.equal(after.runner, "boat");
+  assert.equal(made.chat.detached.length, 1);
+  assert.equal(made.service.untrustedRepo(after), false, "bb's files may still be on its sandbox");
+});
+
 test("refused: the sandbox is gone or broken, lent, shared, or runs someone else's bb", async () => {
   const made = env();
   const gone = await headless(made);

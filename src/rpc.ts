@@ -186,7 +186,7 @@ export function registerRpc(runtime: Runtime): void {
   const latestReview = (task: Task) =>
     task.role === "implement" ? reviewState(runtime.service.store.latestEvent(task.id, "review")?.text) : null;
   /** A task for the UI, with its review state and whether it's ready for the user. */
-  const untrusted = (task: Task) => task.runner === "boat" && runtime.service.store.latestEvent(task.id, "trust") !== null;
+  const untrusted = (task: Task) => runtime.service.untrustedRepo(task);
   const { bb, service } = runtime;
 
   // Chat titles for task sources, read in batches and kept a minute.

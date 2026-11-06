@@ -540,6 +540,11 @@ export class TaskStore {
     return (this.db().prepare(sql).all(...params) as Row[]).map(toTask);
   }
 
+  /** Every task that ever ran in a sandbox, whatever its state now. */
+  sandboxTasks(sandboxId: string): Task[] {
+    return (this.db().prepare(`SELECT * FROM tasks WHERE sandbox_id = ? ORDER BY created_at`).all(sandboxId) as Row[]).map(toTask);
+  }
+
   /** Tasks still occupying (or possibly occupying) a sandbox. */
   liveSandboxTasks(sandboxId: string): Task[] {
     return (

@@ -502,6 +502,8 @@ export interface ChatMoveStatus {
   untrusted: boolean;
   /** The repos the warning names (all of them with How tasks run In boat). */
   untrustedRepos: string[];
+  /** Of those, the ones other tasks ran in this sandbox before (not this task's own). */
+  otherRepos: string[];
   /** How tasks run is In boat. */
   workersBoat: boolean;
   /** bb already runs on the sandbox (no install). */
@@ -2592,6 +2594,29 @@ export class BoatService {
     return [task.repo, ...task.extraRepos.map((extra) => extra.repo)].filter((repo): repo is string => repo !== null);
   }
 
+  /**
+   * Every repo that ran in the task's sandbox: its own, then other tasks'
+   * (closed ones too: what they left there stays when bb comes in).
+   */
+  private sandboxRepos(task: Task): string[] {
+    const repos = this.taskRepos(task);
+    const seen = new Set(repos.map((repo) => repo.toLowerCase()));
+    for (const other of task.sandboxId === null ? [] : this.store.sandboxTasks(task.sandboxId)) {
+      for (const repo of this.taskRepos(other)) {
+        if (seen.has(repo.toLowerCase())) continue;
+        seen.add(repo.toLowerCase());
+        repos.push(repo);
+      }
+    }
+    return repos;
+  }
+
+  /** The Untrusted repo badge: headless because the rules don't trust its repo, and bb was never installed on its sandbox. */
+  untrustedRepo(task: Task): boolean {
+    if (task.runner !== "boat" || this.store.latestEvent(task.id, "trust") === null) return false;
+    return task.sandboxId === null || !this.store.sandboxHadBb(task.sandboxId);
+  }
+
   /** bb was installed on this sandbox for a move (it may hold bb's files even after a rollback). */
   private bbWasInstalled(sandboxId: string): boolean {
     return this.store.sandboxHadBb(sandboxId);
@@ -2686,10 +2711,12 @@ export class BoatService {
   async continueAsChatStatus(idOrPrefix: string, signal?: AbortSignal): Promise<ChatMoveStatus> {
     const task = this.mustGet(idOrPrefix);
     const settings = await this.settings();
-    const trust = this.chatTrust(this.taskRepos(task), settings);
+    const trust = this.chatTrust(this.sandboxRepos(task), settings);
+    const own = new Set(this.taskRepos(task).map((repo) => repo.toLowerCase()));
     const base = {
       untrusted: !trust.trusted,
       untrustedRepos: trust.untrustedRepos,
+      otherRepos: trust.untrustedRepos.filter((repo) => !own.has(repo.toLowerCase())),
       workersBoat: trust.workersBoat,
       hasMachine: false,
       sandboxStopped: false,
@@ -2744,8 +2771,9 @@ export class BoatService {
     const settings = await this.settings();
     const now = this.moveBlockerNow(task);
     if (now !== null) throw now;
-    const trust = this.chatTrust(this.taskRepos(task), settings);
-    if (!confirmCovers(options.confirmUntrusted, trust)) throw this.untrustedRepoError(trust, "move", options.confirmUntrusted !== null);
+    // bb comes into a sandbox that's been used: what every task left there counts.
+    const trust = this.chatTrust(this.sandboxRepos(task), settings);
+    if (!confirmCovers(options.confirmUntrusted, trust)) throw this.untrustedRepoError(trust, "move", options.confirmUntrusted !== null, this.taskRepos(task));
     const connect = await this.connectBlocker();
     if (connect !== null) throw connect;
     // Every await is behind us: check again and take the task in one step.
