@@ -19,7 +19,7 @@ at runtime.
   to `screenshots/boat/` (at most 6). Each must be PNG, JPEG or WebP, at
   least 1200 px wide, at most 2 MiB, and show no tokens, email addresses,
   home paths, private repo names or unrelated chat text. `backup.png` is
-  for the README only. If the set changes, update the list in
+  for docs/settings.md only. If the set changes, update the list in
   `entry.json` and the Screenshots section below.
 
 ## Before submitting
@@ -126,8 +126,8 @@ CLI, agent tools and skills, send-menu and New thread entry points, and a
   sandbox by default when bb Connect is set up, and on the bb machine
   otherwise (`--local` or the dialog to choose). Those sandboxes run bb's
   daemon with that machine's bb credentials. Cloud orchestrators start in
-  full access, like task chats (a setting, on by default, documented in the
-  README and docs/orchestrators.md).
+  full access, like task chats (a setting, on by default, documented in
+  docs/settings.md and docs/orchestrators.md).
 - No secret settings, and no passwords or API keys stored. Environment
   secrets are shown by name only; values are dropped when read. The
   database keeps private preview links and reports with presigned evidence
@@ -141,7 +141,7 @@ CLI, agent tools and skills, send-menu and New thread entry points, and a
   Connect set up). Missing plugins degrade to "usage unknown", no
   notification, or orchestrators on the bb machine.
 - Private preview links (`?_token=…`) and presigned evidence links (up to
-  7 days) are posted into chats on purpose. The README and overview say so.
+  7 days) are posted into chats on purpose. SECURITY.md and the overview say so.
 - Not affiliated with boat.dev.
 
 ## Screenshots

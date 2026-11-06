@@ -153,7 +153,7 @@ bb boat relay switch [<thread>] [--to claude|codex] [--now]   # move one by hand
 
 Tasks have their own rules for limits (continue with the other agent
 mid-task, follow-ups to the agent with room): see
-[Coding agents and usage limits](../README.md#coding-agents-and-usage-limits).
+[Coding agents and usage limits](features.md#coding-agents-and-usage-limits).
 
 ## The protocol
 
@@ -186,6 +186,6 @@ current settings. The editor highlights them and warns about unknown ones.
 | `{{evidence}}` | What to do with screenshots and recordings (uploads on or off) |
 | `{{model-tiers}}` | The model presets table (Settings → Models). A protocol without it gets the table at the end |
 
-The orchestrator picks a [model preset](../README.md#model-presets) for each
+The orchestrator picks a [model preset](features.md#model-presets) for each
 task, with a one-line reason. The plugin then picks the model and effort for
 the task's agent and records all four on the task.
