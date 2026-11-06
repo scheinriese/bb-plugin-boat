@@ -175,22 +175,27 @@ export async function workingChildren(bb: BbPluginApi, parents: ThreadRow[], boa
  * preview, a watcher. They don't count as background work: like any
  * preview, a live one keeps its sandbox on under the preview rules, and
  * nothing waits for one to end. Told from bb's description of the command
- * (the agent's, like "Start the Vite dev server") and its summary.
+ * (the agent's, like "Start the Vite dev server") and its summary, and only
+ * on explicit evidence: it must say it serves, and name no finite step. A
+ * build, a test run or anything unclear counts as work (a sandbox kept on a
+ * while longer costs little; stopping real work loses it).
  */
-const SERVER_PATTERNS = [
+const SERVING = [
   /\bdev[\s-]?server\b/i,
-  /\b(start|run|launch|boot|restart)(s|ing|ed)?\s+(up\s+)?(the\s+|a\s+|an\s+)?([\w./-]+\s+){0,3}(server|preview|site)\b(?!\s+(tests?|specs?|checks?|build|logs?))/i,
-  /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(dev|start|serve|preview|watch|storybook)\b/i,
+  /\bpreview\b/i,
+  /\bserv(e|es|ing)\b/i,
+  /\b(start|run|launch|boot|restart)(s|ing|ed)?\b[^.;\n]{0,40}\bserver\b/i,
+  /--watch\b|\bwatch\s+mode\b|\bwatch(es|ing)?\s+for\s+changes\b/i,
+  /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(dev|start)\b/i,
   /\b(vite|next|nuxt|astro|remix|gatsby|docusaurus)\s+(dev|develop|preview|start)\b/i,
-  /\bvite\b(?!\s+(build|test))/i,
-  /\b(storybook|webpack-dev-server|http-server|live-server|browser-sync|nodemon)\b/i,
-  /\bhttp\.server\b|\bphp\s+-S\b|\brails\s+(s|server)\b|\bmanage\.py\s+runserver\b|\bflask\s+run\b|\b(uvicorn|gunicorn)\b|\b(hugo|zola)\s+serve(r)?\b|\b(jekyll|mkdocs|mdbook)\s+serve\b/i,
-  /(^|\s)(npx\s+)?serve(\s|$)/i,
-  /--watch\b|\bwatch(es|ing)?\s+(mode|for\s+changes)\b|\btail\s+-f\b/i,
+  /\bhttp\.server\b|\bphp\s+-S\b|\brails\s+(s|server)\b|\brunserver\b|\bflask\s+run\b|\b(uvicorn|gunicorn)\b|\b(hugo|zola)\s+server\b|\bstorybook\s+dev\b|\bstart-storybook\b|\bwebpack-dev-server\b|\b(http|live)-server\b|\bnodemon\b|\btail\s+-f\b/i,
 ];
+/** Words that name a finite step: a command that says one of these is work, whatever else it says. */
+const FINITE =
+  /\b(build(s|ing)?|test(s|ing)?|lint(s|ing)?|type-?check(s|ing)?|tsc\s+(-b|--build)|install(s|ing)?|migrat(e|es|ing|ion|ions)|compil(e|es|ing|ation)|bundl(e|es|ing)|bench(mark)?(s|ing)?|e2e|deploy(s|ing)?|publish(es|ing)?|export(s|ing)?|generat(e|es|ing))\b/i;
 
 export function isServerCommand(text: string): boolean {
-  return SERVER_PATTERNS.some((pattern) => pattern.test(text));
+  return !FINITE.test(text) && SERVING.some((pattern) => pattern.test(text));
 }
 
 interface ActiveCommand {

@@ -209,9 +209,11 @@ own processes there never count. Background work keeps a sandbox on for
 A server left running in the background (a dev server, a preview, a
 watcher) isn't background work: nothing waits for it to end. Like any
 preview, it keeps its sandbox on only while its preview is live, under the
-[preview rules](#previews). The plugin tells a server from a finite job (a
-build, a test run) by bb's description of the command, like "Start the
-Vite dev server" or `npm run dev`; when bb can't say, the command counts.
+[preview rules](#previews). The plugin treats a command as a server only
+when bb's description of it says it serves ("Start the Vite dev server",
+`npm run dev`, watch mode) and names no finite step (build, test, lint,
+type-check, install, migrate, compile, bundle). Anything else, or when bb
+can't say, counts as work.
 
 boat's own auto-stop (**Hard stop after**, within your plan's cap) only
 sees boat's headless agents at work, not a chat's. While a turn runs in a
