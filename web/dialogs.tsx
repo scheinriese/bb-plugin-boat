@@ -1664,6 +1664,7 @@ type MoveStatus = {
   blocked: { code: string; message: string; hint: string | null } | null;
   untrusted: boolean;
   untrustedRepos: string[];
+  otherRepos: string[];
   workersBoat: boolean;
   hasMachine: boolean;
   sandboxStopped: boolean;
@@ -1687,6 +1688,7 @@ function ContinueAsChatForm({ task, status, onDone }: { task: TaskDto; status: M
   const [trusted, setTrusted] = useState(false);
   const agent = PROVIDER_LABEL[task.provider];
   const repos = status.untrustedRepos;
+  const ownRepos = repos.filter((repo) => !status.otherRepos.includes(repo));
   const canSubmit = status.blocked === null && (!status.untrusted || trusted);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -1749,31 +1751,30 @@ function ContinueAsChatForm({ task, status, onDone }: { task: TaskDto; status: M
         <div className="grid gap-3">
           <InlineAlert tone="warning">
             {status.workersBoat ? (
-              <>How tasks run is set to In boat. The chat's sandbox can reach your bb, so continue only if you trust what this task works on.</>
-            ) : (
+              <>How tasks run is set to In boat. </>
+            ) : ownRepos.length > 0 ? (
               <>
-                Your projects don't run tasks on{" "}
-                {repos.map((repo, index) => (
-                  <span key={repo}>
-                    {index > 0 ? (index === repos.length - 1 ? " and " : ", ") : ""}
-                    <code className="font-mono text-xs">{repo}</code>
-                  </span>
-                ))}{" "}
-                as chats. The chat's sandbox can reach your bb, so continue only if you trust {repos.length === 1 ? "it" : "them"}.
+                Your projects don't run tasks on <RepoList repos={ownRepos} /> as chats.{" "}
               </>
-            )}
+            ) : null}
+            {status.otherRepos.length > 0 ? (
+              <>
+                Other tasks ran <RepoList repos={status.otherRepos} /> in this sandbox before
+                {status.workersBoat ? "" : `, and your projects don't run tasks on ${status.otherRepos.length === 1 ? "it" : "them"} as chats`}.{" "}
+              </>
+            ) : null}
+            The chat's sandbox can reach your bb, so continue only if you trust{" "}
+            {repos.length === 0 ? "this task" : status.workersBoat ? <RepoList repos={repos} /> : repos.length === 1 ? "it" : "them"}.
           </InlineAlert>
           <label htmlFor="ca-move-trust" className="flex items-start gap-2 text-sm">
             <Checkbox id="ca-move-trust" className="mt-0.5" checked={trusted} onCheckedChange={(checked) => setTrusted(checked === true)} />
-            <span className="min-w-0">
-              {status.workersBoat || repos.length === 0 ? (
-                "I trust this task's work"
-              ) : repos.length === 1 ? (
-                <>
-                  I trust <code className="font-mono text-xs">{repos[0]}</code>
-                </>
+            <span className="min-w-0 text-pretty">
+              {repos.length === 0 ? (
+                "I trust this task"
               ) : (
-                "I trust these repos"
+                <>
+                  I trust <RepoList repos={repos} />
+                </>
               )}
             </span>
           </label>
@@ -1788,6 +1789,20 @@ function ContinueAsChatForm({ task, status, onDone }: { task: TaskDto; status: M
         </SubmitButton>
       </DialogFooter>
     </form>
+  );
+}
+
+/** Repos as code, joined with commas and "and". */
+function RepoList({ repos }: { repos: readonly string[] }) {
+  return (
+    <>
+      {repos.map((repo, index) => (
+        <span key={repo}>
+          {index > 0 ? (index === repos.length - 1 ? " and " : ", ") : ""}
+          <code className="font-mono text-xs break-all">{repo}</code>
+        </span>
+      ))}
+    </>
   );
 }
 
