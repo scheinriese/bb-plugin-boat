@@ -89,6 +89,10 @@ export function renderSharedProtocol(text: string, tiers: TierMap, settings?: Pr
 
 /** `{{workers}}`: one or two sentences on how a task runs (the How tasks run setting). */
 export function workersText(settings?: Pick<ProtocolSettings, "workerMode" | "adhocWorkerMode">): string {
+  return `${workersRunText(settings)} I can also move a headless task into a task chat from its page; boat_followup then goes into that chat.`;
+}
+
+function workersRunText(settings?: Pick<ProtocolSettings, "workerMode" | "adhocWorkerMode">): string {
   const chat =
     "a regular bb chat nested under your chat in the sidebar (I can open it and write to it directly; a turn I start there wakes you too)";
   if (settings?.workerMode === "boat") {

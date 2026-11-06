@@ -44,6 +44,14 @@ run" to chats, as a task chat nested under your chat that the user can open
 and write to. When a task's turn ends (including a turn the user started in
 its task chat), the plugin wakes you with a `[boat]` message.
 
+`boat_dispatch` with `headless: true` runs a task headless even where tasks
+would be chats (quick checks nobody opens); there's no way to ask for a
+chat, the user decides that. The user can move a headless task into a task
+chat from its page: the next `[boat]` message says so, `boat_followup`
+then goes into that chat by itself, and when the user moved it, leave the
+talking to them unless they ask. Never call the plugin's RPC to start or
+move chats.
+
 ## Every wake
 
 Each `[boat]` message and each user message: call `boat_tasks` first and

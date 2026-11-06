@@ -76,6 +76,14 @@ the brief:
 - **Explore and plan, no changes** (on the Review model preset).
 - **Test task (no repo).**
 
+**Run as a chat**, under Repository, makes the task a bb chat you can open
+and type into instead of a headless one. It's on by default where How tasks
+run and the repo's project would make the task a chat, and follows the repo
+until you tick or clear it. It needs bb Connect (the hint under it says how
+to turn it on). For a repo your projects don't run as chats, ticking it
+shows a warning first: a task chat's sandbox can reach your bb, so do it
+only for repos you trust.
+
 A good brief has the goal, the context (files, issues, earlier decisions),
 the constraints, how to check the result, and anything special about the
 pull request. The agent can't ask questions mid-task. The plugin adds the
@@ -124,6 +132,22 @@ Open a task chat to watch every step or write to it; the plugin treats your
 turn as part of the task. Ultracode (Claude) and Ultra (Codex) work there.
 Task chats need bb Connect and take about a minute longer to start. Their
 sandbox holds bb machine credentials, so keep them for repos you trust.
+
+**Continue as a chat** on a headless task's page moves it into a task chat
+once its turn has ended: bb is installed on the task's sandbox (about a
+minute), and a chat with the same agent opens there, working in the task's
+checkout, with the brief, the latest report and the messages so far (in a
+file outside the repo). The headless conversation stops, follow-ups go to
+the chat, and the chat's first turn only reads up and sums up where the
+task stands. There's no way back. For repos your projects don't run as
+chats, the dialog warns and asks you to confirm. It isn't offered while
+the turn runs, without bb Connect, or for a sandbox shared with another
+open task or lent by you; start a new task as a chat with
+`--context-from <id>` there instead.
+
+A single task can also go its own way: `--chat` or `--headless` on
+`bb boat task start` (Run as a chat in New task). Agents only get `--chat`
+for repos the rules trust; for any other repo you decide, on the page.
 
 Idle sandboxes stop on their own. Their files and agent conversations
 survive and resume on the next follow-up. Closing a task deletes its
@@ -375,7 +399,8 @@ command has `--help`, and `--json` gives machine-readable output.
 | `bb boat doctor` | Check the setup, with a fix for each problem; never starts a sandbox |
 | `bb boat status` | Setup summary, plan limits, sandboxes, open tasks, repo access |
 | `bb boat task start --test` | Start the test task: no repo, changes nothing |
-| `bb boat task start --title … --brief …` | Start a task (`--repo`, `--project`, `--agent`, `--tier`, `--snapshot`, `--sandbox`, `--type` …) |
+| `bb boat task start --title … --brief …` | Start a task (`--repo`, `--project`, `--agent`, `--tier`, `--snapshot`, `--sandbox`, `--type`, `--chat` or `--headless` …) |
+| `bb boat task continue-as-chat <id>` | Move a headless task into a task chat (repos the rules trust; others from the task's page) |
 | `bb boat task review <id>` | Independent review of a task's work |
 | `bb boat task followup <id> --message …` | Next turn (`--agent` switches agent, `--tier` changes preset, `--steer` redirects a running turn) |
 | `bb boat task show \| transcript \| list \| interrupt \| close` | Inspect and finish tasks |

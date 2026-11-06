@@ -58,6 +58,20 @@ shows under Ready to review on the Cloud agents page.
 Idle sandboxes stop on their own, and resume on the next follow-up; their
 files and the agent's conversation survive.
 
+## Task chats and headless tasks
+
+- `--headless` on `task start` always works (quick checks nobody opens).
+- `--chat` only when the user asked for a task chat, and only for repos in
+  a project with Run tasks as chats on (or any repo with How tasks run set
+  to As chats everywhere). On `untrusted_repo`, don't retry and don't work
+  around it: tell the user the hint. A task chat's sandbox can reach their
+  bb, so they decide (Run as a chat in New task on the Cloud agents page,
+  or a project).
+- `bb boat task continue-as-chat <id>` moves a headless task into a task
+  chat when the user wants to talk to its agent. Same trust rule; for other
+  repos the user uses Continue as a chat on the task's page.
+- Never call the plugin's RPC (`bb plugin rpc …`) to start or move chats.
+
 ## Agents
 
 - "Coding agents" (`agents`) is Auto-detect by default: the plugin uses the
@@ -86,7 +100,7 @@ default 3) caps how many run; `bb boat status` shows the room left.
 | `bb boat doctor` | Check the setup: boat CLI, sign-in, plan, agent logins, environment, GitHub, bb Connect. Read-only |
 | `bb boat status` | Setup summary, plan, room for sandboxes, open tasks |
 | `bb boat task start --test` | The test task (no repo, changes nothing; `--agent codex` to test Codex) |
-| `bb boat task start --title "…" --brief "…" --tier build --reason "…"` | Start a task on this chat's project (repo, base branch, environment come from it). The model preset (`light`, `review`, `build`, `deep`, `frontier`) picks model and effort for the agent. Add `--project <id>`, `--repo owner/name`, `--agent codex`, `--effort`, `--model`, `--branch`, `--base`, `--role review`, `--sandbox <id>`, `--type small`, `--context-from t_…` |
+| `bb boat task start --title "…" --brief "…" --tier build --reason "…"` | Start a task on this chat's project (repo, base branch, environment come from it). The model preset (`light`, `review`, `build`, `deep`, `frontier`) picks model and effort for the agent. Add `--project <id>`, `--repo owner/name`, `--agent codex`, `--effort`, `--model`, `--branch`, `--base`, `--role review`, `--sandbox <id>`, `--type small`, `--context-from t_…`, `--headless` (or `--chat`, see Task chats) |
 | `bb boat task start … --brief-file brief.md` | Long briefs from a file on your machine |
 | `bb boat task review <id>` | Independent review of a task's work, by the other agent by default |
 | `bb boat task followup <id> --message "…"` | Next turn in the same conversation (`--agent codex` switches to the other agent at the same preset, `--tier deep` changes the preset, `--steer` redirects a running turn, `--evidence-only` only asks for uploads and needs no message) |
@@ -94,6 +108,7 @@ default 3) caps how many run; `bb boat status` shows the room left.
 | `bb boat task transcript <id>` | What the agent did step by step |
 | `bb boat task list [--mine] [--all]` | Tasks |
 | `bb boat task interrupt <id>` | Stop the running turn |
+| `bb boat task continue-as-chat <id>` | Move a headless task into a task chat (bb on its sandbox, a chat with the same agent; follow-ups then go there) |
 | `bb boat task close <id> [--cancel] [--keep-sandbox]` | Finish a task; deletes its sandbox unless shared. Unshipped work (projects that ship after approval) is refused unless the user said to discard it (`--discard`) |
 | `bb boat task ship <id>` | Projects that ship after approval: push the task's commits to its base branch. Only from the task's orchestrator chat, after the user said so there |
 | `bb boat preview list` / `preview wake\|extend\|stop <id>` | Previews agents left running (private links), and bringing a sleeping one back |

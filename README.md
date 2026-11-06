@@ -83,7 +83,9 @@ often, add them as [projects](docs/features.md#projects).
 | Best for | Handing off a piece of work without leaving your conversation | Starting work directly, checking a repo, a test task | Long hands-on sessions that keep going while this computer sleeps |
 
 A **task chat** is a task you can open as a bb chat and type into: set
-**How tasks run** to one of the "As chats" options (needs bb Connect). See
+**How tasks run** to one of the "As chats" options (needs bb Connect), tick
+**Run as a chat** in New task, or use **Continue as a chat** on a headless
+task's page. See
 [How tasks run](docs/features.md#how-tasks-run-in-boat-or-as-task-chats). Turn on bb Connect
 with `bb account login` (then `bb connect on` if it's off); the setup
 checklist shows its state.
