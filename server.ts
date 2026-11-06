@@ -271,6 +271,7 @@ export default async function plugin(bb: BbPluginApi) {
       peek: (taskId) => watchdogRef?.noteFor(taskId) ?? Promise.resolve(null),
       sent: (taskId) => watchdogRef?.noteSent(taskId) ?? Promise.resolve(),
     },
+    machineSuspended: (hostId, underWork) => watchdogRef?.planned(hostId, underWork),
     evidence: createEvidenceSource(readRepoFile, undefined, (error, at) =>
       bb.log.warn(`evidence uploader: GitHub refresh failed (${error instanceof Error ? error.message : String(error)}); installing the copy from ${new Date(at).toISOString()}`),
     ),
@@ -451,6 +452,8 @@ export default async function plugin(bb: BbPluginApi) {
     held: (sandboxId) => service.holdsSandbox(sandboxId),
     // A headless task's finished agent left processes computing there (boat ps).
     computing: (sandboxId) => service.processesBusy(sandboxId),
+    // The watchdog tells the keeper's planned stops from ones that cut work off.
+    suspended: (hostId, underWork) => watchdogRef?.planned(hostId, underWork),
   });
 
   // The watchdog: bb's record of Boat sandbox machines true to boat, chats

@@ -132,6 +132,12 @@ export interface Watchdog {
   noteSent(taskId: string): Promise<void>;
   /** Load pending notes (after a restart). */
   load(): Promise<void>;
+  /**
+   * The plugin suspended this machine itself. Nothing ran in the background
+   * (underWork false): a planned stop, even if the watchdog saw work there a
+   * pass ago. underWork: at the 12-hour limit for it.
+   */
+  planned(hostId: string, underWork: boolean): void;
 }
 
 /** What the watchdog saw running in the background on a machine while it was up. */
@@ -183,6 +189,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   const problems = new Map<string, string>();
   /** Host id → the stop it's reconciling (bb's last sight of the machine), and how many tries. */
   const tries = new Map<string, { episode: number; count: number }>();
+  /** Host ids the plugin suspended at its limit for background work (the notice says so). */
+  const atLimit = new Set<string>();
   /** Host id → up and connected at the last look. */
   const upNow = new Map<string, boolean>();
   /** Thread id → since when its messages wait on a down machine. */
@@ -509,9 +517,10 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
           await stoppedUnderWork(host.id, sandboxId, rows, stoppedAt, cause, done.did);
         }
       } else if ((phase === "suspended" || phase === "suspending") && seen.has(host.id)) {
-        // bb suspended it (the idle stop or the keeper at their limit, or someone's click) under background work.
+        // Suspended under background work: by the plugin at its limit, or by bb or someone's click.
         const stoppedAt = host.lifecycle?.suspendedAt ?? at;
-        await stoppedUnderWork(host.id, sandboxId, rows, stoppedAt, "bb suspended the machine.", "bb resumes it on the next message.");
+        const cause = atLimit.delete(host.id) ? "The plugin suspended it: that's the most it keeps a sandbox on for background work." : "bb suspended the machine.";
+        await stoppedUnderWork(host.id, sandboxId, rows, stoppedAt, cause, "bb resumes it on the next message.");
       }
 
       // Messages waiting for the machine while it's down.
@@ -714,6 +723,14 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
     async noteSent(taskId) {
       const parsed = noteSchema.safeParse(await deps.kv.get<unknown>(resumeNoteKey(taskId)).catch(() => undefined));
       if (parsed.success) await dropNote(parsed.data, "in the follow-up");
+    },
+
+    planned(hostId, underWork) {
+      if (underWork) atLimit.add(hostId);
+      else {
+        seen.delete(hostId);
+        atLimit.delete(hostId);
+      }
     },
 
     async load() {

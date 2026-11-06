@@ -131,6 +131,8 @@ test("the idle stop leaves a machine on while background work runs there, and st
   await later(6 * MINUTE, () => env.service.sweep());
   assert.deepEqual(env.chat.suspended, [task.hostId]);
   assert.match(env.store.events(task.id, 50).find((event) => event.kind === "sandbox-stopped")!.text, /after 1 idle minutes/);
+  // The watchdog hears it was a planned stop, with nothing in the background.
+  assert.deepEqual(env.planned, [{ hostId: task.hostId, underWork: false }]);
 });
 
 test("background work keeps a machine on at most 12 hours from when the idle stop first saw it", async () => {
@@ -143,6 +145,7 @@ test("background work keeps a machine on at most 12 hours from when the idle sto
   await later(5 * MINUTE + KEEP_LIMIT_MS + MINUTE, () => env.service.sweep());
   assert.deepEqual(env.chat.suspended, [task.hostId]);
   assert.match(env.store.events(task.id, 50).find((event) => event.kind === "sandbox-stopped")!.text, /a bb workflow had been running in the background for 12 hours/);
+  assert.deepEqual(env.planned, [{ hostId: task.hostId, underWork: true }]);
 });
 
 test("when bb can't say what runs on a machine, the idle stop doesn't stop it on a guess", async () => {

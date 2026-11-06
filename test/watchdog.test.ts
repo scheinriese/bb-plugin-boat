@@ -181,6 +181,35 @@ test("the plugin's own idle stop with nothing in the background says nothing", a
   assert.equal(await dog.noteFor(w.task.id), null);
 });
 
+test("the plugin's own stop right after background work ended says nothing; one at its limit says so", async () => {
+  const w = await world();
+  const dog = w.watchdog();
+  w.setRow({ activity: WORKFLOW });
+  await dog.tick();
+  // The workflow ends; the idle stop suspends the machine before the watchdog looks again.
+  w.setRow({ activity: { ...WORKFLOW, activeWorkflowCount: 0 } });
+  dog.planned(w.host.id, false);
+  w.host.lifecycle = { phase: "suspended", suspendedAt: w.now() };
+  w.host.status = "disconnected";
+  w.sandbox.state = "stopped";
+  w.advance(MINUTE);
+  await dog.tick();
+  assert.equal(w.told.length, 0);
+
+  const capped = await world();
+  const watch = capped.watchdog();
+  capped.setRow({ activity: WORKFLOW });
+  await watch.tick();
+  watch.planned(capped.host.id, true);
+  capped.host.lifecycle = { phase: "suspended", suspendedAt: capped.now() };
+  capped.host.status = "disconnected";
+  capped.sandbox.state = "stopped";
+  capped.advance(MINUTE);
+  await watch.tick();
+  assert.equal(capped.told.length, 1);
+  assert.match(capped.told[0]!.text, /The plugin suspended it: that's the most it keeps a sandbox on for background work\./);
+});
+
 test("a stop at the 12-hour limit for background work says it may have been stuck, without 'rerun it now'", async () => {
   const w = await world();
   const dog = w.watchdog();

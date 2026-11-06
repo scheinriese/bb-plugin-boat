@@ -217,6 +217,13 @@ export interface ServiceHooks {
    * cut off its background work (the watchdog's); absent: none.
    */
   resumeNote?: { peek(taskId: string): Promise<string | null>; sent(taskId: string): Promise<void> };
+  /**
+   * The plugin suspended a worker machine itself (the idle stop, making
+   * room, a stop someone asked for). underWork: background work still ran
+   * (the idle stop at its limit). The watchdog tells a planned stop from
+   * one that cut work off.
+   */
+  machineSuspended?(hostId: string, underWork: boolean): void;
   /** Tests: the memory check's cap and the move's poll interval and waits (ms). */
   sizeTiming?: { checkMs?: number; pollMs?: number; stopMs?: number; startMs?: number; reconnectMs?: number };
 }
@@ -746,6 +753,7 @@ export class BoatService {
         if (hostId !== null && this.hooks.chat !== undefined) {
           await this.hooks.chat.suspendMachine(hostId);
           this.suspendedHosts.add(hostId);
+          this.hooks.machineSuspended?.(hostId, false);
         } else {
           await this.boat.stop(victim.sandbox.id, signal);
         }
@@ -2609,6 +2617,7 @@ export class BoatService {
     if (action === "stop") {
       await chat.suspendMachine(hostId);
       this.suspendedHosts.add(hostId);
+      this.hooks.machineSuspended?.(hostId, false);
     } else if (action === "resume") {
       await chat.resumeMachine(hostId);
       this.suspendedHosts.delete(hostId);
@@ -3502,6 +3511,7 @@ export class BoatService {
     if (hostId !== null) {
       await this.hooks.chat!.suspendMachine(hostId);
       this.suspendedHosts.add(hostId);
+      this.hooks.machineSuspended?.(hostId, false);
     } else {
       await this.boat.stop(sandboxId, signal);
     }
@@ -4594,6 +4604,7 @@ export class BoatService {
           await this.hooks.chat.suspendMachine(hostId);
           this.suspendedHosts.add(hostId);
           this.backgroundSince.delete(hostId);
+          this.hooks.machineSuspended?.(hostId, background);
           const hours = Math.round(KEEP_LIMIT_MS / 3_600_000);
           for (const task of tasks) {
             this.store.addEvent(

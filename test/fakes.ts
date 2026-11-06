@@ -813,6 +813,8 @@ export function makeService(
   const warnings: string[] = [];
   /** Notes a worker gets once with its next prompt after a stop (the watchdog's), per task. */
   const resumeNotes = new Map<string, string>();
+  /** Machines the service suspended itself, and whether background work still ran. */
+  const planned: { hostId: string; underWork: boolean }[] = [];
   let plan: MachineTypeFacts[] | null = options.plan ?? null;
   let projects: SizedProject[] = options.projects ?? [];
   const service = new BoatService(boat as unknown as BoatApi, store, {
@@ -834,6 +836,7 @@ export function makeService(
       peek: async (taskId) => resumeNotes.get(taskId) ?? null,
       sent: async (taskId) => void resumeNotes.delete(taskId),
     },
+    machineSuspended: (hostId, underWork) => void planned.push({ hostId, underWork }),
     sizeTiming: { checkMs: 200, pollMs: 1, stopMs: 200, startMs: 200, reconnectMs: 200, ...options.sizeTiming },
     ...(options.quotas ? { quotas: { read: async () => options.quotas! } } : {}),
     ...(options.evidence ? { evidence: options.evidence } : {}),
@@ -852,6 +855,7 @@ export function makeService(
     told,
     warnings,
     resumeNotes,
+    planned,
     setSettings(next: Partial<BoatSettings>) {
       settings = { ...settings, ...next };
     },

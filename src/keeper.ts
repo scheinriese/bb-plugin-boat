@@ -131,6 +131,8 @@ export interface KeeperDeps {
   held?: (sandboxId: string) => boolean;
   /** Processes a headless task's finished agent left are computing there (boat ps; absent: never). */
   computing?: (sandboxId: string) => Promise<boolean>;
+  /** The keeper suspended this machine; underWork: background work still ran (at its 12-hour limit). */
+  suspended?: (hostId: string, underWork: boolean) => void;
   now?: () => number;
 }
 
@@ -361,6 +363,8 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
       const children =
         busyChats.size > 0 || unlisted.length > 0 || threads === null || hostId === null ? [] : await workingChildren(bb, threads, new Set([...boatMachines, hostId])).catch(() => []);
       let keepOn = busyChats.size > 0 || unlisted.length > 0 || children.length > 0;
+      /** Work still ran, but it has been kept on for KEEP_LIMIT_MS. */
+      let limited = false;
 
       if (keepOn) {
         // A run of extends; a task chat's next turn starts a new one.
@@ -378,6 +382,7 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
         if (now - streak.since >= KEEP_LIMIT_MS) {
           // Long enough: boat's stop comes (bb suspends the machine first, below).
           keepOn = false;
+          limited = true;
           if (!streak.ended) {
             streak.ended = true;
             const hours = Math.round(KEEP_LIMIT_MS / 3_600_000);
@@ -414,6 +419,7 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
           // resumes it on demand. A live preview goes too right before boat's
           // stop: through bb, the next message brings it all back.
           await bb.sdk.hosts.experimental_suspend({ hostId });
+          deps.suspended?.(hostId, limited);
         }
       } catch (error) {
         retryAt.set(sandboxId, now + RETRY_MS);
