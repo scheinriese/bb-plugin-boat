@@ -1053,12 +1053,6 @@ test("sandbox sizes through the page's RPCs: the dialog's facts, a move, a proje
   const { id, sandboxId } = started.task;
   const calls = () => state().calls as string[][];
   assert.ok(calls().some((call) => call[0] === "exec" && call.includes("--detach") && call.at(-1)!.includes("/tmp/boat-memory/")), "the sampler started");
-  // The CLI asks for the same with --measure-memory.
-  const viaCli = await harness.runCli(["task", "start", "--title", "Check acme/api runs", "--repo", "acme/api", "--brief", "Run the tests.", "--measure-memory", "--json"], { threadId: "thr_orch" });
-  assert.equal(viaCli.exitCode, 0, viaCli.stderr || viaCli.stdout);
-  const cliTask = JSON.parse(viaCli.stdout).task as { id: string; sandboxId: string };
-  assert.ok(calls().some((call) => call[0] === "exec" && call.includes("--detach") && call.includes(cliTask.sandboxId)), "the CLI's task is measured too");
-  assert.equal((await harness.runCli(["task", "close", cliTask.id, "--cancel"])).exitCode, 0);
 
   // While it runs: the dialog says why it can't move, and a move is refused.
   let info = (await harness.callRpc("sandboxResizeInfo", { id })) as { blocker: { code: string } | null; current: { type: string } | null; suggested: string | null };
@@ -1077,4 +1071,10 @@ test("sandbox sizes through the page's RPCs: the dialog's facts, a move, a proje
   const detail = (await harness.callRpc("task", { id })) as { task: { memory: { size: { type: string } | null; resize: unknown } | null } };
   assert.equal(detail.task.memory?.size?.type, "large");
   assert.equal(detail.task.memory?.resize, null);
+  // The CLI asks for the same with --measure-memory.
+  const viaCli = await harness.runCli(["task", "start", "--title", "Check acme/api runs", "--repo", "acme/api", "--brief", "Run the tests.", "--measure-memory", "--json"], { threadId: "thr_orch" });
+  assert.equal(viaCli.exitCode, 0, viaCli.stderr || viaCli.stdout);
+  const cliTask = JSON.parse(viaCli.stdout).task as { id: string; sandboxId: string };
+  assert.ok(calls().some((call) => call[0] === "exec" && call.includes("--detach") && call.includes(cliTask.sandboxId)), "the CLI's task is measured too");
+  assert.equal((await harness.runCli(["task", "close", cliTask.id, "--cancel"])).exitCode, 0);
 });
