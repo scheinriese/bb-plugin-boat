@@ -72,8 +72,10 @@ export function CloudAgentsHeader(_props: PluginNavPanelProps) {
   return (
     <div className="flex items-center gap-1.5">
       <IconButton label="Refresh from boat.dev" icon="ArrowReloadHorizontal" busy={refresh.isPending} onClick={() => void runRefresh()} />
-      <Button size="sm" className="h-7 px-2.5" onClick={() => setDialog("task")}>
-        <Icon name="Plus" /> New task
+      {/* Icon only on phones, so the page title in bb's header isn't cut to one letter. */}
+      <Button size="sm" className="h-7 px-2 sm:px-2.5" aria-label="New task" onClick={() => setDialog("task")}>
+        <Icon name="Plus" />
+        <span className="hidden sm:inline">New task</span>
       </Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

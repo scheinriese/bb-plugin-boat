@@ -706,6 +706,29 @@ function TranscriptItem({ entry }: { entry: TranscriptEntry }) {
 
 // ----------------------------------------------------------------- reply box
 
+/**
+ * The line under the reply box's controls: the situation's hint, or where the
+ * message goes. The keyboard shortcut only shows on wider screens (phones
+ * have no ⌘ key).
+ */
+function ReplyHint({ hint, chat, room, provider }: { hint: string | null; chat: boolean; room: boolean; provider: Provider }) {
+  if (hint !== null) return <p className="text-xs text-pretty text-muted-foreground">{hint}</p>;
+  const other = provider === "claude" ? "codex" : "claude";
+  const parts = [
+    chat ? "Sent into the task chat" : null,
+    room ? `${PROVIDER_LABEL[other]} takes over if ${PROVIDER_LABEL[provider]} is near its limit` : null,
+  ].filter((part): part is string => part !== null);
+  return (
+    <p className={cn("text-xs text-pretty text-muted-foreground", parts.length === 0 && "hidden sm:block")}>
+      {parts.join(" · ")}
+      <span className="hidden sm:inline">
+        {parts.length > 0 ? " · " : null}
+        <Kbd>⌘</Kbd> <Kbd>Enter</Kbd> to send
+      </span>
+    </p>
+  );
+}
+
 /** room: the task's agent, or the other one when it's near its limit; keep: always the task's agent. */
 type AgentChoice = "room" | "keep" | Provider;
 
@@ -810,19 +833,10 @@ function ReplyBox({ task }: { task: TaskDetailDto }) {
             {running ? (
               <label htmlFor={steerId} className="inline-flex items-center gap-2 text-xs text-foreground">
                 <Checkbox id={steerId} checked={steer} onCheckedChange={(checked) => setSteer(checked === true)} />
-                Steer the running turn
+                Steer this turn
               </label>
             ) : null}
-            <p className="min-w-0 flex-1 text-xs text-muted-foreground">
-              {hint ?? (
-                <>
-                  {chat ? "Sent into the task chat · " : null}
-                  {agent === "room" ? `${PROVIDER_LABEL[task.provider === "claude" ? "codex" : "claude"]} takes over if ${PROVIDER_LABEL[task.provider]} is near its limit · ` : null}
-                  <Kbd>⌘</Kbd> <Kbd>Enter</Kbd> to send
-                </>
-              )}
-            </p>
-            <Button type="submit" size="sm" disabled={!canSend}>
+            <Button type="submit" size="sm" className="ml-auto" disabled={!canSend}>
               <Icon
                 name={followup.isPending ? "Loading" : "Sent"}
                 className={cn(followup.isPending && "animate-spin")}
@@ -830,6 +844,8 @@ function ReplyBox({ task }: { task: TaskDetailDto }) {
               {steering ? "Steer" : "Send"}
             </Button>
           </div>
+          {/* Its own line under the controls: inline, a narrow screen squeezed it to one word per line. */}
+          <ReplyHint hint={hint} chat={chat} room={agent === "room"} provider={task.provider} />
         </form>
       )}
     </div>
