@@ -200,11 +200,46 @@ test("a headless sandbox whose finished agent left a build computing isn't idle-
   const busy = { live: true, sampledAt: null, processes: [{ pid: 42, command: "cargo bench", cpuPercent: 99, memoryMb: null, commandId: null }] };
   env.boat.processSamples.set(task.sandboxId!, busy);
   const stops = () => env.boat.calls.filter((call) => call === `stop ${task.sandboxId}`).length;
-  // One busy reading isn't enough (it could be a blip); the same process busy again five minutes later is.
+  // A first busy reading holds the stop until the next one decides.
   await later(5 * MINUTE, () => env.service.sweep());
-  assert.equal(stops(), 1, "a single reading doesn't hold the stop");
-  env.boat.sandboxes.get(task.sandboxId!)!.state = "idle";
+  assert.equal(stops(), 0);
+  // Five minutes later the same program is busy again (another pid: a build's compiler processes come and go).
+  env.boat.processSamples.set(task.sandboxId!, { ...busy, processes: [{ ...busy.processes[0]!, pid: 43 }] });
   await later(11 * MINUTE, () => env.service.sweep());
   await later(17 * MINUTE, () => env.service.sweep());
-  assert.equal(stops(), 1, "two readings of the same busy process do");
+  assert.equal(stops(), 0, "kept on while it computes");
+  // It finished: the next reading lets the idle stop go ahead.
+  env.boat.processSamples.set(task.sandboxId!, { ...busy, processes: [] });
+  await later(23 * MINUTE, () => env.service.sweep());
+  assert.equal(stops(), 1);
+});
+
+test("a first busy reading that isn't confirmed doesn't keep a sandbox on", async () => {
+  const env = makeService({ settings: { stopIdleAfterMinutes: 1 } });
+  const { task } = await env.service.launchTask({ title: "Blip", role: "implement", brief: "Do it.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+  env.boat.finish(task.conversationId!, REPORT);
+  await env.service.sweep();
+  env.boat.processSamples.set(task.sandboxId!, { live: true, sampledAt: null, processes: [{ pid: 7, command: "node build.js", cpuPercent: 80, memoryMb: null, commandId: null }] });
+  await later(5 * MINUTE, () => env.service.sweep());
+  env.boat.processSamples.set(task.sandboxId!, { live: true, sampledAt: null, processes: [] });
+  await later(11 * MINUTE, () => env.service.sweep());
+  assert.deepEqual(env.boat.calls.filter((call) => call === `stop ${task.sandboxId}`), [`stop ${task.sandboxId}`]);
+});
+
+test("background work after a new turn starts its 12 hours over", async () => {
+  const env = makeService({ chat: true, settings: { stopIdleAfterMinutes: 1 } });
+  const task = await chatTask(env);
+  env.chat.activities.set(task.hostId!, { background: { ...NO_WORK, commands: 1 } });
+  await later(5 * MINUTE, () => env.service.sweep());
+  // A follow-up: a new turn runs, ends 13 hours later, and leaves new background work.
+  await later(6 * MINUTE, async () => {
+    await env.service.followup(task.id, "One more thing.");
+    await env.service.sweep();
+  });
+  await later(13 * 3_600_000, async () => {
+    env.chat.finish(task.threadId!, REPORT);
+    await env.service.sweep();
+  });
+  await later(13 * 3_600_000 + 5 * MINUTE, () => env.service.sweep());
+  assert.deepEqual(env.chat.suspended, [], "an hour-old job isn't at the 12-hour limit");
 });

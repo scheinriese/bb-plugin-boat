@@ -19,6 +19,7 @@ import {
   type ShipResult,
   type EnvironmentInfo,
   busyProcesses,
+  programName,
   shellQuote,
 } from "./boat-api.ts";
 import { checkPreview, previewLink, previewView, type PreviewView } from "./previews.ts";
@@ -519,6 +520,9 @@ const SETTLE_MS = 30_000;
 /** How long a `boat ps` reading of a sandbox is reused. */
 const PROCESS_CHECK_MS = 5 * 60_000;
 
+/** What `boat ps` says of a headless sandbox whose agent has finished. */
+export type Computing = "busy" | "maybe" | "no";
+
 /** A move to a chat whose task was closed or changed meanwhile. */
 class MoveCancelled extends Error {
   readonly why: "closed" | "changed" | "unloaded";
@@ -739,7 +743,7 @@ export class BoatService {
       let computing: (typeof candidates)[number] | undefined;
       for (const entry of candidates) {
         if (await this.machineBusy(entry.tasks)) continue;
-        if (!entry.tasks.some((task) => task.runner === "chat") && (await this.processesBusy(entry.sandbox.id))) {
+        if (!entry.tasks.some((task) => task.runner === "chat") && (await this.processesBusy(entry.sandbox.id)) !== "no") {
           computing ??= entry;
           continue;
         }
@@ -1878,11 +1882,13 @@ export class BoatService {
   /** bb suspended this worker machine (the watchdog brought bb's record in line): the idle stop leaves it. */
   noteSuspended(hostId: string): void {
     this.suspendedHosts.add(hostId);
+    this.backgroundSince.delete(hostId);
   }
 
   /** bb has this worker machine up again (the watchdog resumed it, or sees it connected): the idle stop watches it again. */
   noteResumed(hostId: string): void {
     this.suspendedHosts.delete(hostId);
+    this.backgroundSince.delete(hostId);
   }
 
   /** A move to a task chat is running for this task. */
@@ -4518,23 +4524,26 @@ export class BoatService {
   /** Worker machine → since when the idle stop sees background work there (its limit counts from then). */
   private readonly backgroundSince = new Map<string, number>();
 
-  /** `boat ps` readings per sandbox: the busy processes (pid and command), reused a few minutes. */
-  private readonly processChecks = new Map<string, { at: number; busy: string[]; confirmed: boolean }>();
+  /** `boat ps` readings per sandbox: the busy programs (by executable name), reused a few minutes. */
+  private readonly processChecks = new Map<string, { at: number; busy: string[]; verdict: Computing }>();
 
   /**
    * Processes a headless task's finished agent left are still computing
-   * there (`boat ps`): the same process busy in two readings a few minutes
-   * apart. Unknown counts as no.
+   * there (`boat ps`): "busy" when the same program was busy in two
+   * readings a few minutes apart (a build's compiler processes come and
+   * go, so by program, not pid); "maybe" after a first busy reading, until
+   * the next one decides. Unknown counts as "no".
    */
-  async processesBusy(sandboxId: string, now = Date.now()): Promise<boolean> {
+  async processesBusy(sandboxId: string, now = Date.now()): Promise<Computing> {
     const cached = this.processChecks.get(sandboxId);
-    if (cached !== undefined && now - cached.at < PROCESS_CHECK_MS) return cached.confirmed;
+    if (cached !== undefined && now - cached.at < PROCESS_CHECK_MS) return cached.verdict;
     const sample = await this.boat.processes(sandboxId, this.hooks.lifecycle).catch(() => null);
-    const busy = busyProcesses(sample).map((entry) => `${entry.pid ?? "?"} ${entry.command}`);
-    const confirmed = cached !== undefined && now - cached.at < 4 * PROCESS_CHECK_MS && busy.some((entry) => cached.busy.includes(entry));
-    this.processChecks.set(sandboxId, { at: now, busy, confirmed });
+    const busy = [...new Set(busyProcesses(sample).map((entry) => programName(entry.command)))];
+    const again = cached !== undefined && now - cached.at < 4 * PROCESS_CHECK_MS && busy.some((name) => cached.busy.includes(name));
+    const verdict: Computing = busy.length === 0 ? "no" : again ? "busy" : "maybe";
+    this.processChecks.set(sandboxId, { at: now, busy, verdict });
     for (const [id, entry] of this.processChecks) if (now - entry.at > 4 * PROCESS_CHECK_MS) this.processChecks.delete(id);
-    return confirmed;
+    return verdict;
   }
 
   /**
@@ -4561,7 +4570,11 @@ export class BoatService {
       }
       for (const [hostId, tasks] of byHost) {
         if (this.suspendedHosts.has(hostId)) continue;
-        if (tasks.some((task) => task.status === "running" || task.status === "starting")) continue;
+        // A turn runs: background work after it is new work (its 12 hours start over).
+        if (tasks.some((task) => task.status === "running" || task.status === "starting")) {
+          this.backgroundSince.delete(hostId);
+          continue;
+        }
         // A wake, ship or dispatch holds the sandbox right now.
         if (tasks.some((task) => task.sandboxId !== null && this.claims.has(task.sandboxId))) continue;
         // A live preview the user hasn't looked at yet keeps the machine on.
@@ -4579,7 +4592,10 @@ export class BoatService {
             break;
           }
         }
-        if (busy) continue;
+        if (busy) {
+          this.backgroundSince.delete(hostId);
+          continue;
+        }
         // So may every other chat on the machine (a workflow's, one bb started),
         // and work left running in the background (background commands, bb
         // workflows, child chats).
@@ -4591,7 +4607,10 @@ export class BoatService {
           this.hooks.log.warn(`idle stop ${hostId}: ${errorText(error)}`);
           continue;
         }
-        if (activity.turns || activity.waiting) continue;
+        if (activity.turns || activity.waiting) {
+          this.backgroundSince.delete(hostId);
+          continue;
+        }
         // Background work keeps it on, up to the keeper's limit from when the idle stop first saw it.
         const background = hasWork(activity.background);
         if (!background) this.backgroundSince.delete(hostId);
@@ -4634,11 +4653,17 @@ export class BoatService {
       const tasks = this.store.liveSandboxTasks(sandboxId);
       // bb manages machines of worker chats (it suspends idle ones itself).
       if (tasks.some((entry) => entry.runner === "chat")) continue;
-      if (tasks.some((entry) => entry.status === "running" || entry.status === "starting")) continue;
+      if (tasks.some((entry) => entry.status === "running" || entry.status === "starting")) {
+        this.backgroundSince.delete(sandboxId);
+        continue;
+      }
       const latest = Math.max(...tasks.map((entry) => Date.parse(entry.updatedAt)));
       if (now - latest < threshold) continue;
-      // Processes the finished agent left computing (a build, tests) keep it on, up to the keeper's limit.
-      if (await this.processesBusy(sandboxId, now)) {
+      // Processes the finished agent left computing (a build, tests) keep it on, up to
+      // the keeper's limit. A first busy reading waits for the next one to decide.
+      const computing = await this.processesBusy(sandboxId, now);
+      if (computing === "maybe") continue;
+      if (computing === "busy") {
         const since = this.backgroundSince.get(sandboxId) ?? now;
         this.backgroundSince.set(sandboxId, since);
         if (now - since < KEEP_LIMIT_MS) continue;

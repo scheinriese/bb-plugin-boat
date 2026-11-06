@@ -433,8 +433,11 @@ test("a turn is kept on for 12 hours at most; then boat's stop comes, and the ne
     await keep();
     env.time.advance(5 * MINUTE);
   }
-  // Hard stop after within the trial's cap (2 h), extended about every 95 minutes while under 12 hours.
-  assert.equal(env.boat.extended.length, 8);
+  // Hard stop after within the trial's cap (2 h), extended about every 95 minutes while under 12 hours;
+  // the last extends only reach to the 12 hours (half an hour at least), never 2 hours past them.
+  assert.ok(env.boat.extended.length >= 8 && env.boat.extended.length <= 12, String(env.boat.extended.length));
+  assert.ok(Date.parse(env.sandbox.archiveAfter!) <= start + KEEP_LIMIT_MS + 35 * MINUTE, env.sandbox.archiveAfter!);
+  assert.ok(env.boat.extended.at(-1)!.args[1] !== "7200", "the last extend is cut to what's left");
   assert.ok(env.time.now() - start >= KEEP_LIMIT_MS);
   // Not extended again: near its deadline bb suspends it (it resumes on the next message).
   assert.deepEqual(env.suspended, [env.task.hostId]);
@@ -451,8 +454,10 @@ test("a turn is kept on for 12 hours at most; then boat's stop comes, and the ne
   await env.service.sweep();
   env.sandbox.archiveAfter = new Date(env.time.now() + 10 * MINUTE).toISOString();
   env.time.advance(MINUTE);
+  const before = env.boat.extended.length;
   await keep();
-  assert.equal(env.boat.extended.length, 9);
+  assert.equal(env.boat.extended.length, before + 1);
+  assert.equal(env.boat.extended.at(-1)!.args[1], "7200", "a new turn gets the full Hard stop after again");
 });
 
 test("a machine isn't suspended under other work: a headless agent, a headless turn, a ship or wake in flight, a live preview", async () => {
@@ -621,7 +626,7 @@ test("a headless sandbox whose finished agent left processes computing is kept o
   const sandbox = env.boat.sandboxes.get(task.sandboxId!)!;
   sandbox.archiveAfter = new Date(time.now() + 10 * MINUTE).toISOString();
   const { bb } = fakeBb(() => []);
-  let computing = false;
+  let computing: "busy" | "maybe" | "no" = "no";
   const keeper = () =>
     createSandboxKeeper(bb, {
       boat: env.boat as unknown as BoatApi,
@@ -634,7 +639,7 @@ test("a headless sandbox whose finished agent left processes computing is kept o
     });
   await keeper()();
   assert.deepEqual(env.boat.extended, []);
-  computing = true;
+  computing = "maybe";
   await keeper()();
   assert.deepEqual(env.boat.extended, [{ id: sandbox.id, args: ["--ttl", "7200"] }]);
   assert.match(env.store.events(task.id, 50).find((event) => event.kind === KEPT_ON_EVENT)!.text, /while processes the agent started are still running/);

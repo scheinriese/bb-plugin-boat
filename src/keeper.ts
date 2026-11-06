@@ -110,6 +110,12 @@ function moreTime(seconds: number): string {
   return `${minutes} more ${minutes === 1 ? "minute" : "minutes"}`;
 }
 
+/** An extend never reaches past the 12 hours in a row (at least half an hour, like any extend). */
+function withinLimit(ttlSeconds: number, streak: { since: number }, now: number): number {
+  const left = Math.ceil((KEEP_LIMIT_MS - (now - streak.since)) / 1000);
+  return Math.min(ttlSeconds, Math.max(1800, left));
+}
+
 function turnRuns(task: Task): boolean {
   return task.status === "running" || task.status === "starting";
 }
@@ -129,8 +135,8 @@ export interface KeeperDeps {
   skip?: (sandboxId: string) => boolean;
   /** Sandboxes a dispatch, ship or wake holds right now: never suspended. */
   held?: (sandboxId: string) => boolean;
-  /** Processes a headless task's finished agent left are computing there (boat ps; absent: never). */
-  computing?: (sandboxId: string) => Promise<boolean>;
+  /** Processes a headless task's finished agent left are computing there (boat ps; "maybe": a first reading; absent: never). */
+  computing?: (sandboxId: string) => Promise<"busy" | "maybe" | "no">;
   /** The keeper suspended this machine; underWork: background work still ran (at its 12-hour limit). */
   suspended?: (hostId: string, underWork: boolean) => void;
   now?: () => number;
@@ -330,7 +336,9 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
         // A headless sandbox: only processes its finished agent left keep it on (boat
         // keeps a running agent on itself). Nothing else of the plugin's to do here.
         if (sandbox.state !== "idle") continue;
-        if (!(await deps.computing?.(sandboxId).catch(() => false))) {
+        // Near boat's stop, a first busy reading counts: being wrong costs sandbox time, not work.
+        const computing = (await deps.computing?.(sandboxId).catch(() => "no" as const)) ?? "no";
+        if (computing === "no") {
           streaks.delete(sandboxId);
           continue;
         }
@@ -338,7 +346,7 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
         streaks.set(sandboxId, streak);
         if (now - streak.since >= KEEP_LIMIT_MS) continue;
         try {
-          const used = await withinAutoStopCap(ttl, async (seconds) => {
+          const used = await withinAutoStopCap(withinLimit(ttl, streak, now), async (seconds) => {
             await deps.boat.extend(sandboxId, ["--ttl", String(seconds)], deps.signal);
             return seconds;
           });
@@ -407,7 +415,8 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
       if (!keepOn && lastCall && busy === "held") keepOn = true;
       try {
         if (keepOn) {
-          const used = await withinAutoStopCap(ttl, async (seconds) => {
+          const streak = streaks.get(sandboxId);
+          const used = await withinAutoStopCap(streak === undefined ? ttl : withinLimit(ttl, streak, now), async (seconds) => {
             await deps.boat.extend(sandboxId, ["--ttl", String(seconds)], deps.signal);
             return seconds;
           });

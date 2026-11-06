@@ -127,7 +127,8 @@ export const BUSY_CPU_PERCENT = 20;
 /** boat's, bb's and the system's own programs in a sandbox (by executable name): never the task's work. */
 const INFRASTRUCTURE = /^(ascii[\w.-]*|boat|bb|bb-host-daemon|sshd|systemd[\w.-]*|\(sd-pam\)|containerd[\w.-]*|dockerd|journald|dbus[\w.-]*|cron|ps|top)$/i;
 
-function executable(command: string): string {
+/** A process's program: the executable's file name ("cc1", "node"). */
+export function programName(command: string): string {
   const first = command.trim().split(/\s+/)[0] ?? "";
   return first.slice(first.lastIndexOf("/") + 1);
 }
@@ -139,7 +140,7 @@ function executable(command: string): string {
  */
 export function busyProcesses(sample: ProcessSample | null): SandboxProcess[] {
   if (sample === null || sample.live === false) return [];
-  return sample.processes.filter((entry) => (entry.cpuPercent ?? 0) >= BUSY_CPU_PERCENT && !INFRASTRUCTURE.test(executable(entry.command)));
+  return sample.processes.filter((entry) => (entry.cpuPercent ?? 0) >= BUSY_CPU_PERCENT && !INFRASTRUCTURE.test(programName(entry.command)));
 }
 
 export function parseProcessSample(records: JsonRecord[]): ProcessSample {
