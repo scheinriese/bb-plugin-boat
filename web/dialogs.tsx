@@ -1632,7 +1632,7 @@ function CloseTaskForm({ task, onDone }: { task: TaskDto; onDone: () => void }) 
             : unshipped
               ? "If this work hasn't shipped, closing throws it away: its commits exist only in the sandbox. To keep it, use Ship instead."
               : `The task is marked done. Its ${task.prUrl ? "PR and report stay" : "report stays"} available here.`}
-          {ownsSandbox ? " Its sandbox is deleted unless you keep it." : ""}
+          {ownsSandbox ? " Its sandbox is deleted unless you keep it or another open task still uses it." : ""}
         </DialogDescription>
       </DialogHeader>
       {ownsSandbox ? (
