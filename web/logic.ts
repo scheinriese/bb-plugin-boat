@@ -2,7 +2,7 @@
 // sections: which state the page is in, the status line, starter templates,
 // protocol placeholders and other wording. No React and no SDK here, so the
 // tests can import it directly (test/web-logic.test.ts).
-import type { PlanDto, SandboxUseDto, TaskDto } from "../contract";
+import type { PlanDto, SandboxUseDto, TaskDetailDto, TaskDto } from "../contract";
 
 // ------------------------------------------------------------------ page state
 
@@ -621,6 +621,45 @@ export function shipOutcome(input: { status: TaskDto["status"]; sandbox: Sandbox
   if (input.sandbox === "deleted") return "The task is closed and its sandbox deleted.";
   if (input.sandbox === "kept") return input.keptBecause ? `The task is closed; its sandbox is kept: ${input.keptBecause}.` : "The task is closed; its sandbox is kept.";
   return "The task is closed.";
+}
+
+// ------------------------------------------------------------------ Ship conflicts
+
+/**
+ * The task page's panel after Ship stopped on a conflict: the error until the
+ * next turn, then "What changed since you approved" with how it was compared
+ * and what was left out.
+ */
+export function shipApprovalPanel(approval: NonNullable<TaskDetailDto["shipApproval"]>): {
+  title: string;
+  lead: string;
+  source: string | null;
+  block: string | null;
+  note: string | null;
+} {
+  const changes = approval.changes;
+  if (changes === null) {
+    return {
+      title: "Ship stopped on a conflict",
+      lead: approval.message.replace(/^Couldn't ship [^:]*: /, "").replace(/^./, (first) => first.toUpperCase()),
+      source: null,
+      block: null,
+      note: "Once the task's agent resolves it, this shows what changed since you approved. Ship again only after you've looked.",
+    };
+  }
+  const omitted = changes.omitted > 0 ? `${changes.omitted} more line${changes.omitted === 1 ? "" : "s"} not shown.` : null;
+  return {
+    title: "What changed since you approved",
+    lead: "Ship stopped on a conflict, and the task's agent resolved it. Your earlier approval doesn't cover the new commits.",
+    source:
+      changes.via === "range-diff"
+        ? "The commits you approved compared with the commits now (git range-diff):"
+        : changes.via === "stat"
+          ? "Files changed since the commit you approved (git diff --stat; git range-diff didn't work in the sandbox):"
+          : `Couldn't compare the commits you approved with the commits now${changes.text ? `: ${changes.text}` : ""}.`,
+    block: changes.via === "none" ? null : changes.text || "(no differences)",
+    note: omitted,
+  };
 }
 
 // ------------------------------------------------------------------ The orchestrator card

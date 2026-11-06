@@ -125,6 +125,12 @@ switch (command) {
       print({ exitCode: 0, stdout: state.shipOutput ?? (state.shipFail ? `BOAT_SHIP_ERROR 0 ${state.shipFail}\n` : "BOAT_SHIPPED 0 abcdef1234567890 2\nBOAT_SHIP_DONE\n"), stderr: "" });
       break;
     }
+    if (script.includes("BOAT_SINCE")) {
+      // "What changed since you approved" (src/ship-approval.ts).
+      (state.compared ??= []).push({ id: rest[0], script });
+      print({ exitCode: 0, stdout: state.since ?? "BOAT_SINCE none 0\n", stderr: "" });
+      break;
+    }
     if (script.includes("BOAT_LOGIN")) {
       print({ exitCode: 0, stdout: state.loginExpired ? "BOAT_LOGIN expired\n" : "BOAT_LOGIN ok\nBOAT_GH_EXPIRES 2099-01-01 00:00:00 UTC\n", stderr: "" });
       break;

@@ -328,6 +328,18 @@ export const taskDetailSchema = taskSchema.extend({
   dashboardUrl: z.string().nullable(),
   /** Its sandbox's size, out-of-memory kills, peak memory and moves (null: couldn't read). */
   memory: taskMemorySchema.nullable(),
+  /**
+   * Ship stopped on a conflict after you approved (cleared once it ships or
+   * closes): the error, and after the next turn what changed since then.
+   */
+  shipApproval: z
+    .object({
+      message: z.string(),
+      at: z.string(),
+      /** range-diff: the approved commits compared with the new ones; stat: changed files; none: couldn't compare (text says why). */
+      changes: z.object({ via: z.enum(["range-diff", "stat", "none"]), text: z.string(), omitted: z.number() }).nullable(),
+    })
+    .nullable(),
 });
 export type TaskDetailDto = z.infer<typeof taskDetailSchema>;
 

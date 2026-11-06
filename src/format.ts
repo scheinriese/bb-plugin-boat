@@ -5,6 +5,7 @@ import { dashboardUrl, type Limits, type Sandbox } from "./boat-api.ts";
 import type { Decision, Task, TaskEvent } from "./store.ts";
 import { tierSummary } from "./tiers.ts";
 import { HIDDEN_EVENT_KINDS, memoryNoticeLines } from "./memory.ts";
+import { sinceApprovalNotice } from "./ship-approval.ts";
 
 /** App link to an orchestrator's overview on the Cloud agents page. */
 export function overviewLink(threadId: string | null | undefined): string {
@@ -138,6 +139,11 @@ export function taskDetail(
   if (task.orchestratorThreadId) lines.push(`Dispatched by: @thread:${task.orchestratorThreadId}`);
   lines.push(`Created ${ago(task.createdAt)}, updated ${ago(task.updatedAt)}`);
   if (task.error) lines.push("", `Error: ${task.error}`);
+  if (task.shipApproval !== null) {
+    lines.push("", `Ship stopped: ${task.shipApproval.message}`);
+    const since = sinceApprovalNotice(task);
+    if (since !== "") lines.push(since);
+  }
   if (options.brief === true) lines.push("", "Brief:", task.brief);
   if (task.result) lines.push("", "Agent's last message:", resultExcerpt(task.result, 6000));
   if ((options.evidence ?? []).length > 0) {
@@ -258,7 +264,9 @@ export function notificationText(
           .join("\n")}`
       : "(The worker sent no final message.)";
     const body = task.status === "failed" ? `Error: ${task.error ?? "unknown"}\n\n${quoted}` : quoted;
-    return `${head}\n${meta}${preview ? `\nPreview: ${preview}` : ""}${delivery}${handover}${evidence}${memoryText}\n\n${body}`;
+    // The turn after a ship conflict: what the user is asked to approve again.
+    const since = sinceApprovalNotice(task);
+    return `${head}\n${meta}${preview ? `\nPreview: ${preview}` : ""}${delivery}${handover}${evidence}${memoryText}${since ? `\n\n${since}` : ""}\n\n${body}`;
   });
   const next = [
     "Before acting, reconcile every open task with `boat_tasks` (`bb boat task list --mine`), not only these. Then, per task:",
