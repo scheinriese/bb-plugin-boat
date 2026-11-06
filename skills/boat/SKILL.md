@@ -103,7 +103,7 @@ default 3) caps how many run; `bb boat status` shows the room left.
 | `bb boat sandbox snapshot <id> <name>` / `sandbox snapshots` | Save a sandbox as a snapshot; list saved ones (`--snapshot <name>` on task start starts from one) |
 | `bb boat project list [--local]` | Projects (and local bb projects as `local:<id>`) |
 | `bb boat project add --name "Web app" --repo acme/web@main` | Add a project (repeat `--repo` for more repos; `--environment`, `--snapshot`, `--protocol`, `--workers`, `--delivery`, `--protected-branches "release, develop"`, `--instructions` or `--instructions-file`, `--size large` for its sandboxes) |
-| `bb boat project set <id> --delivery pr\|push` | Change a project: how work lands (draft pull requests, or ship after approval), and the same options as `add` (`none` clears protected branches, instructions or the size) |
+| `bb boat project set <id> --delivery pr\|push` | Change a project: how work lands (draft pull requests, or ship after approval), and the same options as `add` (`none` clears protected branches, instructions or the size; `--size xlarge` from an agent's chat needs `--user-approved` after the user's OK) |
 | `bb boat orchestrator new --project <id> --prompt "…"` | Start an orchestrator for a project (`--local` on this computer, `--cloud` in a new small boat sandbox, which needs bb Connect; without either, the cloud when bb Connect is set up; `--take-over <thread>` continues a previous one) |
 | `bb boat orchestrator on` / `off` | Make the current chat an orchestrator, or stop (tools load on its next session) |
 | `bb boat protocol show [--project <id>]` | The orchestrator protocol: shared rules, model presets, then the project's rules file |
