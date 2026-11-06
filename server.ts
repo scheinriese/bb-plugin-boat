@@ -272,6 +272,7 @@ export default async function plugin(bb: BbPluginApi) {
       sent: (taskId) => watchdogRef?.noteSent(taskId) ?? Promise.resolve(),
     },
     machineSuspended: (hostId, underWork) => watchdogRef?.planned(hostId, underWork),
+    sandboxStopped: (sandboxId) => watchdogRef?.planned(sandboxId, false),
     processesStopped: (sandboxId, at) => void watchdogRef?.headlessStopped({ sandboxId, stoppedAt: at, how: "idle-stop" }).catch(() => undefined),
     evidence: createEvidenceSource(readRepoFile, undefined, (error, at) =>
       bb.log.warn(`evidence uploader: GitHub refresh failed (${error instanceof Error ? error.message : String(error)}); installing the copy from ${new Date(at).toISOString()}`),
@@ -456,7 +457,6 @@ export default async function plugin(bb: BbPluginApi) {
     // The watchdog tells the keeper's planned stops from ones that cut work off.
     suspended: (hostId, underWork) => watchdogRef?.planned(hostId, underWork),
     stopsComputing: (sandboxId, deadline) => void watchdogRef?.headlessStopped({ sandboxId, stoppedAt: deadline, how: "auto-stop" }).catch(() => undefined),
-    stoppedComputing: (sandboxId, at) => void watchdogRef?.headlessStopped({ sandboxId, stoppedAt: at, how: "stopped" }).catch(() => undefined),
   });
 
   // The watchdog: bb's record of Boat sandbox machines true to boat, chats
@@ -465,6 +465,8 @@ export default async function plugin(bb: BbPluginApi) {
     boat,
     store: service.store,
     kv: bb.storage.kv,
+    // The same boat ps readings the idle stop and the keeper go by.
+    computing: (sandboxId) => service.processesBusy(sandboxId),
     tell: (threadId, text) => runtime.tellOrchestrator(threadId, text),
     // An orchestrator being handed over hears of it once its successor is in place.
     deferred: (threadId) => runtime.isHandingOver(threadId),

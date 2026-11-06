@@ -600,22 +600,62 @@ test("messages waiting on a machine bb lost the connection to while its sandbox 
 test("boat's coming stop of a headless sandbox still computing: told ahead; the note only once it has stopped", async () => {
   const env = makeService();
   const { task } = await env.service.launchTask({ title: "Soak", role: "implement", brief: "Run it.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+  env.boat.finish(task.conversationId!, "Done.\n\n=== REPORT ===\nSTATUS: done\nPR: none\nBRANCH: boat/x\nSUMMARY: ran it\nTESTS: ok\nOPEN QUESTIONS: none\n=== END REPORT ===");
+  await env.service.sweep();
   const told: string[] = [];
-  const dog = createWatchdog({ pluginId: "boat" } as unknown as BbPluginApi, {
+  let at = Date.now();
+  const dog = createWatchdog({ pluginId: "boat", sdk: { hosts: { list: async () => [] } } } as unknown as BbPluginApi, {
     boat: env.boat as unknown as BoatApi,
     store: env.store,
     kv: memoryKv(),
+    computing: async () => "busy",
     tell: async (_threadId, text) => void told.push(text),
     log: () => undefined,
+    now: () => at,
   });
-  const deadline = Date.now() + 20 * MINUTE;
+  await dog.tick();
+  const deadline = at + 20 * MINUTE;
   await dog.headlessStopped({ sandboxId: task.sandboxId!, stoppedAt: deadline, how: "auto-stop" });
+  at += MINUTE;
   await dog.tick();
   assert.equal(told.length, 1);
   assert.match(told[0]!, /sandbox \([^)]*\) stops at \d\d:\d\d UTC while work is running in the background/);
   assert.equal(await dog.noteFor(task.id), null, "nothing was lost yet");
-  await dog.headlessStopped({ sandboxId: task.sandboxId!, stoppedAt: deadline, how: "stopped" });
+  // The watchdog keeps looking while it computes; then boat's stop comes: the worker's note now, no second notice.
+  for (let step = 0; step < 4; step += 1) {
+    at += 5 * MINUTE;
+    await dog.tick();
+  }
+  env.boat.sandboxes.get(task.sandboxId!)!.state = "stopped";
+  at += MINUTE;
+  await dog.tick();
+  assert.equal(told.length, 1);
   assert.match((await dog.noteFor(task.id))!, /Restart a job only if you still need it/);
+});
+
+test("a planned headless stop (the idle stop, with nothing computing) says nothing, even right after a busy reading", async () => {
+  const env = makeService();
+  const { task } = await env.service.launchTask({ title: "Quiet", role: "implement", brief: "Do it.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+  env.boat.finish(task.conversationId!, "Done.\n\n=== REPORT ===\nSTATUS: done\nPR: none\nBRANCH: boat/x\nSUMMARY: done\nTESTS: ok\nOPEN QUESTIONS: none\n=== END REPORT ===");
+  await env.service.sweep();
+  const told: string[] = [];
+  let at = Date.now();
+  const dog = createWatchdog({ pluginId: "boat", sdk: { hosts: { list: async () => [] } } } as unknown as BbPluginApi, {
+    boat: env.boat as unknown as BoatApi,
+    store: env.store,
+    kv: memoryKv(),
+    computing: async () => "busy",
+    tell: async (_threadId, text) => void told.push(text),
+    log: () => undefined,
+    now: () => at,
+  });
+  await dog.tick();
+  dog.planned(task.sandboxId!, false);
+  env.boat.sandboxes.get(task.sandboxId!)!.state = "stopped";
+  at += MINUTE;
+  await dog.tick();
+  assert.equal(told.length, 0);
+  assert.equal(await dog.noteFor(task.id), null);
 });
 
 test("the dispatch hold's own row takes the note; a deleted carrier lets the next message be held again", async () => {

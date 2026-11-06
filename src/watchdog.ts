@@ -22,7 +22,7 @@
 import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { KEEP_LIMIT_MS, NO_WORK, addWork, describeWork, hasWork, messagesWaiting, rowWork, threadsOnMachine, type BackgroundWork, type ThreadRow } from "./activity.ts";
-import { ACTIVE_STATES, type BoatApi, type Sandbox } from "./boat-api.ts";
+import { ACTIVE_STATES, busyProcesses, type BoatApi, type Sandbox } from "./boat-api.ts";
 import { RESUME_NOTE_PREFIX, WATCHDOG_PREFIX, quietNotice, resumeNoteText, stoppedNotice, waitingNotice, type NoticeSubject } from "./format.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import { OPEN_STATUSES, type Task, type TaskStore } from "./store.ts";
@@ -95,7 +95,13 @@ export interface QueuedRow {
 }
 
 export interface WatchdogDeps {
-  boat: Pick<BoatApi, "list" | "events">;
+  boat: Pick<BoatApi, "list" | "events" | "processes">;
+  /**
+   * Whether processes a headless task's finished agent left still compute
+   * in its sandbox (the service's reading: "maybe" after a first busy one).
+   * Absent: read with boat ps here.
+   */
+  computing?: (sandboxId: string) => Promise<"busy" | "maybe" | "no">;
   store: Pick<TaskStore, "list" | "get" | "addEvent" | "byThread" | "orchestratorThreadIds">;
   kv: PluginKvStorage;
   /** Post a plain message into a chat (runtime.tellOrchestrator). */
@@ -131,7 +137,7 @@ export interface Watchdog {
    * compute (the plugin at its 12-hour limit for them): the orchestrator
    * hears once, the worker gets the note with its next follow-up.
    */
-  headlessStopped(input: { sandboxId: string; stoppedAt: number; how: "idle-stop" | "auto-stop" | "stopped" }): Promise<void>;
+  headlessStopped(input: { sandboxId: string; stoppedAt: number; how: "idle-stop" | "auto-stop" }): Promise<void>;
   /** The message.dispatch hook's decision for a pending note (sync, never throws). */
   dispatch(context: { threadId: string; attempt: string; text: string; queued: QueuedRow[]; originPluginId: string | null }):
     | { action: "proceed" }
@@ -143,11 +149,12 @@ export interface Watchdog {
   /** Load pending notes (after a restart). */
   load(): Promise<void>;
   /**
-   * The plugin suspended this machine itself. Nothing ran in the background
+   * The plugin suspended this machine (by host id), or stopped this
+   * headless sandbox (by sandbox id), itself. Nothing ran in the background
    * (underWork false): a planned stop, even if the watchdog saw work there a
    * pass ago. underWork: at the 12-hour limit for it.
    */
-  planned(hostId: string, underWork: boolean): void;
+  planned(id: string, underWork: boolean): void;
 }
 
 /** What the watchdog saw running in the background on a machine while it was up. */
@@ -201,6 +208,13 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   const tries = new Map<string, { episode: number; count: number }>();
   /** Host ids the plugin suspended at its limit for background work (the notice says so). */
   const atLimit = new Set<string>();
+  /**
+   * Headless sandboxes whose finished agent left processes computing: since
+   * when, and when last seen (a stop then cut them off).
+   */
+  const computingSeen = new Map<string, { since: number; at: number }>();
+  /** Headless sandboxes boat stops at their auto-stop at the 12-hour limit: the stop episode (told ahead). */
+  const toldAhead = new Map<string, number>();
   /** Host id → up and connected at the last look. */
   const upNow = new Map<string, boolean>();
   /**
@@ -697,6 +711,78 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
     }
   }
 
+  // ---------------------------------------------------------------- headless sandboxes
+
+  /** A stop episode: the minute it stopped (an ahead notice and the stop share it). */
+  function episode(at: number): number {
+    return Math.floor(at / 60_000);
+  }
+
+  async function computingNow(sandboxId: string): Promise<boolean> {
+    if (deps.computing !== undefined) return (await deps.computing(sandboxId).catch(() => "no" as const)) !== "no";
+    return busyProcesses(await deps.boat.processes(sandboxId, deps.signal).catch(() => null)).length > 0;
+  }
+
+  /**
+   * Headless sandboxes whose agent has finished: what they still compute
+   * while up, and a stop that cuts it off (boat's auto-stop, a crash, the
+   * boat.dev dashboard). The plugin's own stops say so (planned), and so
+   * does its stop at the 12-hour limit (headlessStopped).
+   */
+  async function headless(at: number, sandboxes: Map<string, Sandbox>): Promise<void> {
+    const open = deps.store.list({ statuses: OPEN_STATUSES, limit: 1000 });
+    const bySandbox = new Map<string, Task[]>();
+    for (const task of open) if (task.sandboxId !== null) bySandbox.set(task.sandboxId, [...(bySandbox.get(task.sandboxId) ?? []), task]);
+    for (const id of [...computingSeen.keys(), ...toldAhead.keys()]) {
+      if (!bySandbox.has(id)) {
+        computingSeen.delete(id);
+        toldAhead.delete(id);
+      }
+    }
+    for (const [sandboxId, tasks] of bySandbox) {
+      // Task chats' machines are watched above; a turn running is boat's agent at work.
+      if (tasks.some((task) => task.runner === "chat")) continue;
+      if (tasks.some((task) => task.status === "running" || task.status === "starting")) {
+        computingSeen.delete(sandboxId);
+        continue;
+      }
+      if (deps.held?.(sandboxId)) continue;
+      const sandbox = sandboxes.get(sandboxId);
+      if (sandbox === undefined) continue;
+      if (ACTIVE_STATES.has(sandbox.state)) {
+        if (sandbox.state !== "idle") continue;
+        if (await computingNow(sandboxId)) computingSeen.set(sandboxId, { since: computingSeen.get(sandboxId)?.since ?? at, at });
+        else computingSeen.delete(sandboxId);
+        continue;
+      }
+      if (!STOPPED_STATES.has(sandbox.state)) continue;
+      const last = computingSeen.get(sandboxId);
+      computingSeen.delete(sandboxId);
+      const ahead = toldAhead.get(sandboxId);
+      toldAhead.delete(sandboxId);
+      if (last === undefined) continue;
+      const stoppedFromBoat = sandbox.stoppedAt === null ? NaN : Date.parse(sandbox.stoppedAt);
+      const stoppedAt = Number.isFinite(stoppedFromBoat) ? stoppedFromBoat : at;
+      if (stoppedAt - last.at > SEEN_FRESH_MS) continue;
+      const work = "processes the agent started";
+      const capped = ahead !== undefined || last.at - last.since >= CAPPED_AFTER_MS;
+      const incident = `stopped:${sandboxId}:${ahead ?? episode(stoppedAt)}`;
+      const cause = "boat stopped it (its auto-stop, a crash or the boat.dev dashboard), not the plugin.";
+      const did = "The next follow-up resumes it.";
+      event(tasks, `The sandbox stopped while work was running in the background (${work}). ${cause}`);
+      await noteTasks(tasks, incident, stoppedAt, work, capped);
+      // Told ahead of boat's stop at the 12-hour limit already: the note is what's left.
+      if (ahead !== undefined) continue;
+      const told = new Set<string>();
+      for (const task of tasks) {
+        if (task.orchestratorThreadId === null || told.has(task.orchestratorThreadId)) continue;
+        told.add(task.orchestratorThreadId);
+        const text = stoppedNotice({ subject: { kind: "task", taskId: task.id, title: task.title, sandboxId }, work, stoppedAt, cause, did, now: at, capped });
+        post({ threadId: task.orchestratorThreadId, taskId: task.id, gapMs: STOP_NOTICE_GAP_MS, incident, subject: `stopped:${sandboxId}`, text });
+      }
+    }
+  }
+
   // ---------------------------------------------------------------- quiet turns
 
   /** A chat's turn is really under way (not just queued, not waiting on background work). */
@@ -773,9 +859,10 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         machinesAt = at;
         try {
           const sandboxes = new Map((await deps.boat.list({ all: true, signal: deps.signal })).map((sandbox) => [sandbox.id, sandbox]));
-          await machines(at, sandboxes);
+          await machines(at, sandboxes).catch((error: unknown) => deps.log(`watchdog: machines: ${message(error)}`));
+          await headless(at, sandboxes).catch((error: unknown) => deps.log(`watchdog: headless sandboxes: ${message(error)}`));
         } catch (error) {
-          deps.log(`watchdog: machines: ${message(error)}`);
+          deps.log(`watchdog: boat list: ${message(error)}`);
         }
       }
       await flush().catch((error: unknown) => deps.log(`watchdog: notices: ${message(error)}`));
@@ -860,17 +947,16 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       const tasks = deps.store.list({ statuses: OPEN_STATUSES, limit: 1000 }).filter((task) => task.sandboxId === sandboxId && task.runner !== "chat");
       if (tasks.length === 0) return;
       const work = "processes the agent started";
-      // boat's stop came: the orchestrator heard beforehand; now the worker gets the note.
-      if (how === "stopped") {
-        await noteTasks(tasks, `stopped:${sandboxId}:headless`, stoppedAt, work, true);
-        return;
-      }
-      const incident = `stopped:${sandboxId}:${Math.floor(stoppedAt / 60_000)}`;
+      // One stop, one episode: boat's coming stop is told now, and its note armed
+      // when the watchdog sees the stop (with the same episode).
+      const incident = `stopped:${sandboxId}:${episode(stoppedAt)}`;
       const ahead = how === "auto-stop";
+      if (ahead) toldAhead.set(sandboxId, episode(stoppedAt));
+      else computingSeen.delete(sandboxId);
       const cause = ahead ? "boat stops it at its auto-stop: the plugin no longer keeps it on for them." : "The plugin stopped it: that's the most it keeps a sandbox on for them.";
       const did = "The next follow-up resumes it.";
       event(tasks, ahead ? `The sandbox stops at its auto-stop while ${work} still compute: the plugin no longer keeps it on for them.` : `The sandbox stopped while work was running in the background (${work}). ${cause}`);
-      if (!ahead) await noteTasks(tasks, `stopped:${sandboxId}:headless`, stoppedAt, work, true);
+      if (!ahead) await noteTasks(tasks, incident, stoppedAt, work, true);
       const told = new Set<string>();
       for (const task of tasks) {
         if (task.orchestratorThreadId === null || told.has(task.orchestratorThreadId)) continue;
@@ -881,11 +967,13 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       // The monitor's next pass sends it.
     },
 
-    planned(hostId, underWork) {
-      if (underWork) atLimit.add(hostId);
+    planned(id, underWork) {
+      if (underWork) atLimit.add(id);
       else {
-        seen.delete(hostId);
-        atLimit.delete(hostId);
+        seen.delete(id);
+        atLimit.delete(id);
+        // A headless sandbox the plugin stopped with nothing computing (by its sandbox id).
+        computingSeen.delete(id);
       }
     },
 
