@@ -9,7 +9,9 @@ the finished results. It never writes code itself.
 Orchestrators are optional. Everything in the [README](../README.md) works
 without one.
 
-![The Cloud agents page with orchestrators: decisions under Needs you, one orchestrator per project, then work ready to review](screenshots/orchestrators.png)
+![The Cloud agents page with orchestrators: decisions under Needs you, one orchestrator per project, then work ready to review](screenshots/overview.png)
+
+![An orchestrator chat after starting a task: its worker chats are nested under it in the sidebar, and the chat runs on a boat sandbox](screenshots/orchestrator-chat.png)
 
 ## When to use one
 
@@ -182,6 +184,8 @@ approve again: your earlier OK doesn't cover the new commits. See
 Off by default. Turn it on in Settings → Usage limits → **Claude ↔ Codex
 switching for orchestrators** (`relayEnabled`). It needs both Claude and
 Codex.
+
+![An orchestrator that moved from Claude to Codex near Claude's usage limit, with its handoff note](screenshots/claude-to-codex.png)
 
 - Near a usage limit (**Switch at**, 90% of the fullest usage limit by
   default), the plugin asks the orchestrator for a handoff note, then
