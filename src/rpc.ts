@@ -4,6 +4,7 @@ import { TAGS, rpcContract, type PreviewDto, type SandboxDto, type TaskDetailDto
 import type { PreviewView } from "./previews.ts";
 import { MACHINE_TYPES, assertBranch, autoStopHours, dashboardUrl, normalizeRepo, type MachineType, type Sandbox } from "./boat-api.ts";
 import { BoatError, resolveBoatBinary } from "./boat.ts";
+import { describeClose } from "./close-outcome.ts";
 import { parseReport } from "./briefs.ts";
 import { resultExcerpt } from "./format.ts";
 import { bbProjectRepo, listLocalProjects, pushLocalBranch } from "./local-projects.ts";
@@ -665,7 +666,8 @@ export function registerRpc(runtime: Runtime): void {
           keepSandbox: keepSandbox ? true : undefined,
           discard: discard === true,
         });
-        return { task: await single(result.task), sandbox: result.sandbox };
+        const outcome = await describeClose(service, result, { asked: keepSandbox });
+        return { task: await single(result.task), sandbox: result.sandbox, keptBecause: outcome.keptBecause };
       }),
 
     previews: ({ threadId, taskId }) =>
@@ -688,14 +690,20 @@ export function registerRpc(runtime: Runtime): void {
         const place = from === "chat" ? "in the task chat" : "on the overview";
         const result = await service.shipTask(id, { keepOpen: keepOpen === true, approval: `by the user ${place}` });
         const task = result.task;
+        const outcome = await describeClose(service, result);
         if (task.orchestratorThreadId) {
           const where = result.shipped.map((entry) => `${entry.baseBranch} (${entry.sha.slice(0, 7)}, ${entry.commits} commit${entry.commits === 1 ? "" : "s"})`).join(", ");
           await runtime
-            .tellOrchestrator(task.orchestratorThreadId, `[boat] The user shipped task ${task.id} "${task.title}" to ${where} ${from === "chat" ? "from the task chat" : "from the overview"}.${result.sandbox === "deleted" ? " The task is closed and its sandbox deleted." : ""} Mention it in your next update.`)
+            .tellOrchestrator(task.orchestratorThreadId, `[boat] The user shipped task ${task.id} "${task.title}" to ${where} ${from === "chat" ? "from the task chat" : "from the overview"}. ${outcome.text} Mention it in your next update.`)
             .catch(() => undefined);
         }
         runtime.changed();
-        return { task: await single(task), shipped: result.shipped.map(({ baseBranch, sha, commits }) => ({ baseBranch, sha, commits })), sandbox: result.sandbox };
+        return {
+          task: await single(task),
+          shipped: result.shipped.map(({ baseBranch, sha, commits }) => ({ baseBranch, sha, commits })),
+          sandbox: result.sandbox,
+          keptBecause: outcome.keptBecause,
+        };
       }),
 
     projectAccess: ({ projectId }) =>

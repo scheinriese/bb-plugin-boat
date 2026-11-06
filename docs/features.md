@@ -212,7 +212,8 @@ Each project picks one (Projects → "How work lands", or
   - The plugin rebases the commits onto the latest base branch and pushes.
     It never forces. Uncommitted changes, files the agent never added, or
     conflicts stop it before anything is pushed. Then the task closes and
-    its sandbox is deleted.
+    its sandbox is deleted, unless another open task (its review, say)
+    still uses it; the message after Ship or Close names that task.
   - Until it ships, the sandbox holds the only copy. Closing or cancelling
     such a task asks you to discard the work, and `bb boat sandbox delete`
     refuses. A task with nothing to ship closes like any other. boat deletes stopped sandboxes after 14 days, so after 10 days

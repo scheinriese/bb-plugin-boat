@@ -750,7 +750,8 @@ export const rpcContract = defineRpcContract({
   closeTask: {
     /** discard: close work that hasn't shipped (its sandbox and commits are deleted). */
     input: z.object({ id: z.string(), cancel: z.boolean(), keepSandbox: z.boolean(), discard: z.boolean().optional() }),
-    output: z.object({ task: taskSchema, sandbox: z.enum(["deleted", "kept", "gone", "none"]) }),
+    /** keptBecause: why a closed task's sandbox stayed ("task t_… still uses it"), else null. */
+    output: z.object({ task: taskSchema, sandbox: z.enum(["deleted", "kept", "gone", "none"]), keptBecause: z.string().nullable() }),
   },
   createSandbox: {
     input: z.object({
@@ -791,6 +792,8 @@ export const rpcContract = defineRpcContract({
       task: taskSchema,
       shipped: z.array(z.object({ baseBranch: z.string(), sha: z.string(), commits: z.number() })),
       sandbox: z.enum(["deleted", "kept", "gone", "none"]),
+      /** Why the closed task's sandbox stayed ("task t_… still uses it"), else null. */
+      keptBecause: z.string().nullable(),
     }),
   },
   /** What a project's workers can reach: GitHub access per repo, and the environment's secret NAMES (never values). */

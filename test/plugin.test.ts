@@ -105,7 +105,7 @@ test("help, status and an end-to-end task through the CLI", async (t) => {
 
   const close = await harness.runCli(["task", "close", task.id]);
   assert.equal(close.exitCode, 0, close.stderr);
-  assert.match(close.stdout, /Sandbox: deleted/);
+  assert.match(close.stdout, /^Task t_[0-9a-f]+ is closed; its sandbox is deleted\.$/m);
   assert.equal(Object.keys(state().sandboxes).length, 0);
 });
 

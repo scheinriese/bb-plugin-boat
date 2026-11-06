@@ -76,7 +76,7 @@ import {
   useSettingRows,
   useStoredFlag,
 } from "./hooks";
-import { STARTERS, chatChoice, chatControl, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
+import { STARTERS, chatChoice, chatControl, closeToast, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
 import { Disclosure, Field, IconButton, InlineAlert, Kbd, RichText, SUGGEST_INPUT, ThreadName, showError } from "./ui";
 
@@ -1609,9 +1609,8 @@ function CloseTaskForm({ task, onDone }: { task: TaskDto; onDone: () => void }) 
     event.preventDefault();
     try {
       const result = await close.mutate({ id: task.id, cancel, keepSandbox, discard: unshipped && !keepSandbox });
-      const sandboxNote =
-        result.sandbox === "deleted" ? " · sandbox deleted" : result.sandbox === "kept" ? " · sandbox kept" : "";
-      toast.success(`${cancel ? "Cancelled" : "Closed"} ${task.id}${sandboxNote}`);
+      const { title, description } = closeToast({ taskId: task.id, cancelled: cancel, sandbox: result.sandbox, keptBecause: result.keptBecause });
+      toast.success(title, description ? { description } : undefined);
       onDone();
     } catch (error) {
       if (!unshipped && rpcErrorInfo(error).code === "unshipped_work") {

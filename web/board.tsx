@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { ConfirmDialog, submitOnModEnter } from "./dialogs";
 import { relativeTime, reviewLabel } from "./format";
 import { useBoard, useCloudAgentsNavigation, useNow } from "./hooks";
+import { shipOutcome } from "./logic";
 import {
   CountPill,
   EmptyBox,
@@ -285,7 +286,7 @@ export function ShipDialog({
     try {
       const result = await ship.mutate({ id: task.id, from });
       const where = result.shipped.map((entry) => `${entry.baseBranch} (${entry.sha.slice(0, 7)})`).join(", ");
-      toast.success(`Shipped ${task.title} to ${where}`);
+      toast.success(`Shipped ${task.title} to ${where}`, { description: shipOutcome({ status: result.task.status, sandbox: result.sandbox, keptBecause: result.keptBecause }) });
       onOpenChange(false);
     } catch (error) {
       showError(error);
@@ -300,7 +301,7 @@ export function ShipDialog({
         <>
           The task's commits for <span className="font-medium text-foreground">{task.title}</span> are pushed onto{" "}
           <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]">{base}</code>, after updating them to its
-          latest version (nothing is forced). Then the task closes and its sandbox is deleted.
+          latest version (nothing is forced). Then the task closes, and its sandbox is deleted unless another open task still uses it.
         </>
       }
       confirmLabel={`Ship to ${base}`}

@@ -2,6 +2,7 @@
 import { PluginCliError, cliCommand, defineCli, type PluginCliContext } from "@get-bb/plugin-sdk";
 import { MACHINE_TYPES, autoStopHours, dashboardUrl, type MachineType } from "./boat-api.ts";
 import { BoatError } from "./boat.ts";
+import { describeClose } from "./close-outcome.ts";
 import {
   agentLine,
   decisionLines,
@@ -9,7 +10,6 @@ import {
   taskNote,
   overviewLink,
   sandboxLine,
-  statusLabel,
   taskDetail,
   taskTable,
 } from "./format.ts";
@@ -793,9 +793,8 @@ export function buildCli(runtime: Runtime) {
               discard: options.discard === true,
               signal: ctx.signal,
             });
-            return out(result, options.json, () =>
-              `Task ${result.task.id} is ${statusLabel(result.task)}. Sandbox: ${result.sandbox}.`,
-            );
+            const outcome = await describeClose(service, result, { asked: options["keep-sandbox"] === true });
+            return out({ ...result, keptBecause: outcome.keptBecause }, options.json, () => outcome.text);
           });
         },
       }),
@@ -819,10 +818,11 @@ export function buildCli(runtime: Runtime) {
             }
             const result = await service.shipTask(task.id, { keepOpen: options["keep-open"] === true, approval: "by the user in chat", signal: ctx.signal });
             runtime.changed();
-            return out(result, options.json, () =>
+            const outcome = await describeClose(service, result);
+            return out({ ...result, keptBecause: outcome.keptBecause }, options.json, () =>
               [
                 ...result.shipped.map((entry) => `Shipped ${entry.commits} commit${entry.commits === 1 ? "" : "s"} to ${entry.baseBranch} (${entry.sha.slice(0, 7)}).`),
-                result.sandbox === "deleted" ? `Task ${result.task.id} is closed; its sandbox is deleted.` : `Task ${result.task.id} stays open.`,
+                outcome.text,
               ].join("\n"),
             );
           });
