@@ -79,9 +79,10 @@ rights of the user who runs bb. In particular, it uses:
   database in bb's data folder (by default `~/.bb/plugins/boat/data.db`), plus
   the shared orchestrator protocol in `orchestrator-protocol.md` next to it.
 - The everyday settings in bb's settings list; the plugin's own settings,
-  your model presets and the Claude ↔ Codex switching state (including
-  orchestrators' handoff notes) in bb's plugin storage; each orchestrator's
-  role and project on its thread. None of the settings are secret.
+  your model presets, page state (a hidden orchestrator card) and the
+  Claude ↔ Codex switching state (including orchestrators' handoff notes)
+  in bb's plugin storage; each orchestrator's role and project on its
+  thread. None of the settings are secret.
 - No passwords or API keys. Environment secrets show by name only; the
   plugin drops their values as soon as it reads them, so they never reach
   the UI, the logs or a chat (agents can read them in their sandbox).
