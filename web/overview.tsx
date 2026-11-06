@@ -50,7 +50,7 @@ import {
 } from "./hooks";
 import { pageState, sandboxUseLabel, statusLine, usageSummary, type PageState } from "./logic";
 import { SetupCard, SetupWarnings } from "./setup";
-import { EmptyBox, IconButton, InlineAlert, ListPanel, RichText, Section, StatusDot, ThreadName, showError } from "./ui";
+import { Disclosure, EmptyBox, IconButton, InlineAlert, ListPanel, RichText, Section, StatusDot, ThreadName, showError } from "./ui";
 
 const COLUMN = "mx-auto box-border w-full max-w-4xl px-4 pb-10 pt-3 md:px-5 md:pt-4";
 
@@ -376,51 +376,51 @@ function WayRow({ icon, title, text, actions }: { icon: string; title: string; t
 
 // ------------------------------------------------------------- step-up card
 
-/** Until someone has an orchestrator: what one is, how to start one, and Hide (remembered on this device). */
+/**
+ * Until someone has an orchestrator: what one is, How it works (a
+ * disclosure), Set up an orchestrator, and × to hide it (remembered on this
+ * device).
+ */
 function StepUpCard() {
   const [hidden, setHidden] = useStoredFlag("hide-orchestrator-card");
   const only = useOverview().data?.defaults.onlyAgent ?? null;
   const [creating, setCreating] = useState(false);
-  const [explaining, setExplaining] = useState(false);
   if (hidden) return null;
   return (
     <section aria-labelledby="ca-step-up" className="flex flex-col gap-3 rounded-lg border border-dashed border-border px-4 py-4 sm:flex-row sm:items-start">
       <Icon name="Workflow" className="mt-0.5 hidden size-4 shrink-0 text-muted-foreground sm:block" aria-hidden />
-      <div className="min-w-0 flex-1 space-y-2">
+      <div className="min-w-0 flex-1 space-y-3">
         <div className="space-y-1">
-          <h2 id="ca-step-up" className="text-sm font-medium text-foreground">
-            Coordinate a project with an orchestrator
-          </h2>
+          <div className="flex items-start justify-between gap-2">
+            <h2 id="ca-step-up" className="text-sm font-medium text-pretty text-foreground">
+              Coordinate a project with an orchestrator
+            </h2>
+            <IconButton
+              label="Hide this card"
+              icon="X"
+              className="-mr-2 -mt-1.5"
+              onClick={() => {
+                setHidden(true);
+                toast("Hidden. New orchestrator stays in the ⋯ menu at the top.");
+              }}
+            />
+          </div>
           <p className="text-xs text-pretty text-muted-foreground">
             An orchestrator is a chat that plans the work, starts tasks in their own sandboxes, has every change reviewed, and brings you only
             decisions and finished results.
           </p>
         </div>
-        {explaining ? (
+        <Disclosure label="How it works" className="space-y-2">
           <ol className="list-decimal space-y-1 pl-4 text-xs text-pretty text-muted-foreground">
             <li>Pick a project and say what to get done, like “fix the three open checkout bugs”.</li>
             <li>It splits the work into tasks and starts them (it asks before running more than 3 at once).</li>
             <li>{only === null ? "The other agent" : "A second session"} reviews each change before it reaches you.</li>
             <li>Questions show up here under Needs you; finished work under Ready to review.</li>
           </ol>
-        ) : null}
-        <div className="flex flex-wrap items-center gap-2 pt-1">
+        </Disclosure>
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" className="h-7" onClick={() => setCreating(true)}>
             <Icon name="Workflow" /> Set up an orchestrator
-          </Button>
-          <Button variant="outline" size="sm" className="h-7" aria-expanded={explaining} onClick={() => setExplaining((value) => !value)}>
-            How it works
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 text-muted-foreground hover:text-foreground"
-            onClick={() => {
-              setHidden(true);
-              toast("Hidden. New orchestrator stays in the ⋯ menu at the top.");
-            }}
-          >
-            Hide
           </Button>
         </div>
       </div>
