@@ -392,7 +392,7 @@ function TaskActions({ task, link }: { task: TaskDetailDto; link: SandboxLinkSta
             <Icon name="MessageSquare" /> Open chat
           </Button>
         ) : null}
-        {task.canShip ? <ShipButton task={task} className="my-0" /> : null}
+        {task.canShip && !inFlight ? <ShipButton task={task} className="my-0" /> : null}
         {canRequestReview(task) ? (
           <Button variant="outline" size="sm" disabled={running || inFlight} onClick={() => setReviewing(true)}>
             <Icon name="Eye" /> Request review
@@ -403,7 +403,11 @@ function TaskActions({ task, link }: { task: TaskDetailDto; link: SandboxLinkSta
             variant="outline"
             size="sm"
             disabled={inFlight || move === undefined || moveBlocked !== null}
-            onClick={() => setMoving(true)}
+            onClick={() => {
+              // The dialog shows what's true now (the sandbox may have stopped, or gone, since the page loaded).
+              setMoving(true);
+              void moveStatus.refetch();
+            }}
           >
             <Icon name={inFlight ? "Loading" : "MessageSquare"} className={cn(inFlight && "animate-spin")} />
             {inFlight ? "Moving to a chat…" : "Continue as a chat"}
@@ -436,10 +440,7 @@ function TaskActions({ task, link }: { task: TaskDetailDto; link: SandboxLinkSta
             task={task}
             status={move}
             open={moving}
-            onOpenChange={(open) => {
-              setMoving(open);
-              if (open) void moveStatus.refetch();
-            }}
+            onOpenChange={setMoving}
           />
         ) : null}
       </div>

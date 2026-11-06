@@ -136,6 +136,8 @@ test("Ship is offered only when a finished turn left work to ship", async () => 
   current = env.store.get(task.id)!;
   assert.equal(current.unshipped, 1);
   assert.equal(toTaskDto(current).canShip, true);
+  // Not while it moves to a chat (the move holds the sandbox).
+  assert.equal(toTaskDto(current, { movingToChat: true }).canShip, false);
   assert.match(notificationText([current]), /ships to master once the user approves \(`boat_ship`/);
 
   // Shipped but kept open: nothing left to ship.

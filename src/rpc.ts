@@ -63,7 +63,8 @@ export function toTaskDto(
     previewUrl: extras.previewUrl ?? null,
     delivery: task.delivery,
     unshipped,
-    canShip: unshipped && task.status === "idle",
+    // Not while it moves to a chat: the move holds the sandbox.
+    canShip: unshipped && task.status === "idle" && extras.movingToChat !== true,
     untrustedRepo: extras.untrustedRepo ?? false,
     movingToChat: extras.movingToChat ?? false,
     id: task.id,
