@@ -76,7 +76,7 @@ import {
   useSettingRows,
   useStoredFlag,
 } from "./hooks";
-import { STARTERS, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
+import { STARTERS, chatChoice, chatControl, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
 import { Disclosure, Field, IconButton, InlineAlert, Kbd, RichText, SUGGEST_INPUT, ThreadName, showError } from "./ui";
 
@@ -241,6 +241,8 @@ export function NewTaskForm({
   const [machineType, setMachineType] = useState<MachineType | null>(null);
   const [brief, setBrief] = useState(initialBrief);
   const [addingProject, setAddingProject] = useState(false);
+  // Run as a chat: follows the rules until the user ticks or clears it (null).
+  const [chatTouched, setChatTouched] = useState<boolean | null>(null);
   const briefRef = useRef<HTMLTextAreaElement>(null);
   const workers = useSettings().values?.workers;
   // Repository follows the bb project (the New thread screen's picker) until you edit it.
@@ -279,9 +281,27 @@ export function NewTaskForm({
         : (project.repos.find((entry) => shortRepo(entry.repo).toLowerCase() === typedRepo) ?? null);
   const testing = starter === "test";
   const effectiveTitle = title.trim() || titleFromBrief(brief);
-  // With task chats for projects only, a repo outside them runs headless in boat.
-  const repoNote =
-    workers === "projects" && projects.data !== undefined && project === null && REPO_PATTERN.test(typedRepo) ? ({ kind: "untrusted" } as const) : null;
+  // The task's repos as the server sees them: the typed one (or the project's main repo), then the project's others.
+  const mainRepo = typedRepo !== "" ? typedRepo : project?.repos[0] ? shortRepo(project.repos[0].repo).toLowerCase() : null;
+  const otherRepos =
+    project !== null && projectRepo !== null ? project.repos.filter((entry) => entry !== projectRepo).map((entry) => shortRepo(entry.repo).toLowerCase()) : [];
+  const taskRepos = mainRepo === null ? [] : [mainRepo, ...otherRepos];
+  const repoComplete = typedRepo === "" || REPO_PATTERN.test(typedRepo);
+  const existingSandbox = sandbox !== NEW_SANDBOX;
+  const chatInput = {
+    workers: typeof workers === "string" ? workers : undefined,
+    repos: taskRepos,
+    repoComplete,
+    projects: projects.data?.projects,
+    taskChats: overview.data?.taskChats,
+    connect: overview.data?.connect,
+    existingSandbox,
+    loading: typeof workers !== "string" || (projects.data === undefined && !projects.error) || (overview.data === undefined && !overview.error),
+  };
+  const chatRules = chatControl(chatInput);
+  const chat = chatChoice(chatRules, chatTouched, { ...chatInput, inProject: project !== null });
+  // The repo the warning names, as typed.
+  const warnedRepo = chatRules.untrustedRepos[0] === mainRepo && typedRepo !== "" ? shortRepo(repo.trim()) : (chatRules.untrustedRepos[0] ?? null);
 
   // The repo a starter's text names: the typed one, else the project's main repo.
   const starterRepo = repo.trim() ? shortRepo(repo.trim()) : project?.repos[0] ? shortRepo(project.repos[0].repo) : "";
@@ -297,7 +317,8 @@ export function NewTaskForm({
   }, [starterRepo, starterEntry]);
   const needsRepo = starterEntry?.needsRepo === true && starterRepo === "";
 
-  const canSubmit = testing || (brief.trim() !== "" && effectiveTitle !== "" && !needsRepo);
+  // Start waits for what decides Run as a chat, so it sends what the checkbox shows.
+  const canSubmit = testing || (brief.trim() !== "" && effectiveTitle !== "" && !needsRepo && !chatRules.loading);
 
   const applyStarter = (id: StarterId) => {
     const entry = STARTERS.find((each) => each.id === id)!;
@@ -344,6 +365,8 @@ export function NewTaskForm({
         machineType: sandbox === NEW_SANDBOX ? machineType : null,
         notifyThreadId: null,
         projectId: project?.id ?? null,
+        runner: chat.runner,
+        confirmUntrustedChat: chat.confirmUntrustedChat,
       });
       toast.success(pending ? `${task.title}: starting` : `${task.title}: started`);
       onStarted?.();
@@ -429,7 +452,38 @@ export function NewTaskForm({
               {projectList.flatMap((entry) => entry.repos.map((each) => <option key={`${entry.id}:${each.repo}`} value={shortRepo(each.repo)} label={entry.name} />))}
             </datalist>
           </Field>
-          {repoNote?.kind === "untrusted" ? (
+          <label htmlFor={`${uid}-chat`} className="flex items-start gap-2 text-sm">
+            <Checkbox
+              id={`${uid}-chat`}
+              className="mt-0.5"
+              checked={chat.checked}
+              disabled={!chatRules.possible}
+              onCheckedChange={(checked) => setChatTouched(checked === true)}
+            />
+            <span className="min-w-0">
+              <span className={cn("text-foreground", !chatRules.possible && "text-muted-foreground")}>Run as a chat</span>
+              <span className="block text-xs text-pretty text-muted-foreground">
+                <RichText text={chatRules.hint} />
+              </span>
+            </span>
+          </label>
+          {chat.note === "untrusted-chat" ? (
+            chatRules.workersBoat ? (
+              <RepoTrustAlert>
+                How tasks run is set to In boat. A task chat's sandbox can reach your bb, so run chats only for repos you trust.
+              </RepoTrustAlert>
+            ) : chatRules.headlessProject !== null ? (
+              <RepoTrustAlert>
+                The {chatRules.headlessProject} project runs its tasks headless. A task chat's sandbox can reach your bb, so run chats only for repos you
+                trust.
+              </RepoTrustAlert>
+            ) : (
+              <RepoTrustAlert action="Add as project" icon="Plus" onAction={() => setAddingProject(true)}>
+                <code className="font-mono text-xs">{warnedRepo}</code> isn't one of your projects. A task chat's sandbox can reach your bb, so run chats
+                only for repos you trust.
+              </RepoTrustAlert>
+            )
+          ) : chat.note === "untrusted" ? (
             <RepoTrustAlert action="Add as project" icon="Plus" onAction={() => setAddingProject(true)}>
               <code className="font-mono text-xs">{shortRepo(repo.trim())}</code> isn't one of your projects, so its task runs headless in boat, with
               no access to your bb. Add it as a project if you trust it.
@@ -594,7 +648,11 @@ const STARTER_ICON: Record<StarterId, string> = {
 /** "owner/name" once typed in full; the trust note waits for it. */
 const REPO_PATTERN = /^[\w.-]+\/[\w.-]+$/;
 
-/** Why the typed repo's task won't be a bb chat, with the one-click fix. */
+/**
+ * A note on the typed repo's trust (why its task runs headless, or a warning
+ * before a chat), with the one-click fix when there is one. Stacked: the text
+ * gets the full width, the button its own line (a phone squeezed it beside).
+ */
 function RepoTrustAlert({
   children,
   action,
@@ -602,18 +660,20 @@ function RepoTrustAlert({
   onAction,
 }: {
   children: ReactNode;
-  action: string;
+  action?: string;
   icon?: string;
-  onAction: () => void;
+  onAction?: () => void;
 }) {
   return (
     <InlineAlert tone="warning">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <p className="min-w-0 flex-1">{children}</p>
-        <Button type="button" variant="outline" size="sm" className="h-7 max-w-full shrink-0" onClick={onAction}>
-          {icon ? <Icon name={icon} /> : null}
-          <span className="truncate">{action}</span>
-        </Button>
+      <div className="flex flex-col items-start gap-2">
+        <p className="text-pretty">{children}</p>
+        {action && onAction ? (
+          <Button type="button" variant="outline" size="sm" className="h-7 max-w-full" onClick={onAction}>
+            {icon ? <Icon name={icon} /> : null}
+            <span className="truncate">{action}</span>
+          </Button>
+        ) : null}
       </div>
     </InlineAlert>
   );

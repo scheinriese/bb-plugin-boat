@@ -362,3 +362,118 @@ export const EVIDENCE_VARIABLES: readonly { name: string; note: string }[] = [
   { name: "EVIDENCE_REGION", note: "optional" },
   { name: "EVIDENCE_LINK_DAYS", note: "optional, 1–7 days (7)" },
 ];
+
+// ------------------------------------------------------------- run as a chat
+
+/** The setup checklist's fix for bb Connect, when the connect plugin gives none. */
+export const CONNECT_FIX = "Turn on bb Connect: sign in with `bb account login`, then run `bb connect on`.";
+
+export interface ChatControlInput {
+  /** How tasks run (useSettings().values.workers): boat, projects or all; undefined while it loads. */
+  workers: string | undefined;
+  /** The task's repos as the server sees them ("owner/name"): the typed one (or the project's main repo) first, then the project's others. */
+  repos: readonly string[];
+  /** The typed repo is complete ("owner/name") or empty: warnings wait for it. */
+  repoComplete: boolean;
+  /** The plugin's projects; undefined while they load. */
+  projects: readonly { name: string; repos: readonly { repo: string }[]; workerMode: "chat" | "boat" }[] | undefined;
+  /** overview.taskChats; undefined while it loads (or when it can't). */
+  taskChats: boolean | undefined;
+  connect: { state: "ready" | "off" | "unknown"; fix: string | null } | undefined;
+  /** An existing sandbox is picked under More options: it decides. */
+  existingSandbox: boolean;
+  /** Still loading what decides (settings, projects, overview). */
+  loading: boolean;
+}
+
+export interface ChatControl {
+  loading: boolean;
+  /** The checkbox can be ticked: this bb runs task chats, bb Connect isn't off, no existing sandbox picked. */
+  possible: boolean;
+  /** The rules run these repos as chats: the default, and no warning. Same rule as the server's chatTrust. */
+  trusted: boolean;
+  untrustedRepos: string[];
+  /** How tasks run is In boat. */
+  workersBoat: boolean;
+  /** The first untrusted repo's project that runs its tasks headless (null: it's in no project). */
+  headlessProject: string | null;
+  /** The line under the checkbox (RichText). */
+  hint: string;
+}
+
+/** How the projects run a repo's tasks: null in none; the careful one wins (like the server). */
+export function repoModeIn(projects: ChatControlInput["projects"], repo: string): { mode: "chat" | "boat" | null; boatProject: string | null } {
+  const lower = repo.toLowerCase();
+  const owners = (projects ?? []).filter((project) => project.repos.some((entry) => shortRepoLower(entry.repo) === lower));
+  if (owners.length === 0) return { mode: null, boatProject: null };
+  const careful = owners.find((project) => project.workerMode === "boat") ?? null;
+  return { mode: careful ? "boat" : "chat", boatProject: careful?.name ?? null };
+}
+
+function shortRepoLower(repo: string): string {
+  return repo
+    .replace(/^https?:\/\/(www\.)?github\.com\//, "")
+    .replace(/^git@github\.com:/, "")
+    .replace(/\.git$/, "")
+    .toLowerCase();
+}
+
+export function chatControl(input: ChatControlInput): ChatControl {
+  const workersBoat = input.workers !== "projects" && input.workers !== "all";
+  const untrustedRepos = workersBoat
+    ? [...input.repos]
+    : input.repos.filter((repo) => (repoModeIn(input.projects, repo).mode ?? (input.workers === "all" ? "chat" : "boat")) !== "chat");
+  const trusted = !workersBoat && untrustedRepos.length === 0;
+  const first = untrustedRepos[0];
+  const headlessProject = first === undefined ? null : repoModeIn(input.projects, first).boatProject;
+  const possible = !input.loading && input.taskChats === true && input.connect?.state !== "off" && !input.existingSandbox;
+  const hint = input.loading
+    ? "Opens as a bb chat you can type into."
+    : input.taskChats !== true
+      ? input.taskChats === false
+        ? "This bb can't run task chats."
+        : "Couldn't check whether this bb can run task chats; How tasks run decides."
+      : input.existingSandbox
+        ? "Follows the sandbox you picked: a chat only if it already runs bb."
+        : input.connect?.state === "off"
+          ? `Needs bb Connect, which is off. ${input.connect.fix ?? CONNECT_FIX}`
+          : input.connect?.state === "unknown"
+            ? "Opens as a bb chat you can type into. Couldn't check bb Connect; without it, the task won't start."
+            : "Opens as a bb chat you can type into. Off: headless in boat, followed on this page.";
+  return { loading: input.loading, possible, trusted, untrustedRepos, workersBoat, headlessProject, hint };
+}
+
+export interface ChatChoice {
+  /** What the checkbox shows. */
+  checked: boolean;
+  /** What startTask gets: what the checkbox shows; null where the rules (or the picked sandbox) decide. */
+  runner: "chat" | "boat" | null;
+  /** The repos the warning named, sent when the user starts the chat past it ([] for a task with no repo). */
+  confirmUntrustedChat: string[] | null;
+  /** The one alert under Repository: the warning before an untrusted chat, or today's "runs headless" note. */
+  note: "untrusted-chat" | "untrusted" | null;
+}
+
+/**
+ * The checkbox follows the rules until the user ticks or clears it
+ * (touched: their choice, null until then).
+ */
+export function chatChoice(
+  control: ChatControl,
+  touched: boolean | null,
+  input: Pick<ChatControlInput, "workers" | "repos" | "repoComplete" | "existingSandbox" | "taskChats"> & {
+    /** A project has the typed repo (or was picked). */
+    inProject: boolean;
+  },
+): ChatChoice {
+  const checked = control.possible ? (touched ?? control.trusted) : false;
+  const runner = control.loading || input.existingSandbox || input.taskChats === undefined ? null : checked ? "chat" : "boat";
+  const warn = checked && !control.trusted && input.repoComplete;
+  const headlessNote = !checked && input.workers === "projects" && !input.inProject && input.repos.length > 0 && input.repoComplete;
+  return {
+    checked,
+    runner,
+    confirmUntrustedChat: warn && runner === "chat" ? [...control.untrustedRepos] : null,
+    note: warn ? "untrusted-chat" : headlessNote ? "untrusted" : null,
+  };
+}

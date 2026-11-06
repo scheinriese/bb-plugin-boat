@@ -7,6 +7,9 @@ import { sandboxUses } from "../src/rpc.ts";
 import {
   STARTERS,
   canRequestReview,
+  chatChoice,
+  chatControl,
+  type ChatControlInput,
   evidenceMode,
   historyText,
   isCheckRepoTask,
@@ -253,4 +256,101 @@ test("Select ignores the empty change Radix's hidden native select reports (it c
   assert.ok(guard !== -1, "the wrapper drops empty changes");
   assert.ok(guard < handler.indexOf("onValueChange?.(next)"), "before telling the caller");
   assert.ok(guard < handler.indexOf("setUncontrolledValue(next)"), "and before storing it");
+});
+
+// Run as a chat in New task: the checkbox, what it sends, and the one alert under Repository.
+const PROJECTS: ChatControlInput["projects"] = [
+  { name: "Web", repos: [{ repo: "acme/web" }, { repo: "acme/api" }], workerMode: "chat" },
+  { name: "Careful", repos: [{ repo: "https://github.com/acme/careful" }], workerMode: "boat" },
+];
+
+function chatForm(patch: Partial<ChatControlInput> = {}, touched: boolean | null = null, inProject?: boolean) {
+  const input: ChatControlInput = {
+    workers: "projects",
+    repos: ["acme/web"],
+    repoComplete: true,
+    projects: PROJECTS,
+    taskChats: true,
+    connect: { state: "ready", fix: null },
+    existingSandbox: false,
+    loading: false,
+    ...patch,
+  };
+  const control = chatControl(input);
+  const owned = inProject ?? input.repos.some((repo) => PROJECTS!.some((project) => project.repos.some((entry) => entry.repo.endsWith(repo))));
+  return { control, choice: chatChoice(control, touched, { ...input, inProject: owned }) };
+}
+
+test("Run as a chat: on by default exactly where the rules run chats, and sends what it shows", () => {
+  // A project with Run tasks as chats on.
+  let { control, choice } = chatForm();
+  assert.deepEqual([control.possible, control.trusted, choice.checked, choice.runner, choice.note], [true, true, true, "chat", null]);
+  assert.equal(choice.confirmUntrustedChat, null);
+  assert.match(control.hint, /Opens as a bb chat you can type into/);
+  // In boat: off by default, for every repo and for no repo.
+  for (const repos of [["acme/web"], []]) {
+    ({ control, choice } = chatForm({ workers: "boat", repos }));
+    assert.deepEqual([control.trusted, choice.checked, choice.runner], [false, false, "boat"]);
+  }
+  // Outside projects: off with projects only, on with everywhere; a headless project is off either way.
+  assert.equal(chatForm({ repos: ["acme/other"] }).choice.checked, false);
+  assert.equal(chatForm({ workers: "all", repos: ["acme/other"] }).choice.checked, true);
+  assert.equal(chatForm({ workers: "all", repos: ["acme/careful"] }).choice.checked, false);
+  // No repo with chats on.
+  assert.equal(chatForm({ repos: [] }).choice.checked, true);
+  // A project's other repo counts too.
+  assert.equal(chatForm({ repos: ["acme/web", "acme/careful"] }).choice.checked, false);
+});
+
+test("Run as a chat: the user's choice sticks; past the rules it warns and sends the confirm for those repos", () => {
+  const on = chatForm({ repos: ["acme/other"] }, true, false);
+  assert.deepEqual([on.choice.checked, on.choice.runner, on.choice.note], [true, "chat", "untrusted-chat"]);
+  assert.deepEqual(on.choice.confirmUntrustedChat, ["acme/other"]);
+  assert.equal(on.control.headlessProject, null);
+  const careful = chatForm({ repos: ["acme/careful"] }, true);
+  assert.equal(careful.control.headlessProject, "Careful");
+  assert.deepEqual(careful.choice.confirmUntrustedChat, ["acme/careful"]);
+  const boat = chatForm({ workers: "boat", repos: [] }, true);
+  assert.deepEqual([boat.choice.note, boat.control.workersBoat], ["untrusted-chat", true]);
+  assert.deepEqual(boat.choice.confirmUntrustedChat, []);
+  // Cleared on a trusted repo: headless, no note.
+  const off = chatForm({}, false);
+  assert.deepEqual([off.choice.checked, off.choice.runner, off.choice.note], [false, "boat", null]);
+  // A half-typed repo: no warning (and no confirm) yet.
+  const typing = chatForm({ repos: ["acme/oth"], repoComplete: false }, true, false);
+  assert.deepEqual([typing.choice.note, typing.choice.confirmUntrustedChat], [null, null]);
+});
+
+test("Run as a chat: not possible means off, disabled, the reason and the fix; the two notes never show together", () => {
+  const off = chatForm({ connect: { state: "off", fix: null } }, true);
+  assert.deepEqual([off.control.possible, off.choice.checked, off.choice.runner], [false, false, "boat"]);
+  assert.match(off.control.hint, /Needs bb Connect, which is off\. Turn on bb Connect: sign in with `bb account login`, then run `bb connect on`\./);
+  assert.match(chatForm({ connect: { state: "off", fix: "Run `bb connect on`." } }).control.hint, /which is off\. Run `bb connect on`\./);
+  assert.match(chatForm({ connect: { state: "unknown", fix: null } }).control.hint, /Couldn't check bb Connect/);
+  assert.equal(chatForm({ connect: { state: "unknown", fix: null } }).choice.checked, true);
+  const none = chatForm({ taskChats: false });
+  assert.deepEqual([none.control.possible, none.choice.runner], [false, "boat"]);
+  assert.match(none.control.hint, /can't run task chats/);
+  // An existing sandbox decides; the rules get no runner.
+  const picked = chatForm({ existingSandbox: true }, true);
+  assert.deepEqual([picked.control.possible, picked.choice.checked, picked.choice.runner], [false, false, null]);
+  // Loading: unchecked, no runner (Start waits).
+  const loading = chatForm({ loading: true, workers: undefined });
+  assert.deepEqual([loading.choice.checked, loading.choice.runner], [false, null]);
+  // Outside projects, with projects only: today's headless note while off, the warning once ticked.
+  assert.equal(chatForm({ repos: ["acme/other"] }, null, false).choice.note, "untrusted");
+  assert.equal(chatForm({ repos: ["acme/other"], connect: { state: "off", fix: null } }, null, false).choice.note, "untrusted");
+  assert.equal(chatForm({ repos: ["acme/other"] }, true, false).choice.note, "untrusted-chat");
+  for (const workers of ["boat", "projects", "all"]) {
+    for (const repos of [[], ["acme/web"], ["acme/other"], ["acme/careful"]]) {
+      for (const touched of [null, true, false]) {
+        for (const state of ["ready", "off", "unknown"] as const) {
+          const { choice, control } = chatForm({ workers, repos, connect: { state, fix: null } }, touched, repos[0] === "acme/web" || repos[0] === "acme/careful");
+          assert.ok(choice.note === null || choice.note === "untrusted" || choice.note === "untrusted-chat");
+          if (choice.runner === "chat") assert.ok(control.trusted || choice.confirmUntrustedChat !== null, `${workers} ${repos} ${touched} ${state}`);
+          if (!control.possible) assert.equal(choice.checked, false);
+        }
+      }
+    }
+  }
 });
