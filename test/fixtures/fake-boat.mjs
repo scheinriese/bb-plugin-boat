@@ -219,7 +219,7 @@ switch (command) {
           passGithub: true,
           passSecrets: true,
           passAgentsCredentials: true,
-          passSandboxCredentials: state.boatCredentials === true,
+          ...(state.boatCredentials === "unreported" ? {} : { passSandboxCredentials: state.boatCredentials === true }),
           proxyAiCredentials: false,
         },
       });
@@ -231,6 +231,8 @@ switch (command) {
         const safe = name === "base" && state.safe === true;
         // boat passes its credentials by default; the fake starts with them off unless the state says so.
         const effective = { passAgentsCredentials: !safe, passGithub: !safe, passSecrets: !safe, passSandboxCredentials: !safe && state.boatCredentials === true };
+        // "unreported": a boat that doesn't say.
+        if (state.boatCredentials === "unreported") delete effective.passSandboxCredentials;
         return { name, isDefault: name === "base", credentialProfileId: null, safeForThirdParties: safe, effective, passGithub: true, passAgentsCredentials: true, envContents: "EXAMPLE_TOKEN=fake_value_123\n" };
       }),
     });

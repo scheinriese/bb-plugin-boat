@@ -248,6 +248,7 @@ test("boat credentials in the environments workers use: a warning with the fix, 
   assert.match(check(projects, "boat-credentials").detail, /^"base" \(your default\) and "web" pass boat credentials/);
   assert.equal(check(projects, "boat-credentials").fix?.command, "boat env set base --boat-credentials false && boat env set web --boat-credentials false");
   assert.doesNotMatch(check(projects, "boat-credentials").detail, /"api"/, "an environment no worker uses");
+  assert.match(check(projects, "boat-credentials").detail, / Couldn't find "missing" among your boat environments\.$/, "an environment boat doesn't list isn't dropped");
   // A named Boat environment replaces boat's default.
   const named = buildChecks(facts({ environments: some.map((env) => (env.name === "base" ? { ...env, passSandboxCredentials: false } : env)) }), context({ environment: "web" }));
   assert.match(check(named, "boat-credentials").detail, /^"web" passes boat credentials/);
@@ -264,6 +265,45 @@ test("boat credentials in the environments workers use: a warning with the fix, 
   assert.equal(check(signedOut, "boat-credentials").detail, "Needs you to sign in to boat.dev first.");
   // Alongside another warning, the summary names both.
   assert.match(buildStatus(withProfile(["claude-subscription"]), context({ agents: "both" })).summary, /^Setup: ready, but check Coding agents, boat login in sandboxes\. Run `bb boat doctor`\.$/);
+});
+
+test("boat credentials boat didn't report, or an environment it doesn't list, are unknown, never off", () => {
+  // boat's JSON without the toggle: the parsed value is null, and the check doesn't claim "off".
+  const bare = parseEnvironments({ environments: [{ name: "base", isDefault: true }] });
+  assert.equal(bare[0]!.passSandboxCredentials, null);
+  const unreported = buildChecks(facts({ environments: bare }), context());
+  assert.deepEqual(
+    { state: check(unreported, "boat-credentials").state, required: check(unreported, "boat-credentials").required, detail: check(unreported, "boat-credentials").detail },
+    { state: "unknown", required: false, detail: 'Couldn\'t tell whether "base" (your default) passes boat credentials into sandboxes.' },
+  );
+  assert.equal(check(unreported, "boat-credentials").fix, undefined);
+  assert.equal(setupOk(unreported), true, "never blocks");
+
+  // Every other environment off, one project's unreported: still unknown.
+  const oneUnreported = withoutBoatLogin().map((env) => (env.name === "web" ? { ...env, passSandboxCredentials: null } : env));
+  const project = check(buildChecks(facts({ environments: oneUnreported }), context({ projectEnvironments: ["web", "docs"] })), "boat-credentials");
+  assert.equal(project.state, "unknown");
+  assert.equal(project.detail, 'Couldn\'t tell whether "web" passes boat credentials into sandboxes.');
+
+  // A project's environment boat doesn't list, the rest off.
+  const ghost = check(buildChecks(facts({ environments: withoutBoatLogin() }), context({ projectEnvironments: ["ghost", "web"] })), "boat-credentials");
+  assert.equal(ghost.state, "unknown");
+  assert.equal(ghost.detail, 'Couldn\'t find "ghost" among your boat environments.');
+  // No default environment in boat, none named.
+  const noDefault = withoutBoatLogin().map((env) => ({ ...env, isDefault: false }));
+  assert.equal(check(buildChecks(facts({ environments: noDefault }), context()), "boat-credentials").detail, "Couldn't find your default environment among your boat environments.");
+
+  // Some pass them: still the warning, with the unclear ones named and only the known ones in the command.
+  const mixed = withoutBoatLogin().map((env) => (env.name === "base" ? { ...env, passSandboxCredentials: true } : env.name === "web" ? { ...env, passSandboxCredentials: null } : env));
+  const warned = check(buildChecks(facts({ environments: mixed }), context({ projectEnvironments: ["web", "ghost", "docs"] })), "boat-credentials");
+  assert.equal(warned.state, "warning");
+  assert.match(warned.detail, /^"base" \(your default\) passes boat credentials into sandboxes: /);
+  assert.match(warned.detail, /through bb Connect\. Couldn't tell whether "web" passes boat credentials into sandboxes\. Couldn't find "ghost" among your boat environments\.$/);
+  assert.equal(warned.fix?.command, "boat env set base --boat-credentials false");
+
+  // "ok" only when boat says off for each of them.
+  const off = check(buildChecks(facts({ environments: withoutBoatLogin() }), context({ projectEnvironments: ["web", "docs"] })), "boat-credentials");
+  assert.equal(off.state, "ok");
 });
 
 test("each missing piece says how to fix it", () => {

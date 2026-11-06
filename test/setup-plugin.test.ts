@@ -86,6 +86,19 @@ test("bb boat doctor warns about boat credentials in the environments workers us
   assert.match(fixed.stdout, /\n✓ boat login in sandboxes: Your tasks' environments don't pass boat credentials into sandboxes\.\n/);
 });
 
+test("boat credentials boat doesn't report: the doctor and the access line say they couldn't tell, never off", async (t) => {
+  const { harness } = await setup(t, { boat: { boatCredentials: "unreported" } });
+  await harness.runCli(["project", "add", "--name", "Storefront", "--repo", "acme/storefront@master", "--environment", "storefront"]);
+  const out = await harness.runCli(["doctor"]);
+  assert.equal(out.exitCode, 0, out.stderr || out.stdout);
+  assert.match(out.stdout, /\n\? boat login in sandboxes: Couldn't tell whether "base" \(your default\) and "storefront" pass boat credentials into sandboxes\.\n/);
+  assert.doesNotMatch(out.stdout, /don't pass boat credentials/);
+  const status = await harness.runCli(["status"]);
+  assert.match(status.stdout, /- Storefront: environment storefront: [^\n]*; couldn't tell whether boat credentials are passed in\n/);
+  const access = (await harness.callRpc("projectAccess", { projectId: "storefront" })) as { passSandboxCredentials: boolean | null };
+  assert.equal(access.passSandboxCredentials, null);
+});
+
 test("bb boat status starts with the setup line and skips empty headings", async (t) => {
   const { harness, patch } = await setup(t);
   const status = await harness.runCli(["status"]);

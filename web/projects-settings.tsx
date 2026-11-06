@@ -555,6 +555,7 @@ function ProjectAccessLine({ projectId }: { projectId: string }) {
           {notes.includes("boat-credentials") ? (
             <span className="text-warning-text"> · boat credentials are passed in: workers can start, stop and delete any of your sandboxes</span>
           ) : null}
+          {notes.includes("boat-credentials-unknown") ? <span> · couldn't tell whether boat credentials are passed in</span> : null}
           {/* Information, not a warning: the proxy is a paid add-on. */}
           {notes.includes("real-ai-keys") ? (
             <span>

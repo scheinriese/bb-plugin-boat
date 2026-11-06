@@ -420,8 +420,10 @@ own.
   them; turn them off with `boat env set <name> --boat-credentials false`.
   A project's access line warns too. It also notes when real AI keys go in:
   the AI proxy (`boat ai proxy on`, a paid boat add-on: `boat ai proxy`
-  shows the price) passes placeholders instead. Neither stops a task. More
-  in [SECURITY.md](../SECURITY.md#trust-model).
+  shows the price) passes placeholders instead. When boat doesn't say
+  whether an environment passes boat credentials, both say they couldn't
+  tell. None of this stops a task. More in
+  [SECURITY.md](../SECURITY.md#trust-model).
 - **Repo access.** Before a task starts, the plugin asks GitHub from inside
   the sandbox what boat's login may do with each repo. No access stops the
   task with "Connect GitHub on boat.dev → Environment and give boat access

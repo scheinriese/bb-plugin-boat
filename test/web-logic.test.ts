@@ -431,8 +431,9 @@ test("a project's access line notes boat credentials and real AI keys, and nothi
   assert.deepEqual(accessNotes({ passSandboxCredentials: true, passAgentsCredentials: true, aiProxy: false }), ["boat-credentials", "real-ai-keys"]);
   // No agent logins go in at all: no AI note.
   assert.deepEqual(accessNotes({ passSandboxCredentials: false, passAgentsCredentials: false, aiProxy: false }), []);
-  // Couldn't tell: nothing.
-  assert.deepEqual(accessNotes({ passSandboxCredentials: null, passAgentsCredentials: null, aiProxy: null }), []);
+  // boat didn't say: "couldn't tell", never read as off.
+  assert.deepEqual(accessNotes({ passSandboxCredentials: null, passAgentsCredentials: null, aiProxy: null }), ["boat-credentials-unknown"]);
+  assert.deepEqual(accessNotes({ passSandboxCredentials: null, passAgentsCredentials: true, aiProxy: false }), ["boat-credentials-unknown", "real-ai-keys"]);
   assert.deepEqual(accessNotes({ passSandboxCredentials: false, passAgentsCredentials: true, aiProxy: null }), []);
   // The proxy is a paid add-on: its price when boat gives one.
   assert.equal(aiProxyCost("about $1 a day plus $1 per 1,000 requests"), "paid add-on, about $1 a day plus $1 per 1,000 requests");

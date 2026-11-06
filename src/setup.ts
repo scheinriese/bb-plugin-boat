@@ -339,14 +339,27 @@ export function profileFor(facts: BoatFacts, environment: EnvironmentFacts | nul
 }
 
 /**
- * The environments the plugin's workers use, as boat lists them: the one new
- * sandboxes use (Boat environment, else boat's default), then each project's.
+ * The environments the plugin's workers use: the one new sandboxes use
+ * (Boat environment, else boat's default), then each project's. found: as
+ * boat lists them, once each; missing: the ones boat doesn't list ("ghost"
+ * in quotes, or "your default environment" when boat has none).
  */
-export function workerEnvironments(facts: BoatFacts, settings: Pick<SetupSettings, "environment" | "projectEnvironments">): EnvironmentFacts[] {
+export function workerEnvironments(
+  facts: BoatFacts,
+  settings: Pick<SetupSettings, "environment" | "projectEnvironments">,
+): { found: EnvironmentFacts[]; missing: string[] } {
   const list = facts.environments ?? [];
-  const named = (settings.projectEnvironments ?? []).map((name) => list.find((env) => env.name === name) ?? null);
-  const all = [environmentFor(facts, settings.environment), ...named].filter((env): env is EnvironmentFacts => env !== null);
-  return all.filter((env, index) => all.findIndex((other) => other.name === env.name) === index);
+  const found: EnvironmentFacts[] = [];
+  const missing: string[] = [];
+  const add = (env: EnvironmentFacts | null, label: string) => {
+    if (env === null) {
+      if (!missing.includes(label)) missing.push(label);
+    } else if (!found.some((other) => other.name === env.name)) found.push(env);
+  };
+  const setting = settings.environment.trim();
+  add(environmentFor(facts, setting), setting === "" ? "your default environment" : `"${setting}"`);
+  for (const name of settings.projectEnvironments ?? []) add(list.find((env) => env.name === name) ?? null, `"${name}"`);
+  return { found, missing };
 }
 
 /** "a", "a and b", "a, b and c". */
@@ -613,17 +626,30 @@ export function buildChecks(facts: BoatFacts, context: CheckContext): SetupCheck
   } else if (facts.environments === null) {
     checks.push({ id: "boat-credentials", label: boatLogin, state: "unknown", required: false, detail: "Couldn't read your boat environments." });
   } else {
-    const passing = workerEnvironments(facts, settings).filter((env) => env.passSandboxCredentials === true);
-    if (passing.length === 0) {
+    // "ok" only when boat says "off" for every environment workers use: an unreported toggle or an
+    // environment boat doesn't list is unknown, never off.
+    const { found, missing } = workerEnvironments(facts, settings);
+    const which = (env: EnvironmentFacts) => `"${env.name}"${env.isDefault && named === "" ? " (your default)" : ""}`;
+    const passing = found.filter((env) => env.passSandboxCredentials === true);
+    const unreported = found.filter((env) => env.passSandboxCredentials === null).map(which);
+    const unclear = [
+      unreported.length > 0 ? `Couldn't tell whether ${names(unreported)} ${unreported.length === 1 ? "passes" : "pass"} boat credentials into sandboxes.` : null,
+      missing.length > 0 ? `Couldn't find ${names(missing)} among your boat environments.` : null,
+    ].filter((text): text is string => text !== null);
+    if (passing.length === 0 && unclear.length > 0) {
+      checks.push({ id: "boat-credentials", label: boatLogin, state: "unknown", required: false, detail: unclear.join(" ") });
+    } else if (passing.length === 0) {
       checks.push({ id: "boat-credentials", label: boatLogin, state: "ok", required: false, detail: "Your tasks' environments don't pass boat credentials into sandboxes." });
     } else {
-      const which = passing.map((env) => `"${env.name}"${env.isDefault && named === "" ? " (your default)" : ""}`);
       checks.push({
         id: "boat-credentials",
         label: boatLogin,
         state: "warning",
         required: false,
-        detail: `${names(which)} ${passing.length === 1 ? "passes" : "pass"} boat credentials into sandboxes: your boat CLI login, for your whole account. Workers there can start, stop and delete any of your sandboxes. The plugin doesn't need them: it runs boat on the machine that runs bb, and task chats and cloud orchestrators reach it through bb Connect.`,
+        detail: [
+          `${names(passing.map(which))} ${passing.length === 1 ? "passes" : "pass"} boat credentials into sandboxes: your boat CLI login, for your whole account. Workers there can start, stop and delete any of your sandboxes. The plugin doesn't need them: it runs boat on the machine that runs bb, and task chats and cloud orchestrators reach it through bb Connect.`,
+          ...unclear,
+        ].join(" "),
         fix: {
           text: `Turn them off with the command below (running sandboxes keep them until \`boat env upgrade <env>\`). If workers in an environment really need boat, give them a scoped key instead, stored as a secret variable of that environment: \`boat api-key create --env <env id> --actions <only what's needed> --ttl <short>\`.`,
           command: passing.map((env) => `boat env set ${env.name} --boat-credentials false`).join(" && "),

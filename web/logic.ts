@@ -650,18 +650,20 @@ export function cardShownToast(hasOrchestrator: boolean): { title: string; descr
 
 /**
  * Notes on a project's access line about what its environment passes in:
- * boat credentials (the boat CLI's login, for the whole account), a warning;
- * and real AI keys while the AI proxy is off (only when agent logins go in
- * at all), information only: the proxy is a paid add-on, a trade-off rather
- * than a misconfiguration. Unknowns show nothing.
+ * boat credentials (the boat CLI's login, for the whole account), a warning,
+ * or "couldn't tell" when boat didn't say (never read as off); and real AI
+ * keys while the AI proxy is off (only when agent logins go in at all),
+ * information only: the proxy is a paid add-on, a trade-off rather than a
+ * misconfiguration. Call it only when the environment was read.
  */
 export function accessNotes(access: {
   passSandboxCredentials: boolean | null;
   passAgentsCredentials: boolean | null;
   aiProxy: boolean | null;
-}): ("boat-credentials" | "real-ai-keys")[] {
-  const notes: ("boat-credentials" | "real-ai-keys")[] = [];
+}): ("boat-credentials" | "boat-credentials-unknown" | "real-ai-keys")[] {
+  const notes: ("boat-credentials" | "boat-credentials-unknown" | "real-ai-keys")[] = [];
   if (access.passSandboxCredentials === true) notes.push("boat-credentials");
+  if (access.passSandboxCredentials === null) notes.push("boat-credentials-unknown");
   if (access.passAgentsCredentials === true && access.aiProxy === false) notes.push("real-ai-keys");
   return notes;
 }
