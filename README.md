@@ -237,6 +237,26 @@ orchestrator protocol.
 - [SECURITY.md](SECURITY.md): what the plugin runs, reaches and stores, and
   how to report a problem
 
+## Contributing
+
+I built this plugin for my own workflow and share it as it is. I maintain it
+in my spare time, so replies can take a while.
+
+- **Welcome:** bug reports and fixes, setups that don't work yet (a Linux bb
+  machine, boat organizations, other plans), docs fixes, and support for more
+  of the agents boat runs.
+- **Open an issue first** for a new feature or a bigger change, so we can
+  agree it fits before you build it.
+- **Forks are fine.** The plugin is MIT licensed: if you want it shaped around
+  your own setup, keep your own version.
+- **Security problems:** report them privately on GitHub (the Security tab,
+  then "Report a vulnerability"; see [SECURITY.md](SECURITY.md)), not in an
+  issue or on Discord.
+
+Before you open a pull request, run `npm run typecheck` and `npm test`. A
+plugin is full-trust code, so I read every change before merging, and I may
+not merge changes I can't maintain.
+
 ## Development
 
 ```sh
