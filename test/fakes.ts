@@ -811,6 +811,8 @@ export function makeService(
   let settings = defaultSettings({ ...(options.chat ? { workerMode: "chat" as const } : {}), ...options.settings });
   const told: { threadId: string; text: string }[] = [];
   const warnings: string[] = [];
+  /** Notes a worker gets once with its next prompt after a stop (the watchdog's), per task. */
+  const resumeNotes = new Map<string, string>();
   let plan: MachineTypeFacts[] | null = options.plan ?? null;
   let projects: SizedProject[] = options.projects ?? [];
   const service = new BoatService(boat as unknown as BoatApi, store, {
@@ -827,6 +829,10 @@ export function makeService(
     sizePlanNow: () => plan,
     tell: async (threadId, text) => {
       told.push({ threadId, text });
+    },
+    resumeNote: {
+      peek: async (taskId) => resumeNotes.get(taskId) ?? null,
+      sent: async (taskId) => void resumeNotes.delete(taskId),
     },
     sizeTiming: { checkMs: 200, pollMs: 1, stopMs: 200, startMs: 200, reconnectMs: 200, ...options.sizeTiming },
     ...(options.quotas ? { quotas: { read: async () => options.quotas! } } : {}),
@@ -845,6 +851,7 @@ export function makeService(
     notifications,
     told,
     warnings,
+    resumeNotes,
     setSettings(next: Partial<BoatSettings>) {
       settings = { ...settings, ...next };
     },

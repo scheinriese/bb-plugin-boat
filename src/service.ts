@@ -212,6 +212,11 @@ export interface ServiceHooks {
   sizePlanNow?(): PlanSize[] | null;
   /** Post a plain message into a chat (a move that ended after its caller stopped waiting). */
   tell?(threadId: string, text: string): Promise<void>;
+  /**
+   * The note a task's worker gets once with its next prompt after a stop
+   * cut off its background work (the watchdog's); absent: none.
+   */
+  resumeNote?: { peek(taskId: string): Promise<string | null>; sent(taskId: string): Promise<void> };
   /** Tests: the memory check's cap and the move's poll interval and waits (ms). */
   sizeTiming?: { checkMs?: number; pollMs?: number; stopMs?: number; startMs?: number; reconnectMs?: number };
 }
@@ -2040,17 +2045,21 @@ export class BoatService {
       await this.ensureRunning(task.sandboxId!, options.signal);
       // Now that the sandbox is up, its login can be asked directly.
       if (needsGithub) await this.assertGithubLogin(task, { signal: options.signal });
+      const note = await this.resumeNoteFor(task.id);
       const dispatch = await this.boat.prompt({
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
         // A new agent on a Deep task gets the working mode for its own tools.
-        prompt: composeFollowupPrompt(task.role, message, {
-          enteringDeep,
-          provider,
-          evidence: this.hasEvidence(task.id),
-          delivery: task.delivery,
-          sandboxNote: this.sizes.followupNote(task),
-        }),
+        prompt: this.withNote(
+          note,
+          composeFollowupPrompt(task.role, message, {
+            enteringDeep,
+            provider,
+            evidence: this.hasEvidence(task.id),
+            delivery: task.delivery,
+            sandboxNote: this.sizes.followupNote(task),
+          }),
+        ),
         provider,
         model,
         reasoningEffort,
@@ -2082,6 +2091,7 @@ export class BoatService {
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       }
       this.sizes.noteSent(task.id); // sizes
+      this.noteSent(task.id, note);
       if (newlyApproved) this.store.addEvent(task.id, "approval", "Frontier at max effort, approved by the user (follow-up)");
       this.markChangedSinceReview(task);
       if (agentNote !== null) this.store.addEvent(task.id, "agent", agentNote);
@@ -2155,7 +2165,9 @@ export class BoatService {
       if (claimed === null) throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       if (task.hostId !== null) this.suspendedHosts.delete(task.hostId);
       try {
-        await this.hooks.chat!.send(task.threadId!, composeEvidencePrompt(task.role, message, "chat"), { steer: false });
+        const note = await this.resumeNoteFor(task.id);
+        await this.hooks.chat!.send(task.threadId!, this.withNote(note, composeEvidencePrompt(task.role, message, "chat")), { steer: false });
+        this.noteSent(task.id, note);
       } catch (error) {
         this.store.transition(
           task.id,
@@ -2173,10 +2185,11 @@ export class BoatService {
     try {
       this.sizes.assertCanFollowup(task); // sizes
       await this.ensureRunning(task.sandboxId!, options.signal);
+      const note = await this.resumeNoteFor(task.id);
       const dispatch = await this.boat.prompt({
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
-        prompt: composeEvidencePrompt(task.role, message, "boat"),
+        prompt: this.withNote(note, composeEvidencePrompt(task.role, message, "boat")),
         provider: task.provider,
         model: task.model,
         reasoningEffort: task.reasoningEffort,
@@ -2187,12 +2200,28 @@ export class BoatService {
         await this.boat.interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       }
+      this.noteSent(task.id, note);
       this.store.addEvent(task.id, "followup", clip(`(evidence only) ${message}`, 2000));
       this.hooks.changed([task.id]);
       return updated;
     } finally {
       release();
     }
+  }
+
+  /** The note for the worker's next prompt after a stop that cut off its background work (null: none). */
+  private async resumeNoteFor(taskId: string): Promise<string | null> {
+    return (await this.hooks.resumeNote?.peek(taskId).catch(() => null)) ?? null;
+  }
+
+  /** The prompt with the note first. */
+  private withNote(note: string | null, prompt: string): string {
+    return note === null ? prompt : `${note}\n\n${prompt}`;
+  }
+
+  /** The note went out: the next prompt goes without it. */
+  private noteSent(taskId: string, note: string | null): void {
+    if (note !== null) void this.hooks.resumeNote?.sent(taskId).catch(() => undefined);
   }
 
   /** A follow-up in the worker's chat; another agent means a new chat in the same workspace. */
@@ -2239,20 +2268,25 @@ export class BoatService {
         await chat.stop(task.threadId!).catch(() => undefined);
         return this.store.update(task.id, { threadId }) ?? claimed;
       }
+      const note = await this.resumeNoteFor(task.id);
       await chat.send(
         task.threadId!,
-        composeFollowupPrompt(task.role, message, {
-          enteringDeep: next.enteringDeep,
-          provider: next.provider,
-          runner: "chat",
-          effort: next.reasoningEffort,
-          evidence: this.hasEvidence(task.id),
-          delivery: task.delivery,
-          sandboxNote: this.sizes.followupNote(task),
-        }),
+        this.withNote(
+          note,
+          composeFollowupPrompt(task.role, message, {
+            enteringDeep: next.enteringDeep,
+            provider: next.provider,
+            runner: "chat",
+            effort: next.reasoningEffort,
+            evidence: this.hasEvidence(task.id),
+            delivery: task.delivery,
+            sandboxNote: this.sizes.followupNote(task),
+          }),
+        ),
         { steer: false, ...(next.changesModel ? { model: next.model, effort: next.reasoningEffort } : {}) },
       );
       this.sizes.noteSent(task.id); // sizes
+      this.noteSent(task.id, note);
       return claimed;
     } catch (error) {
       // Nothing was sent: put the task back as it was.
@@ -2325,10 +2359,12 @@ export class BoatService {
             extraInstructions: this.standingInstructions(task, settings),
           }
         : {};
+    // A new agent in the same sandbox: a stop that cut off background work concerns it too.
+    const note = await this.resumeNoteFor(task.id);
     const spawned = await this.hooks.chat!.spawn({
       taskId: task.id,
       title: task.title,
-      prompt: composeHandoverPrompt({
+      prompt: this.withNote(note, composeHandoverPrompt({
         ...fromBoat,
         taskId: task.id,
         role: task.role,
@@ -2346,7 +2382,7 @@ export class BoatService {
         effort: next.reasoningEffort,
         evidence: this.hasEvidence(task.id),
         sandboxLine: this.sizes.lineFor(task, "chat"),
-      }),
+      })),
       provider: next.provider,
       model: next.model,
       effort: next.reasoningEffort,
@@ -2354,6 +2390,7 @@ export class BoatService {
       projectId: task.projectId,
       where: { kind: "environment", environmentId },
     });
+    this.noteSent(task.id, note);
     this.store.addEvent(task.id, "chat", spawned.threadId);
     this.recordChat(task.id, spawned.threadId, next.provider, next.model, next.reasoningEffort);
     return spawned.threadId;
