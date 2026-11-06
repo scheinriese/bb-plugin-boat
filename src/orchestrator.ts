@@ -77,6 +77,11 @@ export async function getThreadProject(bb: BbPluginApi, threadId: string): Promi
   return parseOrchestratorProject((await readMetadata(bb, threadId)).project);
 }
 
+/** What an orchestrator was started with beyond the settings (OrchestratorPicks in orchestrator-agent.ts), unparsed. */
+export async function getOrchestratorPicks(bb: BbPluginApi, threadId: string): Promise<unknown> {
+  return (await readMetadata(bb, threadId)).picks ?? null;
+}
+
 export interface TakeOver {
   /** A previous orchestrator thread: its last message and open tasks move here. */
   threadId?: string | null;
@@ -107,6 +112,8 @@ export interface SpawnOrchestratorInput {
   /** Run in this existing workspace (a relay successor reuses its predecessor's). */
   environmentId?: string | null;
   reasoningLevel?: string | null;
+  /** What it was started with beyond the settings (OrchestratorPicks), kept for Claude ↔ Codex switching. */
+  picks?: object | null;
   /** Full Access (a cloud orchestrator: unattended in its own sandbox); otherwise the user's default mode. */
   permissionMode?: "full" | null;
 }
@@ -225,6 +232,7 @@ export async function spawnOrchestrator(bb: BbPluginApi, input: SpawnOrchestrato
       role: ORCHESTRATOR_ROLE,
       since: new Date().toISOString(),
       project: input.project as unknown as Record<string, never>,
+      ...(input.picks ? { picks: input.picks as Record<string, never> } : {}),
     },
     // Their project's section or Pinned; worker chats nest under them.
     ...(input.sectionId ? { sectionId: input.sectionId } : {}),

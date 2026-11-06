@@ -16,6 +16,8 @@ import {
   defaultOrchestratorAgent,
   orchestratorAgentChoice,
   orchestratorChoices,
+  orchestratorPicks,
+  parseOrchestratorPicks,
   type OrchestratorSettings,
 } from "../src/orchestrator-agent.ts";
 import { DEFAULT_TIERS } from "../src/tiers.ts";
@@ -82,6 +84,31 @@ test("model and effort: the Build preset's model for the agent and Effort for or
   assert.deepEqual(orchestratorAgentChoice(settings, "high", { providerId: "pi", model: "pi-large", effort: "low" }), { providerId: "pi", provider: null, model: "pi-large", effort: "low" });
 
   assert.equal(choiceSummary(orchestratorAgentChoice(settings, "high")), "Claude Code · claude-opus-5-5 · high effort");
+});
+
+test("picks: only what differs from the settings stays with an orchestrator, by agent for a model", () => {
+  const settings = both();
+  const picks = (effortSetting: string, request: Parameters<typeof orchestratorAgentChoice>[2]) =>
+    orchestratorPicks(settings, effortSetting, orchestratorAgentChoice(settings, effortSetting, request));
+  // The defaults, or a pick that matches them: it follows the settings.
+  assert.equal(picks("high", {}), null);
+  assert.equal(picks("high", { providerId: "codex", effort: "high", model: "gpt-6.1-sol" }), null);
+  assert.equal(picks("high", { model: "opus-5-5" }), null);
+  // An effort other than the setting's, a model other than the agent's Build model.
+  assert.deepEqual(picks("high", { effort: "low" }), { effort: "low" });
+  assert.deepEqual(picks("high", { model: "fable-5-1", effort: "xhigh" }), { effort: "xhigh", models: { claude: "claude-fable-5-1" } });
+  assert.deepEqual(picks("medium", { model: "gpt-6-astra" }), { models: { codex: "gpt-6-astra" } });
+  // Another bb agent: switching never moves it, so nothing to keep.
+  assert.equal(picks("high", { providerId: "pi", effort: "low" }), null);
+
+  // What's read back is checked: anything else is dropped.
+  assert.deepEqual(parseOrchestratorPicks({ effort: "low", models: { claude: "claude-fable-5-1", codex: "gpt-6-astra" } }), {
+    effort: "low",
+    models: { claude: "claude-fable-5-1", codex: "gpt-6-astra" },
+  });
+  assert.deepEqual(parseOrchestratorPicks({ effort: "max", models: { claude: "", pi: "pi-large", codex: 4 } }), {});
+  assert.deepEqual(parseOrchestratorPicks(null), {});
+  assert.deepEqual(parseOrchestratorPicks("low"), {});
   assert.equal(choiceSummary(orchestratorAgentChoice(settings, "high", { providerId: "pi" })), "pi");
 });
 
@@ -227,10 +254,16 @@ test("the dialog's RPC: the settings by default, its agent and effort picks when
     effort: "high",
     switching: true,
   });
+  const picks = () => (spawns.at(-1)!.pluginMetadata as { picks?: unknown }).picks;
   await harness.callRpc("startOrchestrator", base);
   assert.deepEqual(last(), { providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" });
+  assert.equal(picks(), undefined);
+  // The dialog sends what it shows; only an effort other than the setting's stays with it (for switching).
+  await harness.callRpc("startOrchestrator", { ...base, provider: "claude", effort: "high" });
+  assert.equal(picks(), undefined);
   await harness.callRpc("startOrchestrator", { ...base, provider: "codex", effort: "xhigh" });
   assert.deepEqual(last(), { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "xhigh" });
+  assert.deepEqual(picks(), { effort: "xhigh" });
   // Only the four levels.
   await assert.rejects(harness.callRpc("startOrchestrator", { ...base, effort: "max" }), /validation failed/);
 

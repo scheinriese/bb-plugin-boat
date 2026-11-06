@@ -5,6 +5,7 @@ import { findLocalProject, localToOrchestratorProject } from "./local-projects.t
 import {
   PERSONAL_PROJECT_ID,
   getOrchestratorFlag,
+  getOrchestratorPicks,
   getThreadProject,
   setOrchestrator as writeOrchestratorFlag,
   spawnOrchestrator as spawnThread,
@@ -12,7 +13,14 @@ import {
   type TakeOver,
 } from "./orchestrator.ts";
 import type { RepoFileReader } from "./github.ts";
-import { CHAT_PROVIDER_ID, orchestratorAgentChoice, type OrchestratorAgentChoice } from "./orchestrator-agent.ts";
+import {
+  CHAT_PROVIDER_ID,
+  orchestratorAgentChoice,
+  orchestratorPicks,
+  parseOrchestratorPicks,
+  type OrchestratorAgentChoice,
+  type OrchestratorPicks,
+} from "./orchestrator-agent.ts";
 import { toOrchestratorProject, type OrchestratorProject, type ProjectStore } from "./projects.ts";
 import { ensureProjectSection, threadSection } from "./sections.ts";
 import type { QuotaReader, Quotas } from "./quota.ts";
@@ -233,6 +241,8 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       providerId: string | null;
       model: string | null;
       reasoningLevel?: string | null;
+      /** Kept with it for Claude ↔ Codex switching. */
+      picks?: OrchestratorPicks | null;
       title: string | null;
       prompt: string;
       takeOver: TakeOver | null;
@@ -256,6 +266,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       providerId: options.providerId,
       model: options.model,
       reasoningLevel: options.reasoningLevel ?? null,
+      picks: options.picks ?? null,
       title: options.title,
       prompt: options.prompt,
       takeOverSection: section,
@@ -425,8 +436,14 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         }
       }
       const settings = await service.settings();
-      // The other agent's Build model at Effort for orchestrators, like a new orchestrator there.
-      const agent = orchestratorAgentChoice(settings, (await deps.settings.get()).orchestratorEffort, { providerId: CHAT_PROVIDER_ID[to] });
+      // The other agent's Build model at Effort for orchestrators, like a new orchestrator
+      // there; an effort picked for this orchestrator stays, and a model picked for that agent.
+      const picks = parseOrchestratorPicks(await getOrchestratorPicks(bb, oldThreadId).catch(() => null));
+      const agent = orchestratorAgentChoice(settings, (await deps.settings.get()).orchestratorEffort, {
+        providerId: CHAT_PROVIDER_ID[to],
+        model: picks.models?.[to] ?? null,
+        effort: picks.effort ?? null,
+      });
       const baseTitle = (old.title ?? old.titleFallback ?? project.name).replace(/ · (Claude|Codex)$/, "");
       const preferred = settings.relay.preferred;
       // What the old chat leaves behind: its note, and messages still waiting for it.
@@ -449,6 +466,8 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         providerId: agent.providerId,
         model: agent.model,
         reasoningLevel: agent.effort,
+        // Passed on, so the switch back keeps them too.
+        picks: Object.keys(picks).length > 0 ? picks : null,
         // The preferred agent's orchestrator keeps the plain title.
         title: to === preferred ? baseTitle : `${baseTitle} · ${AGENT_NAME[to]}`,
         prompt,
@@ -797,7 +816,8 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       const settings = await service.settings();
       const { sidebarLayout, cloudOrchestratorFullAccess } = settings;
       // Named here (dialog, CLI) or from the settings: always explicit, so it's what the dialog showed.
-      const agent = orchestratorAgentChoice(settings, (await deps.settings.get()).orchestratorEffort, {
+      const effortSetting = (await deps.settings.get()).orchestratorEffort;
+      const agent = orchestratorAgentChoice(settings, effortSetting, {
         providerId: input.providerId,
         model: input.model,
         effort: input.effort,
@@ -810,6 +830,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         providerId: agent.providerId,
         model: agent.model,
         reasoningLevel: agent.effort,
+        picks: orchestratorPicks(settings, effortSetting, agent),
         title: input.title ?? null,
         prompt: input.prompt,
         takeOver: input.takeOver ?? null,

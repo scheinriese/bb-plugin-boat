@@ -7,10 +7,12 @@
 // - model: the Build preset's model for that agent (Settings → Models);
 // - effort: Effort for orchestrators (orchestratorEffort).
 // What a caller names (--provider, --model, --effort, the dialog's picks) wins.
+// A successor keeps its orchestrator's effort and model picks (OrchestratorPicks).
 // "Coordinate from this chat" isn't here: that chat keeps its own model.
 import type { OrchestratorChoicesDto } from "../contract-orchestrator.ts";
 import { AGENT_NAME, effectiveRelay, onlyAgent, otherAgent } from "./relay.ts";
 import type { BoatSettings } from "./service.ts";
+import { ORCHESTRATOR_EFFORTS, type OrchestratorEffort } from "./settings.ts";
 import type { SettingsStore } from "./settings-store.ts";
 import type { Provider } from "./store.ts";
 import { bbModelId, modelAgent } from "./tiers.ts";
@@ -84,6 +86,46 @@ export function orchestratorAgentChoice(settings: OrchestratorSettings, effortSe
     model: model !== null ? (bbModelId(provider, model) ?? model) : orchestratorModel(settings, provider),
     effort: effort ?? effortSetting,
   };
+}
+
+/**
+ * What one orchestrator was started with beyond the settings: an effort other
+ * than Effort for orchestrators, a model other than its agent's Build model.
+ * Its chat's metadata keeps them, and Claude ↔ Codex switching passes them on:
+ * the effort on either agent, a model whenever it runs on that model's agent.
+ */
+export interface OrchestratorPicks {
+  effort?: OrchestratorEffort;
+  /** bb's model id, by the agent it's for. */
+  models?: Partial<Record<Provider, string>>;
+}
+
+const isEffort = (value: unknown): value is OrchestratorEffort => (ORCHESTRATOR_EFFORTS as readonly unknown[]).includes(value);
+
+/** The picks to keep with a new orchestrator; null: it follows the settings. */
+export function orchestratorPicks(settings: Pick<BoatSettings, "modelTiers">, effortSetting: string, choice: OrchestratorAgentChoice): OrchestratorPicks | null {
+  // Another bb agent: switching never moves it.
+  if (choice.provider === null) return null;
+  const picks: OrchestratorPicks = {};
+  if (choice.effort !== effortSetting && isEffort(choice.effort)) picks.effort = choice.effort;
+  if (choice.model !== null && choice.model !== orchestratorModel(settings, choice.provider)) picks.models = { [choice.provider]: choice.model };
+  return Object.keys(picks).length > 0 ? picks : null;
+}
+
+/** Stored picks, minus anything that isn't one (old or hand-edited metadata). */
+export function parseOrchestratorPicks(value: unknown): OrchestratorPicks {
+  if (value === null || typeof value !== "object") return {};
+  const raw = value as { effort?: unknown; models?: unknown };
+  const picks: OrchestratorPicks = {};
+  if (isEffort(raw.effort)) picks.effort = raw.effort;
+  if (raw.models !== null && typeof raw.models === "object") {
+    const models = raw.models as Record<string, unknown>;
+    for (const provider of ["claude", "codex"] as const) {
+      const model = models[provider];
+      if (typeof model === "string" && model.trim() !== "" && model.length <= 200) (picks.models ??= {})[provider] = model.trim();
+    }
+  }
+  return picks;
 }
 
 /** "Claude Code · claude-opus-5-5 · high effort" (the CLI's line). */

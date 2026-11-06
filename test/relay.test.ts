@@ -552,6 +552,34 @@ test("a successor starts with the other agent's Build model at Effort for orches
   assert.deepEqual([successor.providerId, successor.model, successor.reasoningLevel], ["codex", "gpt-6.2", "medium"]);
 });
 
+test("an effort or model picked for one orchestrator stays through switching: the effort on both agents, the model on its own", async (t) => {
+  const { harness, threads, metadata } = await relayHost(t, { claude: 93, codex: 12 });
+  const spawned = () => {
+    const spawn = harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as Record<string, unknown>;
+    return [spawn.providerId, spawn.model, spawn.reasoningLevel];
+  };
+  const picks = (threadId: string) => (metadata.get(threadId) as { picks?: unknown }).picks;
+  // Effort for orchestrators is High; this one runs on Fable at Low.
+  const started = await harness.runCli(["orchestrator", "new", "--project", "storefront", "--prompt", "Ship it", "--local", "--model", "claude-fable-5-1", "--effort", "low"]);
+  assert.equal(started.exitCode, 0, started.stderr || started.stdout);
+  assert.deepEqual(spawned(), ["claude-code", "claude-fable-5-1", "low"]);
+  assert.deepEqual(picks("thr_old"), { effort: "low", models: { claude: "claude-fable-5-1" } });
+
+  // To Codex: still Low, on Codex's Build model (Fable is Claude's).
+  const toCodex = await harness.runCli(["relay", "switch", "thr_old", "--to", "codex", "--now", "--json"]);
+  assert.equal((JSON.parse(toCodex.stdout) as { kind: string }).kind, "took-over", toCodex.stderr || toCodex.stdout);
+  assert.deepEqual(spawned(), ["codex", "gpt-6.1-sol", "low"]);
+  assert.deepEqual(picks("thr_new"), picks("thr_old"));
+
+  // Back to Claude: Fable at Low again, though the setting has changed since.
+  assert.equal((await harness.runCli(["config", "set", "orchestratorEffort", "medium"])).exitCode, 0);
+  threads.get("thr_new")!.providerId = "codex";
+  const back = await harness.runCli(["relay", "switch", "thr_new", "--to", "claude", "--now", "--json"]);
+  assert.equal((JSON.parse(back.stdout) as { kind: string }).kind, "took-over", back.stderr || back.stdout);
+  assert.deepEqual(spawned(), ["claude-code", "claude-fable-5-1", "low"]);
+  assert.deepEqual(picks("thr_third"), picks("thr_old"));
+});
+
 test("the switch back to Claude starts with Claude's Build model (bb's id) at Effort for orchestrators, and the plain title", async (t) => {
   const { harness, threads } = await relayHost(t, { claude: 20, codex: 93 }, { orchestratorEffort: "low" });
   // boat's form of the id in the presets table.
