@@ -408,7 +408,7 @@ export function buildCli(runtime: Runtime) {
             }
             const unshipped = await service.unshippedTasks(positionals.id, ctx.signal);
             if (unshipped.length > 0) {
-              const check = options.discard ? await runtime.chatApproval(ctx.threadId, unshipped[0]!) : { ok: false, reason: "" };
+              const check = options.discard ? await runtime.chatApproval(ctx.threadId, unshipped[0]!, "discard") : { ok: false, reason: "" };
               if (!check.ok) {
                 throw new PluginCliError(`${positionals.id} holds work that hasn't shipped (${unshipped.map((task) => task.id).join(", ")}).`, {
                   code: "unshipped_work",
@@ -864,7 +864,7 @@ export function buildCli(runtime: Runtime) {
           return guard(async () => {
             if (options.discard) {
               // Throwing work away needs the user's word in the orchestrator chat too.
-              const check = await runtime.chatApproval(ctx.threadId, service.mustGet(positionals.id));
+              const check = await runtime.chatApproval(ctx.threadId, service.mustGet(positionals.id), "discard");
               if (!check.ok) {
                 throw new PluginCliError(`Not discarded: ${check.reason}.`, {
                   code: "approval_required",

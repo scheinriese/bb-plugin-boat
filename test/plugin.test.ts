@@ -527,7 +527,7 @@ test("taking over re-parents the old orchestrator's worker chats", async (t) => 
     provider: "claude", model: null, reasoningEffort: null, tier: null, reason: null, runner: "chat", threadId: "thr_worker",
     hostId: "host_1", environmentId: "env_1", readyAt: null, readyNote: null, delivery: "pr", boatProject: null, environment: null, snapshot: null, extraRepos: [], brief: "b",
     parentTaskId: null, prUrl: null, result: null, error: null, turns: 1, ownsSandbox: true, createdAt: now, updatedAt: now,
-    finishedAt: now, notifiedAt: now, unshipped: null,
+    finishedAt: now, notifiedAt: now, unshipped: null, shipApproval: null,
   });
   store.addEvent("t_chat01", "chat", "thr_worker");
   const updates: Record<string, unknown>[] = [];

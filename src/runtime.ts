@@ -47,6 +47,7 @@ import { composeProtocol, loadProjectRules, renderSharedProtocol, type ProtocolS
 import { DEFAULT_TIERS, parseTierMap, type TierMap } from "./tiers.ts";
 import { TaskError, type BoatService } from "./service.ts";
 import { OPEN_STATUSES } from "./store.ts";
+import { changedApprovalReason, changedSinceApproval } from "./ship-approval.ts";
 
 /** How a caller names a project: a configured one, or a local bb project. */
 export type ProjectRef = { kind: "boat"; id: string } | { kind: "local"; bbProjectId: string };
@@ -103,9 +104,11 @@ export interface Runtime {
   /**
    * Did the user write in this orchestrator chat after the task's work was
    * reported? (A ship from chat needs it: an agent saying "approved" isn't
-   * enough, and worker output can't produce a user message.)
+   * enough, and worker output can't produce a user message.) `discard`:
+   * throwing unshipped work away; a ship's refusal says when a newer turn
+   * needs a new OK.
    */
-  chatApproval(threadId: string | null | undefined, task: Task): Promise<{ ok: boolean; reason: string }>;
+  chatApproval(threadId: string | null | undefined, task: Task, action?: "ship" | "discard"): Promise<{ ok: boolean; reason: string }>;
   /** Tell an orchestrator something (a ship from the overview, …). */
   tellOrchestrator(threadId: string, text: string): Promise<void>;
   /** A chat in a hand-over: worker notices wait for its successor. */
@@ -650,7 +653,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   }
 
   /** A chat being handed over (asked for its note, or mid-switch): notices wait for the successor. */
-  async function chatApproval(threadId: string | null | undefined, task: Task): Promise<{ ok: boolean; reason: string }> {
+  async function chatApproval(threadId: string | null | undefined, task: Task, action: "ship" | "discard" = "ship"): Promise<{ ok: boolean; reason: string }> {
     const taskId = task.id;
     if (!threadId) return { ok: false, reason: "only the task's orchestrator chat can ship or discard it (or the user, with the buttons on the overview)" };
     if (threadId !== task.orchestratorThreadId) return { ok: false, reason: "this chat isn't the task's orchestrator" };
@@ -667,13 +670,20 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     }
     // Messages the plugin (or another agent) sent count as neither.
     const fromPlugin = (text: string) => text.startsWith("[boat") || text.startsWith("[bb message");
-    let reportedAt = -1;
+    const fromUser = (item: { preview: string }) => item.preview !== "" && !fromPlugin(item.preview);
+    const reports: number[] = [];
     items.forEach((item, index) => {
-      if (item.preview.startsWith("[boat]") && (item.preview.includes(taskId) || /^\[boat\] \d+ tasks finished a turn/.test(item.preview))) reportedAt = index;
+      if (item.preview.startsWith("[boat]") && (item.preview.includes(taskId) || /^\[boat\] \d+ tasks finished a turn/.test(item.preview))) reports.push(index);
     });
+    const reportedAt = reports.at(-1) ?? -1;
     if (reportedAt === -1) return { ok: false, reason: "the task's work hasn't been reported in this chat" };
-    const userAfter = items.slice(reportedAt + 1).some((item) => item.preview !== "" && !fromPlugin(item.preview));
-    if (userAfter) return { ok: true, reason: "" };
+    if (items.slice(reportedAt + 1).some(fromUser)) return { ok: true, reason: "" };
+    // An OK to ship given before a newer turn doesn't cover it: say why it's needed again.
+    if (action === "ship" && changedSinceApproval(task)) return { ok: false, reason: changedApprovalReason(task.shipApproval!) };
+    const wroteBefore = reports.length > 1 && items.slice(reports[0]! + 1, reportedAt).some(fromUser);
+    if (action === "ship" && wroteBefore && items[reportedAt]!.preview.includes(taskId)) {
+      return { ok: false, reason: "the task had a newer turn after the user last wrote here; show the user what changed and ask them to approve again" };
+    }
     return { ok: false, reason: "the user hasn't written in this chat since the task's work was reported" };
   }
 

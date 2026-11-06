@@ -1,13 +1,20 @@
 // Ship conflicts: the ship script names the conflicting files and the base
-// commits that changed them (run for real against throwaway git repos), and
-// the error says so.
+// commits that changed them (run for real against throwaway git repos), the
+// error says so, and the user's OK from before the follow-up that resolves
+// it doesn't count for the commits after it.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { BoatError } from "../src/boat.ts";
 import { conflictReason, fileList, parseConflictDetail, parseShipOutput, shipScript } from "../src/boat-api.ts";
+import type { OrchestratorProject } from "../src/projects.ts";
+import { TaskError } from "../src/service.ts";
+import { changedApprovalReason, changedSinceApproval } from "../src/ship-approval.ts";
+import type { ShipApproval } from "../src/store.ts";
+import { makeService } from "./fakes.ts";
 
 const ENV = {
   ...process.env,
@@ -126,4 +133,109 @@ test("the conflict text: files, commits, the task that shipped one, and nothing 
   assert.equal(fileList(["a"]), "a");
   // A bad sha isn't kept.
   assert.equal(parseConflictDetail(["head not-a-sha"]).head, null);
+});
+
+function approvalRecord(overrides: Partial<ShipApproval> = {}): ShipApproval {
+  return {
+    at: "2026-11-05T10:00:00.000Z",
+    turns: 1,
+    path: "/home/user/work/web",
+    baseBranch: "master",
+    head: "1111111111111111111111111111111111111111",
+    base: "2222222222222222222222222222222222222222",
+    files: ["package.json"],
+    moreFiles: 0,
+    message: "Couldn't ship /home/user/work/web → master: its commits conflict with the latest master in package.json (changed by 1a2b3c4 'Add the videos:test suite'). The task's agent must rebase and resolve them.",
+    changes: null,
+    ...overrides,
+  };
+}
+
+test("the second approval's reason names the conflict", () => {
+  assert.equal(
+    changedApprovalReason(approvalRecord()),
+    "the work changed after the user approved it (a follow-up resolved a conflict in package.json); show the user what changed and ask them to approve again",
+  );
+  assert.match(changedApprovalReason(approvalRecord({ files: [] })), /a conflict in the rebase onto master\)/);
+  assert.equal(changedSinceApproval({ turns: 1, shipApproval: approvalRecord() }), false);
+  assert.equal(changedSinceApproval({ turns: 2, shipApproval: approvalRecord() }), true);
+  assert.equal(changedSinceApproval({ turns: 2, shipApproval: null }), false);
+});
+
+const STOREFRONT: OrchestratorProject = {
+  id: "storefront",
+  name: "Storefront",
+  repos: [{ repo: "acme/storefront", baseBranch: "master" }],
+  environment: "storefront",
+  snapshot: null,
+  protocolPath: null,
+  workerMode: "boat",
+  delivery: "push",
+  source: "boat",
+  protectedBranches: [],
+  instructions: "",
+  bbProjectId: null,
+};
+
+const REPORT = "Done.\n=== REPORT ===\nSTATUS: done\n=== END REPORT ===";
+const HEAD = "1111111111111111111111111111111111111111";
+const BASE = "2222222222222222222222222222222222222222";
+
+/** BoatApi.ship's error for a conflict, as the ship script would make it. */
+function conflictError(path: string, shippedBy: (sha: string) => string | null = () => null) {
+  const detail = [`head ${HEAD}`, `base ${BASE}`, "file package.json", "commit 1a2b3c4 Add the videos:test suite"];
+  const conflict = parseConflictDetail(detail);
+  return Object.assign(new BoatError(`Couldn't ship ${path} → master: ${conflictReason("master", conflict, shippedBy)}.`, { code: "ship_conflict" }), {
+    shipped: [],
+    conflict: { ...conflict, path, baseBranch: "master" },
+  });
+}
+
+test("a ship conflict keeps what was approved; shipping or closing clears it", async () => {
+  const env = makeService();
+  env.boat.limitsValue.maxActiveSandboxes = 10;
+  const { task } = await env.service.launchTask({ title: "Dev script", role: "implement", brief: "Do it.", repo: "acme/storefront", orchestratorThreadId: "thr_orch", project: STOREFRONT }, 5_000);
+  env.boat.finish(task.conversationId!, REPORT);
+  await env.service.sweep();
+  const path = env.store.get(task.id)!.repoPath!;
+  const realShip = env.boat.ship.bind(env.boat);
+  env.boat.ship = async () => {
+    throw conflictError(path);
+  };
+  await assert.rejects(env.service.shipTask(task.id, { approval: "by the user in chat" }), (error: unknown) => {
+    assert.ok(error instanceof TaskError);
+    assert.equal(error.code, "ship_conflict");
+    assert.match(error.message, /in package\.json \(changed by 1a2b3c4 'Add the videos:test suite'\)/);
+    return true;
+  });
+  const current = env.store.get(task.id)!;
+  assert.equal(current.status, "idle", "the task stays open for the follow-up");
+  assert.deepEqual(
+    { turns: current.shipApproval?.turns, head: current.shipApproval?.head, base: current.shipApproval?.base, files: current.shipApproval?.files },
+    { turns: 1, head: HEAD, base: BASE, files: ["package.json"] },
+  );
+  assert.match(env.store.latestEvent(task.id, "ship-conflict")!.text, /conflict with the latest master in package\.json/);
+  // Shipped: the record goes.
+  env.boat.ship = realShip;
+  await env.service.shipTask(task.id, { approval: "test", keepOpen: true });
+  assert.equal(env.store.get(task.id)!.shipApproval, null);
+  // Closed: it goes too.
+  env.boat.ship = async () => {
+    throw conflictError(path);
+  };
+  await assert.rejects(env.service.shipTask(task.id, { approval: "test" }));
+  assert.notEqual(env.store.get(task.id)!.shipApproval, null);
+  await env.service.closeTask(task.id, { discard: true });
+  assert.equal(env.store.get(task.id)!.shipApproval, null);
+});
+
+test("other ship failures keep no approval record", async () => {
+  const env = makeService();
+  const { task } = await env.service.launchTask({ title: "Dev script", role: "implement", brief: "Do it.", repo: "acme/storefront", orchestratorThreadId: "thr_orch", project: STOREFRONT }, 5_000);
+  env.boat.finish(task.conversationId!, REPORT);
+  await env.service.sweep();
+  env.boat.shipError = Object.assign(new BoatError("Couldn't ship /w → master: the push was refused (protected branch).", { code: "ship_push" }), { shipped: [], conflict: null });
+  await assert.rejects(env.service.shipTask(task.id, { approval: "test" }), (error: unknown) => error instanceof TaskError && error.code === "ship_push");
+  assert.equal(env.store.get(task.id)!.shipApproval, null);
+  assert.equal(env.store.latestEvent(task.id, "ship-conflict"), null);
 });

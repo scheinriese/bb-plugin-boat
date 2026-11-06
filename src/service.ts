@@ -15,6 +15,7 @@ import {
   type MachineType,
   type PreparedRepo,
   type Sandbox,
+  type ShipConflict,
   type ShipResult,
   type EnvironmentInfo,
   shellQuote,
@@ -1156,6 +1157,7 @@ export class BoatService {
       finishedAt: null,
       notifiedAt: null,
       unshipped: null,
+      shipApproval: null,
     });
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
     if (input.measureMemory) this.sizes.watch(id); // sizes
@@ -3635,7 +3637,11 @@ export class BoatService {
             `Shipped ${partial.map((entry) => `${entry.commits} commit${entry.commits === 1 ? "" : "s"} to ${entry.baseBranch} (${entry.sha.slice(0, 7)})`).join(", ")} before it stopped; the rest is still unshipped`,
           );
         }
-        if (error instanceof BoatError) throw new TaskError(error.message, error.code ?? "ship_failed");
+        if (error instanceof BoatError) {
+          const conflict = (error as { conflict?: (ShipConflict & { path: string; baseBranch: string }) | null }).conflict ?? null;
+          if (error.code === "ship_conflict") this.noteShipConflict(task, error.message, conflict);
+          throw new TaskError(error.message, error.code ?? "ship_failed");
+        }
         throw error;
       }
     } finally {
@@ -3646,6 +3652,8 @@ export class BoatService {
     }
     const summary = result.shipped.map((entry) => `${entry.commits} commit${entry.commits === 1 ? "" : "s"} to ${entry.baseBranch} (${entry.sha.slice(0, 7)})`).join(", ");
     this.store.addEvent(task.id, "shipped", `Shipped ${summary}; approved ${options.approval}`);
+    // Shipped: an approval kept from a conflict has done its job.
+    if (task.shipApproval !== null) this.store.update(task.id, { shipApproval: null });
     // Nothing left to ship, unless a follow-up started during the push.
     this.store.transition(task.id, ["idle"], { unshipped: 0 }, { promptId: task.promptId });
     this.hooks.changed([task.id]);
@@ -3681,7 +3689,7 @@ export class BoatService {
         "Ship it once the user approves (Ship on the overview, or boat_ship after their OK in chat), or ask the user whether to throw the work away.",
       );
     }
-    const updated = this.store.update(task.id, { status, finishedAt: new Date().toISOString() }) ?? task;
+    const updated = this.store.update(task.id, { status, finishedAt: new Date().toISOString(), shipApproval: null }) ?? task;
     // Stop an in-flight dispatch, then the running turn.
     this.dispatches.get(task.id)?.abort();
     if (task.status === "running" && task.runner === "chat" && task.threadId && this.hooks.chat) {
@@ -3773,6 +3781,32 @@ export class BoatService {
     // Only for the turn it checked: a newer turn or a close wins.
     this.store.transition(task.id, ["idle", "failed"], { unshipped }, { promptId: task.promptId });
   }
+
+  /**
+   * A ship stopped on a conflict: keep what the user approved (the task's
+   * head and the base it was rebased onto), so a later turn needs their OK
+   * again. A later attempt replaces it.
+   */
+  private noteShipConflict(task: Task, message: string, conflict: (ShipConflict & { path: string; baseBranch: string }) | null): void {
+    this.store.addEvent(task.id, "ship-conflict", message);
+    if (conflict === null || conflict.head === null || conflict.base === null) return;
+    this.store.update(task.id, {
+      shipApproval: {
+        at: new Date().toISOString(),
+        turns: task.turns,
+        path: conflict.path,
+        baseBranch: conflict.baseBranch,
+        head: conflict.head,
+        base: conflict.base,
+        files: conflict.files,
+        moreFiles: conflict.moreFiles,
+        message,
+        changes: null,
+      },
+    });
+    this.hooks.changed([task.id]);
+  }
+
 
 
   /**
@@ -3988,7 +4022,7 @@ export class BoatService {
     }
     if (state === null || state.archived || hint?.kind === "archived") {
       // Archived or deleted by hand: the work there is over, and so is its machine.
-      const closed = this.store.transition(task.id, ["running", "idle", "failed"], { status: "cancelled", finishedAt: nowIso });
+      const closed = this.store.transition(task.id, ["running", "idle", "failed"], { status: "cancelled", finishedAt: nowIso, shipApproval: null });
       if (closed === null) return false;
       this.store.addEvent(task.id, "cancelled", "The task chat was archived or deleted");
       const settings = await this.settings();
