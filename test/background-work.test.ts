@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { KEEP_LIMIT_MS, NO_WORK, describeWork, rowWork, type ThreadRow } from "../src/activity.ts";
-import { busyProcesses, parseProcessSample } from "../src/boat-api.ts";
+import { busyProcesses, isInfrastructure, parseProcessSample } from "../src/boat-api.ts";
 import { createChatRunner } from "../src/chat.ts";
 import { makeService } from "./fakes.ts";
 
@@ -261,4 +261,35 @@ test("the idle stop at the 12-hour limit for a headless sandbox still computing 
   assert.ok(env.boat.calls.includes(`stop ${task.sandboxId}`));
   assert.match(env.store.events(task.id, 50).find((event) => event.kind === "sandbox-stopped")!.text, /had been computing for 12 hours/);
   assert.deepEqual(env.computingStopped, [task.sandboxId]);
+});
+
+test("boat ps, as boat prints it: bb's daemon and workers and boat's own processes aren't work; the task's node build is", () => {
+  const sample = parseProcessSample([
+    {
+      live: true,
+      processes: [
+        { command: "/var/lib/ascii-lazy-bin/ascii-lazyfs", commandId: null, cpuPercent: 33.8, memoryMB: 1188.6, parentPid: 1, pid: 17949, startedAt: "2026-11-06T10:00:00Z", user: "root" },
+        { command: "/usr/bin/node /home/user/.bb-machines/acme.example/npm/lib/node_modules/bb-app/host-daemon/dist/daemon-bundle.mjs", commandId: null, cpuPercent: 41, memoryMB: 310, parentPid: 1, pid: 200, startedAt: "2026-11-06T10:00:00Z", user: "user" },
+        { command: "node /home/user/.bb-machines/acme.example/npm/lib/node_modules/bb-app/host-daemon/dist/bb-provider-bridge-worker.mjs", commandId: null, cpuPercent: 27, memoryMB: 120, parentPid: 200, pid: 201, startedAt: "2026-11-06T10:00:00Z", user: "user" },
+        { command: "node /opt/bb-app/host-daemon/dist/bb-plugin-host-worker.mjs", commandId: null, cpuPercent: 22, memoryMB: 90, parentPid: 200, pid: 202, startedAt: "2026-11-06T10:00:00Z", user: "user" },
+        { command: "/usr/bin/node /home/user/work/acme/web/node_modules/.bin/tsc -b", commandId: null, cpuPercent: 98, memoryMB: 700, parentPid: 300, pid: 301, startedAt: "2026-11-06T10:05:00Z", user: "user" },
+        { command: "cargo build --release", commandId: "cmd_1", cpuPercent: 3, memoryMB: 80, parentPid: 300, pid: 302, startedAt: "2026-11-06T10:05:00Z", user: "user" },
+      ],
+    },
+  ]);
+  assert.equal(sample.processes[0]!.user, "root");
+  assert.equal(sample.processes[1]!.parentPid, 1);
+  assert.equal(sample.processes[4]!.startedAt, "2026-11-06T10:05:00Z");
+  assert.deepEqual(busyProcesses(sample).map((entry) => entry.pid), [301]);
+  assert.equal(isInfrastructure({ command: "/usr/bin/node /work/server/bb-app/notes.mjs" }), false, "a repo's own file named like bb's isn't bb");
+});
+
+test("the idle stop tells the watchdog when it stops a headless sandbox with nothing computing", async () => {
+  const env = makeService({ settings: { stopIdleAfterMinutes: 1 } });
+  const { task } = await env.service.launchTask({ title: "Docs", role: "implement", brief: "Write them.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+  env.boat.finish(task.conversationId!, REPORT);
+  await env.service.sweep();
+  await later(5 * MINUTE, () => env.service.sweep());
+  assert.ok(env.boat.calls.includes(`stop ${task.sandboxId}`));
+  assert.deepEqual(env.plannedSandboxStops, [task.sandboxId]);
 });

@@ -227,6 +227,8 @@ export interface ServiceHooks {
   machineSuspended?(hostId: string, underWork: boolean): void;
   /** The idle stop stopped a headless sandbox whose finished agent's processes still computed (at the 12-hour limit). */
   processesStopped?(sandboxId: string, at: number): void;
+  /** The plugin stopped a headless sandbox with nothing computing there (the idle stop, making room): a planned stop. */
+  sandboxStopped?(sandboxId: string): void;
   /** Tests: the memory check's cap and the move's poll interval and waits (ms). */
   sizeTiming?: { checkMs?: number; pollMs?: number; stopMs?: number; startMs?: number; reconnectMs?: number };
 }
@@ -739,20 +741,16 @@ export class BoatService {
           (a, b) =>
             Number(this.hasLivePreview(a.sandbox.id)) - Number(this.hasLivePreview(b.sandbox.id)) || a.lastTouched.localeCompare(b.lastTouched),
         );
-      // Work the tasks don't show keeps a sandbox on: another chat on its machine or
-      // background work there. A headless sandbox still computing goes last.
+      // Work the tasks don't show keeps a sandbox on: another chat on its machine,
+      // background work there, or (headless) processes the finished agent left
+      // computing, even after one reading. None left to stop: the limit says so.
       let victim: (typeof candidates)[number] | undefined;
-      let computing: (typeof candidates)[number] | undefined;
       for (const entry of candidates) {
         if (await this.machineBusy(entry.tasks)) continue;
-        if (!entry.tasks.some((task) => task.runner === "chat") && (await this.processesBusy(entry.sandbox.id)) !== "no") {
-          computing ??= entry;
-          continue;
-        }
+        if (!entry.tasks.some((task) => task.runner === "chat") && (await this.processesBusy(entry.sandbox.id)) !== "no") continue;
         victim = entry;
         break;
       }
-      victim ??= computing;
       if (victim !== undefined) {
         // A worker chat's machine is suspended through bb, which resumes it on the next message.
         const hostId = victim.tasks.find((task) => task.runner === "chat" && task.hostId !== null)?.hostId ?? null;
@@ -762,6 +760,7 @@ export class BoatService {
           this.hooks.machineSuspended?.(hostId, false);
         } else {
           await this.boat.stop(victim.sandbox.id, signal);
+          this.hooks.sandboxStopped?.(victim.sandbox.id);
         }
         for (const task of victim.tasks) {
           this.store.addEvent(task.id, "sandbox-stopped", "Sandbox stopped to make room for new work; it resumes on follow-up.");
@@ -4683,6 +4682,7 @@ export class BoatService {
           );
         }
         if (computing === "busy") this.hooks.processesStopped?.(sandboxId, now);
+        else this.hooks.sandboxStopped?.(sandboxId);
         this.hooks.changed(tasks.map((entry) => entry.id));
       } catch (error) {
         this.hooks.log.warn(`idle stop ${sandboxId}: ${errorText(error)}`);

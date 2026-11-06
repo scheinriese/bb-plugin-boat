@@ -107,11 +107,16 @@ export interface Limits {
 /** One process in `boat ps` (fields as boat names them; unknown ones null). */
 export interface SandboxProcess {
   pid: number | null;
+  /** The full command line. */
   command: string;
   cpuPercent: number | null;
   memoryMb: number | null;
   /** The boat command it belongs to (cmd_…), if boat says. */
   commandId: string | null;
+  parentPid?: number | null;
+  startedAt?: string | null;
+  /** The user it runs as ("root", "user"). */
+  user?: string | null;
 }
 
 /** `boat ps`: the sandbox's processes, live or (stopped) its last stored sample. */
@@ -124,8 +129,33 @@ export interface ProcessSample {
 
 /** At least this much CPU: the process is computing (a build, tests), not idling (a dev server, a watcher). */
 export const BUSY_CPU_PERCENT = 20;
-/** boat's, bb's and the system's own programs in a sandbox (by executable name): never the task's work. */
-const INFRASTRUCTURE = /^(ascii[\w.-]*|boat|bb|bb-host-daemon|sshd|systemd[\w.-]*|\(sd-pam\)|containerd[\w.-]*|dockerd|journald|dbus[\w.-]*|cron|ps|top)$/i;
+/**
+ * Programs always there in a sandbox, whatever the task (by executable
+ * name): boat's own (ascii-agent, ascii-lazyfs, …), bb's, the system's.
+ */
+const INFRASTRUCTURE_PROGRAMS =
+  /^(ascii[\w.-]*|boat|bb|bb-host-daemon|sshd|systemd[\w.-]*|\(sd-pam\)|init|containerd[\w.-]*|dockerd|journald|rsyslogd|dbus[\w.-]*|cron|crond|atd|agetty|udevd|polkitd|tailscaled|snapd|packagekitd|unattended-upgrade[s]?|multipathd|ps|top)$/i;
+/**
+ * The same by full command line, for programs run by an interpreter: bb's
+ * host daemon and its workers (node with a script under bb's install or a
+ * bb machine's data folder), boat's own binaries, and the plugin's memory
+ * sampler. A node build or test run of the task's doesn't match.
+ */
+const INFRASTRUCTURE_COMMANDS = [
+  /\/bb-app\/host-daemon\//,
+  /\/\.bb-machines\//,
+  /\bbb-provider-bridge-worker\.mjs\b/,
+  /\bbb-plugin-host-worker\.mjs\b/,
+  /\bbb-parcel-watcher-child\.mjs\b/,
+  /\/host-daemon\/dist\/daemon-bundle\.mjs\b/,
+  /\/var\/lib\/ascii-/,
+  /\/tmp\/boat-memory\//,
+];
+
+/** One of boat's, bb's or the system's own processes, never the task's work. */
+export function isInfrastructure(entry: Pick<SandboxProcess, "command">): boolean {
+  return INFRASTRUCTURE_PROGRAMS.test(programName(entry.command)) || INFRASTRUCTURE_COMMANDS.some((pattern) => pattern.test(entry.command));
+}
 
 /** A process's program: the executable's file name ("cc1", "node"). */
 export function programName(command: string): string {
@@ -140,7 +170,7 @@ export function programName(command: string): string {
  */
 export function busyProcesses(sample: ProcessSample | null): SandboxProcess[] {
   if (sample === null || sample.live === false) return [];
-  return sample.processes.filter((entry) => (entry.cpuPercent ?? 0) >= BUSY_CPU_PERCENT && !INFRASTRUCTURE.test(programName(entry.command)));
+  return sample.processes.filter((entry) => (entry.cpuPercent ?? 0) >= BUSY_CPU_PERCENT && !isInfrastructure(entry));
 }
 
 export function parseProcessSample(records: JsonRecord[]): ProcessSample {
@@ -157,6 +187,9 @@ export function parseProcessSample(records: JsonRecord[]): ProcessSample {
       cpuPercent: num(raw.cpuPercent) ?? num(raw.cpu),
       memoryMb: num(raw.memoryMB) ?? num(raw.memoryMb) ?? num(raw.memMb),
       commandId: str(raw.commandId),
+      parentPid: num(raw.parentPid),
+      startedAt: str(raw.startedAt),
+      user: str(raw.user),
     }));
   return { live: bool(body.live), sampledAt: str(body.sampledAt), processes };
 }
