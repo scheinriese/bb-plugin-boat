@@ -80,14 +80,15 @@ Once you have an orchestrator, the Cloud agents page puts **Needs you** and
 
 ## Agent, model and effort
 
-Every orchestrator the plugin starts (from the dialog, the command line, a
-take-over, or [Claude ↔ Codex switching](#claude--codex-switching)) gets
-them explicitly:
+Every orchestrator you start (from the dialog, the command line or a
+take-over) gets them explicitly:
 
 - **Agent:** **Agent for orchestrators** (Claude Code by default), or the
   other one while boat.dev reports it as not connected. With one agent
   (**Coding agents**), always that one.
-- **Model:** the Build preset's model for that agent (Settings → Models).
+- **Model:** the agent's Build preset model, the one Build tasks use
+  (Settings → Models). Changing it there changes it for Build tasks too;
+  for orchestrators alone, use `--model`.
 - **Effort:** **Effort for orchestrators**: Low, Medium, High (the default)
   or Extra high. An orchestrator mostly reads reports, plans and starts
   tasks; the tasks do the heavy work at their own preset. Higher effort uses
@@ -108,8 +109,15 @@ bb boat orchestrator new --project web-app --prompt "…" --provider codex --eff
 bb boat orchestrator new --project web-app --prompt "…" --model claude-fable-5-1   # a model picks its agent
 ```
 
-`--provider` takes `claude-code` (or `claude`) and `codex`; what you name
-wins over the settings. The command prints what it started with.
+`--provider` takes `claude-code` (or `claude`) and `codex`, and `--model`
+takes boat's ids too (`opus-5-5`); what you name wins over the settings.
+The command prints what it started with.
+
+[Claude ↔ Codex switching](#claude--codex-switching) starts an orchestrator
+on the other agent, with that agent's Build preset model at **Effort for
+orchestrators**. If you picked another effort for one orchestrator, it
+keeps it on both agents; a model you named comes back whenever it runs on
+that model's agent again.
 
 ## Cloud orchestrators
 
@@ -170,9 +178,9 @@ Codex.
 
 - Near a usage limit (**Switch at**, 90% of the fullest usage limit by
   default), the plugin asks the orchestrator for a handoff note, then
-  starts an orchestrator on the other agent in the same workspace (with
-  its [model and effort](#agent-model-and-effort)). Open tasks, decisions,
-  task chats and your waiting messages move to it.
+  starts an orchestrator on the other agent in the same workspace (which
+  model and effort: see [Agent, model and effort](#agent-model-and-effort)).
+  Open tasks, decisions, task chats and your waiting messages move to it.
 - New tasks also start on the agent with room.
 - Once the **Agent for orchestrators** (Settings → Orchestrators) is below
   **Switch back below** (50%) again, and the orchestrator has been quiet
