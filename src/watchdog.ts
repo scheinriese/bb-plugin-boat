@@ -122,6 +122,16 @@ export interface Watchdog {
   tick(): Promise<void>;
   /** A message was queued somewhere (bb's message.queued): put a pending note in front of it. */
   queued(entry: QueuedRow): Promise<void>;
+  /** A queued message was deleted before it ran (bb's message.cancelled): a note it carried is pending again. */
+  cancelled(entry: QueuedRow): Promise<void>;
+  /** A queued message ran (bb's message.dispatched). */
+  dispatched(entry: QueuedRow): void;
+  /**
+   * A headless sandbox stops while processes its finished agent left still
+   * compute (the plugin at its 12-hour limit for them): the orchestrator
+   * hears once, the worker gets the note with its next follow-up.
+   */
+  headlessStopped(input: { sandboxId: string; stoppedAt: number; how: "idle-stop" | "auto-stop" }): Promise<void>;
   /** The message.dispatch hook's decision for a pending note (sync, never throws). */
   dispatch(context: { threadId: string; attempt: string; text: string; queued: QueuedRow[]; originPluginId: string | null }):
     | { action: "proceed" }
@@ -207,6 +217,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   const held = new Set<string>();
   /** Notes already delivered (task ids), so a second way to the worker doesn't count again. */
   const delivered = new Set<string>();
+  /** Queued row id → the note it carries (back to pending if the row is deleted before it runs). */
+  const carried = new Map<string, { note: ResumeNote; at: number }>();
   /** Notices waiting to go out. */
   let outbox: Outgoing[] = [];
   /** When the machines were last looked at; a message for an offline machine asks for a look at once. */
@@ -302,7 +314,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
    */
   async function prepend(note: ResumeNote, row: QueuedRow): Promise<boolean> {
     if (noteBlock(row.content)) return true;
-    if (row.editable === false) return false;
+    // Not one for later (a retry at a limit's reset): the note goes with the next message that runs.
+    if (row.editable === false || row.state === "scheduled" || (typeof row.sendAt === "number" && row.sendAt > now())) return false;
     await bb.sdk.threads.queuedMessages.update({
       threadId: row.threadId,
       queuedMessageId: row.id,
@@ -312,18 +325,31 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
     return true;
   }
 
-  /** Into the first editable row the chat has queued (re-read once, as the row may have moved on). */
-  async function prependQueued(note: ResumeNote, threadId: string, preferred?: QueuedRow): Promise<boolean> {
+  /**
+   * Into the first message the chat has queued that runs next (re-read
+   * once, as the row may have moved on). The row that carries it (null:
+   * none could).
+   */
+  async function prependQueued(note: ResumeNote, threadId: string, preferred?: QueuedRow): Promise<string | null> {
     if (preferred !== undefined) {
       try {
-        if (await prepend(note, preferred)) return true;
+        if (await prepend(note, preferred)) return preferred.id;
       } catch {
         // Changed meanwhile: read it again.
       }
     }
     const rows = rowsOf(await bb.sdk.threads.queuedMessages.list({ threadId } as never).catch(() => []));
-    const row = rows.find((candidate) => candidate.id === preferred?.id) ?? rows.find((candidate) => candidate.editable !== false);
-    return row === undefined ? false : prepend(note, row).catch(() => false);
+    const due = (row: QueuedRow) => row.editable !== false && row.state !== "scheduled" && !(typeof row.sendAt === "number" && row.sendAt > now());
+    const row = rows.find((candidate) => candidate.id === preferred?.id && due(candidate)) ?? rows.find(due);
+    if (row === undefined) return null;
+    return (await prepend(note, row).catch(() => false)) ? row.id : null;
+  }
+
+  /** The note went into a queued row: delivered, unless that row is deleted before it runs. */
+  async function carriedBy(note: ResumeNote, rowId: string): Promise<void> {
+    carried.set(rowId, { note, at: now() });
+    for (const [id, entry] of carried) if (now() - entry.at > SENT_TTL_MS) carried.delete(id);
+    await dropNote(note, "before the next message");
   }
 
   // ---------------------------------------------------------------- machines
@@ -368,7 +394,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
     const incident = `stopped:${sandboxId}:${Math.floor(stoppedAt / 60_000)}`;
     const work = describeWork(last.work);
     event(tasks, `The sandbox stopped while work was running in the background (${work}). ${cause} ${did}`);
-    for (const task of tasks) await setNote(task, stoppedAt, work, capped);
+    await noteTasks(tasks, incident, stoppedAt, work, capped);
     const told = new Set<string>();
     for (const task of tasks) {
       const threadId = task.orchestratorThreadId;
@@ -394,6 +420,28 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         ...(capped || !byBoat ? { hostUp: hostId } : {}),
       });
     }
+  }
+
+  /**
+   * Each task's worker gets the note, once per incident (also across a
+   * restart of the plugin). A message already queued for a task chat takes
+   * it at once.
+   */
+  async function noteTasks(tasks: Task[], incident: string, stoppedAt: number, work: string, capped: boolean): Promise<void> {
+    const sent = await sentLog();
+    let wrote = false;
+    for (const task of tasks) {
+      const key = `n:${incident}:${task.id}`;
+      if (sent[key] !== undefined) continue;
+      sent[key] = now();
+      wrote = true;
+      await setNote(task, stoppedAt, work, capped);
+      const note = task.threadId === null ? undefined : notes.get(task.threadId);
+      if (note === undefined) continue;
+      const row = await prependQueued(note, note.threadId!).catch(() => null);
+      if (row !== null) await carriedBy(note, row);
+    }
+    if (wrote) await deps.kv.set(WATCHDOG_KEY, { sent }).catch((error: unknown) => deps.log(`watchdog: ${message(error)}`));
   }
 
   /** Suspend through bb a machine whose sandbox boat stopped behind bb's back. Returns what the plugin did. */
@@ -706,10 +754,28 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       const note = notes.get(entry.threadId);
       if (note === undefined) return;
       try {
-        if (await prependQueued(note, entry.threadId, entry)) await dropNote(note, "before the next message");
+        const row = await prependQueued(note, entry.threadId, entry);
+        if (row !== null) await carriedBy(note, row);
       } catch (error) {
         deps.log(`resume note for ${note.taskId}: ${message(error)}`);
       }
+    },
+
+    async cancelled(entry) {
+      const carrying = carried.get(entry.id);
+      if (carrying === undefined) return;
+      carried.delete(entry.id);
+      // The message with the note was deleted before it ran: the next one gets it.
+      const note = carrying.note;
+      delivered.delete(note.taskId);
+      await deps.kv.set(resumeNoteKey(note.taskId), note).catch(() => undefined);
+      if (note.threadId !== null) notes.set(note.threadId, note);
+      deps.store.addEvent(note.taskId, "watchdog", "The message that carried the note about the stop was deleted; the next message gets it.");
+      deps.changed?.([note.taskId]);
+    },
+
+    dispatched(entry) {
+      carried.delete(entry.id);
     },
 
     dispatch(context) {
@@ -717,9 +783,9 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         const note = notes.get(context.threadId);
         if (note === undefined || context.attempt !== "start-turn") return { action: "proceed" };
         // The plugin's own follow-ups carry the note already; so does a row it was put in front of.
-        if (context.originPluginId === bb.pluginId || context.text.includes(RESUME_NOTE_PREFIX) || context.queued.some((row) => noteBlock(row.content))) {
-          return { action: "proceed" };
-        }
+        if (context.text.includes(RESUME_NOTE_PREFIX) || context.queued.some((row) => noteBlock(row.content))) return { action: "proceed" };
+        // A follow-up the plugin sends now was written with the note (one queued before the stop wasn't).
+        if (context.originPluginId === bb.pluginId && context.queued.length === 0) return { action: "proceed" };
         // Once only: a message that reaches the worker without the note goes ahead.
         if (held.has(context.threadId)) return { action: "proceed" };
         held.add(context.threadId);
@@ -728,7 +794,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         const first = context.queued[0];
         if (first !== undefined) {
           void prependQueued(note, context.threadId, first)
-            .then((done) => (done ? dropNote(note, "before the next message") : undefined))
+            .then((row) => (row === null ? undefined : carriedBy(note, row)))
             .catch(() => undefined);
         }
         return { action: "wait", reason: "Adding a note about the sandbox's restart", sendAt: now() + 10_000 };
@@ -746,6 +812,25 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
     async noteSent(taskId) {
       const parsed = noteSchema.safeParse(await deps.kv.get<unknown>(resumeNoteKey(taskId)).catch(() => undefined));
       if (parsed.success) await dropNote(parsed.data, "in the follow-up");
+    },
+
+    async headlessStopped({ sandboxId, stoppedAt, how }) {
+      const tasks = deps.store.list({ statuses: OPEN_STATUSES, limit: 1000 }).filter((task) => task.sandboxId === sandboxId && task.runner !== "chat");
+      if (tasks.length === 0) return;
+      const work = "processes the agent started";
+      const incident = `stopped:${sandboxId}:${Math.floor(stoppedAt / 60_000)}`;
+      const cause = how === "idle-stop" ? "The plugin stopped it: that's the most it keeps a sandbox on for them." : "boat stops it at its auto-stop: the plugin no longer keeps it on for them.";
+      const did = "The next follow-up resumes it.";
+      event(tasks, `The sandbox stopped while work was running in the background (${work}). ${cause}`);
+      await noteTasks(tasks, incident, stoppedAt, work, true);
+      const told = new Set<string>();
+      for (const task of tasks) {
+        if (task.orchestratorThreadId === null || told.has(task.orchestratorThreadId)) continue;
+        told.add(task.orchestratorThreadId);
+        const text = stoppedNotice({ subject: { kind: "task", taskId: task.id, title: task.title, sandboxId }, work, stoppedAt, cause, did, now: now(), capped: true, ahead: stoppedAt > now() });
+        post({ threadId: task.orchestratorThreadId, taskId: task.id, gapMs: STOP_NOTICE_GAP_MS, incident, subject: `stopped:${sandboxId}`, text });
+      }
+      await flush().catch(() => undefined);
     },
 
     planned(hostId, underWork) {

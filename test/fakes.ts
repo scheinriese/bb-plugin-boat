@@ -815,6 +815,8 @@ export function makeService(
   const resumeNotes = new Map<string, string>();
   /** Machines the service suspended itself, and whether background work still ran. */
   const planned: { hostId: string; underWork: boolean }[] = [];
+  /** Headless sandboxes the idle stop stopped while their processes still computed. */
+  const computingStopped: string[] = [];
   let plan: MachineTypeFacts[] | null = options.plan ?? null;
   let projects: SizedProject[] = options.projects ?? [];
   const service = new BoatService(boat as unknown as BoatApi, store, {
@@ -837,6 +839,7 @@ export function makeService(
       sent: async (taskId) => void resumeNotes.delete(taskId),
     },
     machineSuspended: (hostId, underWork) => void planned.push({ hostId, underWork }),
+    processesStopped: (sandboxId) => void computingStopped.push(sandboxId),
     sizeTiming: { checkMs: 200, pollMs: 1, stopMs: 200, startMs: 200, reconnectMs: 200, ...options.sizeTiming },
     ...(options.quotas ? { quotas: { read: async () => options.quotas! } } : {}),
     ...(options.evidence ? { evidence: options.evidence } : {}),
@@ -856,6 +859,7 @@ export function makeService(
     warnings,
     resumeNotes,
     planned,
+    computingStopped,
     setSettings(next: Partial<BoatSettings>) {
       settings = { ...settings, ...next };
     },

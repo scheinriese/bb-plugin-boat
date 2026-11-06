@@ -208,6 +208,7 @@ test("a headless sandbox whose finished agent left a build computing isn't idle-
   await later(11 * MINUTE, () => env.service.sweep());
   await later(17 * MINUTE, () => env.service.sweep());
   assert.equal(stops(), 0, "kept on while it computes");
+  assert.deepEqual(env.planned, []);
   // It finished: the next reading lets the idle stop go ahead.
   env.boat.processSamples.set(task.sandboxId!, { ...busy, processes: [] });
   await later(23 * MINUTE, () => env.service.sweep());
@@ -242,4 +243,20 @@ test("background work after a new turn starts its 12 hours over", async () => {
   });
   await later(13 * 3_600_000 + 5 * MINUTE, () => env.service.sweep());
   assert.deepEqual(env.chat.suspended, [], "an hour-old job isn't at the 12-hour limit");
+});
+
+test("the idle stop at the 12-hour limit for a headless sandbox still computing says so, and tells the watchdog", async () => {
+  const env = makeService({ settings: { stopIdleAfterMinutes: 1 } });
+  const { task } = await env.service.launchTask({ title: "Soak test", role: "implement", brief: "Run it.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+  env.boat.finish(task.conversationId!, REPORT);
+  await env.service.sweep();
+  env.boat.processSamples.set(task.sandboxId!, { live: true, sampledAt: null, processes: [{ pid: 9, command: "node soak.js", cpuPercent: 90, memoryMb: null, commandId: null }] });
+  // The monitor looks every few minutes; it keeps finding the job busy.
+  for (let at = 5 * MINUTE; at <= 11 * MINUTE + KEEP_LIMIT_MS + 10 * MINUTE; at += 10 * MINUTE) {
+    await later(at, () => env.service.sweep());
+    if (env.boat.calls.includes(`stop ${task.sandboxId}`)) break;
+  }
+  assert.ok(env.boat.calls.includes(`stop ${task.sandboxId}`));
+  assert.match(env.store.events(task.id, 50).find((event) => event.kind === "sandbox-stopped")!.text, /had been computing for 12 hours/);
+  assert.deepEqual(env.computingStopped, [task.sandboxId]);
 });

@@ -225,6 +225,8 @@ export interface ServiceHooks {
    * one that cut work off.
    */
   machineSuspended?(hostId: string, underWork: boolean): void;
+  /** The idle stop stopped a headless sandbox whose finished agent's processes still computed (at the 12-hour limit). */
+  processesStopped?(sandboxId: string, at: number): void;
   /** Tests: the memory check's cap and the move's poll interval and waits (ms). */
   sizeTiming?: { checkMs?: number; pollMs?: number; stopMs?: number; startMs?: number; reconnectMs?: number };
 }
@@ -4671,9 +4673,17 @@ export class BoatService {
       this.backgroundSince.delete(sandboxId);
       try {
         await this.boat.stop(sandboxId, this.hooks.lifecycle);
+        const hours = Math.round(KEEP_LIMIT_MS / 3_600_000);
         for (const entry of tasks) {
-          this.store.addEvent(entry.id, "sandbox-stopped", `Sandbox stopped after ${settings.stopIdleAfterMinutes} idle minutes; it resumes on follow-up.`);
+          this.store.addEvent(
+            entry.id,
+            "sandbox-stopped",
+            computing === "busy"
+              ? `Sandbox stopped: processes the agent started had been computing for ${hours} hours, the most the plugin keeps a sandbox on for them. It resumes on follow-up.`
+              : `Sandbox stopped after ${settings.stopIdleAfterMinutes} idle minutes; it resumes on follow-up.`,
+          );
         }
+        if (computing === "busy") this.hooks.processesStopped?.(sandboxId, now);
         this.hooks.changed(tasks.map((entry) => entry.id));
       } catch (error) {
         this.hooks.log.warn(`idle stop ${sandboxId}: ${errorText(error)}`);

@@ -513,3 +513,68 @@ test("after a suspend through bb, an orchestrator on that machine hears of it on
   assert.deepEqual(w.told.map((entry) => entry.threadId), ["thr_orch", "thr_cloud"]);
   assert.match(w.told[1]!.text, /^\[boat\] Watchdog: Your own sandbox/);
 });
+
+test("a follow-up already queued when the stop is found gets the note at once; a restart doesn't arm it again", async () => {
+  const w = await world();
+  const dog = w.watchdog();
+  w.setRow({ activity: WORKFLOW });
+  await dog.tick();
+  w.boatStops();
+  // The orchestrator's follow-up went out before the plugin knew of the stop: it waits for the machine.
+  w.queued.set(w.task.threadId!, [{ id: "q1", threadId: w.task.threadId!, content: [{ type: "text", text: "Next step" }], createdAt: w.now(), updatedAt: w.now(), state: "waiting", waitingOn: { kind: "host-offline" }, editable: true }]);
+  w.advance(MINUTE);
+  await dog.tick();
+  assert.equal(w.calls.updates.length, 1);
+  assert.equal(w.calls.updates[0]!.queuedMessageId, "q1");
+  assert.equal(await dog.noteFor(w.task.id), null);
+  // The plugin restarts while bb still has the machine as active: no second note, no second notice.
+  w.host.lifecycle = { phase: "active", suspendedAt: null };
+  w.queued.set(w.task.threadId!, []);
+  const again = w.watchdog();
+  await again.tick();
+  assert.equal(await again.noteFor(w.task.id), null);
+  assert.equal(w.told.length, 1);
+});
+
+test("the note skips a message scheduled for later, and comes back when the message carrying it is deleted", async () => {
+  const w = await world();
+  await w.kv.set(resumeNoteKey(w.task.id), { taskId: w.task.id, threadId: w.task.threadId, text: `${RESUME_NOTE_PREFIX} at 10:00 UTC.` });
+  const dog = w.watchdog();
+  await dog.load();
+  const later: QueuedRow = { id: "q1", threadId: w.task.threadId!, content: [], updatedAt: 1, editable: true, state: "scheduled", sendAt: w.now() + 3_600_000 };
+  w.queued.set(w.task.threadId!, [later]);
+  await dog.queued(later);
+  assert.equal(w.calls.updates.length, 0);
+  assert.notEqual(await dog.noteFor(w.task.id), null);
+  const now: QueuedRow = { id: "q2", threadId: w.task.threadId!, content: [{ type: "text", text: "Hi" }], updatedAt: 2, editable: true, state: "waiting" };
+  await dog.queued(now);
+  assert.equal(w.calls.updates.at(-1)!.queuedMessageId, "q2");
+  assert.equal(await dog.noteFor(w.task.id), null);
+  // The user deletes that message: the next one gets the note.
+  await dog.cancelled(now);
+  assert.notEqual(await dog.noteFor(w.task.id), null);
+  dog.dispatched({ ...now, id: "q3" });
+  await dog.queued({ ...now, id: "q4" });
+  assert.equal(w.calls.updates.at(-1)!.queuedMessageId, "q4");
+});
+
+test("a headless sandbox stopped at the limit while still computing: the orchestrator hears once, the worker's next follow-up gets the note", async () => {
+  const env = makeService();
+  const { task } = await env.service.launchTask({ title: "Benchmarks", role: "implement", brief: "Run them.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+  const kv = memoryKv();
+  const told: string[] = [];
+  const dog = createWatchdog({ pluginId: "boat" } as unknown as BbPluginApi, {
+    boat: env.boat as unknown as BoatApi,
+    store: env.store,
+    kv,
+    tell: async (_threadId, text) => void told.push(text),
+    log: () => undefined,
+  });
+  const at = Date.now();
+  await dog.headlessStopped({ sandboxId: task.sandboxId!, stoppedAt: at, how: "idle-stop" });
+  await dog.headlessStopped({ sandboxId: task.sandboxId!, stoppedAt: at, how: "idle-stop" });
+  assert.equal(told.length, 1);
+  assert.match(told[0]!, /while work was running in the background \(processes the agent started\)\. The plugin stopped it/);
+  const note = await dog.noteFor(task.id);
+  assert.match(note!, /Restart a job only if you still need it/);
+});

@@ -139,6 +139,8 @@ export interface KeeperDeps {
   computing?: (sandboxId: string) => Promise<"busy" | "maybe" | "no">;
   /** The keeper suspended this machine; underWork: background work still ran (at its 12-hour limit). */
   suspended?: (hostId: string, underWork: boolean) => void;
+  /** A headless sandbox still computing reached the 12 hours: boat stops it at this deadline (epoch ms). */
+  stopsComputing?: (sandboxId: string, deadline: number) => void;
   now?: () => number;
 }
 
@@ -344,7 +346,13 @@ export function createSandboxKeeper(bb: BbPluginApi, deps: KeeperDeps): () => Pr
         }
         const streak = streaks.get(sandboxId) ?? { since: now, turns: "", ended: false };
         streaks.set(sandboxId, streak);
-        if (now - streak.since >= KEEP_LIMIT_MS) continue;
+        if (now - streak.since >= KEEP_LIMIT_MS) {
+          if (!streak.ended) {
+            streak.ended = true;
+            deps.stopsComputing?.(sandboxId, deadline);
+          }
+          continue;
+        }
         try {
           const used = await withinAutoStopCap(withinLimit(ttl, streak, now), async (seconds) => {
             await deps.boat.extend(sandboxId, ["--ttl", String(seconds)], deps.signal);

@@ -272,6 +272,7 @@ export default async function plugin(bb: BbPluginApi) {
       sent: (taskId) => watchdogRef?.noteSent(taskId) ?? Promise.resolve(),
     },
     machineSuspended: (hostId, underWork) => watchdogRef?.planned(hostId, underWork),
+    processesStopped: (sandboxId, at) => void watchdogRef?.headlessStopped({ sandboxId, stoppedAt: at, how: "idle-stop" }).catch(() => undefined),
     evidence: createEvidenceSource(readRepoFile, undefined, (error, at) =>
       bb.log.warn(`evidence uploader: GitHub refresh failed (${error instanceof Error ? error.message : String(error)}); installing the copy from ${new Date(at).toISOString()}`),
     ),
@@ -454,6 +455,7 @@ export default async function plugin(bb: BbPluginApi) {
     computing: (sandboxId) => service.processesBusy(sandboxId),
     // The watchdog tells the keeper's planned stops from ones that cut work off.
     suspended: (hostId, underWork) => watchdogRef?.planned(hostId, underWork),
+    stopsComputing: (sandboxId, deadline) => void watchdogRef?.headlessStopped({ sandboxId, stoppedAt: deadline, how: "auto-stop" }).catch(() => undefined),
   });
 
   // The watchdog: bb's record of Boat sandbox machines true to boat, chats
@@ -483,6 +485,15 @@ export default async function plugin(bb: BbPluginApi) {
     if (entry === undefined || typeof entry.threadId !== "string") return;
     if (entry.waitingOn?.kind === "host-offline") wakeMonitor();
     void watchdog.queued(entry).catch(() => undefined);
+  });
+  // A message that carried the note: deleted before it ran, the note waits for the next one.
+  bb.events.on("message.cancelled", (payload: unknown) => {
+    const entry = (payload as { entry?: QueuedRow }).entry;
+    if (entry !== undefined && typeof entry.id === "string") void watchdog.cancelled(entry).catch(() => undefined);
+  });
+  bb.events.on("message.dispatched", (payload: unknown) => {
+    const entry = (payload as { entry?: QueuedRow }).entry;
+    if (entry !== undefined && typeof entry.id === "string") watchdog.dispatched(entry);
   });
   // The same note for a message that would go straight to the worker: held a moment, once, to add it.
   bb.experimental_hooks.on("message.dispatch", (context) =>
