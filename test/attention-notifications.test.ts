@@ -64,6 +64,30 @@ test("needs-you and ready category preferences filter independently without ackn
   assert.deepEqual(env.sent.map((notice) => notice.title), ["Needs you: Pick a rate limit", "Ready: Fix the cart"]);
 });
 
+test("opt-in progress skips existing work and delivers only later finished turns once", async () => {
+  const env = fixture();
+  env.state.decisions = [];
+  env.task.readyAt = null;
+  let progress = false;
+  const notifier = createAttentionNotifications({ ...env.deps, enabled: async (kind) => kind === undefined || (kind === "progress" && progress) });
+  await notifier.flush();
+  progress = true;
+  await notifier.flush();
+  assert.equal(env.sent.length, 0, "enabling progress does not send old turns");
+  env.task.turns = 2;
+  env.task.promptId = "p_2";
+  await notifier.flush();
+  await notifier.flush();
+  assert.deepEqual(env.sent.map((notice) => notice.title), ["Update: Fix the cart"]);
+  progress = false;
+  env.task.turns = 3;
+  env.task.promptId = "p_3";
+  await notifier.flush();
+  progress = true;
+  await notifier.flush();
+  assert.equal(env.sent.length, 1);
+});
+
 test("changes while delivery runs are drained without duplicate ready notices", async () => {
   const env = fixture();
   env.state.enabled = true;

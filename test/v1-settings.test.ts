@@ -57,13 +57,13 @@ test("everyday controls follow the handoff and preserve every other setting in A
   assert.equal(new Set(all.map((row) => row.key)).size, rows.length);
   assert.equal(all.length, rows.length);
   assert.deepEqual(grouped.groups.find((group) => group.title === "Agents")!.rows.map((row) => row.key), ["agents", "relayPreferred"]);
-  assert.deepEqual(grouped.groups.find((group) => group.title === "Notifications")!.rows.map((row) => row.key), ["notifyNeedsYou", "notifyReady"]);
+  assert.deepEqual(grouped.groups.find((group) => group.title === "Notifications")!.rows.map((row) => row.key), ["notifyNeedsYou", "notifyReady", "notifyProgress"]);
   assert.ok(grouped.advanced.some((row) => row.key === "implementProvider"));
 });
 
 test("enabling a category preserves a migrated notification opt-out for the other category", () => {
-  assert.deepEqual(notificationSettingPatch(false, "notifyNeedsYou", true), { pushNotifications: true, notifyNeedsYou: true, notifyReady: false });
-  assert.deepEqual(notificationSettingPatch(false, "notifyReady", true), { pushNotifications: true, notifyNeedsYou: false, notifyReady: true });
+  assert.deepEqual(notificationSettingPatch(false, "notifyNeedsYou", true), { pushNotifications: true, notifyNeedsYou: true, notifyReady: false, notifyProgress: false });
+  assert.deepEqual(notificationSettingPatch(false, "notifyReady", true), { pushNotifications: true, notifyNeedsYou: false, notifyReady: true, notifyProgress: false });
   assert.deepEqual(notificationSettingPatch(true, "notifyReady", false), { pushNotifications: true, notifyReady: false });
   assert.equal(checkedAgo("2026-11-07T19:52:00Z", Date.parse("2026-11-07T19:54:00Z")), "2 min ago");
 });

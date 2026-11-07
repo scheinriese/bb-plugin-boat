@@ -177,6 +177,13 @@ export const PLUGIN_SETTINGS = {
     description: "A change is reviewed and ready to merge or ship.",
     default: true,
   },
+  notifyProgress: {
+    section: "usage-limits",
+    type: "boolean",
+    label: "Progress",
+    description: "Other finished task turns. Off keeps it quiet.",
+    default: false,
+  },
   // Setup
   evidenceUploader: {
     section: "setup",

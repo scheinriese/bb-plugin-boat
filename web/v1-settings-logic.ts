@@ -8,7 +8,7 @@ export const SETTINGS_GROUPS = [
   { title: "Agents", keys: ["agents", "relayPreferred"] },
   { title: "Sandboxes & cost", keys: ["machineType", "maxActiveSandboxes", "stopIdleAfterMinutes", "avoidExtraUsage"] },
   { title: "Orchestrators", keys: ["tasksBeforeAsking"] },
-  { title: "Notifications", keys: ["notifyNeedsYou", "notifyReady"] },
+  { title: "Notifications", keys: ["notifyNeedsYou", "notifyReady", "notifyProgress"] },
 ] as const;
 
 export function groupedSettings(rows: readonly SettingDto[]) {
@@ -27,8 +27,8 @@ export const EVERYDAY_SETTING_COPY: Record<string, { label?: string; description
 };
 
 /** Keep a migrated opt-out off until the owner enables a category explicitly. */
-export function notificationSettingPatch(master: boolean, key: "notifyNeedsYou" | "notifyReady", checked: boolean) {
-  return { pushNotifications: true, ...(!master ? { notifyNeedsYou: false, notifyReady: false } : {}), [key]: checked };
+export function notificationSettingPatch(master: boolean, key: "notifyNeedsYou" | "notifyReady" | "notifyProgress", checked: boolean) {
+  return { pushNotifications: true, ...(!master ? { notifyNeedsYou: false, notifyReady: false, notifyProgress: false } : {}), [key]: checked };
 }
 
 export function checkedAgo(iso: string, now: number): string {

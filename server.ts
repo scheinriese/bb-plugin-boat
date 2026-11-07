@@ -337,7 +337,7 @@ export default async function plugin(bb: BbPluginApi) {
     kv: bb.storage.kv,
     enabled: async (kind) => {
       const values = await settings.get();
-      return values.pushNotifications && (kind === "ready" ? values.notifyReady : kind === "needs-you" ? values.notifyNeedsYou : true);
+      return values.pushNotifications && (kind === "ready" ? values.notifyReady : kind === "needs-you" ? values.notifyNeedsYou : kind === "progress" ? values.notifyProgress : true);
     },
     decisions: () => store.decisions({ statuses: ["open"], limit: 1000 }),
     tasks: () => store.list({ statuses: ["idle", "failed"], limit: 1000 }),

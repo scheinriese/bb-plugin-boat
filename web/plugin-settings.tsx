@@ -534,7 +534,9 @@ export function AdvancedSettings() {
 /** One SDK settings section owns ordering; no host DOM or duplicate toggles. */
 export function BoatSettings() {
   const compact = useIsCompactViewport();
-  return compact ? <MobileBoatSettings /> : <DesktopBoatSettings />;
+  const query = useSettingRows();
+  const frameRef = useSettingsFrameTweak(query.data?.settings.find((row) => row.key === "experimentalUiTweaks")?.value === true);
+  return <div ref={frameRef}>{compact ? <MobileBoatSettings /> : <DesktopBoatSettings />}</div>;
 }
 
 function DesktopBoatSettings() {
@@ -546,15 +548,14 @@ function DesktopBoatSettings() {
   const navigate = useBbNavigate();
   const grouped = groupedSettings(query.data?.settings ?? []);
   const master = query.data?.settings.find((row) => row.key === "pushNotifications")?.value === true;
-  const frameRef = useSettingsFrameTweak(query.data?.settings.find((row) => row.key === "experimentalUiTweaks")?.value === true);
-  return <div ref={frameRef} className="boat-settings space-y-[22px] text-[13px] leading-[18px]">
+  return <div className="boat-settings space-y-[22px] text-[13px] leading-[18px]">
     <SetupChecklist />
     <Loading error={query.error} rows={query.data?.settings.length ?? 0} />
     {grouped.groups.map((group) => <section key={group.title} aria-label={group.title} className={cn("space-y-2", setup?.ok === false && "opacity-35")}>
       <h3 className="text-[13px] font-medium leading-[18px] text-[#B7B7B7]">{group.title}</h3>
       <div className="divide-y divide-[#222] overflow-hidden rounded-[10px] border border-[#262626] bg-[#181818]">
         {group.rows.map((row) => <EverydaySettingRow key={row.key} row={row} saver={saver} sizes={sizes} master={master} />)}
-        {group.title === "Notifications" ? <div className="flex items-start gap-6 px-3.5 py-3"><div className="min-w-0 flex-1"><p className="text-[#E2E2E2]">Progress</p><p className="mt-0.5 text-xs leading-[17px] text-[#8A8A8A]">Every finished turn. Off keeps it quiet.</p></div><span title="Progress notifications stay off in v1"><Switch checked={false} disabled onCheckedChange={() => undefined} aria-label="Progress notifications stay off" className="opacity-100 disabled:opacity-100" /></span></div> : null}
+
       </div>
     </section>)}
     <div className="space-y-2">
@@ -577,7 +578,7 @@ function EverydaySettingRow({ row, saver, sizes, master }: { row: SettingDto; sa
   const description = copy?.description ?? row.description;
   const id = `boat-everyday-${row.key}`;
   const [draft, setDraft] = useState<string | null>(null);
-  const category = row.key === "notifyNeedsYou" || row.key === "notifyReady" ? row.key : null;
+  const category = row.key === "notifyNeedsYou" || row.key === "notifyReady" || row.key === "notifyProgress" ? row.key : null;
   const error = saver.errors[row.key];
   const disabled = row.disabledReason !== null;
   const selectClass = "h-[30px] w-44 rounded-md border-[#2E2E2E] bg-[#151515] px-2.5 text-[13px] text-[#D6D6D6] shadow-none";

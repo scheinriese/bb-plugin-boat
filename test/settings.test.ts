@@ -245,7 +245,7 @@ test("bb boat config get|set|reset: one command for both places, with the same c
   const all = await cli("config", "get");
   assert.equal(all.exitCode, 0, all.stderr);
   assert.match(all.stdout, /^bb's settings list \(Settings → Plugins → Boat Cloud Agents\):\n {2}agents = "auto"\n {2}workers = "boat"/);
-  assert.match(all.stdout, /\n\nUsage limits:\n {2}notifyNeedsYou = true\n {2}notifyReady = true\n {2}autoFailover = true\n/);
+  assert.match(all.stdout, /\n\nUsage limits:\n {2}notifyNeedsYou = true\n {2}notifyReady = true\n {2}notifyProgress = false\n {2}autoFailover = true\n/);
   assert.match(
     all.stdout,
     /\n\nOrchestrators \(optional\):\n {2}relayPreferred = "claude"\n {2}orchestratorEffort = "high"\n {2}tasksBeforeAsking = 5\n {2}sidebarLayout = "sections"\n {2}orchestratorMachineType = "small"\n {2}cloudOrchestratorFullAccess = true\n/,
