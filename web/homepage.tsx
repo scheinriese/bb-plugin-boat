@@ -53,7 +53,7 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
     </div> : <div className="overflow-hidden rounded-[10px] border border-border bg-card">
       {decisions.map(decision => {
         const task = tasks.find(task => task.id === (decision.askedByTaskId ?? decision.taskIds[0]));
-        return <HomeDecision key={decision.id} decision={decision} subline={[task?.compactTitle ?? task?.title, projectName(task)].filter(Boolean).join(" · ")}/>;
+        return <HomeDecision key={decision.id} decision={decision} subline={[task?.title, projectName(task)].filter(Boolean).join(" · ")}/>;
       })}
       {problems.map(task=><HomeProblem key={task.id} task={task} project={projectName(task)}/>)}
       {orchestrators.map(entry => {
@@ -103,7 +103,7 @@ function HomeDecision({decision,subline}:{decision:DecisionDto;subline:string}) 
   };
   return <div className={ROW}>
     <span className="size-1.5 shrink-0 rounded-full bg-[#F0B135]"/>
-    <button type="button" onClick={open} className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 text-left hover:underline focus-visible:ring-1 focus-visible:ring-ring"><span className="text-[13px] leading-4 text-[color:var(--boat-label)]">{decision.shortLabel ?? decision.question}</span><span className="text-xs leading-4 text-[color:var(--boat-faint)]">{subline}</span></button>
+    <button type="button" onClick={open} className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 text-left hover:underline focus-visible:ring-1 focus-visible:ring-ring"><span className="text-[13px] leading-4 text-[color:var(--boat-label)]">{decision.question}</span><span className="text-xs leading-4 text-[color:var(--boat-faint)]">{subline}</span></button>
     <Button size="sm" variant="outline" className={ACTION} disabled={pending} onClick={choose}>{pending?"Queued…":option?`Go with ${option}`:"Open"}</Button>
   </div>;
 }

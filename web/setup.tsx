@@ -512,7 +512,7 @@ export function SetupChecklist() {
   const copy = useCopy();
   const transcript = experimental_useRpcQuery({contract:rpcContract,method:"transcript",input:{id:test?.id??"",limit:80},enabled:!!test && (test.status==="running"||test.status==="starting")});
   useInterval(()=>{void transcript.refetch();},test?.status==="running"||test?.status==="starting"?5000:null);
-  const evidence = setupEvidence([...(transcript.data?.events.map(event=>event.content)??[]),detailedTest?.result]);
+  const evidence = setupEvidence([...(transcript.data?.events.filter(event=>event.type==="response").map(event=>event.content)??[]),detailedTest?.result]);
   const elapsed = test ? setupDuration(test.createdAt,test.finishedAt,clock) : null;
   const testUsage = experimental_useRpcQuery({contract:rpcContract,method:"fidelityUsage",input:{taskId:test?.id??"",timezoneOffsetMinutes:new Date().getTimezoneOffset()},enabled:startedId!==null&&!!test&&test.status!=="starting"&&test.status!=="running"}).data?.task;
   const receipt = [evidence.node?`Node ${evidence.node}`:null,evidence.git?`git ${evidence.git}`:null,evidence.github=== "ok"?"GitHub access ok":null,elapsed?`${elapsed} on a Small sandbox`:null,testUsage?.dollars!=null?`about ${testUsage.dollars.toLocaleString("en-US",{style:"currency",currency:"USD"})}`:null].filter(Boolean).join(" · ");
