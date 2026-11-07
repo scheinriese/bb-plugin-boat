@@ -13,6 +13,7 @@ import type { Runtime } from "../src/runtime.ts";
 import type { StartTaskInput } from "../src/service.ts";
 import type { PullRequestFacts } from "../contract-merge.ts";
 import type { Task } from "../src/store.ts";
+import type { Quotas } from "../src/quota.ts";
 
 const PR = "https://github.com/acme/demo/pull/12";
 const facts: PullRequestFacts = { repo: "acme/demo", number: 12, url: PR, title: "Demo", head: "1".repeat(40), base: "2".repeat(40), headBranch: "boat/demo", baseBranch: "main", additions: 12, deletions: 3, commits: 1, state: "OPEN", draft: true, mergeable: "MERGEABLE", mergeState: "CLEAN", reviewDecision: "", checks: [], checksTruncated: false, mergeMethod: "merge" };
@@ -20,9 +21,9 @@ const report = "=== REPORT ===\nSTATUS: done\nVERDICT: approve\nSUMMARY: reviewe
 function gate() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 async function until(check: () => boolean) { const end = Date.now() + 3000; while (!check()) { if (Date.now() > end) throw Error("Timed out"); await new Promise(resolve => setTimeout(resolve, 2)); } }
 
-async function setup(options: { machine?: unknown; project?: Reviewer | null; realLaunch?: boolean; preflight?: () => Promise<void>; pullRequest?: string | null } = {}) {
+async function setup(options: { machine?: unknown; project?: Reviewer | null; realLaunch?: boolean; preflight?: () => Promise<void>; pullRequest?: string | null; quotas?: Quotas } = {}) {
   let project = options.project ?? null;
-  const env = makeService({ chat: true, projectReviewer: () => project, preflight: options.preflight, repoWorkerMode: () => "boat" });
+  const env = makeService({ chat: true, projectReviewer: () => project, preflight: options.preflight, repoWorkerMode: () => "boat", quotas: options.quotas });
   const metadata = new Map<string, Record<string, unknown>>(); const disposals: (() => void)[] = [];
   const runtime = {
     service: env.service, projects: { forRepo: () => ({ id: "store", repos: [{ repo: "acme/demo", baseBranch: "main" }] }) }, isOrchestrator: async () => false, launchWaitMs: 5000, changed() {},
@@ -160,6 +161,14 @@ test("fake service dispatch verifies the new review checkout HEAD and never exec
   await env.start().tick(); const review = env.store.list({ parentTaskId: env.taskId })[0];
   assert.ok(review); assert.equal(review.role, "review"); assert.equal(review.status, "running"); assert.equal(review.ownsSandbox, true); assert.notEqual(review.sandboxId, "bx_native");
   assert.match(review.brief, new RegExp(`HEAD ${facts.head}`)); assert.ok(env.boat.calls.some(call => call.startsWith("prepare "))); env.noCoreMutations();
+});
+test("automatic native review waits on a limited explicit reviewer and retries once after actual subscription reset",async()=>{
+ const usage:Quotas=new Map([["claude",{provider:"claude",usedPercent:95,resetsAt:null,window:"Weekly"}],["codex",{provider:"codex",usedPercent:97,resetsAt:null,window:"Weekly"}]]);const env=await setup({machine:"codex",quotas:usage});await env.start().tick();assert.equal(env.launches.length,0);assert.equal(env.state().state,"waiting");assert.match(env.state().message,/usage limit/);assert.equal(env.store.latestEvent(env.taskId,"native-review-attempt"),null);assert.equal(env.store.list({parentTaskId:env.taskId}).length,0);assert.equal(env.boat.calls.length,0);
+ usage.get("codex")!.usedPercent=10;const controller=env.start();await controller.tick();await controller.tick();assert.equal(env.launches.length,1);env.noCoreMutations();
+});
+test("a native review quota change during preparation releases only the unused attempt, with zero allocation",async()=>{
+ const usage:Quotas=new Map([["codex",{provider:"codex",usedPercent:10,resetsAt:null,window:"Weekly"}]]);let block=true;const env=await setup({realLaunch:true,machine:"codex",quotas:usage,preflight:async()=>{if(block)usage.get("codex")!.usedPercent=97;}});await env.start().tick();assert.equal(env.state().state,"waiting");assert.equal(env.store.list({parentTaskId:env.taskId}).length,0);assert.equal(env.boat.calls.length,0);assert.equal(JSON.parse(env.store.latestEvent(env.taskId,"native-review-attempt")!.text).deferred,true);env.noCoreMutations();
+ block=false;usage.get("codex")!.usedPercent=10;const exec=env.boat.exec.bind(env.boat);env.boat.exec=async(id,command,options)=>command.includes("BOAT_NATIVE_REVIEW_HEAD")?{exitCode:0,stdout:`BOAT_NATIVE_REVIEW_HEAD ${facts.head}\n`,stderr:""}:exec(id,command,options);await env.start().tick();assert.equal(env.store.list({parentTaskId:env.taskId}).length,1);assert.equal(env.boat.calls.filter(c=>c.startsWith("create ")).length,1);env.noCoreMutations();
 });
 
 test("a mismatched new review checkout cannot start even a fake provider", async () => {

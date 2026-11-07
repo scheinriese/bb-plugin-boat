@@ -85,13 +85,15 @@ export function createStartQueue(deps: StartQueueDeps) {
           queuedStart: {
             taskId: entry.reservedTaskId,
             async beforeInsert() {
-              await sourceCurrent(entry, signal);
               quotas = await fresh(signal);
               if (paid) {
                 await allowed(paid.provider);
                 if (now() >= Date.parse(paid.expiresAt) || queueDigest(quotaRows(quotas)) !== queueDigest(paid.quotas)) throw new TaskError("Agent usage changed. Review a fresh paid-start confirmation.", "paid_start_stale");
               }
               assertPolicy(await service.settings());
+              // The origin read is last: a close during quota/settings reads
+              // must still cancel before the synchronous registry transaction.
+              await sourceCurrent(entry, signal);
             },
             insert(task, save, preparedSettings) {
               signal.throwIfAborted(); lifecycle.signal.throwIfAborted(); localSourceCurrent(entry);
@@ -129,7 +131,19 @@ export function createStartQueue(deps: StartQueueDeps) {
       try { plain = durableStartInput(input); } catch { throw new TaskError("The task request is invalid or exceeds the queue's supported bounds.", "invalid_task"); }
       const existing = store.pending(plain, parentGeneration);
       if (existing) { deps.wake(); return { kind: "queued", request: existing.dto, pending: true }; }
-      try { return { kind: "started", ...await service.launchTask(input, waitMs) }; }
+      const revision = deps.policyRevision?.() ?? 0;
+      const assertCurrent = () => {
+        lifecycle.signal.throwIfAborted();
+        if ((deps.policyRevision?.() ?? 0) !== revision) throw new TaskError("The start policy changed. Check the current settings and request this work again.", "start_policy_changed");
+      };
+      try { return { kind: "started", ...await service.launchTask({ ...input, subscriptionGuard: {
+        async check(provider, settings) {
+          assertCurrent();
+          await service.assertSubscriptionRoom(provider, { settings, signal: lifecycle.signal });
+          if (queueDigest(await service.settings()) !== queueDigest(settings)) throw new TaskError("The start policy changed. Request this work again.", "start_policy_changed");
+          assertCurrent();
+        }, assertCurrent,
+      } }, waitMs) }; }
       catch (error) {
         if (!(error instanceof TaskError) || error.code !== "agents_at_limit") throw error;
         input.signal?.throwIfAborted(); lifecycle.signal.throwIfAborted();

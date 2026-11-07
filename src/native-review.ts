@@ -10,7 +10,7 @@ import { TaskError } from "./service.ts";
 import type { Runtime } from "./runtime.ts";
 import type { Task } from "./store.ts";
 
-const attemptSchema = z.object({ version: z.literal(1), turnKey: z.string(), reviewTaskId: z.string().nullable() });
+const attemptSchema = z.object({ version: z.literal(1), turnKey: z.string(), reviewTaskId: z.string().nullable(), deferred: z.boolean().optional() });
 const read = <T>(text: string | undefined, schema: z.ZodType<T>): T | null => {
   if (!text) return null;
   try { const parsed = schema.safeParse(JSON.parse(text)); return parsed.success ? parsed.data : null; } catch { return null; }
@@ -105,7 +105,7 @@ export function registerNativeReviews(runtime: Runtime, options: { facts?: typeo
       return;
     }
     const attempt = read(store.latestEvent(id, "native-review-attempt")?.text, attemptSchema);
-    if (attempt?.turnKey === key) {
+    if (attempt?.turnKey === key && !attempt.deferred) {
       await publish(task, { ...state, state: "failed", message: "This turn's automatic review was already requested. You can request a manual review." }); return;
     }
     if (!task.repo || !task.prUrl) { await publish(task, { ...state, state: "waiting", message: "Waiting for the agent to report a GitHub pull request; the native branch is not known yet." }); return; }
@@ -148,6 +148,7 @@ export function registerNativeReviews(runtime: Runtime, options: { facts?: typeo
       const afterInput = store.get(id);
       if (!afterInput || reviewGeneration(afterInput) !== binding.generation) throw changed();
       if (childFor(afterInput, key)) { pending.add(id); return; }
+      await service.assertSubscriptionRoom(policy.reviewer, { signal: lifecycle.signal });
       // Persist the once-only claim before any asynchronous dispatch or provider start.
       store.addEvent(id, "native-review-attempt", JSON.stringify({ version: 1, turnKey: key, reviewTaskId: null }));
       await publish(ready, { ...state, state: "starting", message: `${policy.reviewer === "codex" ? "Codex" : "Claude"} review requested.` });
@@ -160,7 +161,13 @@ export function registerNativeReviews(runtime: Runtime, options: { facts?: typeo
       if (lifecycle.signal.aborted) return;
       const latest = store.get(id);
       if (!latest || (source ? reviewGeneration(latest) !== source.generation : reviewGeneration(latest) !== generation)) return;
-      const attempted = read(store.latestEvent(id, "native-review-attempt")?.text, attemptSchema)?.turnKey === key;
+      const claimed = read(store.latestEvent(id, "native-review-attempt")?.text, attemptSchema);
+      if (error instanceof TaskError && error.code === "agents_at_limit" && !childFor(latest, key) && claimed?.turnKey === key && !claimed.deferred) {
+        // No child/task/VM exists: release only this unused launch attempt.
+        store.addEvent(id, "native-review-attempt", JSON.stringify({ version: 1, turnKey: key, reviewTaskId: null, deferred: true }));
+      }
+      const lastAttempt = read(store.latestEvent(id, "native-review-attempt")?.text, attemptSchema);
+      const attempted = lastAttempt?.turnKey === key && !lastAttempt.deferred;
       await publish(latest, { ...state, state: attempted ? "failed" : "waiting", message: `${attempted ? "Automatic review could not start. You can request a manual review." : "Automatic review is waiting."} ${String(error instanceof Error ? error.message : error).slice(0, 300)}` });
     }
   }

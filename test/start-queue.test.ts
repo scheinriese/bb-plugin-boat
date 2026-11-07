@@ -29,16 +29,16 @@ function setup() {
   const database = () => db as unknown as Database.Database;
   const registry = new TaskStore(database), store = new StartQueueStore(database), boat = new FakeBoat();
   const { bb, harness } = createFakePluginHost({pluginId:"boat"}); let closed=false, projectValid=true, settings=defaultSettings(), clock=Date.now(), usage=quotas(), readCount=0;
-  let preflight: (()=>Promise<void>) | null=null, onFresh: ((n:number)=>void)|null=null, afterInsertFailure=false;
+  let preflight: (()=>Promise<void>) | null=null, onFresh: ((n:number)=>void|Promise<void>)|null=null, afterInsertFailure=false;
   harness.sdk.stub("threads.get", async ({threadId}:{threadId:string})=>({id:threadId,archivedAt:closed?1:null,deletedAt:null}));
-  const reader:QuotaReader={async read(_signal,options){if(options?.fresh){onFresh?.(++readCount);}return new Map([...usage].map(([k,v])=>[k,{...v}]));}};
+  const reader:QuotaReader={async read(_signal,options){if(options?.fresh){await onFresh?.(++readCount);}return new Map([...usage].map(([k,v])=>[k,{...v}]));}};
   const lifecycle = new AbortController();
   const service=new BoatService(boat as unknown as BoatApi,registry,{settings:async()=>settings,lifecycle:lifecycle.signal,changed(){if(afterInsertFailure){afterInsertFailure=false;throw Error("Simulated reload after registry insertion");}},notify:async()=>{},log:{info(){},warn(){}},quotas:reader,preflight:async()=>{await preflight?.();},checkPreview:async()=>"up"});
   const controllers:ReturnType<typeof createStartQueue>[]=[];
   const start=()=>{const q=createStartQueue({bb,service,store,quotas:reader,changed(){},wake(){},now:()=>clock,projectCurrent:()=>projectValid});controllers.push(q);return q;};
   const queue=start();
   return {db,bb,harness,registry,store,boat,service,queue,start,reader,
-    setUsage(v:Quotas){usage=v;}, setClosed(){closed=true;}, changeProject(){projectValid=false;}, advance(ms:number){clock+=ms;}, setPreflight(fn:(()=>Promise<void>)|null){preflight=fn;}, setFresh(fn:((n:number)=>void)|null){onFresh=fn;}, get freshReads(){return readCount;}, get settings(){return settings;}, setSettings(next:Partial<typeof settings>){settings={...settings,...next};}, failAfterInsert(){afterInsertFailure=true;},
+    setUsage(v:Quotas){usage=v;}, setClosed(){closed=true;}, changeProject(){projectValid=false;}, advance(ms:number){clock+=ms;}, setPreflight(fn:(()=>Promise<void>)|null){preflight=fn;}, setFresh(fn:((n:number)=>void|Promise<void>)|null){onFresh=fn;}, get freshReads(){return readCount;}, get settings(){return settings;}, setSettings(next:Partial<typeof settings>){settings={...settings,...next};}, failAfterInsert(){afterInsertFailure=true;},
     async queued(overrides:Partial<StartTaskInput>={}){const r=await queue.launch({...input,...overrides},5000);assert.equal(r.kind,"queued");if(r.kind!=="queued")throw Error("Not queued");return r.request;},
     async settle(){await until(()=>registry.list().every(t=>t.status!=="starting"));},
     async dispose(){controllers.forEach(q=>q.dispose());lifecycle.abort();await harness.lifecycle.dispose();},
@@ -60,6 +60,12 @@ test("subscription reset retries original work once across concurrent ticks and 
  assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);assert.ok(e.registry.latestEvent(receipt.taskId!,"queued-start"));
  await e.start().tick();assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);
  assert.equal(e.queue.cancel(queued.id,queued.revision).taskId,receipt.taskId);assert.equal(e.registry.get(receipt.taskId!)!.status,"running");
+});
+test("explicit provider, model and agent-specific effort cannot bypass a fresh public new-work quota guard",async t=>{
+ for(const named of [{provider:"codex"},{model:"gpt-6.1"},{reasoningEffort:"ultra"},{provider:"claude"},{model:"claude-opus-5-5"},{reasoningEffort:"ultracode"}] as Partial<StartTaskInput>[]){const e=setup();t.after(()=>e.dispose());const ordinary=await e.queued();const explicit=await e.queued(named);assert.notEqual(explicit.id,ordinary.id);assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);assert.equal((e.db.prepare("SELECT count(*) AS n FROM task_events WHERE kind='paid-start-approved'").get() as {n:number}).n,0);}
+});
+test("a first public request with relay off waits on its named/default agent even when only the other has room",async t=>{
+ const e=setup();t.after(()=>e.dispose());e.setUsage(quotas(95,10));e.setSettings({relay:{...e.settings.relay,enabled:false}});assert.equal((await e.queued()).state,"waiting");assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);
 });
 test("disabled relay preserves the preferred agent: other-agent room keeps waiting until the preferred agent resets",async t=>{
  const e=setup();t.after(()=>e.dispose());e.setSettings({relay:{...e.settings.relay,enabled:false}});const q=await e.queued();e.setUsage(quotas(95,10));await e.queue.tick();assert.equal(e.queue.get(q.id)!.state,"waiting");assert.equal(e.boat.calls.length,0);
@@ -86,6 +92,9 @@ test("closed original chat cancels waiting work, including a close during async 
  if(late)e.setPreflight(async()=>{entered=true;await hold.promise;});else e.setClosed();
  const ticking=e.queue.tick();if(late){await until(()=>entered);e.setClosed();hold.release();}await ticking;
  assert.equal(e.queue.get(q.id)!.state,"cancelled");assert.equal(e.boat.calls.length,0);assert.equal(e.registry.list().length,0);}
+});
+test("a source close during the final fresh-quota read still wins before task insertion",async t=>{
+ const e=setup();t.after(()=>e.dispose());const q=await e.queued(),hold=gate();let entered=false;e.setUsage(quotas(10,20));e.setFresh(async()=>{if(!entered&&e.queue.get(q.id)!.state==="dispatching"){entered=true;await hold.promise;}});const work=e.queue.tick();await until(()=>entered);e.setClosed();hold.release();await work;assert.equal(e.queue.get(q.id)!.state,"cancelled");assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);
 });
 test("a new or closed parent generation invalidates queued review work",async t=>{
  for(const closed of [false,true]){const e=setup();t.after(()=>e.dispose());const parent=(await e.service.launchTask({...input,provider:"claude"},5000)).task;

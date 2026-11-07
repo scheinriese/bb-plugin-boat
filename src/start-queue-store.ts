@@ -24,8 +24,8 @@ export const queuedInputSchema = z.object({
 }).strict();
 export type QueuedInput = z.infer<typeof queuedInputSchema>;
 export function durableStartInput(input: StartTaskInput): QueuedInput {
-  const { signal: _signal, nativeReview: _review, queuedStart: _queued, ...plain } = input;
-  if (_review || _queued) throw new Error("Internal review/queued launches cannot be enqueued again.");
+  const { signal: _signal, nativeReview: _review, queuedStart: _queued, subscriptionGuard: _guard, ...plain } = input;
+  if (_review || _queued || _guard) throw new Error("Internal launch capabilities cannot be enqueued again.");
   return queuedInputSchema.parse(plain);
 }
 export function queueDigest(value: unknown): string {

@@ -289,6 +289,8 @@ export interface StartTaskInput {
   nativeReview?: { source: NativeReviewSource; signal?: AbortSignal; beforeDispatch(reviewTaskId: string): Promise<void> };
   /** Internal durable-queue insertion capability; never accepted from RPC/tool input. */
   queuedStart?: { taskId: string; beforeInsert(): Promise<void>; insert(task: Task, save: () => Task, preparedSettings: BoatSettings): Task };
+  /** Internal public-new-work quota guard, resolved against the actual chosen agent. */
+  subscriptionGuard?: { check(provider: Provider, settings: BoatSettings): Promise<void>; assertCurrent(): void };
   signal?: AbortSignal;
 }
 
@@ -1039,6 +1041,16 @@ export class BoatService {
     return run();
   }
 
+  /** Automatic/public work cannot turn an explicit agent/model into paid approval. */
+  async assertSubscriptionRoom(provider: Provider, options: { settings?: BoatSettings; signal?: AbortSignal } = {}): Promise<void> {
+    const settings = options.settings ?? await this.settings();
+    if (!settings.avoidExtraUsage || !this.hooks.quotas) return;
+    const quotas = await this.hooks.quotas.read(options.signal, { fresh: true }).catch(() => new Map());
+    options.signal?.throwIfAborted(); this.hooks.lifecycle.throwIfAborted();
+    const reading = quotas.get(provider);
+    if (reading && reading.usedPercent >= settings.relay.switchAtPercent) throw new TaskError(`${AGENT_NAME[provider]} is near its usage limit. This work will wait for a reset.`, "agents_at_limit");
+  }
+
   private async prepareTask(input: StartTaskInput): Promise<{ task: Task; run: () => Promise<Task> }> {
     const settings = await this.settings();
     const title = input.title.trim();
@@ -1131,6 +1143,8 @@ export class BoatService {
         provider = pick;
       }
     }
+    if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings);
+    if (input.nativeReview) await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal });
     const roleModel = (input.role === "review" ? settings.reviewModel : settings.implementModel).trim() || null;
     const configuredModel = provider === roleProvider ? roleModel : defaultModelFor(provider, settings);
     // A model for the agent the user doesn't have can't run on the other one:
@@ -1302,7 +1316,13 @@ export class BoatService {
       unshipped: null,
       shipApproval: null,
     };
+    if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings);
+    if (input.nativeReview) {
+      await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal });
+      this.assertNativeReviewSource(input.nativeReview.source);
+    }
     if (input.queuedStart) await input.queuedStart.beforeInsert();
+    input.subscriptionGuard?.assertCurrent();
     const task = input.queuedStart ? input.queuedStart.insert(record, () => this.store.insert(record), settings) : this.store.insert(record);
     if (input.nativeReview) this.store.addEvent(id, "native-review-source", JSON.stringify(input.nativeReview.source));
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
