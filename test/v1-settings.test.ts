@@ -4,7 +4,7 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { DECLARED_SETTINGS_KEY, PLUGIN_SETTINGS_KEY, createMigratingSettingsStore, settingRows, type SettingsStore } from "../src/settings-store.ts";
 import { SETTINGS } from "../src/settings.ts";
 import type { SetupStatusDto } from "../contract.ts";
-import { groupedSettings, setupProgress } from "../web/v1-settings-logic.ts";
+import { groupedSettings, setupProgress, setupTestPassed } from "../web/v1-settings-logic.ts";
 
 test("settings migrate over two generations without losing false, zero, empty or later edits", async (t) => {
   let host = createFakePluginHost({ pluginId: "boat", settings: { agents: "codex", workers: "projects", environment: "", maxActiveSandboxes: 0, pushNotifications: false, machineType: "small" } });
@@ -66,4 +66,10 @@ test("setup progression never treats warnings or unknown checks as passed", () =
   status.checks[2]!.state = "ok";
   status.checks[3]!.state = "ok";
   assert.equal(setupProgress(status).current!.id, "environment", "a required extra check still has a single visible fix");
+});
+
+test("an idle test task needs a passing report before setup claims All set", () => {
+  assert.equal(setupTestPassed({ status: "idle", error: null, reportStatus: "blocked" }), false);
+  assert.equal(setupTestPassed({ status: "idle", error: null, reportStatus: null }), false);
+  assert.equal(setupTestPassed({ status: "idle", error: null, reportStatus: "done" }), true);
 });

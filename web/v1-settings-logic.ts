@@ -1,4 +1,8 @@
-import type { SettingDto, SetupStatusDto } from "../contract";
+import type { SettingDto, SetupStatusDto, TaskDto } from "../contract";
+
+export function setupTestPassed(task: Pick<TaskDto, "status" | "error" | "reportStatus"> | undefined): boolean {
+  return task !== undefined && (task.status === "idle" || task.status === "done") && task.error === null && task.reportStatus === "done";
+}
 
 export const SETTINGS_GROUPS = [
   { title: "Agents", keys: ["agents", "implementProvider", "reviewProvider"] },

@@ -13,7 +13,7 @@ import { PANEL_PATH, SIGN_IN_SUBPATH } from "./format";
 import { setupSummaryText, withBoatPath } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
 import { useBoard, useCopy, useHosts, useInterval, useOverview, useProjects, useSettingRows, useSetup, useTask } from "./hooks";
-import { setupProgress } from "./v1-settings-logic";
+import { setupProgress, setupTestPassed } from "./v1-settings-logic";
 import { EmptyBox, InlineAlert, RichText, showError } from "./ui";
 
 /** U7: what a task costs, in one plain paragraph (rates from `boat new --help`). */
@@ -509,7 +509,7 @@ export function SetupChecklist() {
     return error ? <InlineAlert>{error.message}</InlineAlert> : <EmptyBox>Checking your boat.dev setup…</EmptyBox>;
   }
   const { checks, complete, current } = setupProgress(data);
-  const testPassed = test !== undefined && (test.status === "idle" || test.status === "done") && test.error === null;
+  const testPassed = setupTestPassed(test);
   const testBusy = test?.status === "starting" || test?.status === "running";
   if (data.ok && testPassed) return <div className="flex flex-wrap items-center gap-3 rounded-[10px] border border-border bg-card px-3.5 py-3">
     <Icon name="CircleCheck" className="size-4 text-[#5BD08A]" aria-hidden /><div className="min-w-0 flex-1"><p className="text-[13px] text-[#5BD08A]">All set</p><p className="text-xs text-muted-foreground">{data.plan?.name ?? "Boat plan"} · {data.agents.effective === "both" ? "Claude and Codex" : data.agents.effective === "claude" ? "Claude" : "Codex"} · test task passed</p></div><CheckAgainButton variant="ghost" />
@@ -523,7 +523,7 @@ export function SetupChecklist() {
     <div className="space-y-2 border-t border-border px-3.5 py-3">
       <div className="flex flex-wrap items-center gap-3"><div className="min-w-0 flex-1"><p className="text-[13px]">Run a test task</p><p className="text-xs text-muted-foreground">Checks the sandbox and agent login. Uses a small sandbox and agent usage.</p></div>
       <Button size="sm" variant="outline" disabled={!data.ok || testBusy || start.pendingInputs.length > 0} onClick={() => void runTest()}>{testBusy ? "Test task working…" : "Run test task"}</Button></div>
-      {test ? <button type="button" className={cn("w-full rounded-md border border-border px-3 py-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", test.error ? "text-[#E06C6C]" : testPassed ? "text-[#5BD08A]" : "text-muted-foreground")} onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: `task/${test.id}` })}>{test.error ?? (testPassed ? "Test task passed" : "Test task is working")} · Open task →</button> : null}
+      {test ? <button type="button" className={cn("w-full rounded-md border border-border px-3 py-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", test.error ? "text-[#E06C6C]" : testPassed ? "text-[#5BD08A]" : "text-muted-foreground")} onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: `task/${test.id}` })}>{test.error ?? (testPassed ? "Test task passed" : testBusy ? "Test task is working" : "Test task needs a look")} · Open task →</button> : null}
     </div>
   </div>;
 }
