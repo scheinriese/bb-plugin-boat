@@ -34,3 +34,10 @@ test("catalog returns only configured Boat repos, bounds optional metadata and e
  const facts = await readProjectCatalog(bb, boat as never, async () => ({ language: "TypeScript", updatedAt: "2026-11-07T12:00:00Z", baseBranch: "main" })); assert.equal(facts.repos[0]!.language, "TypeScript"); assert.equal(facts.local[0]!.repo, "acme/storefront"); assert.doesNotMatch(JSON.stringify(facts), /TOKEN|PRIVATE|hidden|path/); assert.equal(facts.scope, "configured-boat-repos");
  const partial = await readProjectCatalog(bb, boat as never, async () => { throw new Error("secret auth details"); }); assert.equal(partial.repos[0]!.language, null); assert.doesNotMatch(JSON.stringify(partial), /secret auth/);
 });
+
+test("catalog order follows the default environment, never concurrent completion order", async () => {
+ const bb={sdk:{projects:{list:async()=>[]},system:{config:async()=>null}}} as unknown as Pick<BbPluginApi,"sdk">;
+ const boat={defaultEnvironment:async()=>"main",environments:async()=>["docs","main"],environmentInfo:async(name:string)=>{if(name==="main")await new Promise(resolve=>setTimeout(resolve,10));return{repos:[{repo:name==="main"?"acme/storefront":"acme/docs",baseBranch:"main"}]};}};
+ const result=await readProjectCatalog(bb,boat as never,async()=>({language:null,baseBranch:null,updatedAt:null}));
+ assert.deepEqual(result.repos.map(row=>row.repo),["acme/storefront","acme/docs"]);
+});

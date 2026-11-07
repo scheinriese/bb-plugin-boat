@@ -29,9 +29,13 @@ export async function repoMetadata(repo: string, signal: AbortSignal): Promise<{
 }
 export async function readProjectCatalog(bb: Pick<BbPluginApi, "sdk">, boat: Pick<BoatApi, "defaultEnvironment" | "environments" | "environmentInfo">, metadata = repoMetadata): Promise<ProjectCatalogDto> {
   const signal = AbortSignal.timeout(15_000);
-  const [rows, config, names] = await Promise.all([nativeProjectRows(bb).catch(() => []), bb.sdk.system.config().catch(() => null), boat.environments(signal).catch(() => [])]);
+  const [rows, config, names, defaultName] = await Promise.all([nativeProjectRows(bb).catch(() => []), bb.sdk.system.config().catch(() => null), boat.environments(signal).catch((): string[] => []), boat.defaultEnvironment(signal).catch(() => null)]);
+  const ordered = defaultName && names.includes(defaultName) ? [defaultName, ...names.filter(name => name !== defaultName)] : names;
   const repos = new Map<string, ProjectCatalogDto["repos"][number]>(); let cursor = 0; let failed = false;
-  await Promise.all(Array.from({ length: 2 }, async () => { while (cursor < Math.min(names.length, 8)) { const name = names[cursor++]!; try { const env = await boat.environmentInfo(name, signal); for (const entry of env.repos.slice(0, 200)) { const repo = repoOf(entry.repo); if (repo && !repos.has(repo.toLowerCase()) && repos.size < 200) repos.set(repo.toLowerCase(), { repo, baseBranch: entry.baseBranch, language: null, updatedAt: null }); } } catch { failed = true; } } }));
+  const environments: (Awaited<ReturnType<BoatApi["environmentInfo"]>> | null)[] = Array(Math.min(ordered.length, 8)).fill(null);
+  await Promise.all(Array.from({ length: 2 }, async () => { while (cursor < environments.length) { const index = cursor++; try { environments[index] = await boat.environmentInfo(ordered[index]!, signal); } catch { failed = true; } } }));
+  // Completion order of concurrent CLI reads must not choose the default repo.
+  for (const env of environments) for (const entry of env?.repos.slice(0, 200) ?? []) { const repo = repoOf(entry.repo); if (repo && !repos.has(repo.toLowerCase()) && repos.size < 200) repos.set(repo.toLowerCase(), { repo, baseBranch: entry.baseBranch, language: null, updatedAt: null }); }
   const entries = [...repos.values()]; cursor = 0;
   await Promise.all(Array.from({ length: 4 }, async () => { while (cursor < Math.min(entries.length, 40)) { const entry = entries[cursor++]!; const extra = await metadata(entry.repo, signal).catch(() => null); if (extra) Object.assign(entry, extra, { baseBranch: entry.baseBranch ?? extra.baseBranch }); } }));
   const hostId = config && "primaryHostId" in config ? config.primaryHostId : null;
