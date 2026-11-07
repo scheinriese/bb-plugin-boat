@@ -65,6 +65,6 @@ export const usageResultSchema = z.object({
 });
 export type FidelityUsageDto = z.infer<typeof usageResultSchema>;
 export const fidelityRpcMethods = {
-  history: { input: historyInputSchema, output: z.object({ events: z.array(historyEventSchema), nextBeforeSeq: z.number().int().nullable() }) },
-  fidelityUsage: { input: z.object({ taskId: z.string().optional(), timezoneOffsetMinutes: z.number().int().min(-840).max(840).default(0) }), output: usageResultSchema },
+  history: { input: historyInputSchema, output: z.object({ events: z.array(historyEventSchema), nextBeforeSeq: z.number().int().nullable() }), tags: () => ["boat:tasks"] },
+  fidelityUsage: { input: z.object({ taskId: z.string().optional(), timezoneOffsetMinutes: z.number().int().min(-840).max(840).default(0) }), output: usageResultSchema, tags: () => ["boat:tasks", "boat:sandboxes", "boat:overview"] },
 };

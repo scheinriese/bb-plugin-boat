@@ -159,6 +159,7 @@ function toSandboxDto(sandbox: Sandbox, taskIds: string[], uses: SandboxDto["use
     url: sandbox.url,
     createdAt: sandbox.createdAt,
     archiveAfter: sandbox.archiveAfter,
+    machineType: sandbox.machineType ?? null,
     dashboardUrl: dashboardUrl(sandbox.id),
     sshCommand: `boat ssh ${sandbox.id}`,
     taskIds,

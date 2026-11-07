@@ -381,6 +381,7 @@ export const sandboxSchema = z.object({
   archiveAfter: z.string().nullable(),
   dashboardUrl: z.string(),
   sshCommand: z.string(),
+  machineType: machineTypeSchema.nullable().optional(),
   taskIds: z.array(z.string()),
   /** What uses it: open tasks first, then chats on it (empty: not in use). */
   uses: z.array(sandboxUseSchema),
