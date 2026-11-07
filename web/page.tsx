@@ -46,7 +46,7 @@ function CloudPageTabs({section}:{section:string}) {
   const navigate = useBbNavigate();
   return <div className="h-full min-h-0 flex-1 overflow-y-auto"><div className="mx-auto w-full max-w-[1140px] px-4 pt-4 md:px-6">
     <nav aria-label="Cloud agents pages" className="flex gap-7 border-b border-border">{["today","sandboxes","projects"].map(tab => <button key={tab} type="button" aria-current={section===tab?"page":undefined} onClick={()=>navigate.toPluginPanel(PANEL_PATH,{subPath:tab==="today"?"":tab})} className={"border-b-2 pb-2 text-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " + (section===tab?"border-foreground font-medium text-foreground":"border-transparent text-muted-foreground hover:text-foreground")}>{tab[0]!.toUpperCase()+tab.slice(1)}</button>)}</nav>
-    {section==="today"?<Today/>:section==="sandboxes"?<div className="py-6"><SandboxesSection/></div>:<div className="py-6"><ProjectsSettings/></div>}
+    {section==="today"?<Today/>:section==="sandboxes"?<div className="py-6"><SandboxesSection/></div>:<div className="py-6"><ProjectsSettings page/></div>}
   </div></div>;
 }
 

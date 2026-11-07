@@ -414,7 +414,7 @@ test("the plugin hands an orchestrator to Codex: note first, then a successor in
   assert.deepEqual(harness.inspection.sdk.callsTo("threads.archive").map((call) => (call[0] as { threadId: string }).threadId), ["thr_old"]);
   // A push notice, even with turn notices off.
   const pushes = harness.inspection.sdk.callsTo("plugins.callRpc").map((call) => call[0] as { pluginId: string; input: { title?: string } });
-  assert.ok(pushes.some((call) => call.pluginId === "push-notifications" && call.input.title === "Storefront moved to Codex"));
+  assert.equal(pushes.some((call) => call.pluginId === "push-notifications" && call.input.title === "Storefront moved to Codex"), false, "provider handoffs stay quiet; pushes are only for needs you and ready");
   // Nothing queued can wake the old chat later.
   assert.ok(harness.inspection.sdk.callsTo("threads.queuedMessages.delete").some((call) => (call[0] as { queuedMessageId: string }).queuedMessageId === "q_retry"));
 

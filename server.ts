@@ -333,7 +333,8 @@ export default async function plugin(bb: BbPluginApi) {
     quotas,
     connect,
     settings,
-    notifyUser: (title, body) => pushNotice(title, body, { always: true }),
+    // Relay progress and reset waits stay in-chat; only task needs-you/ready pushes are sent.
+    notifyUser: async () => undefined,
     setup,
     changed,
     wake: () => wakeMonitor(),
@@ -477,7 +478,8 @@ export default async function plugin(bb: BbPluginApi) {
     tell: (threadId, text) => runtime.tellOrchestrator(threadId, text),
     // An orchestrator being handed over hears of it once its successor is in place.
     deferred: (threadId) => runtime.isHandingOver(threadId),
-    notifyUser: (title, body) => pushNotice(title, body, { always: true }),
+    // Relay progress and reset waits stay in-chat; only task needs-you/ready pushes are sent.
+    notifyUser: async () => undefined,
     // A move, resize, dispatch, ship or wake there: the plugin is at it itself.
     held: (sandboxId) => service.holdsSandbox(sandboxId),
     suspended: (hostId) => service.noteSuspended(hostId),

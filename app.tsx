@@ -24,6 +24,7 @@ import {
   useSegmentVisible,
   useThreadHasTasks,
 } from "./web/thread-surfaces";
+import { registerRowSignals } from "./web/row-signals";
 import { registerShipInteraction } from "./web/ship-interaction";
 import { registerChatCards } from "./web/cards";
 import { registerEntryPoints } from "./web/entry-points";
@@ -93,6 +94,7 @@ export default definePluginApp((app) => {
 
   // `::boat-task{id="t_…"}` in assistant messages → a live task card.
   registerChatCards(app);
+  registerRowSignals(app);
   registerShipInteraction(app);
 
   app.slots.homepageSection({ id: "cloud-agents", title: "Cloud agents", component: HomepageCard });

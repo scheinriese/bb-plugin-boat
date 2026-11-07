@@ -1,11 +1,12 @@
 // Cloud agents Today: live work first, with a bounded, honest recent timeline.
 import { useMemo, useState } from "react";
-import { experimental_useRpcQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
-import { rpcContract, type TaskDto } from "../contract";
+import { experimental_useRpcQuery, experimental_useRpcMutation, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { rpcContract, type DecisionDto, type TaskDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import { BoardSection } from "./board";
+import { toast } from "sonner";
+import { cardStatus, recommendedOption, queueDelivery } from "./cards-logic";
 import { NewOrchestratorDialog } from "./dialogs";
 import { PANEL_PATH, PROVIDER_SHORT, relativeTime } from "./format";
 import { useBoard, useCloudAgentsNavigation, useNow, useOrchestrators, useOverview, useProjects, useRelay, useSetup } from "./hooks";
@@ -43,8 +44,8 @@ export function Today() {
   }, [data, filter]);
   const recent = history.data?.tasks ?? [];
   const shipped = recent.filter(t => t.role !== "review" && t.status === "done" && Date.parse(t.finishedAt ?? t.updatedAt) >= weekStart(now));
-  const broken = data?.running.filter(t => t.status === "failed") ?? [];
-  const needsCount = (data?.needsYou.length ?? 0) + broken.filter(t => /memory|larger|capacity|paid/i.test(t.error ?? "")).length;
+  const broken = data?.running.filter(t => cardStatus(t).status === "broken") ?? [];
+  const needsCount = (data?.needsYou.length ?? 0) + broken.filter(t => cardStatus(t).needsYou).length;
   const timeline = [...recent].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 16);
   const hasWork = recent.length > 0 || open.length > 0;
   const projectName = (id: string | null) => projects.data?.projects.find(p => p.id === id)?.name;
@@ -73,7 +74,7 @@ export function Today() {
         <div className="min-w-0 space-y-7">
           {needsCount > 0 || broken.length > 0 ? <section className="space-y-3">
             <h2 className="text-sm font-medium">Start here</h2>
-            <BoardSection group="needsYou" />
+            <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">{data.needsYou.map(decision => <StartDecision key={decision.id} decision={decision}/>)}</div>
             {broken.map(task => <button key={task.id} type="button" onClick={() => openChat(task)} className="flex w-full items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-left hover:bg-state-hover">
               <span className="text-[#E06C6C]" aria-hidden>●</span>
               <span className="min-w-0 flex-1"><span className="block text-sm">{task.title}</span><span className="mt-1 block text-xs text-muted-foreground">{task.error || "The task stopped. Open the chat to continue."}</span></span>
@@ -88,7 +89,7 @@ export function Today() {
                 const entry = orchestrators.data?.orchestrators.find(o => o.threadId === threadId);
                 return <div key={threadId} className="space-y-3 px-4 py-3">
                   <div className="flex flex-wrap items-center gap-2 text-sm">{threadId === "one-off" ? <span>Tasks</span> : <ThreadName threadId={threadId} />}{entry?.projectId ? <span className="text-xs text-muted-foreground">{projectName(entry.projectId)}</span> : null}<span className="ml-auto text-xs text-muted-foreground">{tasks.length} open</span></div>
-                  <div className="flex flex-wrap gap-1.5">{tasks.map(task => <button key={task.id} type="button" onClick={() => openChat(task)} className="inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-background/40 px-2 py-1 text-xs hover:bg-state-hover"><Icon name={task.role === "review" ? "Eye" : "Code"} className="size-3 shrink-0 text-muted-foreground" /><span className="truncate">{task.title}</span><span className={cn("shrink-0", task.status === "failed" ? "text-[#E06C6C]" : data.ready.some(t => t.id === task.id) ? "text-[#5BD08A]" : "text-muted-foreground")}>{task.status === "failed" ? "broken" : data.ready.some(t => t.id === task.id) ? "ready" : task.latestReview === "reviewing" ? "review" : "working"}</span></button>)}</div>
+                  <div className="flex flex-wrap gap-1.5">{tasks.map(task => <button key={task.id} type="button" onClick={() => openChat(task)} className="inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-background/40 px-2 py-1 text-xs hover:bg-state-hover"><Icon name={task.role === "review" ? "Eye" : "Code"} className="size-3 shrink-0 text-muted-foreground" /><span className="truncate">{task.title}</span><span className={cn("shrink-0", task.status === "failed" ? "text-[#E06C6C]" : data.ready.some(t => t.id === task.id) ? "text-[#5BD08A]" : "text-muted-foreground")}>{cardStatus(task).label.toLowerCase()}</span></button>)}</div>
                 </div>;
               })}
               {grouped.length === 0 ? <p className="px-4 py-5 text-sm text-muted-foreground">No {filter === "all" ? "open" : filter} work. Start a task from New thread.</p> : null}
@@ -103,3 +104,16 @@ export function Today() {
   );
 }
 function Starter({icon,title,detail,onClick}:{icon:string;title:string;detail:string;onClick:()=>void}) { return <button type="button" onClick={onClick} className="space-y-2 rounded-lg border border-border bg-card p-4 text-left hover:bg-state-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Icon name={icon} className="size-4 text-muted-foreground"/><span className="block text-sm font-medium">{title}</span><span className="block text-xs text-muted-foreground">{detail}</span></button>; }
+
+function StartDecision({decision}:{decision:DecisionDto}) {
+  const send=experimental_useRpcMutation({contract:rpcContract,method:"answerDecision"});
+  const navigate=useBbNavigate();
+  const [pending,setPending]=useState(false);
+  const option=recommendedOption(decision.options,decision.recommendation);
+  const choose=()=>{
+    if(pending)return;setPending(true);
+    const cancel=queueDelivery(async()=>{try{await send.mutate({id:decision.id,accept:true,answer:null});}catch(error){toast.error(error instanceof Error?error.message:String(error));}finally{setPending(false);}});
+    toast("Answer queued",{duration:4000,action:{label:"Undo",onClick:()=>{if(cancel())setPending(false);}}});
+  };
+  return <div className="flex flex-col gap-2 px-3.5 py-3 sm:flex-row sm:items-center"><span className="hidden text-[#F0B135] sm:inline" aria-hidden>●</span><button type="button" className="min-w-0 flex-1 text-left hover:underline" onClick={()=>decision.orchestratorThreadId&&navigate.toThread(decision.orchestratorThreadId)}><span className="block text-[13px]">{decision.question}</span><span className="mt-1 block text-xs text-muted-foreground">{option ? `Recommended: ${option}` : decision.recommendation}</span></button><Button type="button" size="sm" className="h-auto min-h-7 max-w-full shrink-0 self-start whitespace-normal text-left text-xs sm:max-w-56" disabled={pending} onClick={choose}>{pending?"Queued…":option?`Go with ${option}`:"Go with recommendation"}</Button></div>;
+}

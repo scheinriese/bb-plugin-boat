@@ -50,7 +50,7 @@ interface ProjectDraft {
   baseBranch: string;
 }
 
-export function ProjectsSettings() {
+export function ProjectsSettings({ page = false }: { page?: boolean } = {}) {
   const { data, error } = useProjects();
   const [editing, setEditing] = useState<Editing>(null);
   const projects = data?.projects ?? [];
@@ -80,13 +80,10 @@ export function ProjectsSettings() {
           </span>
         </EmptyBox>
       ) : projects.length > 0 ? (
-        <ListPanel label="Projects">
-          {projects.map((project) => (
-            <ProjectRow key={project.id} project={project} onEdit={() => setEditing(project)} />
-          ))}
-        </ListPanel>
+        page ? <div className="space-y-3">{projects.map(project=><article key={project.id} className="rounded-[10px] border border-border bg-card p-4"><div className="mb-4 flex items-center gap-3"><h2 className="min-w-0 flex-1 text-sm font-medium">{project.name}</h2><Button size="sm" variant="outline" className="h-7 text-xs" onClick={()=>setEditing(project)}>Edit</Button></div><dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs"><dt className="text-muted-foreground">Repos</dt><dd className="break-words">{project.repos.map(repo=>`${shortRepo(repo.repo)} · base ${repo.baseBranch}`).join(" · ")}</dd><dt className="text-muted-foreground">Work lands</dt><dd>{project.delivery==="push"?"Ships to the base branch after your OK":"Pull requests"}</dd><dt className="text-muted-foreground">Sandbox</dt><dd>{project.machineType ? MACHINE_LABEL[project.machineType].split(" · ")[0] : "Default size"}</dd><dt className="text-muted-foreground">Snapshot</dt><dd className={project.snapshot?"text-[#5BD08A]":"text-muted-foreground"}>{project.snapshot??"None yet"}</dd><dt className="text-muted-foreground">Orchestrator rules</dt><dd className="break-words text-[#7AA7FF]">{project.protocolPath??"—"}</dd></dl></article>)}</div> : <ListPanel label="Projects">{projects.map(project=><ProjectRow key={project.id} project={project} onEdit={()=>setEditing(project)}/>)}</ListPanel>
       ) : null}
       <ProjectDialog
+        sheet={page}
         editing={editing}
         onOpenChange={(open) => {
           if (!open) setEditing(null);
@@ -178,10 +175,10 @@ function ProjectRow({ project, onEdit }: { project: ProjectDto; onEdit: () => vo
 
 // -------------------------------------------------------------------- editor
 
-function ProjectDialog({ editing, onOpenChange }: { editing: Editing; onOpenChange: (open: boolean) => void }) {
+function ProjectDialog({ editing, onOpenChange, sheet = false }: { editing: Editing; onOpenChange: (open: boolean) => void; sheet?: boolean }) {
   return (
     <Dialog open={editing !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className={sheet ? "bottom-0 left-auto right-0 top-0 h-full max-h-none w-full translate-x-0 translate-y-0 overflow-y-auto rounded-none sm:max-w-[440px]" : "max-h-[90vh] overflow-y-auto sm:max-w-xl"}>
         {editing !== null ? (
           <ProjectForm project={editing === "new" ? null : editing} onDone={() => onOpenChange(false)} />
         ) : null}
@@ -310,9 +307,9 @@ function ProjectForm({
   return (
     <form onSubmit={submit} className="grid gap-4">
       <DialogHeader>
-        <DialogTitle>{project ? `Edit ${project.name}` : "New project"}</DialogTitle>
+        <DialogTitle>{project ? `Edit ${project.name}` : "Add project"}</DialogTitle>
         <DialogDescription>
-          Tasks on this project clone these repos from GitHub, so push local changes first.
+          Choose the repos, sandbox and rules for this project.
         </DialogDescription>
       </DialogHeader>
       <Field label="Name" htmlFor="ca-project-name">

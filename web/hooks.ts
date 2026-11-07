@@ -127,17 +127,13 @@ export function useThreadTask(threadId: string): TaskDto | null {
   return role?.kind === "task" ? role.task : null;
 }
 
-/** Nav badge: what the board asks of the user, decisions and work ready to review. */
+/** Nav badge counts only things that require an owner decision. */
 export function useAttentionBadge(): ExperimentalBadge | null {
   const { data } = useBoard(null);
   const decisions = data?.needsYou.length ?? 0;
-  const ready = data?.ready.length ?? 0;
-  const count = decisions + ready;
-  if (count === 0) return null;
-  const parts: string[] = [];
-  if (decisions > 0) parts.push(plural(decisions, "decision"));
-  if (ready > 0) parts.push(`${ready} ready to review`);
-  return { count, tone: "warning", label: `Cloud agents: ${parts.join(", ")}` };
+  const broken = data?.running.filter(task => task.publicStatus?.needsYou === true && task.publicStatus.status === "broken").length ?? 0;
+  const count = decisions + broken;
+  return count === 0 ? null : {count, tone:"warning", label:`Cloud agents: ${count} need you`};
 }
 
 /** Current time, re-read every `intervalMs` so relative times stay fresh. */
