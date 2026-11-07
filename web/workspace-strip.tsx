@@ -36,7 +36,8 @@ function useWorkspace(threadId: string) {
 
 /** Only on worker chats: the server returns no workspace for any other thread. */
 export function useWorkspaceStripVisible({ threadId }: ExperimentalThreadContextSegmentInput): boolean {
-  return Boolean(useWorkspace(threadId).data?.workspace);
+  const workspace=useWorkspace(threadId).data?.workspace;
+  return Boolean(workspace && workspace.chats.filter(chat=>!chat.archived).length>1);
 }
 
 /** "Opus 5.5", else the agent ("Claude") when the chat's model isn't known. */

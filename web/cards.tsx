@@ -8,7 +8,10 @@ import {
   experimental_useRpcQuery,
   type PluginAppBuilder,
   type PluginMessageDirectiveProps,
+  type ExperimentalMessageMetadataProps,
 } from "@get-bb/plugin-sdk/app";
+import { mergeRpcContract } from "../contract-merge";
+import { modelName, prLabel } from "./format";
 import { toast } from "sonner";
 import {
   rpcContract,
@@ -61,7 +64,7 @@ function Notice({ children }: { children: ReactNode }) {
   return (
     <div
       role="status"
-      className="my-2 rounded-lg border border-dashed border-border px-3.5 py-2.5 text-xs text-muted-foreground"
+      className="my-2 rounded-lg border border-dashed border-border px-3.5 py-2.5 text-[12px] text-muted-foreground"
     >
       {children}
     </div>
@@ -72,7 +75,7 @@ export function CardTaskState({ task }: { task: TaskDto }) {
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1.5 text-xs",
+        "inline-flex shrink-0 items-center gap-1.5 text-[12px]",
         CARD_TONES[state.tone],
       )}
     >
@@ -100,7 +103,7 @@ export function LiveTaskRow({ task }: { task: TaskDto }) {
           {task.title}
         </button>
       </span>
-      <span className="hidden text-xs text-muted-foreground sm:inline">
+      <span className="hidden text-[12px] text-muted-foreground sm:inline">
         {task.tier}
       </span>
       <CardTaskState task={task} />
@@ -162,7 +165,7 @@ function TaskCard({
         <LiveTaskRow task={task} />
       </ul>
       {task.excerpt && (
-        <p className="border-t border-border px-3.5 py-2 text-xs text-muted-foreground">
+        <p className="border-t border-border px-3.5 py-2 text-[12px] text-muted-foreground">
           {task.excerpt}
         </p>
       )}
@@ -177,7 +180,7 @@ function TaskChip({ task }: { task: TaskDto }) {
   return (
     <button
       onClick={() => openTask(task.id)}
-      className="mx-1 inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-secondary px-2 py-0.5 align-middle text-xs hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      className="mx-1 inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-secondary px-2 py-0.5 align-middle text-[12px] hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >
       <AgentLogo provider={task.provider} />
       <span className="truncate">{task.title}</span>
@@ -190,6 +193,7 @@ function ReviewCard({ task, round }: { task: TaskDetailDto; round?: number }) {
   const history = experimental_useRpcQuery({contract:rpcContract,method:"history",input:{taskId:task.id,limit:100}}).data?.events;
   const entry=history?.find(event=>event.review && (!round || event.review.round===round) && event.kind==='review-verdict');
   const review=entry?.review;
+  const detail=(entry as (typeof entry & {detail?:string|null}))?.detail;
   const verdict=review?.verdict ?? task.verdict;
   const approved=verdict==='approve'||verdict==='approved';
   const changes=verdict==='changes-requested';
@@ -200,11 +204,11 @@ function ReviewCard({ task, round }: { task: TaskDetailDto; round?: number }) {
   return <Frame className={approved?'border-[#5BD08A]/15 bg-[#5BD08A]/[0.06]':'bg-[#191919]'}>
     <div className="flex flex-wrap items-center gap-2 px-3.5 py-2.5">
       <AgentLogo provider={provider}/><span className={approved?'text-[#B8DEC6]':'text-foreground'}>{heading}</span>
-      <span className="text-xs text-muted-foreground">{review?`Review ${review.round}${review.model?' · '+review.model:''}${review.freshContext?' · fresh context':''}`:task.model}</span>
-      <button className="ml-auto text-xs text-muted-foreground hover:underline" onClick={()=>openTask(review?.reviewTaskId??task.id)}>Full review</button>
+      <span className="text-[12px] text-muted-foreground">{detail??(review?`Review ${review.round}${review.model?' · '+review.model:''}${review.freshContext?' · fresh context':''}`:task.model)}</span>
+      <button className="ml-auto text-[12px] text-muted-foreground hover:underline" onClick={()=>openTask(review?.reviewTaskId??task.id)}>Full review</button>
     </div>
-    {!approved && findings.length>0 && <ul className="space-y-1 px-9 pb-3">{findings.map((finding,index)=><li key={index} className="flex gap-4 text-[13px] leading-5"><span className={cn('w-11 shrink-0 text-xs',finding.severity==='must-fix'?'text-[#FC8C45]':'text-muted-foreground')}>{finding.label??(finding.severity==='must-fix'?'Must fix':'Should')}</span><span className="text-muted-foreground">{finding.text}</span></li>)}</ul>}
-    {!approved && !findings.length && task.error && <p className="px-3.5 pb-3 text-xs text-muted-foreground">{task.error}</p>}
+    {!approved && findings.length>0 && <ul className="space-y-1 px-[36px] pb-3">{findings.map((finding,index)=><li key={index} className="flex gap-4 text-[13px] leading-5"><span className={cn('w-[44px] shrink-0 whitespace-nowrap text-[12px]',finding.severity==='must-fix'?'text-[#FC8C45]':'text-muted-foreground')}>{finding.label??(finding.severity==='must-fix'?'Must fix':'Should')}</span><span className="text-muted-foreground">{finding.text}</span></li>)}</ul>}
+    {!approved && !findings.length && task.error && <p className="px-3.5 pb-3 text-[12px] text-muted-foreground">{task.error}</p>}
   </Frame>;
 }
 
@@ -226,6 +230,7 @@ function useFillComposer(threadId: string) {
 }
 /** A single suitable action for context cards and the host header. */
 export function TaskContextAction({ task }: { task: TaskDto }) {
+  const merge=experimental_useRpcMutation({contract:mergeRpcContract,method:"requestMerge"});
   const state = cardStatus(task);
   const resume = experimental_useRpcMutation({
     contract: rpcContract,
@@ -253,18 +258,14 @@ export function TaskContextAction({ task }: { task: TaskDto }) {
   if (state.status === "ready" && task.canShip)
     return <ShipButton task={task} />;
   if (state.status === "ready" && task.prUrl)
-    return (
-      <UrlLink href={task.prUrl} className="text-xs text-[#7AA7FF]">
-        Open PR
-      </UrlLink>
-    );
+    return <Button size="sm" disabled={merge.isPending} onClick={()=>void merge.mutate({id:task.id,from:"chat"}).catch(showError)}>Merge PR {prLabel(task.prUrl)}</Button>;
   return null;
 }
 
 function ReadyCard({ task }: { task: TaskDetailDto }) {
   const state = cardStatus(task);
   const shipped = state.status === "shipped";
-  return <p className="my-4 flex flex-wrap items-center gap-2 text-xs leading-5 text-muted-foreground">
+  return <p className="my-4 flex flex-wrap items-center gap-2 text-[12px] leading-5 text-muted-foreground">
     <span className="size-1.5 rounded-full bg-[#5BD08A]" aria-hidden />
     <span>{shipped ? "Shipped" : "Ready for you"}{task.source.title ? ` · ${task.source.title} was told` : ""}{!shipped && task.previewUrl ? " · sandbox stays on so the preview keeps working" : ""}</span>
   </p>;
@@ -312,7 +313,7 @@ export function ProblemCard({ task }: { task: TaskDetailDto }) {
                     ? "The task couldn’t continue"
                     : state.label}
           </p>
-          <p className="break-words text-xs text-muted-foreground">
+          <p className="break-words text-[12px] text-muted-foreground">
             {state.reason ||
               task.error ||
               (stopped
@@ -320,7 +321,7 @@ export function ProblemCard({ task }: { task: TaskDetailDto }) {
                 : "Open the task for details.")}
           </p>
           {oom && (
-            <p className="text-xs text-[#FC8C45]">
+            <p className="text-[12px] text-[#FC8C45]">
               A larger sandbox may cost more. Review the size and cost before
               continuing.
             </p>
@@ -420,7 +421,7 @@ export function DecisionCard({
   if (closed && !expanded)
     return (
       <Frame>
-        <div className="flex items-center gap-2 px-3.5 py-2 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2 px-3.5 py-2 text-[12px] text-muted-foreground">
           <Icon name="Check" className="size-3.5" />
           <span className="min-w-0 flex-1 break-words">
             {outcome ??
@@ -439,24 +440,24 @@ export function DecisionCard({
     );
   return (
     <Frame className="border-[#F0B135]/20 bg-[#191919]">
-      <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3.5 py-2 text-xs">
+      <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3.5 py-2 text-[12px]">
         <span className="inline-flex items-center gap-1.5 text-[#F0B135]"><span className="size-1.5 rounded-full bg-current" />{closed ? "Decision answered" : "Needs you"}</span>
         <span className="text-muted-foreground">{asked ? `asked by ${asked.title} · ` : ""}{ageMinutes < 1 ? "just now" : `${ageMinutes} min ago`}</span>
       </header>
       <div className="space-y-3 p-3.5">
         <div>
-          <p className="text-base font-normal leading-6">{decision.question}</p>
+          <p className="text-[16px] font-normal leading-6">{decision.question}</p>
           {richer.context && <p className="mt-1 text-[13px] leading-5 text-muted-foreground">{richer.context}</p>}
         </div>
         <div className="hidden sm:block">
           <table className="w-full table-fixed text-left text-[13px] leading-5">
-            <thead className="text-xs font-normal text-muted-foreground"><tr className="h-7 border-b border-border"><th className="font-normal">Option</th>{columns.map(column=><th key={column} className="w-[110px] font-normal">{column}</th>)}{details.some(option=>option.verdict) && <th className="w-[190px] font-normal">{details.find(option=>option.verdict?.label)?.verdict?.label ?? "Fit"}</th>}</tr></thead>
-            <tbody>{details.map(option=><tr key={option.label} className="h-[38px] border-b border-border last:border-0"><td><span>{option.label}</span>{option.label===recommended && <span className="ml-2 rounded-sm bg-[#7AA7FF]/10 px-1.5 py-0.5 text-[10px] text-[#7AA7FF]">Recommended</span>}{option.summary && <span className="block text-xs text-muted-foreground">{option.summary}</span>}</td>{columns.map(column=><td key={column} className="text-muted-foreground">{String(option.facts?.[column] ?? "—")}</td>)}{details.some(item=>item.verdict) && <td className={option.verdict?.tone==='good'?'text-[#5BD08A]':option.verdict?.tone==='caution'?'text-[#FC8C45]':'text-[#E06C6C]'}>{option.verdict?.text}</td>}</tr>)}</tbody>
+            <thead className="text-[12px] font-normal text-muted-foreground"><tr className="h-7 border-b border-border"><th className="font-normal">Option</th>{columns.map(column=><th key={column} className="w-[110px] font-normal">{column}</th>)}{details.some(option=>option.verdict) && <th className="w-[190px] font-normal">{details.find(option=>option.verdict?.label)?.verdict?.label ?? "Fit"}</th>}</tr></thead>
+            <tbody>{details.map(option=><tr key={option.label} className="h-[38px] border-b border-border last:border-0"><td><span>{option.label}</span>{option.label===recommended && <span className="ml-2 rounded-sm bg-[#7AA7FF]/10 px-1.5 py-0.5 text-[10px] text-[#7AA7FF]">Recommended</span>}{option.summary && <span className="block text-[12px] text-muted-foreground">{option.summary}</span>}</td>{columns.map(column=><td key={column} className="text-muted-foreground">{String(option.facts?.[column] ?? "—")}</td>)}{details.some(item=>item.verdict) && <td className={option.verdict?.tone==='good'?'text-[#5BD08A]':option.verdict?.tone==='caution'?'text-[#FC8C45]':'text-[#E06C6C]'}>{option.verdict?.text}</td>}</tr>)}</tbody>
           </table>
         </div>
-        <div className="space-y-3 sm:hidden">{details.map(option=><div key={option.label} className="border-t border-border pt-2"><p>{option.label}{option.label===recommended && <span className="ml-2 text-[10px] text-[#7AA7FF]">Recommended</span>}</p>{columns.map(column=><p key={column} className="text-xs text-muted-foreground">{column}: {String(option.facts?.[column]??"—")}</p>)}{option.verdict && <p className={option.verdict.tone==='good'?'text-[#5BD08A]':option.verdict.tone==='caution'?'text-[#FC8C45]':'text-[#E06C6C]'}>{option.verdict.text}</p>}<Button size="sm" variant={option.label===recommended?'default':'outline'} className="mt-2 w-full" disabled={busy||closed} onClick={()=>choose(option.label)}>Go with {option.label}</Button></div>)}</div>
+        <div className="space-y-3 sm:hidden">{details.map(option=><div key={option.label} className="border-t border-border pt-2"><p>{option.label}{option.label===recommended && <span className="ml-2 text-[10px] text-[#7AA7FF]">Recommended</span>}</p>{columns.map(column=><p key={column} className="text-[12px] text-muted-foreground">{column}: {String(option.facts?.[column]??"—")}</p>)}{option.verdict && <p className={option.verdict.tone==='good'?'text-[#5BD08A]':option.verdict.tone==='caution'?'text-[#FC8C45]':'text-[#E06C6C]'}>{option.verdict.text}</p>}<Button size="sm" variant={option.label===recommended?'default':'outline'} className="mt-2 w-full" disabled={busy||closed} onClick={()=>choose(option.label)}>Go with {option.label}</Button></div>)}</div>
         {queued ? (
-          <div role="status" className="flex items-center gap-3 text-xs">
+          <div role="status" className="flex items-center gap-3 text-[12px]">
             <span className="min-w-0 flex-1">Queued: {queued.answer}</span>
             <Button
               size="sm"
@@ -471,10 +472,10 @@ export function DecisionCard({
         ) : (
           !closed && (
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="hidden flex-wrap gap-2 sm:flex">{options.map(option=><Button key={option} size="sm" variant={option===recommended?'default':'outline'} disabled={busy} onClick={()=>choose(option)} className="h-[30px] px-3 text-xs font-normal">Go with {option}</Button>)}</div>
+              <div className="hidden flex-wrap gap-2 sm:flex">{options.map(option=><Button key={option} size="sm" variant={option===recommended?'default':'outline'} disabled={busy} onClick={()=>choose(option)} className="h-[30px] px-3 text-[12px] font-normal">Go with {option}</Button>)}</div>
               {fill && (
                 <button
-                  className="py-1 text-left text-xs text-muted-foreground hover:text-foreground sm:ml-auto"
+                  className="py-1 text-left text-[12px] text-muted-foreground hover:text-foreground sm:ml-auto"
                   disabled={send.isPending}
                   onClick={() => fill(`${decision.question}\n\n`)}
                 >
@@ -523,7 +524,7 @@ export function DigestDirective(props: PluginMessageDirectiveProps) {
     <Frame>
       <header className="px-3.5 py-2.5 font-medium">
         Work update
-        <span className="ml-2 text-xs font-normal text-muted-foreground">
+        <span className="ml-2 text-[12px] font-normal text-muted-foreground">
           {contextCounts(
             tasks,
             board.needsYou.length,
@@ -558,7 +559,7 @@ export function HandoffDirective(props: PluginMessageDirectiveProps) {
     .at(-1);
   if (!event) return null;
   return (
-    <aside className="my-3 flex items-start gap-2 border-t border-border py-2 text-xs text-muted-foreground">
+    <aside className="my-3 flex items-start gap-2 border-t border-border py-2 text-[12px] text-muted-foreground">
       <Icon name="ArrowRight" className="mt-0.5 size-3 shrink-0" />
       <span>{event.text}</span>
     </aside>
@@ -584,7 +585,7 @@ function StoppedBanner({task}:{task:TaskDetailDto}) {
   const resume=experimental_useRpcMutation({contract:rpcContract,method:"sandboxAction"});
   const state=cardStatus(task);
   const oom=Boolean(task.memory?.oom?.cause && !task.memory.oom.movedTo);
-  return <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-secondary px-3 py-2 text-xs text-muted-foreground">
+  return <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-secondary px-3 py-2 text-[12px] text-muted-foreground">
     <Icon name="Pause" className="size-3.5" />
     <span className="min-w-0 flex-1">{state.status==='waiting-reset'?'Waiting for a reset · work is saved':oom?'Sandbox stopped · out of memory · work is saved':'Sandbox stopped · nothing lost'}</span>
     <Button size="sm" variant="outline" disabled={resume.isPending} onClick={()=>{if(oom)setResizing(true);else if(task.sandboxId)void resume.mutate({id:task.sandboxId,action:'resume'}).catch(showError)}}>{oom?'Continue on Large':'Resume'}</Button>
@@ -593,7 +594,15 @@ function StoppedBanner({task}:{task:TaskDetailDto}) {
 
 }
 
+/** Agent-dispatched briefs retain provenance using bb's above-message slot. */
+function BriefMetadata({message}:ExperimentalMessageMetadataProps){
+  const task=useThreadTask(message.threadId);
+  if(message.role!=="user" || message.initiator!=="agent" || !task?.source.title)return null;
+  return <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground"><AgentLogo provider={task.provider}/>Brief from {task.source.title}{task.tier?' · '+task.tier[0].toUpperCase()+task.tier.slice(1):''}{task.model?' · '+modelName(task.model):''}</span>;
+}
+
 export function registerChatCards(app: PluginAppBuilder): void {
+  app.slots.experimental_messageMetadata({id:"boat-brief",placement:"above",component:BriefMetadata});
   app.composer.customize({
     id: "boat-sandbox-status",
     scopes: ["thread"],

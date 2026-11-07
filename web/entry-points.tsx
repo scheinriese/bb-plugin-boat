@@ -48,6 +48,8 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { ShipDialog } from "./board";
+import { prLabel } from "./format";
+import { mergeRpcContract } from "../contract-merge";
 import { shipRpcContract } from "../contract-ship";
 import { cardStatus } from "./cards-logic";
 import { ConfirmDialog, ReviewDialog, SubmitButton } from "./dialogs";
@@ -242,10 +244,10 @@ export function registerEntryPoints(app: PluginAppBuilder): void {
           };
         if (state.status === "ready" && task.prUrl)
           return {
-            label: "Open PR",
+            label: `Merge PR ${prLabel(task.prUrl)}`,
             icon: "ArrowUpRight",
             run: () => {
-              navigate.openUrl(task.prUrl!);
+              void data.merge(task.id).then(result=>navigate.toThread(result.threadId)).catch(showError);
             },
           };
         const review = reviewFromChat(role);
@@ -351,6 +353,7 @@ function useThreadRoles({ threadIds }: PluginThreadActionDataInput): Roles {
 
 function useHeaderData(input: PluginThreadActionDataInput) {
   const roles = useThreadRoles(input);
+  const merge=experimental_useRpcMutation({contract:mergeRpcContract,method:"requestMerge"});
   const ship = experimental_useRpcMutation({
     contract: shipRpcContract,
     method: "requestShip",
@@ -361,7 +364,8 @@ function useHeaderData(input: PluginThreadActionDataInput) {
   });
   return {
     roles,
-    busy: ship.isPending || resume.isPending,
+    busy: ship.isPending || resume.isPending || merge.isPending,
+    merge: (id:string)=>merge.mutate({id,from:"chat"}),
     ship: (id: string) => ship.mutate({ id, from: "chat" }),
     resume: async (id: string) => {
       try {
