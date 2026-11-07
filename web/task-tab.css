@@ -136,6 +136,6 @@
 
 .boat-native-review-policy { display:flex; flex-direction:column; gap:2px; margin:0; font-size:12px; line-height:18px; color:var(--boat-task-muted); }
 .boat-native-review-policy strong { font-weight:500; }
-.boat-native-review-policy[data-state="waiting"],.boat-native-review-policy[data-state="starting"] { color:#f0b135; }
-.boat-native-review-policy[data-state="reviewing"] { color:#7aa7ff; }
+.boat-native-review-policy[data-state="waiting"],.boat-native-review-policy[data-state="starting"],.boat-native-review-policy[data-state="reviewing"] { color:var(--boat-task-muted); }
+
 .boat-native-review-policy[data-state="failed"],.boat-native-review-policy[data-state="outdated"] { color:#e06c6c; }
