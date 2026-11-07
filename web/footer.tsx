@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { type ExperimentalSidebarFooterDisclosureProps, type PluginAppBuilder, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { type ExperimentalSidebarFooterDisclosureProps, type PluginAppBuilder, experimental_useRpcQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { rpcContract } from "../contract";
 import { Button } from "../components/ui/button";
 import { Icon } from "../components/ui/icon";
 import { canResumeSandbox, isSandboxActive, PANEL_PATH } from "./format";
@@ -14,8 +15,9 @@ export function registerBoatFooter(app: PluginAppBuilder): void {
 
 /** A registered SDK icon can carry the exception dot without editing host DOM. */
 function BoatFooterIcon({ className }: { className?: string }) {
-  const sandboxes = useSandboxes();
-  const tasks = useSandboxTasks();
+  // Provider/icon renderers run outside a slot context; bind RPC explicitly.
+  const sandboxes = experimental_useRpcQuery({ pluginId:"boat", contract:rpcContract, method:"sandboxes", input:{all:true} });
+  const tasks = experimental_useRpcQuery({ pluginId:"boat", contract:rpcContract, method:"tasks", input:{statuses:null,threadId:null,limit:500} });
   const broken = sandboxes.data?.sandboxes.some((sandbox) => sandboxFailure(sandbox, tasks.data?.tasks ?? []));
   return <span className="relative inline-flex"><SailIcon className={className} />{broken && <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-[#E06C6C]" />}</span>;
 }
