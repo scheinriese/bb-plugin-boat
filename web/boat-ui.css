@@ -1,0 +1,6 @@
+/* Paper's explicit text rendering, scoped to SDK-rendered plugin content.
+   bb's own Inter face and theme font tokens remain inherited. */
+.boat-ui {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
