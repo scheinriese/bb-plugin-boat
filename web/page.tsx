@@ -35,6 +35,7 @@ import {
   SandboxesSection,
   openBoatChat,
 } from "./overview";
+import { SandboxTable } from "./sandboxes-table";
 import { Today } from "./today";
 import { ProjectsSettings } from "./projects-settings";
 import { TaskDetail } from "./task-detail";
@@ -95,7 +96,7 @@ function CloudPageTabs({ section }: { section: string }) {
           <Today />
         ) : section === "sandboxes" ? (
           <div className="py-6">
-            <SandboxesSection />
+            <SandboxTable />
           </div>
         ) : (
           <div className="py-6">

@@ -26,6 +26,7 @@ import {
   useSegmentVisible,
   useThreadHasTasks,
 } from "./web/thread-surfaces";
+import { registerBoatFooter } from "./web/footer";
 import { registerTaskTab, useHasTask } from "./web/task-tab";
 import { registerRowSignals } from "./web/row-signals";
 import { registerShipInteraction } from "./web/ship-interaction";
@@ -102,6 +103,7 @@ export default definePluginApp((app) => {
   registerChatCards(app);
   registerRowSignals(app);
   registerTaskTab(app);
+  registerBoatFooter(app);
   registerShipInteraction(app);
 
   app.slots.homepageSection({

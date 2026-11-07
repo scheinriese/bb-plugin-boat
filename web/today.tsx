@@ -79,7 +79,7 @@ export function Today() {
   const recent = history.data?.tasks ?? [];
   const shipped = recent.filter(
     (t) =>
-      t.role !== "review" &&
+      t.role === "implement" &&
       t.status === "done" &&
       Date.parse(t.finishedAt ?? t.updatedAt) >= weekStart(now),
   );
@@ -87,7 +87,7 @@ export function Today() {
     data?.running.filter((t) => cardStatus(t).status === "broken") ?? [];
   const needsCount =
     (data?.needsYou.length ?? 0) +
-    broken.filter((t) => cardStatus(t).needsYou).length;
+    broken.filter((t) => cardStatus(t).needsYou && !data?.needsYou.some(decision => decision.taskIds.includes(t.id))).length;
   const timeline = [...recent]
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 16);
@@ -322,7 +322,7 @@ export function Today() {
                         {task.status === "done"
                           ? task.role === "review"
                             ? "Review finished: "
-                            : "Shipped: "
+                            : task.role === "implement" && cardStatus(task).status === "shipped" ? "Shipped: " : "Finished: "
                           : task.status === "failed"
                             ? "Broken: "
                             : ""}
