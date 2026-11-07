@@ -128,9 +128,12 @@ export function useThreadTask(threadId: string): TaskDto | null {
   return role?.kind === "task" ? role.task : null;
 }
 
-/** Nav badge counts only things that require an owner decision. */
+/** Required setup failures take priority; healthy setup retains the attention count. */
 export function useAttentionBadge(): ExperimentalBadge | null {
   const { data } = useBoard(null);
+  const setup=useSetup().data;
+  const failed=setup?.ok===false?setup.checks.find(check=>check.required && (check.state==="missing" || check.state==="unknown")):undefined;
+  if(failed)return {text:"!",tone:"critical",label:`Cloud agents need attention: ${failed.label}. ${failed.detail}`};
   const count = data ? attentionCount([...data.ready, ...data.running], data.needsYou) : 0;
   return count === 0 ? null : {count, tone:"warning", label:`Cloud agents: ${count} need you`};
 }
