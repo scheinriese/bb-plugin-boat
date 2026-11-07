@@ -6,6 +6,8 @@
   --boat-description: var(--muted-foreground);
   --boat-chip: var(--muted);
   --boat-label: var(--foreground);
+  --boat-group-heading: var(--foreground);
+  --boat-divider: var(--border);
   --boat-secondary: var(--muted-foreground);
   --boat-faint: var(--muted-foreground);
   --boat-active: var(--muted);
@@ -23,6 +25,8 @@
   --boat-description: #7a7a7a;
   --boat-chip: #1c1c1c;
   --boat-label: #e2e2e2;
+  --boat-group-heading: #b7b7b7;
+  --boat-divider: #222222;
   --boat-secondary: #9a9a9a;
   --boat-faint: #6e6e6e;
   --boat-active: #1d1d1d;
