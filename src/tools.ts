@@ -424,6 +424,7 @@ export function registerTools(runtime: Runtime): void {
       question: z.string().trim().min(3).max(500).describe("The decision, in plain words"),
       recommendation: z.string().trim().min(1).max(500).describe("What you recommend, and why in a few words"),
       options: z.array(decisionOptionInputSchema).max(5).optional().describe("Choices as labels or objects: label, summary, facts (column/value), verdict (text/tone good|caution|bad), recommended"),
+      short_label: z.string().trim().max(120).optional().describe("Concise action for the sidebar, e.g. Pick a rate limit"),
       context: z.string().trim().max(1000).optional().describe("One context line under the question"),
       asked_by_task_id: z.string().optional().describe("Task that asked the question, when applicable"),
       task_ids: z.array(z.string().min(4)).max(10).optional().describe("Tasks it's about"),
@@ -437,6 +438,7 @@ export function registerTools(runtime: Runtime): void {
           recommendation: params.recommendation,
           options: params.options ?? [],
           context: params.context,
+          shortLabel: params.short_label,
           askedByTaskId: params.asked_by_task_id ? service.mustGet(params.asked_by_task_id).id : null,
           taskIds,
         });

@@ -7,6 +7,7 @@ export const sidebarThreadSchema = z.object({
   secondLine: z.object({ text: z.string(), tone: z.enum(["neutral", "attention", "danger", "success"]) }).nullable(),
   parentThreadId: z.string().nullable(),
   createdFor: z.literal("you").nullable(),
+  moving: z.boolean().optional(),
   listedIn: z.string().nullable(),
   rollup: z.object({ needsYou: z.number(), stopped: z.number(), ready: z.number(), working: z.number(), shippedToday: z.number() }).nullable(),
   hidden: z.boolean(), updatedAt: z.string(),

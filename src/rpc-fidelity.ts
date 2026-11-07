@@ -18,7 +18,7 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service">) {
     const all = await service.boat.list({ all: true, signal }).catch(() => { listed = false; return []; });
     const sandboxes = all.slice(0, 100);
     async function aggregate(window: { since: string; until: string }) {
-      const values: Awaited<ReturnType<typeof service.boat.usage>>[] = [];
+      const values: (Awaited<ReturnType<typeof service.boat.usage>> & { sandboxId: string })[] = [];
       let index = 0; let complete = listed && all.length <= 100;
       // Bound subprocess fanout independently of the account's sandbox count.
       await Promise.all(Array.from({ length: 4 }, async () => {
@@ -26,11 +26,11 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service">) {
           const sandbox = sandboxes[index++]!;
           const usage = await service.boat.usage(sandbox.id, window, signal).catch(() => null);
           if (!usage || usage.hours === null || usage.dollars === null) complete = false;
-          if (usage) values.push(usage);
+          if (usage) values.push({ sandboxId: sandbox.id, ...usage });
         }
       }));
       return { ...window, hours: complete ? values.reduce((sum, entry) => sum + (entry.hours ?? 0), 0) : null,
-        dollars: complete ? values.reduce((sum, entry) => sum + (entry.dollars ?? 0), 0) : null, complete, sandboxCount: sandboxes.length };
+        dollars: complete ? values.reduce((sum, entry) => sum + (entry.dollars ?? 0), 0) : null, complete, sandboxCount: sandboxes.length, sandboxes: values.map(({ sandboxId, hours, dollars }) => ({ sandboxId, hours, dollars })) };
     }
     const [day, week] = await Promise.all([aggregate(windows.day), aggregate(windows.week)]);
     for (const [metric, value] of [["day", day], ["week", week]] as const) if (!value.complete) missing.push({ metric, capability: "Complete boat list --all plus boat usage ID --since/--until (seconds and dollars), bounded to 100 sandboxes" });
@@ -43,7 +43,7 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service">) {
       }
       if (!task) missing.push({ metric: "task", capability: "A registered task with sandboxId and boat usage ID for its start/end window; shared sandboxes include overlapping reviews" });
     }
-    return { plan, day, week, task, missing, checkedAt: now.toISOString() };
+    return { plan, day, week, task, sandboxes: week.sandboxes, missing, checkedAt: now.toISOString() };
   }
   return {
     history: (input: Parameters<typeof service.store.history>[0]) => service.store.history(input),

@@ -1116,6 +1116,7 @@ export function buildCli(runtime: Runtime) {
           recommendation: { type: "string", required: true, description: "What you recommend, and why in a few words" },
           option: { type: "string", repeatable: true, description: "A choice label or JSON object with label, summary, facts, verdict, recommended (repeat for each)" },
           context: { type: "string", description: "One context line under the question" },
+          "short-label": { type: "string", description: "Concise sidebar action, e.g. Pick a rate limit" },
           "asked-by-task": { type: "string", description: "Task that asked the question" },
           task: { type: "string", repeatable: true, split: ",", description: "Task ids it's about" },
           thread: { type: "string", description: "Orchestrator thread (default: this one)" },
@@ -1135,6 +1136,7 @@ export function buildCli(runtime: Runtime) {
                 catch { throw new PluginCliError("Each JSON option needs a label and valid optional summary, facts, verdict and recommended fields.", { code: "invalid" }); }
               }),
               context: options.context,
+              shortLabel: options["short-label"],
               askedByTaskId: options["asked-by-task"] ? service.mustGet(options["asked-by-task"]).id : null,
               taskIds: (options.task ?? []).map((id) => service.mustGet(id).id),
             });

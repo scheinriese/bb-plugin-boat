@@ -46,7 +46,7 @@ export const historyEventSchema = z.object({
   taskId: z.string().nullable(), taskTitle: z.string().nullable(), threadId: z.string().nullable(),
   orchestratorThreadId: z.string().nullable(), provider: z.enum(["claude", "codex"]).nullable(),
   from: z.string().nullable(), to: z.string().nullable(), text: z.string().max(4000),
-  cause: z.string().nullable(), decisionId: z.string().nullable(), review: reviewPayloadSchema.nullable(),
+  cause: z.string().nullable(), detail: z.string().max(500).nullable().optional(), decisionId: z.string().nullable(), review: reviewPayloadSchema.nullable(),
 });
 export type HistoryEventDto = z.infer<typeof historyEventSchema>;
 export const historyInputSchema = z.object({
@@ -60,6 +60,7 @@ export const usageResultSchema = z.object({
   plan: z.object({ name: z.string().nullable(), hoursRemaining: z.number().nullable(), hoursTotal: z.number().nullable(), resetsAt: z.string().nullable() }).nullable(),
   day: usageWindowSchema, week: usageWindowSchema,
   task: z.object({ taskId: z.string(), sandboxId: z.string(), attribution: z.literal("sandbox-window"), seconds: z.number().nullable(), hours: z.number().nullable(), dollars: z.number().nullable(), since: z.string().nullable(), until: z.string().nullable(), running: z.boolean().nullable() }).nullable(),
+  sandboxes: z.array(z.object({ sandboxId: z.string(), hours: z.number().nullable(), dollars: z.number().nullable() })).max(100).optional(),
   missing: z.array(z.object({ metric: z.string(), capability: z.string() })), checkedAt: z.string(),
 });
 export type FidelityUsageDto = z.infer<typeof usageResultSchema>;

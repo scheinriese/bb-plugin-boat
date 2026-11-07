@@ -24,7 +24,8 @@ test("decision migration preserves IDs, old string consumers and closed rows", (
   assert.equal(old.id, "d_old"); assert.equal(old.status, "answered"); assert.equal(old.answer, "B");
   assert.deepEqual(old.options, ["A", "B"]); assert.deepEqual(old.optionDetails, [{ label: "A" }, { label: "B" }]);
   assert.equal(old.context, null); assert.equal(old.askedByTaskId, null);
-  const decision = store.addDecision({ orchestratorThreadId: "thr_demo", question: "Choose a limit", recommendation: "Generous", context: "The API uses this for each key.", options: ["Strict", { label: "Generous", facts: { Limit: "120/min", Cost: 0 }, verdict: { text: "Room to grow", tone: "good" }, recommended: true }], taskIds: [] });
+  const decision = store.addDecision({ orchestratorThreadId: "thr_demo", question: "Choose a limit", recommendation: "Generous", context: "The API uses this for each key.", shortLabel: "Pick a rate limit", options: ["Strict", { label: "Generous", facts: { Limit: "120/min", Cost: 0 }, verdict: { text: "Room to grow", tone: "good" }, recommended: true }], taskIds: [] });
+  assert.equal(decision.shortLabel, "Pick a rate limit");
   assert.deepEqual(decision.options, ["Strict", "Generous"]); assert.equal(decision.optionDetails![1]!.recommended, true);
   assert.equal(store.history({ orchestratorThreadId: "thr_demo" }).events[0]!.decisionId, decision.id);
   assert.equal(store.resolveDecision(decision.id, "answered", "Generous")!.id, decision.id);
@@ -91,7 +92,7 @@ test("usage aggregates read-only facts, caches calls, and does not publish incom
   env.service.boat.usage = async (_id, window) => { calls++; return { seconds: 3600, hours: 1, dollars: 0.036, since: window?.since ?? null, until: window?.until ?? null, running: true }; };
   const handlers = fidelityHandlers({ service: env.service });
   const result = await handlers.fidelityUsage({ timezoneOffsetMinutes: 0 });
-  assert.equal(result.week.hours, 1); assert.equal(result.day.dollars, 0.036); assert.equal(result.missing.length, 0);
+  assert.equal(result.sandboxes![0]!.hours, 1); assert.equal(result.week.hours, 1); assert.equal(result.day.dollars, 0.036); assert.equal(result.missing.length, 0);
   await handlers.fidelityUsage({ timezoneOffsetMinutes: 0 }); assert.equal(calls, 2);
   env.service.boat.usage = async () => { throw new Error("private account details"); };
   const failed = await fidelityHandlers({ service: env.service }).fidelityUsage({ timezoneOffsetMinutes: 0 });

@@ -250,6 +250,7 @@ const MIGRATIONS = [
   `ALTER TABLE decisions ADD COLUMN asked_by_task_id TEXT`,
   `ALTER TABLE task_events ADD COLUMN metadata TEXT`,
   `CREATE INDEX IF NOT EXISTS task_events_time ON task_events(at, seq)`,
+  `ALTER TABLE decisions ADD COLUMN short_label TEXT`,
 ];
 
 export const DECISION_STATUSES = ["open", "answered", "withdrawn"] as const;
@@ -308,6 +309,7 @@ export interface Decision {
   optionDetails?: DecisionOption[];
   context?: string | null;
   askedByTaskId?: string | null;
+  shortLabel?: string | null;
   taskIds: string[];
   status: DecisionStatus;
   answer: string | null;
@@ -335,6 +337,7 @@ function toDecision(row: Record<string, unknown>): Decision {
     optionDetails: normalizeDecisionOptions(row.options),
     context: typeof row.context === "string" ? row.context : null,
     askedByTaskId: typeof row.asked_by_task_id === "string" ? row.asked_by_task_id : null,
+    shortLabel: typeof row.short_label === "string" ? row.short_label : null,
     taskIds: stringList(row.task_ids),
     status: (DECISION_STATUSES as readonly string[]).includes(String(row.status)) ? (row.status as DecisionStatus) : "open",
     answer: typeof row.answer === "string" ? row.answer : null,
@@ -855,15 +858,15 @@ export class TaskStore {
 
   // ----------------------------------------------------------- decisions
 
-  addDecision(input: { orchestratorThreadId: string | null; question: string; recommendation: string; options: DecisionOptionInput[]; taskIds: string[]; context?: string | null; askedByTaskId?: string | null }): Decision {
+  addDecision(input: { orchestratorThreadId: string | null; question: string; recommendation: string; options: DecisionOptionInput[]; taskIds: string[]; context?: string | null; askedByTaskId?: string | null; shortLabel?: string | null }): Decision {
     const id = `d_${randomBytes(4).toString("hex")}`;
     const taskIds = [...new Set([...input.taskIds, ...(input.askedByTaskId ? [input.askedByTaskId] : [])])];
     this.db()
       .prepare(
-        `INSERT INTO decisions (id, orchestrator_thread_id, question, recommendation, options, task_ids, status, created_at, context, asked_by_task_id)
-         VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+        `INSERT INTO decisions (id, orchestrator_thread_id, question, recommendation, options, task_ids, status, created_at, context, asked_by_task_id, short_label)
+         VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`,
       )
-      .run(id, input.orchestratorThreadId, input.question, input.recommendation, JSON.stringify(normalizeDecisionOptions(input.options)), JSON.stringify(taskIds), new Date().toISOString(), input.context?.slice(0, 1000) ?? null, input.askedByTaskId ?? taskIds[0] ?? null);
+      .run(id, input.orchestratorThreadId, input.question, input.recommendation, JSON.stringify(normalizeDecisionOptions(input.options)), JSON.stringify(taskIds), new Date().toISOString(), input.context?.slice(0, 1000) ?? null, input.askedByTaskId ?? taskIds[0] ?? null, input.shortLabel?.slice(0, 120) ?? null);
     const decision = this.decision(id)!;
     this.addEvent(input.askedByTaskId ?? input.taskIds[0] ?? "", "needs-you", input.question, { source: "agent", decisionId: id, orchestratorThreadId: input.orchestratorThreadId ?? undefined });
     return decision;

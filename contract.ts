@@ -457,6 +457,7 @@ export const decisionSchema = z.object({
   optionDetails: z.array(decisionOptionSchema).optional(),
   context: z.string().nullable().optional(),
   askedByTaskId: z.string().nullable().optional(),
+  shortLabel: z.string().max(120).nullable().optional(),
   taskIds: z.array(z.string()),
   status: z.enum(["open", "answered", "withdrawn"]),
   answer: z.string().nullable(),

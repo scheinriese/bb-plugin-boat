@@ -16,10 +16,10 @@ export function sidebarState(service: Pick<BoatService, "store" | "publicStatus"
     const state = statuses.get(task.id)!;
     const parent = task.role === "review" && task.parentTaskId ? service.store.get(task.parentTaskId)?.threadId ?? task.orchestratorThreadId : task.orchestratorThreadId;
     const secondLine = state.status === "needs-you" || state.status === "broken"
-      ? { text: state.reason ?? state.label, tone: state.status === "needs-you" ? "attention" as const : "danger" as const }
-      : state.status === "ready" ? { text: task.prUrl ? `Ready · PR #${task.prUrl.match(/\/pull\/(\d+)/)?.[1] ?? ""}` : "Ready · ship to main", tone: "success" as const } : null;
+      ? { text: state.status === "needs-you" ? decisions.find((decision) => decision.taskIds.includes(task.id))?.shortLabel ?? state.reason ?? state.label : `Stopped · ${(state.reason ?? task.error ?? "something went wrong").toLowerCase()}`, tone: state.status === "needs-you" ? "attention" as const : "danger" as const }
+      : state.status === "ready" ? { text: task.prUrl ? `PR #${task.prUrl.match(/\/pull\/(\d+)/)?.[1] ?? ""} · ready to merge` : "Ready to ship to main", tone: "success" as const } : null;
     threads.push({ threadId: task.threadId, role: task.role === "review" ? "review" : "task", status: state.status,
-      provider: task.provider, secondLine, parentThreadId: parent,
+      provider: task.provider, moving: state.moving, secondLine, parentThreadId: parent,
       createdFor: service.store.latestEvent(task.id, "native-chat") === null ? "you" : null,
       listedIn: service.store.latestEvent(task.id, "native-chat") === null ? parent : null, rollup: null,
       hidden: task.status === "done" || task.status === "cancelled" || (task.role === "review" && task.status === "idle" && parseReport(task.result ?? "").verdict !== null), updatedAt: task.updatedAt });
@@ -39,7 +39,7 @@ export function sidebarState(service: Pick<BoatService, "store" | "publicStatus"
     const summary = [rollup.needsYou ? `${rollup.needsYou} need you` : "", rollup.stopped ? `${rollup.stopped} stopped` : "", rollup.ready ? `${rollup.ready} ready` : "", rollup.working ? `${rollup.working} working` : ""].filter(Boolean).join(" · ");
     threads.push({ threadId: orchestrator.threadId, role: "orchestrator", status, provider: null,
       secondLine: summary && ["needs-you", "broken", "ready"].includes(status) ? { text: summary, tone: status === "needs-you" ? "attention" : status === "broken" ? "danger" : "success" } : null,
-      parentThreadId: null, createdFor: null, listedIn: null, rollup, hidden: false, updatedAt: children.reduce((at, task) => task.updatedAt > at ? task.updatedAt : at, orchestrator.createdAt) });
+      parentThreadId: null, moving: rollup.working > 0, createdFor: null, listedIn: null, rollup, hidden: false, updatedAt: children.reduce((at, task) => task.updatedAt > at ? task.updatedAt : at, orchestrator.createdAt) });
   }
   const bounded = threads.slice(0, 2000);
   return { version: 1 as const, revision: createHash("sha256").update(JSON.stringify(bounded)).digest("hex").slice(0, 24), threads: bounded, truncated: threads.length > 2000 || open.length === 1000 || closed.length === 1000 };

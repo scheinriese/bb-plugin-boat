@@ -3,7 +3,7 @@ import type { Task } from "./store.ts";
 
 export interface EventMetadata {
   source?: HistoryEventDto["source"];
-  from?: string; to?: string; cause?: string; decisionId?: string;
+  from?: string; to?: string; cause?: string; detail?: string; decisionId?: string;
   orchestratorThreadId?: string;
   review?: ReviewPayload;
 }
@@ -23,8 +23,8 @@ export function eventMetadata(value: unknown): EventMetadata {
   const out: EventMetadata = {};
   const source = historySourceSchema.safeParse(input.source);
   if (source.success) out.source = source.data;
-  for (const key of ["from", "to", "cause", "decisionId", "orchestratorThreadId"] as const) {
-    if (typeof input[key] === "string") out[key] = input[key].slice(0, key === "cause" ? 1000 : 200);
+  for (const key of ["from", "to", "cause", "detail", "decisionId", "orchestratorThreadId"] as const) {
+    if (typeof input[key] === "string") out[key] = input[key].slice(0, key === "cause" ? 1000 : key === "detail" ? 500 : 200);
   }
   const review = reviewPayloadSchema.safeParse(input.review);
   if (review.success) out.review = review.data;
@@ -65,6 +65,7 @@ export function projectHistoryEvent(row: Record<string, unknown>, task: Task | n
     provider: metadata.review?.provider ?? task?.provider ?? null,
     from: metadata.from ?? null, to, text: text.slice(0, 4000),
     cause: metadata.cause ?? (rawKind === "failed" || rawKind === "stopped" ? text.slice(0, 1000) : null),
+    detail: metadata.detail ?? null,
     decisionId: metadata.decisionId ?? null, review: metadata.review ?? null,
   };
 }

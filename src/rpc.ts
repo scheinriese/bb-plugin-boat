@@ -1016,6 +1016,7 @@ export function registerRpc(runtime: Runtime): void {
         options: decision.options,
         optionDetails: decision.optionDetails,
         context: decision.context ?? null,
+        shortLabel: decision.shortLabel ?? null,
         askedByTaskId: decision.askedByTaskId ?? null,
         taskIds: decision.taskIds,
         status: decision.status,

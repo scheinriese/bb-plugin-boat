@@ -14,6 +14,7 @@ truncated:boolean}`; at most 2000 records. Every record contains:
 | --- | --- |
 | threadId | Existing BB thread id; never a synthetic sidebar row |
 | role | orchestrator, task, review, chat |
+| moving | Whether an arc should move; false for a finished idle turn |
 | status | working, review, ready, shipped, needs-you, broken, stopped, waiting-reset |
 | provider | claude, codex or null |
 | secondLine | `{text,tone}` or null; tone neutral, attention, danger, success |

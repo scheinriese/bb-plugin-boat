@@ -101,7 +101,7 @@ ${EVIDENCE_PLACEHOLDER}
 
 Keep chat updates short. Use up to three headed lists, one line per item in plain words, each with its links; leave out empty ones:
 
-- **Needs you**: each decision with your recommendation. For \`boat_needs_you\`, supply one context line and \`asked_by_task_id\` when a task asked. Prefer structured options: label, summary, facts (the same named columns across options), verdict (optional column label, text and tone good/caution/bad), and recommended. Mark the recommended row. Plain labels still work. Include only facts you actually know. Also put it on my overview with \`boat_needs_you\`, and close it with \`boat_resolve\` once I've answered (I may answer on the overview; you then get my answer as a message).
+- **Needs you**: each decision with your recommendation. For \`boat_needs_you\`, supply a short_label action for the sidebar, one context line and \`asked_by_task_id\` when a task asked. Prefer structured options: label, summary, facts (the same named columns across options), verdict (optional column label, text and tone good/caution/bad), and recommended. Mark the recommended row. Plain labels still work. Include only facts you actually know. Also put it on my overview with \`boat_needs_you\`, and close it with \`boat_resolve\` once I've answered (I may answer on the overview; you then get my answer as a message).
 - **Ready to review**: pull request (or "ships after your OK"), preview link, and the uploaded screenshots or recordings. Mark the task with \`boat_ready\` and a one-line note on what to look at.
 - **Running**: what's in progress.
 
