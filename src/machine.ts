@@ -16,6 +16,7 @@ const resourceSchema = z.object({ sandboxId: z.string(), key: z.string() });
 const inputsSchema = z
   .object({
     type: z.enum(MACHINE_TYPES).optional(),
+    snapshot: z.string().trim().min(1).max(120).optional(),
     /** Adopt this prepared sandbox (a worker chat's) instead of creating one. */
     sandboxId: z.string().regex(/^bx_[A-Za-z0-9]+$/).optional(),
     /** The task whose worker chat runs on it. */
@@ -182,13 +183,14 @@ export function registerBoatMachine(
             type: ((inputs as { type?: MachineType } | null)?.type ?? settings.orchestratorMachineType) as MachineType,
             // Any bb chat can use this machine; keep the repo's own git hooks.
             gitGuard: false,
+            snapshot: parsed.success ? parsed.data.snapshot ?? null : null,
             signal,
           });
         } else if (!ACTIVE_STATES.has(sandbox.state)) {
           report.step("Resuming the boat sandbox");
           sandbox = await service.bringUp(sandbox.id, signal);
         }
-        await checkpoint({ sandboxId: sandbox.id, key });
+        await checkpoint({ sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}) });
         report.log(`boat sandbox ${sandbox.id}`);
         report.step("Installing bb on the sandbox");
         const { hostId } = await bb.experimental_machines.bootstrap({
@@ -197,7 +199,7 @@ export function registerBoatMachine(
           report,
           signal,
         });
-        return { status: "created" as const, name: `Boat ${sandbox.id} (${hostId.slice(-6)})`, resource: { sandboxId: sandbox.id, key } };
+        return { status: "created" as const, name: `Boat ${sandbox.id} (${hostId.slice(-6)})`, resource: { sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}) } };
       } catch (error) {
         signal.throwIfAborted();
         return { status: "failed" as const, message: message(error) };

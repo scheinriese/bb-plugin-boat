@@ -227,3 +227,8 @@ test("the old Ship RPC cannot bypass the in-thread confirmation", async (t) => {
   assert.equal(store.latestEvent("t_chat01", "shipped"), null);
   assert.equal(store.get("t_chat01")?.status, "idle");
 });
+
+test("native size changes preserve snapshots and prepared sandbox keep flags", () => {
+  assert.deepEqual(sizeChipState({ type: "default", snapshot: "repo-base" }, SIZES, "small").change, { status: "ready", value: { type: "default", snapshot: "repo-base" } });
+  assert.deepEqual(sizeChipState({ sandboxId: "bx_ready", taskId: "t_1234", keepSandbox: true }, SIZES, "small").change, { status: "ready", value: { sandboxId: "bx_ready", taskId: "t_1234", keepSandbox: true } });
+});

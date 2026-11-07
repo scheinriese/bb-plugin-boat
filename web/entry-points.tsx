@@ -10,6 +10,7 @@ import {
 import { toast } from "sonner";
 import {
   experimental_useRpcKeyedQuery,
+  experimental_useRpcQuery,
   experimental_useRpcMutation,
   useComposer,
   useBbNavigate,
@@ -96,9 +97,9 @@ export function registerEntryPoints(app: PluginAppBuilder): void {
     }),
   );
   for (const command of [
-    { id: "new-orchestrator", title: "Boat: New orchestrator" },
-    { id: "resume-sandbox", title: "Boat: Resume sandbox" },
-    { id: "go-needs-me", title: "Boat: Go to what needs me" },
+    { id: "new-orchestrator", title: "Boat: new orchestrator" },
+    { id: "resume-sandbox", title: "Boat: resume sandbox" },
+    { id: "go-needs-me", title: "Boat: go to what needs me" },
   ] as const)
     attempt(command.title, () =>
       app.commands.register({
@@ -597,6 +598,13 @@ const CHIP =
  */
 function BoatSizeChip({ value, onChange }: PluginMachineProviderInputsProps) {
   const { data } = useSandboxSizes();
+  const [open, setOpen] = useState(false);
+  const snapshots = experimental_useRpcQuery({
+    contract: rpcContract,
+    method: "snapshots",
+    input: null,
+    enabled: open,
+  });
   const sizes = data?.sizes ?? null;
   const state = sizeChipState(
     value,
@@ -632,7 +640,7 @@ function BoatSizeChip({ value, onChange }: PluginMachineProviderInputsProps) {
   const blocked =
     state.change.status === "blocked" ? state.change.reason : null;
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -671,7 +679,15 @@ function BoatSizeChip({ value, onChange }: PluginMachineProviderInputsProps) {
               aria-checked={selected}
               role="menuitemradio"
               onSelect={() =>
-                onChange({ status: "ready", value: { type: entry.type } })
+                onChange({
+                  status: "ready",
+                  value: {
+                    ...(state.change.status === "ready"
+                      ? state.change.value
+                      : {}),
+                    type: entry.type,
+                  },
+                })
               }
               className="items-start gap-2"
             >
@@ -699,6 +715,51 @@ function BoatSizeChip({ value, onChange }: PluginMachineProviderInputsProps) {
             </DropdownMenuItem>
           );
         })}
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>Start from a snapshot</DropdownMenuLabel>
+        <DropdownMenuItem
+          role="menuitemradio"
+          aria-checked={
+            !(state.change.status === "ready" && state.change.value.snapshot)
+          }
+          onSelect={() => {
+            const next = {
+              ...(state.change.status === "ready" ? state.change.value : {}),
+            };
+            delete next.snapshot;
+            onChange({ status: "ready", value: next });
+          }}
+        >
+          Fresh sandbox
+        </DropdownMenuItem>
+        {snapshots.data?.snapshots.map((snapshot) => (
+          <DropdownMenuItem
+            key={snapshot.name}
+            role="menuitemradio"
+            aria-checked={
+              state.change.status === "ready" &&
+              state.change.value.snapshot === snapshot.name
+            }
+            onSelect={() =>
+              onChange({
+                status: "ready",
+                value: {
+                  ...(state.change.status === "ready"
+                    ? state.change.value
+                    : {}),
+                  snapshot: snapshot.name,
+                },
+              })
+            }
+          >
+            {snapshot.name}
+          </DropdownMenuItem>
+        ))}
+        {snapshots.data?.error && (
+          <p className="px-2 text-xs text-muted-foreground">
+            {snapshots.data.error}
+          </p>
+        )}
         <DropdownMenuSeparator />
         <p className="px-2 py-1.5 text-xs text-pretty text-muted-foreground">
           Default: {defaultLabel} (Settings → Size for chats on a Boat sandbox).

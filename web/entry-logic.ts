@@ -103,7 +103,7 @@ export function coordinateAction(
 // ------------------------------------------------------------ size chip
 
 export type MachineInputsChange =
-  | { status: "ready"; value: Record<string, string> }
+  | { status: "ready"; value: Record<string, string | boolean> }
   | { status: "blocked"; reason: string };
 
 export interface SizeChipState {
@@ -132,8 +132,11 @@ export function sizeChipState(
 ): SizeChipState {
   const inputs = isRecord(value) ? value : {};
   if (typeof inputs.sandboxId === "string") {
-    const kept: Record<string, string> = { sandboxId: inputs.sandboxId };
+    const kept: Record<string, string | boolean> = {
+      sandboxId: inputs.sandboxId,
+    };
     if (typeof inputs.taskId === "string") kept.taskId = inputs.taskId;
+    if (inputs.keepSandbox === true) kept.keepSandbox = true;
     return {
       type: chatDefault,
       picked: false,
@@ -157,11 +160,19 @@ export function sizeChipState(
       },
     };
   }
+  const kept: Record<string, string | boolean> =
+    picked === null ? {} : { type: picked };
+  if (
+    typeof inputs.snapshot === "string" &&
+    inputs.snapshot.length > 0 &&
+    inputs.snapshot.length <= 120
+  )
+    kept.snapshot = inputs.snapshot;
   return {
     type,
     picked: picked !== null,
     adopted: false,
-    change: { status: "ready", value: picked === null ? {} : { type: picked } },
+    change: { status: "ready", value: kept },
   };
 }
 

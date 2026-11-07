@@ -100,3 +100,67 @@ test("native menu delegates the complete submission, and blocked starts never su
   );
   assert.equal(options.length, 2);
 });
+
+import { adoptNativeChat } from "../src/native-start.ts";
+import { makeService } from "./fakes.ts";
+
+test("native adoption records the real chat once without a sandbox start or launch", async () => {
+  const fake = makeService();
+  const runtime = {
+    service: fake.service,
+    isOrchestrator: async () => false,
+    projects: { forRepo: () => null },
+    bb: {
+      sdk: {
+        threads: {
+          get: async () => ({
+            id: "thr_native",
+            title: "Fix the header",
+            providerId: "codex",
+            projectId: "proj_demo",
+            environmentId: "env_demo",
+            parentThreadId: "thr_parent",
+          }),
+        },
+        environments: {
+          get: async () => ({
+            id: "env_demo",
+            path: "/work/demo",
+            hostId: "host_demo",
+          }),
+        },
+        hosts: {
+          get: async () => ({
+            id: "host_demo",
+            machineProviderId: "boat-sandbox",
+          }),
+        },
+        projects: {
+          get: async () => ({ gitRemoteUrl: "https://github.com/acme/demo" }),
+        },
+      },
+      experimental_machines: {
+        getResource: async () => ({
+          sandboxId: "bx_native",
+          snapshot: "demo-base",
+        }),
+      },
+      rpc: { experimental_invalidate: () => undefined },
+    },
+  } as unknown as Runtime;
+  assert.equal(await adoptNativeChat("thr_native", runtime), true);
+  const task = fake.service.store.byThread("thr_native")!;
+  assert.equal(task.sandboxId, "bx_native");
+  assert.equal(task.environmentId, "env_demo");
+  assert.equal(task.orchestratorThreadId, "thr_parent");
+  assert.equal(task.provider, "codex");
+  assert.equal(task.ownsSandbox, false);
+  assert.equal(
+    task.delivery,
+    "pr",
+    "unknown native branch must not offer direct shipping",
+  );
+  assert.equal(task.snapshot, "demo-base");
+  assert.equal(await adoptNativeChat("thr_native", runtime), false);
+  assert.deepEqual(fake.boat.calls, [], "passive adoption never calls Boat");
+});

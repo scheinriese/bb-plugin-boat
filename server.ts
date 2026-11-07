@@ -32,7 +32,7 @@ import { createSettingsStore } from "./src/settings-store.ts";
 import { MODEL_TIERS_KEY } from "./src/runtime.ts";
 import { parseTierMap } from "./src/tiers.ts";
 import { registerRpc } from "./src/rpc.ts";
-import { nativeStart } from "./src/native-start.ts";
+import { nativeStart, adoptNativeChat } from "./src/native-start.ts";
 import { createRuntime, type Runtime } from "./src/runtime.ts";
 import { BoatService, DeliveryDeferred, type BoatSettings, type Notification } from "./src/service.ts";
 import { TaskStore, type Provider } from "./src/store.ts";
@@ -383,13 +383,13 @@ export default async function plugin(bb: BbPluginApi) {
     const threadId = event.thread?.id;
     if (typeof threadId !== "string") return;
     const at = typeof event.thread?.updatedAt === "number" ? event.thread.updatedAt : null;
-    void service
-      .syncChatThread(threadId, {
+    void adoptNativeChat(threadId, runtime)
+      .then(() => service.syncChatThread(threadId, {
         kind,
         ...(kind === "idle" ? { text: event.lastAssistantText ?? null } : {}),
         ...(kind === "failed" ? { error: event.error ?? null } : {}),
         at,
-      })
+      }))
       .catch((error: unknown) => bb.log.warn(`chat event ${kind} ${threadId}: ${error instanceof Error ? error.message : String(error)}`));
   };
   // A chat someone opens in a worker's workspace joins the task.
