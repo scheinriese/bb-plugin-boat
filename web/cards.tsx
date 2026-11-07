@@ -26,7 +26,7 @@ import {
   useThreadTask,
   useThreadTasks,
 } from "./hooks";
-import { AgentBadge, OpenChatButton, PrLink, showError } from "./ui";
+import { AgentLogo, AgentBadge, OpenChatButton, PrLink, showError } from "./ui";
 import { ShipButton } from "./board";
 import { ResizeDialog } from "./sandbox-size";
 import {
@@ -178,6 +178,7 @@ function TaskChip({ task }: { task: TaskDto }) {
       onClick={() => openTask(task.id)}
       className="mx-1 inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-secondary px-2 py-0.5 align-middle text-xs hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >
+      <AgentLogo provider={task.provider} />
       <span className="truncate">{task.title}</span>
       <CardTaskState task={task} />
     </button>
@@ -288,64 +289,11 @@ export function TaskContextAction({ task }: { task: TaskDto }) {
 
 function ReadyCard({ task }: { task: TaskDetailDto }) {
   const state = cardStatus(task);
-  const { openTask } = useCloudAgentsNavigation();
-  const fill = useFillComposer(task.threadId ?? "");
   const shipped = state.status === "shipped";
-  return (
-    <Frame>
-      <div className="flex flex-wrap items-center gap-2 px-3.5 pt-3">
-        <span
-          className={cn(
-            "font-medium",
-            shipped || state.status === "ready"
-              ? "text-[#5BD08A]"
-              : "text-muted-foreground",
-          )}
-        >
-          {shipped ? "Shipped" : state.label}: {task.title}
-        </span>
-        {task.prUrl && <PrLink url={task.prUrl} />}
-      </div>
-      {(task.readyNote || task.excerpt) && (
-        <p className="px-3.5 pt-2 text-xs text-muted-foreground">
-          {task.readyNote || task.excerpt}
-        </p>
-      )}
-      <div className="flex flex-wrap gap-2 px-3.5 py-3">
-        {!shipped && task.canShip && (
-          <ShipButton task={task} className="my-0" />
-        )}
-        {task.prUrl && (
-          <UrlLink
-            href={task.prUrl}
-            className="rounded-md border border-border px-2.5 py-1 text-xs text-[#7AA7FF]"
-          >
-            Open PR
-          </UrlLink>
-        )}
-        {task.previewUrl && (
-          <UrlLink
-            href={task.previewUrl}
-            className="rounded-md border border-border px-2.5 py-1 text-xs text-[#7AA7FF]"
-          >
-            Open preview
-          </UrlLink>
-        )}
-        <Button size="sm" variant="outline" onClick={() => openTask(task.id)}>
-          See the changes
-        </Button>
-        {!shipped && fill && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => fill(`For ${task.title}, I’d like these changes:\n`)}
-          >
-            Ask for changes…
-          </Button>
-        )}
-      </div>
-    </Frame>
-  );
+  return <p className="my-4 flex flex-wrap items-center gap-2 text-xs leading-5 text-muted-foreground">
+    <span className="size-1.5 rounded-full bg-[#5BD08A]" aria-hidden />
+    <span>{shipped ? "Shipped" : "Ready for you"}{task.source.title ? ` · ${task.source.title} was told` : ""}{!shipped && task.previewUrl ? " · sandbox stays on so the preview keeps working" : ""}</span>
+  </p>;
 }
 
 export function ProblemCard({ task }: { task: TaskDetailDto }) {
@@ -440,7 +388,6 @@ export function DecisionCard({
   decision: DecisionDto;
   threadId: string;
 }) {
-  const [selected, setSelected] = useState<string | null>(null);
   const [queued, setQueued] = useState<null | {
     cancel: () => boolean;
     answer: string;
@@ -457,9 +404,13 @@ export function DecisionCard({
       decision.options.length ? decision.options : [decision.recommendation],
     ),
   ].filter(Boolean);
-  const recommended = recommendedOption(options, decision.recommendation);
-  const choice =
-    selected ?? recommended ?? options[0] ?? decision.recommendation;
+  // Additive data contract keeps old string-only decisions readable.
+  const richer = decision as DecisionDto & { context?: string | null; askedByTaskId?: string | null; optionDetails?: Array<{ label: string; summary?: string; facts?: Record<string, string | number | boolean | null>; verdict?: { text: string; label?: string; tone: "good" | "caution" | "bad" }; recommended?: boolean }> };
+  const details: NonNullable<typeof richer.optionDetails> = richer.optionDetails?.length ? richer.optionDetails : options.map(label => ({label}));
+  const recommended = details.find(option => option.recommended)?.label ?? recommendedOption(options, decision.recommendation);
+  const columns = [...new Set(details.flatMap(option => Object.keys(option.facts ?? {})))];
+  const asked = useTask(richer.askedByTaskId ?? decision.taskIds[0] ?? null).data?.task;
+  const ageMinutes = Math.max(0, Math.floor((Date.now() - Date.parse(decision.createdAt)) / 60000));
   const busy = queued !== null || send.isPending;
   const choose = (answer: string) => {
     if (busy) return;
@@ -514,47 +465,23 @@ export function DecisionCard({
       </Frame>
     );
   return (
-    <Frame className="border-[#F0B135]/25">
-      <header className="border-b border-border px-3.5 py-2 text-xs text-[#F0B135]">
-        {closed ? "Decision answered" : "Needs you"}
+    <Frame className="border-[#F0B135]/20 bg-[#191919]">
+      <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3.5 py-2 text-xs">
+        <span className="inline-flex items-center gap-1.5 text-[#F0B135]"><span className="size-1.5 rounded-full bg-current" />{closed ? "Decision answered" : "Needs you"}</span>
+        <span className="text-muted-foreground">{asked ? `asked by ${asked.title} · ` : ""}{ageMinutes < 1 ? "just now" : `${ageMinutes} min ago`}</span>
       </header>
       <div className="space-y-3 p-3.5">
-        <p className="font-medium">{decision.question}</p>
-        <fieldset disabled={busy || closed} className="space-y-1.5">
-          <legend className="sr-only">Options</legend>
-          {options.map((option, index) => (
-            <label
-              key={option}
-              className={cn(
-                "flex cursor-pointer items-start gap-2 rounded-md border px-2.5 py-2",
-                choice === option
-                  ? "border-foreground/30 bg-secondary"
-                  : "border-border",
-              )}
-            >
-              <input
-                type="radio"
-                name={`boat-${decision.id}`}
-                checked={choice === option}
-                onChange={() => setSelected(option)}
-                className="mt-1 accent-current"
-              />
-              <span className="min-w-0 flex-1 break-words">{option}</span>
-              {option === recommended && (
-                <span className="shrink-0 text-[11px] text-[#7AA7FF]">
-                  Recommended
-                </span>
-              )}
-            </label>
-          ))}
-        </fieldset>
-        {decision.recommendation &&
-          !options.includes(decision.recommendation) && (
-            <p className="text-xs text-muted-foreground">
-              <span className="text-[#7AA7FF]">Recommended:</span>{" "}
-              {decision.recommendation}
-            </p>
-          )}
+        <div>
+          <p className="text-base font-normal leading-6">{decision.question}</p>
+          {richer.context && <p className="mt-1 text-[13px] leading-5 text-muted-foreground">{richer.context}</p>}
+        </div>
+        <div className="hidden sm:block">
+          <table className="w-full table-fixed text-left text-[13px] leading-5">
+            <thead className="text-xs font-normal text-muted-foreground"><tr className="h-7 border-b border-border"><th className="font-normal">Option</th>{columns.map(column=><th key={column} className="w-[110px] font-normal">{column}</th>)}{details.some(option=>option.verdict) && <th className="w-[190px] font-normal">{details.find(option=>option.verdict?.label)?.verdict?.label ?? "Fit"}</th>}</tr></thead>
+            <tbody>{details.map(option=><tr key={option.label} className="h-[38px] border-b border-border last:border-0"><td><span>{option.label}</span>{option.label===recommended && <span className="ml-2 rounded-sm bg-[#7AA7FF]/10 px-1.5 py-0.5 text-[10px] text-[#7AA7FF]">Recommended</span>}{option.summary && <span className="block text-xs text-muted-foreground">{option.summary}</span>}</td>{columns.map(column=><td key={column} className="text-muted-foreground">{String(option.facts?.[column] ?? "—")}</td>)}{details.some(item=>item.verdict) && <td className={option.verdict?.tone==='good'?'text-[#5BD08A]':option.verdict?.tone==='caution'?'text-[#FC8C45]':'text-[#E06C6C]'}>{option.verdict?.text}</td>}</tr>)}</tbody>
+          </table>
+        </div>
+        <div className="space-y-3 sm:hidden">{details.map(option=><div key={option.label} className="border-t border-border pt-2"><p>{option.label}{option.label===recommended && <span className="ml-2 text-[10px] text-[#7AA7FF]">Recommended</span>}</p>{columns.map(column=><p key={column} className="text-xs text-muted-foreground">{column}: {String(option.facts?.[column]??"—")}</p>)}{option.verdict && <p className={option.verdict.tone==='good'?'text-[#5BD08A]':option.verdict.tone==='caution'?'text-[#FC8C45]':'text-[#E06C6C]'}>{option.verdict.text}</p>}<Button size="sm" variant={option.label===recommended?'default':'outline'} className="mt-2 w-full" disabled={busy||closed} onClick={()=>choose(option.label)}>Go with {option.label}</Button></div>)}</div>
         {queued ? (
           <div role="status" className="flex items-center gap-3 text-xs">
             <span className="min-w-0 flex-1">Queued: {queued.answer}</span>
@@ -571,19 +498,12 @@ export function DecisionCard({
         ) : (
           !closed && (
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <Button
-                size="sm"
-                disabled={send.isPending || !choice}
-                onClick={() => choose(choice)}
-                className="h-auto min-h-7 whitespace-normal break-words"
-              >
-                {send.isPending ? "Sending…" : `Go with ${choice}`}
-              </Button>
+              <div className="hidden flex-wrap gap-2 sm:flex">{options.map(option=><Button key={option} size="sm" variant={option===recommended?'default':'outline'} disabled={busy} onClick={()=>choose(option)} className="h-[30px] px-3 text-xs font-normal">Go with {option}</Button>)}</div>
               {fill && (
                 <button
                   className="py-1 text-left text-xs text-muted-foreground hover:text-foreground sm:ml-auto"
                   disabled={send.isPending}
-                  onClick={() => fill(`${decision.question}\n\n${choice}\n\n`)}
+                  onClick={() => fill(`${decision.question}\n\n`)}
                 >
                   Answer in your own words
                 </button>
@@ -683,7 +603,21 @@ function StoppedComposerBanner() {
     !["stopped", "broken", "waiting-reset"].includes(cardStatus(task).status)
   )
     return null;
-  return detail ? <ProblemCard task={detail} /> : null;
+  if (!detail) return null;
+  return <StoppedBanner task={detail} />;
+}
+function StoppedBanner({task}:{task:TaskDetailDto}) {
+  const [resizing,setResizing]=useState(false);
+  const resume=experimental_useRpcMutation({contract:rpcContract,method:"sandboxAction"});
+  const state=cardStatus(task);
+  const oom=Boolean(task.memory?.oom?.cause && !task.memory.oom.movedTo);
+  return <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-secondary px-3 py-2 text-xs text-muted-foreground">
+    <Icon name="Pause" className="size-3.5" />
+    <span className="min-w-0 flex-1">{state.status==='waiting-reset'?'Waiting for a reset · work is saved':oom?'Sandbox stopped · out of memory · work is saved':'Sandbox stopped · nothing lost'}</span>
+    <Button size="sm" variant="outline" disabled={resume.isPending} onClick={()=>{if(oom)setResizing(true);else if(task.sandboxId)void resume.mutate({id:task.sandboxId,action:'resume'}).catch(showError)}}>{oom?'Continue on Large':'Resume'}</Button>
+    <ResizeDialog task={task} mode="oom" open={resizing} onOpenChange={setResizing}/>
+  </div>;
+
 }
 
 export function registerChatCards(app: PluginAppBuilder): void {
