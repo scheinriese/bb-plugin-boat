@@ -1,3 +1,4 @@
+import { DiffStats } from "./diff-stats";
 import { useEffect, useId, useRef, useState } from "react";
 import { experimental_useQuestionFormHost, type PluginAppBuilder, type PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import { SHIP_RENDERER_ID, shipFormSchema } from "../contract-ship";
@@ -12,7 +13,7 @@ export function registerShipInteraction(app: PluginAppBuilder): void {
 export function ShipInteraction({ interaction, submit, cancel }: PluginPendingInteractionProps) {
   const parsed = shipFormSchema.safeParse(interaction.payload);
   return parsed.success ? <ShipFormView key={interaction.id} form={parsed.data} submit={submit} cancel={cancel} /> : (
-    <section className="boat-ship-form" aria-label="Shipping confirmation unavailable">
+    <section className="boat-ui boat-ship-form" aria-label="Shipping confirmation unavailable">
       <p role="alert">This shipping confirmation is unavailable. Cancel it and request shipping again.</p>
       <Button variant="outline" size="sm" onClick={() => void cancel()}>Cancel confirmation</Button>
     </section>
@@ -62,7 +63,7 @@ export function ShipFormView({ form, submit, cancel, merge }: Pick<PluginPending
     confirmShortcut ? `${confirmShortcut.label} confirm` : null,
     cancelShortcut ? `${cancelShortcut.label} not now` : null].filter(Boolean).join(" · ");
   return (
-    <form className="boat-ship-form" data-question-form aria-labelledby={`${id}-title`} aria-busy={pending}
+    <form className="boat-ui boat-ship-form" data-question-form aria-labelledby={`${id}-title`} aria-busy={pending}
       onSubmit={(event) => { event.preventDefault(); void act("submit"); }}>
       <div className="boat-ship-body">
       <div className="boat-ship-heading">
@@ -76,7 +77,7 @@ export function ShipFormView({ form, submit, cancel, merge }: Pick<PluginPending
         </li>)}
       </ul>
       <div className="boat-ship-summary">{form.commits} commit{form.commits === 1 ? "" : "s"}
-        {form.additions !== undefined && form.deletions !== undefined ? <> · +{form.additions} −{form.deletions}</> : null}
+        {form.additions !== undefined && form.deletions !== undefined ? <> · <DiffStats additions={form.additions} deletions={form.deletions} /></> : null}
         {merge ? <> · commit <code>{merge.head.slice(0, 7)}</code></> : null}
         {mode === "ship" && form.repositories > 1 ? ` · ${form.repositories} repositories` : ""}
         {form.changes ? <> · <button type="button" className="boat-ship-link" onClick={() => setShowChanges(!showChanges)}>see the changes</button></>

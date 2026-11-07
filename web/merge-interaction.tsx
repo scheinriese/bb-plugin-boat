@@ -7,7 +7,7 @@ export function registerMergeInteraction(app: PluginAppBuilder): void {
 }
 export function MergeInteraction({ interaction, submit, cancel }: PluginPendingInteractionProps) {
   const parsed = mergeFormSchema.safeParse(interaction.payload);
-  if (!parsed.success) return <section className="boat-ship-form"><p role="alert">This merge confirmation is unavailable. Request merging again.</p><Button onClick={() => void cancel()}>Cancel confirmation</Button></section>;
+  if (!parsed.success) return <section className="boat-ui boat-ship-form"><p role="alert">This merge confirmation is unavailable. Request merging again.</p><Button onClick={() => void cancel()}>Cancel confirmation</Button></section>;
   const { requestId, taskId, title, facts } = parsed.data;
   return <ShipFormView key={interaction.id} merge={{ number: facts.number, head: facts.head }} form={{ requestId, taskId, title, baseBranch: facts.baseBranch,
     keepOpen: true, commits: facts.commits, repositories: 1, additions: facts.additions, deletions: facts.deletions,

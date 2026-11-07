@@ -52,3 +52,4 @@
   .boat-ship-footer > span { flex-basis: 100%; }
   .boat-ship-footer > button { flex: 1; min-height: 40px; height: auto; }
 }
+.dark .boat-ship-form { --foreground:#ededed; --muted-foreground:#8a8a8a; --border:#2a2a2a; --primary:#e6e6e6; --primary-foreground:#141414; }
