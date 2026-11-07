@@ -248,6 +248,16 @@ export const taskSourceSchema = z.object({
 });
 export type TaskSourceDto = z.infer<typeof taskSourceSchema>;
 
+export const taskPublicStatusSchema = z.object({
+  status: z.enum(["working", "review", "ready", "shipped", "needs-you", "broken", "stopped", "waiting-reset"]),
+  label: z.string(),
+  tone: z.enum(["neutral", "attention", "positive", "danger"]),
+  reason: z.string().nullable(),
+  needsYou: z.boolean(),
+  moving: z.boolean(),
+});
+export type TaskPublicStatusDto = z.infer<typeof taskPublicStatusSchema>;
+
 export const taskSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -278,6 +288,8 @@ export const taskSchema = z.object({
    * or work its orchestrator marked ready), done, cancelled.
    */
   phase: z.enum(["starting", "working", "waiting", "failed", "ready", "done", "cancelled"]),
+  /** Shared v1 status, additive for older cached task responses. */
+  publicStatus: taskPublicStatusSchema.optional(),
   /** The orchestrator's note when it marked the work ready for review. */
   readyNote: z.string().nullable(),
   /** Latest review of an implementation: "reviewing", "approve", "changes-requested", … */

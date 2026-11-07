@@ -16,7 +16,7 @@ import { DEFAULT_PROTOCOL } from "./default-protocol.ts";
 import { MAX_PROTOCOL_CHARS } from "./protocol.ts";
 import { TaskError } from "./service.ts";
 import { DEFAULT_TIERS, tierMapSchema } from "./tiers.ts";
-import { buildBoard, isReady, phaseOf, reviewState } from "./board.ts";
+import { buildBoard, isReady, phaseOf, reviewState, resolveTaskStatus, type TaskPublicStatus } from "./board.ts";
 import { ConfigError, applyImport, changeCount, exportConfig, exportFileName, planImport, summarize } from "./config.ts";
 import { CHAT_PROVIDER } from "./chat.ts";
 import { OPEN_STATUSES, PROVIDERS, type Provider, type Task } from "./store.ts";
@@ -68,7 +68,7 @@ export function shipApprovalDto(task: Pick<Task, "turns" | "shipApproval">): Tas
 
 export function toTaskDto(
   task: Task,
-  extras: { ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean } = {},
+  extras: { ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean; publicStatus?: TaskPublicStatus } = {},
 ): TaskDto {
   const report = task.result ? parseReport(task.result) : { status: null, verdict: null };
   const unshipped = holdsUnshippedWork(task);
@@ -77,6 +77,7 @@ export function toTaskDto(
       extras.source ??
       (task.orchestratorThreadId === null ? { kind: "page", threadId: null, title: null } : { kind: "chat", threadId: task.orchestratorThreadId, title: null }),
     phase: phaseOf(task, extras.ready ?? task.readyAt !== null),
+    publicStatus: extras.publicStatus ?? resolveTaskStatus(task, { ready: extras.ready, latestReview: extras.latestReview }),
     readyNote: task.readyNote,
     latestReview: extras.latestReview ?? null,
     previewUrl: extras.previewUrl ?? null,
@@ -298,6 +299,7 @@ export function registerRpc(runtime: Runtime): void {
 
   const dto = (task: Task, sources: Sourcing, all?: readonly Task[]) =>
     toTaskDto(task, {
+      publicStatus: service.publicStatus(task, { ready: isReady(task, all ?? service.store.list({ parentTaskId: task.id, limit: 100 }).concat(task), latestReview, sources.isOrchestrator) }),
       untrustedRepo: untrusted(task),
       movingToChat: service.isMovingToChat(task.id),
       latestReview: latestReview(task),
@@ -1011,12 +1013,12 @@ export function registerRpc(runtime: Runtime): void {
       return {
         needsYou: board.needsYou.map(toDecisionDto),
         ready: board.ready.map((task) =>
-          toTaskDto(task, { ready: true, latestReview: latestReview(task), untrustedRepo: untrusted(task), movingToChat: service.isMovingToChat(task.id), previewUrl: service.previewLinkFor(task.id), source: sources.source(task) }),
+          dto(task, sources, tasks),
         ),
         running: board.running.map((task) =>
-          toTaskDto(task, { ready: false, latestReview: latestReview(task), untrustedRepo: untrusted(task), movingToChat: service.isMovingToChat(task.id), previewUrl: service.previewLinkFor(task.id), source: sources.source(task) }),
+          dto(task, sources, tasks),
         ),
-        done: board.done.map((task) => toTaskDto(task, { latestReview: latestReview(task), untrustedRepo: untrusted(task), source: sources.source(task) })),
+        done: board.done.map((task) => dto(task, sources, tasks)),
       };
     },
 
