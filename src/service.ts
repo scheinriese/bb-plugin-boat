@@ -3743,6 +3743,21 @@ export class BoatService {
     ];
   }
 
+  /** Holds the existing lifecycle claim while a confirmed PR merge is rechecked.
+   * This never wakes, stops or deletes a sandbox. The caller keeps it after merge.
+   */
+  async withMergeClaim<T>(id: string, action: (task: Task) => Promise<T>): Promise<T> {
+    const task = await this.refreshChatTask(id);
+    this.assertNotMoving(task.id);
+    this.sizes.assertNotResizing(task, "ship");
+    if (task.status !== "idle" || task.delivery !== "pr" || task.role === "review" || !task.prUrl || !task.repo) {
+      throw new TaskError("Wait for this task's pull request to be ready before merging.", "not_mergeable");
+    }
+    if (task.sandboxId !== null && this.holdsSandbox(task.sandboxId)) throw new TaskError("This sandbox is in use. Try merging again once it finishes.", "sandbox_busy");
+    const release = task.sandboxId === null ? () => {} : this.claim(task.sandboxId);
+    try { return await action(this.mustGet(task.id)); } finally { release(); }
+  }
+
   /** Open tasks on a sandbox whose unshipped work would be lost with it. */
   async unshippedTasks(sandboxId: string, signal?: AbortSignal): Promise<Task[]> {
     const held: Task[] = [];

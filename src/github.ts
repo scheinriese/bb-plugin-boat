@@ -86,3 +86,55 @@ export function ghStatus(signal?: AbortSignal): Promise<{ state: "ok" | "not-ins
     );
   });
 }
+
+/** Only canonical GitHub PR URLs that belong to this task's repository. */
+export function pullRequestNumber(repo: string, url: string): number {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error("The task repository is invalid.");
+  const parsed = new URL(url);
+  const match = /^\/([^/]+\/[^/]+)\/pull\/([1-9]\d*)\/?$/.exec(parsed.pathname);
+  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com" || parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash || !match || match[1].toLowerCase() !== repo.toLowerCase() || !Number.isSafeInteger(Number(match[2]))) {
+    throw new Error("The pull request doesn't belong to this task's repository.");
+  }
+  return Number(match[2]);
+}
+
+/** Bounded, cancellable invocation of the existing server-side gh path. */
+function gh(args: string[], signal?: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => execFile(ghBinary(), args,
+    { timeout: 30_000, maxBuffer: MAX_BYTES, signal, env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" } },
+    (error, stdout, stderr) => error ? reject(new Error((String(stderr).trim() || error.message).slice(0, 600))) : resolve(stdout)));
+}
+
+const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed pullRequest(number:$number){number url title headRefOid baseRefOid headRefName baseRefName additions deletions state isDraft mergeable mergeStateStatus reviewDecision commits(last:1){totalCount nodes{commit{statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion detailsUrl} ... on StatusContext{context state targetUrl}}}}}}}}}}`;
+
+/** No cache: confirmations always see fresh HEAD, branch rules and checks. */
+export async function getPullRequest(repo: string, url: string, signal?: AbortSignal): Promise<import("../contract-merge.ts").PullRequestFacts> {
+  const number = pullRequestNumber(repo, url);
+  const [owner, name] = repo.split("/");
+  const raw = JSON.parse(await gh(["api", "graphql", "-f", `query=${PR_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`], signal));
+  if (raw.errors?.length) throw new Error("GitHub couldn't read the pull request and checks. Try again.");
+  const repository = raw.data?.repository;
+  const pr = repository?.pullRequest;
+  if (!pr) throw new Error("GitHub couldn't find this task's pull request.");
+  const contexts = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+  const { pullRequestFactsSchema } = await import("../contract-merge.ts");
+  const facts = pullRequestFactsSchema.parse({ repo, number: pr.number, url: pr.url, title: pr.title, head: pr.headRefOid, base: pr.baseRefOid,
+    headBranch: pr.headRefName, baseBranch: pr.baseRefName, additions: pr.additions, deletions: pr.deletions, commits: pr.commits.totalCount,
+    state: pr.state, draft: pr.isDraft, mergeable: pr.mergeable, mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision ?? "",
+    checks: (contexts?.nodes ?? []).map((check: Record<string, string | null>) => ({ name: check.name ?? check.context,
+      state: check.__typename === "CheckRun" ? check.status === "COMPLETED" ? check.conclusion ?? "UNKNOWN" : check.status : check.state,
+      url: check.detailsUrl || check.targetUrl || null })), checksTruncated: contexts?.pageInfo?.hasNextPage ?? false,
+    mergeMethod: repository.mergeCommitAllowed ? "merge" : repository.squashMergeAllowed ? "squash" : repository.rebaseMergeAllowed ? "rebase" : null,
+  });
+  if (facts.number !== number || pullRequestNumber(repo, facts.url) !== number) throw new Error("GitHub returned a different pull request.");
+  return facts;
+}
+
+/** Atomic server-side HEAD guard; no admin bypass, auto-merge or branch deletion. */
+export async function mergePullRequest(facts: import("../contract-merge.ts").PullRequestFacts, signal?: AbortSignal): Promise<void> {
+  const { pullRequestFactsSchema } = await import("../contract-merge.ts");
+  const checked = pullRequestFactsSchema.parse(facts);
+  const number = pullRequestNumber(checked.repo, checked.url);
+  if (checked.mergeMethod === null) throw new Error("This repository has no enabled merge method.");
+  await gh(["pr", "merge", String(number), "--repo", checked.repo, `--${checked.mergeMethod}`, "--match-head-commit", checked.head], signal);
+}
