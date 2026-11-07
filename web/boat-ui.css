@@ -1,6 +1,36 @@
 /* Paper's explicit text rendering, scoped to SDK-rendered plugin content.
    bb's own Inter face and theme font tokens remain inherited. */
 .boat-ui {
+  --boat-heading: var(--foreground);
+  --boat-content: var(--foreground);
+  --boat-description: var(--muted-foreground);
+  --boat-chip: var(--muted);
+  --boat-label: var(--foreground);
+  --boat-secondary: var(--muted-foreground);
+  --boat-faint: var(--muted-foreground);
+  --boat-active: var(--muted);
+  --boat-setting-border: var(--border);
+  --boat-mobile-card: var(--card);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Match the handoff's dark surfaces through scoped semantic tokens.
+   Light appearance keeps bb's tokens. Host chrome is outside this root. */
+.dark .boat-ui {
+  --boat-heading: #ededed;
+  --boat-content: #d6d6d6;
+  --boat-description: #7a7a7a;
+  --boat-chip: #1c1c1c;
+  --boat-label: #e2e2e2;
+  --boat-secondary: #9a9a9a;
+  --boat-faint: #6e6e6e;
+  --boat-active: #1d1d1d;
+  --boat-setting-border: #262626;
+  --boat-mobile-card: #1b1b1b;
+  --card: #181818;
+  --border: #2a2a2a;
+  --muted-foreground: #8a8a8a;
+  --primary: #e6e6e6;
+  --primary-foreground: #141414;
 }
