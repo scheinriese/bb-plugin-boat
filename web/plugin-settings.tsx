@@ -5,7 +5,7 @@
 // selects save at once, text and numbers when you leave the field.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { experimental_useRpcMutation, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { experimental_useRpcMutation, experimental_useRpcQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { rpcContract, rpcErrorInfo, type SandboxSizeDto, type SettingDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +19,8 @@ import { EVIDENCE_VARIABLES, ORCHESTRATOR_CARD_RULE, cardShownToast, evidenceMod
 import { ModelPresetsEditor, ProtocolEditor } from "./protocol-settings";
 import { SetupChecklist } from "./setup";
 import { BackupSettings } from "./backup-settings";
-import { groupedSettings } from "./v1-settings-logic";
+import { EVERYDAY_SETTING_COPY, groupedSettings, notificationSettingPatch } from "./v1-settings-logic";
+import { useSettingsFrameTweak } from "./workarounds/settings-frame";
 import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, focusNeighbour, showError } from "./ui";
 
 type SettingValue = string | number | boolean;
@@ -49,15 +50,16 @@ function useSaveSetting() {
       })),
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const run = async (key: string, value: SettingValue | null) => {
-    setErrors(({ [key]: _dropped, ...rest }) => rest);
-    try {
-      await save.mutate({ values: { [key]: value } });
-    } catch (error) {
-      setErrors((current) => ({ ...current, [key]: rpcErrorInfo(error).message }));
-    }
+  const runValues = async (values: Record<string, SettingValue | null>) => {
+    const keys = Object.keys(values);
+    setErrors((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !keys.includes(key))));
+    try { await save.mutate({ values }); }
+    catch (error) { setErrors((current) => ({ ...current, ...Object.fromEntries(keys.map((key) => [key, rpcErrorInfo(error).message])) })); }
   };
-  return { run, errors };
+  const run = async (key: string, value: SettingValue | null) => {
+    await runValues({ [key]: value });
+  };
+  return { run, runValues, errors };
 }
 
 type Saver = ReturnType<typeof useSaveSetting>;
@@ -537,42 +539,73 @@ export function BoatSettings() {
 
 function DesktopBoatSettings() {
   const query = useSettingRows();
+  const setup = useSetup().data;
   const saver = useSaveSetting();
   const sizes = useSandboxSizes().data?.sizes;
   const projects = useProjects().data?.projects ?? [];
   const navigate = useBbNavigate();
   const grouped = groupedSettings(query.data?.settings ?? []);
-  return <div className="space-y-6 text-[13px]">
+  const master = query.data?.settings.find((row) => row.key === "pushNotifications")?.value === true;
+  const frameRef = useSettingsFrameTweak(query.data?.settings.find((row) => row.key === "experimentalUiTweaks")?.value === true);
+  return <div ref={frameRef} className="boat-settings space-y-[22px] text-[13px] leading-[18px]">
     <SetupChecklist />
     <Loading error={query.error} rows={query.data?.settings.length ?? 0} />
-    {grouped.groups.map((group) => <section key={group.title} aria-label={group.title} className="space-y-2">
-      <h3 className="text-xs font-medium text-muted-foreground">{group.title}</h3>
-      <SettingsCard><Rows rows={group.rows} saver={saver} extra={() => ({ sizes })} /></SettingsCard>
+    {grouped.groups.map((group) => <section key={group.title} aria-label={group.title} className={cn("space-y-2", setup?.ok === false && "opacity-35")}>
+      <h3 className="text-[13px] font-medium leading-[18px] text-[#B7B7B7]">{group.title}</h3>
+      <div className="divide-y divide-[#222] overflow-hidden rounded-[10px] border border-[#262626] bg-[#181818]">
+        {group.rows.map((row) => <EverydaySettingRow key={row.key} row={row} saver={saver} sizes={sizes} master={master} />)}
+        {group.title === "Notifications" ? <div className="flex items-start gap-6 px-3.5 py-3"><div className="min-w-0 flex-1"><p className="text-[#E2E2E2]">Progress</p><p className="mt-0.5 text-xs leading-[17px] text-[#8A8A8A]">Every finished turn. Off keeps it quiet.</p></div><span title="Progress notifications stay off in v1"><Switch checked={false} disabled onCheckedChange={() => undefined} aria-label="Progress notifications stay off" className="opacity-100 disabled:opacity-100" /></span></div> : null}
+      </div>
     </section>)}
-    <div className="flex flex-wrap items-center gap-3 rounded-[10px] border border-border bg-card px-3.5 py-3">
-      <div className="min-w-0 flex-1"><p>Projects</p><p className="text-xs text-muted-foreground">{projects.length ? projects.map((project) => project.name).join(", ") : "Repos, how work lands, sizes and reviewers"}</p></div>
-      <Button variant="link" size="sm" className="text-[#7AA7FF]" onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: "projects" })}>Open the Projects page →</Button>
+    <div className="space-y-2">
+    <div className="flex flex-wrap items-center gap-2.5 rounded-[10px] border border-[#262626] bg-[#181818] px-3.5 py-3">
+      <div className="min-w-0 flex-1"><p className="text-[#E2E2E2]">Projects</p><p className="mt-0.5 text-xs leading-[17px] text-[#8A8A8A]">{projects.length ? `${projects.map((project) => project.name).join(", ")} · repos, how work lands, sizes, reviewers` : "Repos, how work lands, sizes, reviewers"}</p></div>
+      <button type="button" className="text-xs leading-4 text-[#7AA7FF] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: "projects" })}>Open the Projects page →</button>
     </div>
-    <details className="rounded-[10px] border border-border bg-card px-3.5 py-3">
-      <summary className="cursor-pointer text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Advanced<span className="mt-1 block text-xs text-muted-foreground">Models, switching, task instructions, backup and restore</span></summary>
+    <details className="rounded-[10px] border border-[#262626] bg-[#181818] px-3.5 py-3">
+      <summary className="cursor-pointer text-[13px] text-[#E2E2E2] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Advanced<span className="mt-0.5 block text-xs leading-[17px] text-[#8A8A8A]">Orchestrator protocol, Claude ↔ Codex switching, instructions for every task, backup and restore</span></summary>
       <div className="mt-5 space-y-5"><Rows rows={grouped.advanced} saver={saver} extra={() => ({ sizes })} /><ModelPresetsEditor /><ProtocolEditor /><BackupSettings /></div>
     </details>
+    </div>
   </div>;
+}
+
+/** Artboard-sized rows, with the existing validated settings writes. */
+function EverydaySettingRow({ row, saver, sizes, master }: { row: SettingDto; saver: Saver; sizes?: SandboxSizeDto[]; master: boolean }) {
+  const copy = EVERYDAY_SETTING_COPY[row.key];
+  const label = copy?.label ?? row.label;
+  const description = copy?.description ?? row.description;
+  const id = `boat-everyday-${row.key}`;
+  const [draft, setDraft] = useState<string | null>(null);
+  const category = row.key === "notifyNeedsYou" || row.key === "notifyReady" ? row.key : null;
+  const error = saver.errors[row.key];
+  const disabled = row.disabledReason !== null;
+  const selectClass = "h-[30px] w-44 rounded-md border-[#2E2E2E] bg-[#151515] px-2.5 text-[13px] text-[#D6D6D6] shadow-none";
+  let control: ReactNode;
+  if (row.type === "boolean") control = <Switch id={id} aria-label={label} checked={row.value === true && (category === null || master)} disabled={disabled} onCheckedChange={(checked) => void (category ? saver.runValues(notificationSettingPatch(master, category, checked)) : saver.run(row.key, checked))} />;
+  else if (row.type === "select" || row.key === "stopIdleAfterMinutes") {
+    const options = row.key === "stopIdleAfterMinutes"
+      ? [...new Map([[15,"15 minutes"],[30,"30 minutes"],[60,"1 hour"],[120,"2 hours"],[240,"4 hours"],[0,"Never"],[Number(row.value), Number(row.value) >= 60 && Number(row.value) % 60 === 0 ? `${Number(row.value)/60} ${Number(row.value) === 60 ? "hour" : "hours"}` : `${row.value} minutes`]].map(([value,label]) => [String(value), {value:String(value),label:String(label)}])).values()]
+      : (row.options ?? []).map((option) => ({...option, label: row.key === "machineType" ? option.label.split(" (")[0]! : option.label}));
+    control = <Select value={String(row.value)} disabled={disabled} onValueChange={(value) => void saver.run(row.key, row.key === "stopIdleAfterMinutes" ? Number(value) : value)}><SelectTrigger id={id} aria-label={label} className={selectClass}><SelectValue /></SelectTrigger><SelectContent>{options.map((option) => <SelectItem key={option.value} value={option.value} disabled={row.key === "machineType" && sizes?.some((size) => size.type === option.value && !size.available) && option.value !== row.value}>{option.label}</SelectItem>)}</SelectContent></Select>;
+  } else control = <Input id={id} aria-label={label} type="number" min={row.min ?? undefined} max={row.max ?? undefined} value={draft ?? String(row.value)} disabled={disabled} className={selectClass} onChange={(event) => setDraft(event.target.value)} onBlur={() => { if (draft !== null && Number(draft) !== row.value) void saver.run(row.key, draft.trim() === "" ? null : Number(draft)); setDraft(null); }} />;
+  return <div className="flex items-start gap-6 px-3.5 py-3"><div className="min-w-0 flex-1"><label htmlFor={id} className="block text-[13px] font-normal leading-[18px] text-[#E2E2E2]">{label}</label><p className="mt-0.5 text-xs leading-[17px] text-[#8A8A8A]">{description}</p>{error ? <p role="alert" className="mt-1 text-xs text-[#E06C6C]">{error}</p> : null}</div><div className="shrink-0">{control}</div></div>;
 }
 
 /** Mobile settings use the same actual settings, with one notification switch. */
 export function MobileBoatSettings() {
   const query = useSettingRows();
   const setup = useSetup().data;
-  const board = useBoard(null).data;
+  const usage = experimental_useRpcQuery({contract: rpcContract, method:"fidelityUsage", input:{timezoneOffsetMinutes: -new Date().getTimezoneOffset()}}).data;
   const saver = useSaveSetting();
   const navigate = useBbNavigate();
   const rows = query.data?.settings ?? [];
-  const needsYou = (board?.needsYou.length ?? 0) + (board?.running.filter((task) => task.publicStatus?.needsYou && !board.needsYou.some((decision) => decision.taskIds.includes(task.id))).length ?? 0);
-  return <div className="space-y-3">
-    <p className={setup?.ok ? "text-[#5BD08A]" : "text-[#F0B135]"}>{setup === undefined ? "Checking cloud agents…" : setup.ok ? "Cloud agents are ready" : "Cloud agents need setup"}</p>
-    <p className="text-sm text-muted-foreground">{board ? `${needsYou} need you · ${board.ready.length} ready` : "Checking tasks…"}</p>
-    <SettingsCard><Rows rows={rows.filter((row) => row.key === "pushNotifications" || row.key === "avoidExtraUsage").map((row) => row.key === "avoidExtraUsage" ? { ...row, label: "Wait for a usage reset", description: "Keeps new tasks off paid extra usage when your agents reach their limits." } : row)} saver={saver} /></SettingsCard>
-    <Button variant="outline" onClick={() => navigate.toPluginPanel(PANEL_PATH)}>Open cloud agents</Button>
+  const master = rows.find((row) => row.key === "pushNotifications")?.value === true;
+  return <div className="space-y-3.5 text-sm">
+    <div className="flex items-center gap-2 rounded-[12px] border border-[#2A2A2A] bg-[#1B1B1B] px-3.5 py-3 text-[13px] leading-[19px]"><span aria-hidden className={cn("size-1.5 shrink-0 rounded-full",setup?.ok ? "bg-[#5BD08A]" : "bg-[#F0B135]")} /><span>{setup === undefined ? "Checking cloud agents…" : setup.ok ? ["All set",setup.plan?.maxActiveSandboxes ? `${setup.plan.activeSandboxes} of ${setup.plan.maxActiveSandboxes} sandboxes on` : null,usage?.plan?.hoursRemaining !== null && usage?.plan?.hoursRemaining !== undefined ? `${usage.plan.hoursRemaining.toLocaleString()} h left` : null].filter(Boolean).join(" · ") : "Cloud agents need setup"}</span></div>
+    <div className="divide-y divide-[#2A2A2A] overflow-hidden rounded-[12px] border border-[#2A2A2A] bg-[#1B1B1B]">
+      {rows.filter((row) => ["notifyNeedsYou","notifyReady","avoidExtraUsage"].includes(row.key)).sort((a,b)=>["notifyNeedsYou","notifyReady","avoidExtraUsage"].indexOf(a.key)-["notifyNeedsYou","notifyReady","avoidExtraUsage"].indexOf(b.key)).map((row) => <div key={row.key} className="flex items-start gap-3 px-3.5 py-3"><div className="min-w-0 flex-1"><p className="text-[15px] leading-5 text-[#E2E2E2]">{row.key === "avoidExtraUsage" ? "Don’t start on paid extra usage" : row.label}</p><p className="mt-0.5 text-[13px] leading-[18px] text-[#8A8A8A]">{row.key === "notifyNeedsYou" ? "A decision or an OK waits on you" : row.key === "notifyReady" ? "A change is reviewed and can ship" : "New tasks wait for the reset"}</p>{saver.errors[row.key] ? <p role="alert" className="text-xs text-[#E06C6C]">{saver.errors[row.key]}</p> : null}</div><Switch aria-label={row.label} className="mt-1 h-6 w-10 [&>span]:size-[18px] [&>span]:data-[state=checked]:translate-x-[18px] [&>span]:data-[state=unchecked]:translate-x-0.5" checked={row.value===true&&(row.key==="avoidExtraUsage"||master)} onCheckedChange={(checked)=>void(row.key==="notifyNeedsYou"||row.key==="notifyReady" ? saver.runValues(notificationSettingPatch(master,row.key,checked)) : saver.run(row.key,checked))}/></div>)}
+    </div>
+    <p className="text-xs leading-[17px] text-[#6E6E6E]">Everything else is in Settings on your computer.</p>
   </div>;
 }

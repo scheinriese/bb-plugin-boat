@@ -1,4 +1,5 @@
 import { fidelityHandlers } from "./rpc-fidelity.ts";
+import { shipPresentation } from "./ship-presentation.ts";
 // RPC handlers behind the Cloud agents UI (contract in ../contract.ts).
 import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import { TAGS, rpcContract, type PreviewDto, type SandboxDto, type TaskDetailDto, type TaskDto, type TaskSourceDto, type ThreadRoleDto } from "../contract.ts";
@@ -208,6 +209,7 @@ export async function refuse<T>(fn: () => Promise<T>): Promise<T> {
 export function registerShipRpc(runtime: Runtime): void {
   const { service, bb } = runtime;
   const interactions = createShipInteractions({
+    presentation: (task) => shipPresentation(runtime, task),
     getTask: (id) => service.mustGet(id),
     latestReview: (id) => service.store.latestEvent(id, "review")?.text ?? null,
     async snapshot(task, targets, signal) {

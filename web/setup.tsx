@@ -13,7 +13,7 @@ import { PANEL_PATH, SIGN_IN_SUBPATH } from "./format";
 import { setupSummaryText, withBoatPath } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
 import { useCopy, useHosts, useInterval, useOverview, useProjects, useSettingRows, useSetup, useTask } from "./hooks";
-import { setupProgress, setupTestPassed } from "./v1-settings-logic";
+import { checkedAgo, setupProgress, setupTestPassed } from "./v1-settings-logic";
 import { EmptyBox, InlineAlert, RichText, showError } from "./ui";
 
 /** U7: what a task costs, in one plain paragraph (rates from `boat new --help`). */
@@ -323,8 +323,9 @@ function CheckList({
   );
 }
 
-function CheckAgainButton({ variant = "outline" }: { variant?: "outline" | "ghost" }) {
+function CheckAgainButton({ variant = "outline", quiet = false }: { variant?: "outline" | "ghost"; quiet?: boolean }) {
   const { run, pending } = useSetupActions();
+  if (quiet) return <button type="button" disabled={pending !== null} onClick={() => void run("check-again")} className="text-xs leading-4 text-[#7AA7FF] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60">{pending === null ? "check again" : "checking…"}</button>;
   return (
     <Button variant={variant} size="sm" className="h-7 shrink-0" disabled={pending !== null} onClick={() => void run("check-again")}>
       <Icon name={pending === "check-again" ? "Loading" : "ArrowReloadHorizontal"} className={cn(pending === "check-again" && "animate-spin")} />
@@ -499,6 +500,10 @@ export function SetupChecklist() {
   const [startedId, setStartedId] = useState<string | null>(null);
   const test = useTask(startedId).data?.task ?? savedTest ?? undefined;
   const navigate = useBbNavigate();
+  const actions = useSetupActions();
+  const signIn = useSignIn();
+  const copy = useCopy();
+  const history = experimental_useRpcQuery({ contract: rpcContract, method: "history", input: { taskId: test?.id ?? "", limit: 4 }, enabled: test !== undefined && test !== null }).data?.events ?? [];
   const runTest = async () => {
     try { const result = await start.mutate({ notifyThreadId: null, provider: null }); setStartedId(result.task.id); }
     catch (error) { showError(error); }
@@ -509,19 +514,43 @@ export function SetupChecklist() {
   const { checks, complete, current } = setupProgress(data);
   const testPassed = setupTestPassed(test);
   const testBusy = test?.status === "starting" || test?.status === "running";
-  if (data.ok && testPassed) return <div className="flex flex-wrap items-center gap-3 rounded-[10px] border border-border bg-card px-3.5 py-3">
-    <Icon name="CircleCheck" className="size-4 text-[#5BD08A]" aria-hidden /><div className="min-w-0 flex-1"><p className="text-[13px] text-[#5BD08A]">All set</p><p className="text-xs text-muted-foreground">{data.plan?.name ?? "Boat plan"} · {data.agents.effective === "both" ? "Claude and Codex" : data.agents.effective === "claude" ? "Claude" : "Codex"} · test task passed</p></div><CheckAgainButton variant="ghost" />
+  if (data.ok && testPassed) return <div className="flex flex-wrap items-center gap-2.5 rounded-[10px] border border-[#2A2A2A] bg-[#181818] px-3.5 py-2.5">
+    <span className="size-1.5 shrink-0 rounded-full bg-[#5BD08A]" aria-hidden /><span className="text-[13px] font-medium leading-5 text-[#EDEDED]">All set</span><span className="min-w-0 flex-1 text-xs leading-4 text-[#8A8A8A]">{[data.plan?.name ? `${data.plan.name} plan` : null, data.plan?.vmHoursRemaining !== null && data.plan?.vmHoursRemaining !== undefined ? `${data.plan.vmHoursRemaining.toLocaleString()} h left` : null, data.agents.effective === "both" ? "Claude and Codex" : data.agents.effective === "claude" ? "Claude" : "Codex", data.checks.some((check) => check.id === "github" && check.state === "ok") ? "GitHub" : null].filter(Boolean).join(" · ")}</span><span className="text-xs leading-4 text-[#6E6E6E]">checked {checkedAgo(data.checkedAt, Date.now())} · <CheckAgainButton quiet /></span>
   </div>;
-  return <div className="overflow-hidden rounded-[10px] border border-border bg-card">
-    <header className="flex flex-wrap items-center gap-2 border-b border-border px-3.5 py-3"><h3 className="flex-1 text-[13px] font-medium">Set up cloud agents</h3><span className="text-xs tabular-nums text-muted-foreground">{complete.length + (testPassed ? 1 : 0)} of 6</span><CheckAgainButton variant="ghost" /></header>
-    {testPassed && !data.ok ? <p role="alert" className="border-b border-border bg-destructive/10 px-3.5 py-3 text-xs text-[#E06C6C]">Cloud agents need a fix. Your saved tasks are still available.</p> : null}
-    {complete.length ? <details className="border-b border-border px-3.5 py-2.5"><summary className="cursor-pointer text-xs text-[#5BD08A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{complete.length} checks passed or not needed</summary><CheckList checks={complete} label="Completed setup checks" where="settings" /></details> : null}
-    {current ? <CheckList checks={[current]} label="Current setup step" where="settings" /> : null}
-    {checks.filter((check) => !complete.includes(check) && check !== current).map((check) => <div key={check.id} className="flex items-center gap-3 border-t border-border px-3.5 py-3 text-xs text-muted-foreground"><Icon name="Circle" className="size-4" aria-hidden /><span>{check.label}</span></div>)}
-    <div className="space-y-2 border-t border-border px-3.5 py-3">
-      <div className="flex flex-wrap items-center gap-3"><div className="min-w-0 flex-1"><p className="text-[13px]">Run a test task</p><p className="text-xs text-muted-foreground">Checks the sandbox and agent login. Uses a small sandbox and agent usage.</p></div>
-      <Button size="sm" variant="outline" disabled={!data.ok || testBusy || start.pendingInputs.length > 0} onClick={() => void runTest()}>{testBusy ? "Test task working…" : "Run test task"}</Button></div>
-      {test ? <button type="button" className={cn("w-full rounded-md border border-border px-3 py-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", test.error ? "text-[#E06C6C]" : testPassed ? "text-[#5BD08A]" : "text-muted-foreground")} onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: `task/${test.id}` })}>{test.error ?? (testPassed ? "Test task passed" : testBusy ? "Test task is working" : "Test task needs a look")} · Open task →</button> : null}
+  const first = complete.length === 0;
+  const active = current?.id ?? "test";
+  const steps = [
+    { id: "cli", title: "Install the boat CLI", description: "boat runs your sandboxes. One line in a terminal; it signs you in and starts a plan.", button: "Run in terminal" },
+    { id: "signed-in", title: "Sign in to boat", description: "So bb can start sandboxes as you.", button: "Sign in…" },
+    { id: "plan", title: "A boat plan", description: "Sandbox hours come from it. 7-day trial, card required.", button: "Open boat.dev" },
+    { id: "agents", title: "Connect an agent", description: "Claude (Pro or Max) or ChatGPT (Plus, Pro or Team), or an API key.", button: "Open Agents" },
+    { id: "github", title: "Connect GitHub", description: "Tasks clone and push with it. Give boat access to your repos.", button: "Connect GitHub" },
+  ];
+  const passed = complete.filter((check) => check.id !== "github" || check.state === "ok");
+  const fixStep = async (check: SetupCheckDto | undefined) => {
+    if (!check?.fix) return;
+    if (check.fix.action === "use-detected-agents") await actions.run("use-detected-agents");
+    else if (check.fix.command) await signIn.start(check.fix.command, check.id);
+    else if (check.fix.url) navigate.openUrl(check.fix.url);
+    else await actions.run("check-again");
+  };
+  const completedRow = (check: SetupCheckDto) => <div key={check.id} className="flex items-center gap-3 border-t border-[#232323] px-3.5 py-2 text-xs leading-[17px] text-[#8A8A8A]"><Icon name="CircleCheck" className="size-[18px] shrink-0 text-[#5BD08A]" aria-hidden /><span>{check.detail || check.label}</span></div>;
+  return <div className="space-y-[22px]">
+    {testPassed && !data.ok ? <div role="alert" className="flex items-start gap-2.5 rounded-[10px] border border-[#53312F] bg-[#261918] px-3.5 py-3"><Icon name="AlertTriangle" className="mt-0.5 size-4 shrink-0 text-[#E06C6C]" aria-hidden /><div className="min-w-0 flex-1"><p className="text-[13px] font-medium leading-5 text-[#EDEDED]">Cloud agents need a fix</p><p className="mt-0.5 text-xs leading-[17px] text-[#B68C89]">Your saved tasks and changes are still here. {current?.detail}</p></div><CheckAgainButton quiet /></div> : first ? <div className="flex items-start gap-2.5 rounded-[10px] border border-[#3D3420] bg-[#1E1A12] px-3.5 py-3"><Icon name="AlertTriangle" className="mt-0.5 size-4 shrink-0 text-[#F0B135]" aria-hidden /><div><p className="text-[13px] font-medium leading-5 text-[#EDEDED]">Boat Cloud Agents needs setup</p><p className="mt-0.5 text-xs leading-[17px] text-[#A8A090]">Nothing runs and nothing costs until the steps below pass.</p></div></div> : null}
+    <div className="overflow-hidden rounded-[10px] border border-[#2A2A2A] bg-[#181818]">
+      <header className="space-y-2.5 px-3.5 pb-3 pt-3.5"><div className="flex items-baseline gap-2.5"><h3 className="min-w-0 flex-1 text-[15px] font-semibold leading-5 text-[#EDEDED]">Set up cloud agents</h3><span className="text-xs leading-4 text-[#8A8A8A]">{passed.length + (testPassed ? 1 : 0)} of 6</span></div><p className="text-[13px] leading-[19px] text-[#9A9A9A]">{testBusy ? "Last step: a real sandbox, end to end." : "About 5 minutes. Each step checks itself; you can leave and come back."}</p><div className="flex gap-1" aria-hidden>{Array.from({length:6},(_,index)=><span key={index} className={cn("h-1 flex-1 rounded-sm", index < passed.length ? "bg-[#5BD08A]" : "bg-[#2E2E2E]")} />)}</div></header>
+      {passed.length && !testBusy ? <details className="border-t border-[#232323]"><summary className="cursor-pointer px-3.5 py-2.5 text-xs leading-[17px] text-[#5BD08A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{passed.length} checks passed</summary>{passed.map(completedRow)}</details> : testBusy ? passed.map(completedRow) : null}
+      {steps.filter((step) => !passed.some((check) => check.id === step.id)).map((step) => {
+        const check = checks.find((check) => check.id === step.id);
+        const isCurrent = active === step.id;
+        const failed = isCurrent && !first && check?.state === "missing";
+        const command = isCurrent ? check?.fix?.command : undefined;
+        const button = check?.fix?.action === "check-again" && !command && !check.fix.url ? "Check again" : step.button;
+        return <div key={step.id} className={cn("flex items-start gap-3 border-t border-[#232323] px-3.5 py-[13px]", isCurrent ? "bg-[#1D1D1D]" : "opacity-35")}><Icon name={failed ? "CircleX" : "Circle"} className={cn("mt-px size-[18px] shrink-0", failed ? "text-[#E06C6C]" : "text-[#8A8A8A]")} aria-hidden /><div className="min-w-0 flex-1"><p className="text-[13px] font-medium leading-5 text-[#EDEDED]">{step.title}</p><p className="mt-0.5 text-xs leading-[17px] text-[#9A9A9A]">{failed || (isCurrent && check?.state === "unknown" && check.fix) ? check.detail : step.description}</p>{command ? <button type="button" title="Copy command" className="mt-2 block w-full overflow-x-auto whitespace-nowrap rounded-md border border-[#262626] bg-[#121212] px-2 py-1.5 text-left font-mono text-[11.5px] leading-4 text-[#C1C1C1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => void copy(command,"Command copied")}>{command}</button> : null}</div><Button size="sm" variant={isCurrent && first ? "default" : "outline"} className="h-7 shrink-0 px-2.5 text-xs" disabled={!isCurrent || actions.pending !== null || signIn.opening !== null} onClick={() => void fixStep(check)}>{button}</Button></div>;
+      })}
+      {current && !steps.some((step) => step.id === current.id) ? <CheckList checks={[current]} label="Current setup step" where="settings" /> : null}
+      <div className={cn("flex items-start gap-3 border-t border-[#232323] px-3.5 py-[13px]", active === "test" ? "bg-[#1D1D1D]" : "opacity-35")}><Icon name={testBusy ? "Loading" : "Circle"} className={cn("mt-px size-[18px] shrink-0 text-[#8A8A8A]", testBusy && "animate-spin")} aria-hidden /><div className="min-w-0 flex-1"><p className="text-[13px] font-medium leading-5 text-[#EDEDED]">{testBusy ? "Running the test task" : "Run a test task"}</p><p className="mt-0.5 text-xs leading-[17px] text-[#9A9A9A]">One Small sandbox. Checks the agent and GitHub access.</p>{test ? <div className="mt-2 rounded-md border border-[#262626] bg-[#121212] px-3 py-2 text-xs leading-[17px]"><p className="flex gap-2 text-[#E2E2E2]">{testBusy ? <Icon name="Loading" className="size-3.5 animate-spin" aria-hidden /> : null}{test.title}<span className="text-[#6E6E6E]">Small sandbox</span></p>{history.slice().reverse().map((event) => <p key={event.seq} className="mt-1 text-[#8A8A8A]">{event.text}</p>)}{test.error ? <p className="mt-1 text-[#E06C6C]">{test.error}</p> : null}</div> : null}</div><Button size="sm" variant="outline" className="h-7 shrink-0 px-2.5 text-xs" disabled={testBusy ? !test : !data.ok || start.pendingInputs.length > 0} onClick={() => testBusy && test ? navigate.toPluginPanel(PANEL_PATH, {subPath:`task/${test.id}`}) : void runTest()}>{testBusy ? "Open its chat" : "Run test task"}</Button></div>
     </div>
+    {!data.ok && !testPassed ? <p className="flex items-center gap-2 text-xs leading-[17px] text-[#6E6E6E]"><Icon name="Lock" className="size-3.5" aria-hidden />The settings below work once setup is done. You can already look around.</p> : null}
   </div>;
 }

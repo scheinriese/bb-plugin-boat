@@ -33,6 +33,7 @@ import { createAttentionNotifications, type AttentionNotifications } from "./src
 import { MODEL_TIERS_KEY } from "./src/runtime.ts";
 import { parseTierMap } from "./src/tiers.ts";
 import { registerRpc } from "./src/rpc.ts";
+import { registerMergeRpc } from "./src/merge.ts";
 import { nativeStart, adoptNativeChat } from "./src/native-start.ts";
 import { createRuntime, type Runtime } from "./src/runtime.ts";
 import { BoatService, DeliveryDeferred, type BoatSettings, type Notification } from "./src/service.ts";
@@ -334,7 +335,10 @@ export default async function plugin(bb: BbPluginApi) {
   runtimeRef = runtime;
   attentionNotifications = createAttentionNotifications({
     kv: bb.storage.kv,
-    enabled: async () => (await settings.get()).pushNotifications,
+    enabled: async (kind) => {
+      const values = await settings.get();
+      return values.pushNotifications && (kind === "ready" ? values.notifyReady : kind === "needs-you" ? values.notifyNeedsYou : true);
+    },
     decisions: () => store.decisions({ statuses: ["open"], limit: 1000 }),
     tasks: () => store.list({ statuses: ["idle", "failed"], limit: 1000 }),
     status: (task) => service.publicStatus(task),
@@ -355,6 +359,7 @@ export default async function plugin(bb: BbPluginApi) {
   registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect });
   registerTools(runtime);
   registerRpc(runtime);
+  registerMergeRpc(runtime);
 
   // Tasks at once before asking, for the instructions (bb asks for them synchronously).
   let tasksBeforeAsking = await settings

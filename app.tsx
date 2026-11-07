@@ -16,6 +16,7 @@ import {
   useCloudAgentsPageTitle,
 } from "./web/page";
 import { BoatSettings, MobileBoatSettings } from "./web/plugin-settings";
+import { registerMergeInteraction } from "./web/merge-interaction";
 import {
   HomepageCard,
   ThreadAgentsTab,
@@ -105,6 +106,7 @@ export default definePluginApp((app) => {
   registerTaskTab(app);
   registerBoatFooter(app);
   registerShipInteraction(app);
+  registerMergeInteraction(app);
 
   app.slots.homepageSection({
     id: "cloud-agents",

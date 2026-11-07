@@ -156,6 +156,27 @@ export type PluginSettingSpec = PluginSettingDescriptor & {
 const NEEDS_BOTH = "Needs both Claude and Codex.";
 
 export const PLUGIN_SETTINGS = {
+  experimentalUiTweaks: {
+    section: "advanced",
+    type: "boolean",
+    label: "Experimental UI tweaks",
+    description: "Hide bb's extra Configuration heading on this plugin's settings page. Off uses bb's standard frame.",
+    default: false,
+  },
+  notifyNeedsYou: {
+    section: "usage-limits",
+    type: "boolean",
+    label: "Needs you",
+    description: "Push to your phone and desktop.",
+    default: true,
+  },
+  notifyReady: {
+    section: "usage-limits",
+    type: "boolean",
+    label: "Ready",
+    description: "A change is reviewed and ready to merge or ship.",
+    default: true,
+  },
   // Setup
   evidenceUploader: {
     section: "setup",

@@ -5,15 +5,41 @@ export function setupTestPassed(task: Pick<TaskDto, "status" | "error" | "report
 }
 
 export const SETTINGS_GROUPS = [
-  { title: "Agents", keys: ["agents", "implementProvider", "reviewProvider"] },
-  { title: "Sandboxes & cost", keys: ["machineType", "maxActiveSandboxes", "stopIdleAfterMinutes", "freeSlotsWhenFull"] },
-  { title: "Orchestrators", keys: ["relayPreferred", "orchestratorEffort", "tasksBeforeAsking", "sidebarLayout", "orchestratorMachineType", "cloudOrchestratorFullAccess"] },
-  { title: "Notifications", keys: ["pushNotifications"] },
+  { title: "Agents", keys: ["agents", "relayPreferred"] },
+  { title: "Sandboxes & cost", keys: ["machineType", "maxActiveSandboxes", "stopIdleAfterMinutes", "avoidExtraUsage"] },
+  { title: "Orchestrators", keys: ["tasksBeforeAsking"] },
+  { title: "Notifications", keys: ["notifyNeedsYou", "notifyReady"] },
 ] as const;
 
 export function groupedSettings(rows: readonly SettingDto[]) {
   const used = new Set<string>(SETTINGS_GROUPS.flatMap((group) => [...group.keys]));
   return { groups: SETTINGS_GROUPS.map((group) => ({ title: group.title, rows: group.keys.flatMap((key) => rows.filter((row) => row.key === key)) })), advanced: rows.filter((row) => !used.has(row.key)) };
+}
+
+export const EVERYDAY_SETTING_COPY: Record<string, { label?: string; description: string }> = {
+  agents: { description: "Follows what's connected in boat.dev." },
+  relayPreferred: { description: "Tasks pick per job; reviews use the other agent." },
+  machineType: { label: "Default size", description: "Projects and tasks can pick another." },
+  maxActiveSandboxes: { description: "The most running at the same time." },
+  stopIdleAfterMinutes: { label: "Stop idle sandboxes after", description: "Work in progress keeps a sandbox on." },
+  avoidExtraUsage: { description: "New tasks wait for the usage reset instead." },
+  tasksBeforeAsking: { description: "Above this, the orchestrator asks you first." },
+};
+
+/** Keep a migrated opt-out off until the owner enables a category explicitly. */
+export function notificationSettingPatch(master: boolean, key: "notifyNeedsYou" | "notifyReady", checked: boolean) {
+  return { pushNotifications: true, ...(!master ? { notifyNeedsYou: false, notifyReady: false } : {}), [key]: checked };
+}
+
+export function checkedAgo(iso: string, now: number): string {
+  const elapsed = Math.max(0, now - Date.parse(iso));
+  if (!Number.isFinite(elapsed) || elapsed < 60_000) return "just now";
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} ${days === 1 ? "day" : "days"} ago`;
 }
 
 /** Optional checks count as not needed; unknown and warning never claim success. */

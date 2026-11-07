@@ -4,7 +4,7 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { DECLARED_SETTINGS_KEY, PLUGIN_SETTINGS_KEY, createMigratingSettingsStore, settingRows, type SettingsStore } from "../src/settings-store.ts";
 import { SETTINGS } from "../src/settings.ts";
 import type { SetupStatusDto } from "../contract.ts";
-import { groupedSettings, setupProgress, setupTestPassed } from "../web/v1-settings-logic.ts";
+import { checkedAgo, groupedSettings, notificationSettingPatch, setupProgress, setupTestPassed } from "../web/v1-settings-logic.ts";
 import { makeService } from "./fakes.ts";
 import { testTaskInput } from "../src/setup.ts";
 
@@ -47,7 +47,7 @@ test("corrupt migration data blocks instead of silently replacing choices with d
   assert.deepEqual(await bb.storage.kv.get(DECLARED_SETTINGS_KEY), { agents: "codex" });
 });
 
-test("grouped controls include every setting once and notifications have one actual switch", async (t) => {
+test("everyday controls follow the handoff and preserve every other setting in Advanced", async (t) => {
   const { bb, harness } = createFakePluginHost({ pluginId: "boat" });
   t.after(() => harness.lifecycle.dispose());
   const store = await createMigratingSettingsStore(bb);
@@ -56,7 +56,16 @@ test("grouped controls include every setting once and notifications have one act
   const all = [...grouped.groups.flatMap((group) => group.rows), ...grouped.advanced];
   assert.equal(new Set(all.map((row) => row.key)).size, rows.length);
   assert.equal(all.length, rows.length);
-  assert.deepEqual(grouped.groups.find((group) => group.title === "Notifications")!.rows.map((row) => row.key), ["pushNotifications"]);
+  assert.deepEqual(grouped.groups.find((group) => group.title === "Agents")!.rows.map((row) => row.key), ["agents", "relayPreferred"]);
+  assert.deepEqual(grouped.groups.find((group) => group.title === "Notifications")!.rows.map((row) => row.key), ["notifyNeedsYou", "notifyReady"]);
+  assert.ok(grouped.advanced.some((row) => row.key === "implementProvider"));
+});
+
+test("enabling a category preserves a migrated notification opt-out for the other category", () => {
+  assert.deepEqual(notificationSettingPatch(false, "notifyNeedsYou", true), { pushNotifications: true, notifyNeedsYou: true, notifyReady: false });
+  assert.deepEqual(notificationSettingPatch(false, "notifyReady", true), { pushNotifications: true, notifyNeedsYou: false, notifyReady: true });
+  assert.deepEqual(notificationSettingPatch(true, "notifyReady", false), { pushNotifications: true, notifyReady: false });
+  assert.equal(checkedAgo("2026-11-07T19:52:00Z", Date.parse("2026-11-07T19:54:00Z")), "2 min ago");
 });
 
 test("setup progression never treats warnings or unknown checks as passed", () => {

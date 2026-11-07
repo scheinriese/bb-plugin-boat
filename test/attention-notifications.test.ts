@@ -50,6 +50,20 @@ test("failed delivery remains pending and retries after a later tick", async () 
   assert.equal(env.data.get("attention:ready:t_1"), "1:p_1");
 });
 
+test("needs-you and ready category preferences filter independently without acknowledging skipped work", async () => {
+  const env = fixture();
+  let ready = false;
+  let needsYou = true;
+  const notifier = createAttentionNotifications({ ...env.deps, enabled: async (kind) => kind === undefined || (kind === "ready" ? ready : needsYou) });
+  await notifier.flush();
+  assert.deepEqual(env.sent.map((notice) => notice.title), ["Needs you: Pick a rate limit"]);
+  assert.equal(env.data.has("attention:ready:t_1"), false);
+  ready = true;
+  needsYou = false;
+  await notifier.flush();
+  assert.deepEqual(env.sent.map((notice) => notice.title), ["Needs you: Pick a rate limit", "Ready: Fix the cart"]);
+});
+
 test("changes while delivery runs are drained without duplicate ready notices", async () => {
   const env = fixture();
   env.state.enabled = true;
