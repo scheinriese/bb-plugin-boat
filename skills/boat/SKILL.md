@@ -218,7 +218,8 @@ environment (`EVIDENCE_BUCKET`, `EVIDENCE_ACCESS_KEY_ID`,
   pull request. The plugin refuses such tasks.
 - In projects that ship after approval, work reaches the base branch only
   through `bb boat task ship` after the user's OK in the orchestrator chat
-  (or their Ship click). Never discard unshipped work unless the user says
+  (or their explicit approval in the in-thread shipping form). Opening the
+  form or writing a note is not approval. Never discard unshipped work unless the user says
   so.
 - Frontier at `--effort max` is refused unless the user approved it
   (`--user-approved`).
