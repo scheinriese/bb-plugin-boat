@@ -9,9 +9,9 @@ tasks and get each change reviewed.
 This is a community plugin. It is not made by or affiliated with boat.dev or
 bb. The workflow is inspired by Conductor's cloud workflow.
 
-The v1 preview has a redesigned Today page, live decision and review cards,
+Version 0.2 adds a redesigned Today page, live decision and review cards,
 Task panels, project rules and explicit shipping confirmations. The screenshots
-below use demo data and the optional Workbench sidebar.
+below use demo data and the optional [Workbench sidebar](https://github.com/scheinriese/bb-plugin-workbench-sidebar).
 
 [![Watch the Boat v1 demo](docs/demos/boat-v1-poster.jpg)](docs/demos/boat-v1.mp4)
 
@@ -25,20 +25,22 @@ data, captions and occasional focus outlines; no real cloud work is started.
 
 ![A task with its reviews, pull request, change summary and sandbox facts](docs/screenshots/v1/task.png)
 
-The previous [0.1.2 recording](https://github.com/user-attachments/assets/769a7fcc-e995-48c4-b4fa-097ea47a7b97)
-shows the earlier UI.
+[What changed and how to upgrade](CHANGELOG.md).
 
 ## Getting started
 
-You need bb 0.48 or later, a boat.dev account with a plan, and a Claude or
-ChatGPT subscription. The steps below set up the rest.
+Tested with bb 0.48.1 and Plugin SDK 0.6.104. You need a boat.dev account
+with a plan and a connected Claude or ChatGPT subscription (or an agent API
+key). The plugin currently supports bb 0.48.x; its experimental SDK surfaces
+are checked before support for a new bb minor version is added.
 
 1. **Install boat** on the machine that runs bb:
    ```sh
    curl -fsSL https://boat.dev/install | sh
    ```
-   It signs you in and starts a plan (7-day trial, card required). When it
-   asks who the sandboxes are for, answer **just me**. The other answer
+   It signs you in and helps you choose a plan. Check boat.dev for current
+   trial and billing terms. When it asks who the sandboxes are for, answer
+   **just me**. The other answer
    turns on "Safe for third parties", and agents then get no logins.
    Already have boat? `boat onboard` signs you in and finishes whatever your
    account still needs; it's safe to run again.
@@ -50,19 +52,15 @@ ChatGPT subscription. The steps below set up the rest.
    clone and push with it.
 4. **Install the plugin:**
    ```sh
-   # Follows the default branch
    bb plugin install https://github.com/scheinriese/bb-plugin-boat
-
-   # Or follows 0.1.x release tags (the marketplace listing follows every 0.x release)
-   bb plugin install git:https://github.com/scheinriese/bb-plugin-boat.git@^0.1.0
    ```
    bb shows what it will install and asks you to confirm. A plugin is
    full-trust code, so read [what it runs, reaches and stores](SECURITY.md)
    first.
-5. **Check the setup.** Open **Cloud agents** in bb's sidebar. Until
-   everything is in place, it shows a "Set up cloud agents" checklist with a
-   fix for each problem (**Sign in…** opens a terminal that runs
-   `boat onboard`; other commands have **Run in terminal**). Or run:
+5. **Check the setup.** Open **Settings → Plugins → Boat Cloud Agents**.
+   The setup checklist shows a fix for each missing requirement. **Sign in…**
+   opens a terminal that runs `boat onboard`; other commands have **Run in
+   terminal**. Or run:
    ```sh
    bb boat doctor
    ```
@@ -71,8 +69,8 @@ ChatGPT subscription. The steps below set up the rest.
    can only be seen from inside a sandbox, so it shows your last task's
    check (your first task on a repo checks it).
 
-   ![The setup checklist: what's done, and the fix for what's missing](docs/screenshots/setup.png)
-6. **Run a test task.** Click **Run a test task** on the page, or run
+   ![Grouped Boat settings and the setup status](docs/screenshots/v1/settings.png)
+6. **Run a test task.** Click **Run test task** in the setup checklist, or run
    `bb boat task start --test`. It needs no repo and changes nothing: the
    agent reports the sandbox's OS, Node and git versions and whether GitHub
    access works. That proves your sign-in, plan and agent login, for one
@@ -93,12 +91,12 @@ often, add them as [projects](docs/features.md#projects).
 
 | | Task from a chat | Cloud agents page | Native Boat sandbox chat |
 | --- | --- | --- | --- |
-| How you start it | Ask any chat to use a cloud agent, or **Send to a cloud agent** in the send menu | **Start** opens bb's New thread screen | Pick **Boat sandbox** in a new chat's environment menu, then **Start** |
+| How you start it | Ask any chat to use a cloud agent, or use `bb boat task start` | Follow work started from a chat or the native composer | Pick **Boat sandbox** in a new chat's environment menu, then **Start** |
 | Where the agent runs | In its own boat sandbox | In its own boat sandbox | The whole chat runs in a boat sandbox |
 | Where you follow it | The source chat hears back; chat-backed tasks nest under it | Today, Sandboxes and Projects; task chats have a Task tab | In the chat and its Task tab |
 | Can you type into it | Through the chat that started it, or the task's reply box | The task's reply box | Yes, it's a regular chat |
 | Needs bb Connect | No (only for task chats) | No (only for task chats) | Yes |
-| Best for | Handing off a piece of work without leaving your conversation | Starting work directly, checking a repo, a test task | Long hands-on sessions that keep going while this computer sleeps |
+| Best for | Handing off a piece of work without leaving your conversation | Decisions, reviews, usage and project rules | Long hands-on sessions that keep going while this computer sleeps |
 
 A **task chat** is a task you can open as a bb chat and type into. Native
 starts use one directly. For delegated work, set **How tasks run** to an
@@ -117,15 +115,10 @@ reviewing for you. See [Go further](#go-further-orchestrators).
 The plugin adds no service of its own. Each task uses two things you already
 pay for:
 
-- **Sandbox time on your boat.dev plan.** Small sandboxes run at half rate,
-  Large at double; XLarge needs boat's $100 plan or higher. boat's $20 plan
-  includes about 555 hours of Default sandbox time a month (about $0.036 an
-  hour). A stopped sandbox uses no sandbox time, and waking it counts as a
-  start. The trial lasts 7 days (card required) and allows 2 sandboxes at
-  once, Small and Default sizes, 75 starts a day and an auto-stop of at
-  most 2 hours. The plugin reads that cap from `boat limits` and keeps
-  every sandbox it starts, resumes or extends within it. `boat limits`
-  shows what's left.
+- **Sandbox time on your boat.dev plan.** Size affects the rate; a stopped
+  sandbox uses no sandbox time. Starts, concurrency and idle limits depend on
+  your plan. The plugin reads the current cap from `boat limits`. Check
+  [boat.dev](https://boat.dev) for current plans and pricing.
 - **Agent usage on your Claude or ChatGPT subscription**, from the same
   usage limits you use everywhere else.
 
@@ -143,11 +136,14 @@ What the plugin does to keep that down:
   included, keeps it on. The task picks up again on your next message.
   Closing a plugin-created task deletes an unused sandbox; native chats
   retain bb's machine lifecycle.
-- When your agents are near their usage limits, new tasks wait for a reset
-  instead of starting on paid extra usage (**Don't start work on paid extra
-  usage**).
+- With **Don't start work on paid extra usage**, a current over-limit
+  reading queues delegated work until a reset. An early start needs explicit
+  approval for that request; naming a provider or model does not bypass it.
 - It never turns on boat's paid extra starts (`boat billing extra-starts`,
   off by default).
+
+bb’s native **Send now** explicitly overrides a composer wait and may use
+paid extra usage. It is separate from the delegated task’s paid-start form.
 
 An orchestrator uses sandbox hours and agent usage faster than single tasks:
 it starts several tasks, and a review for each.
@@ -236,6 +232,21 @@ them into the grouped section.
 `bb boat config export | import` backs them up. All of them, with keys and
 defaults: [docs/settings.md](docs/settings.md).
 
+## Upgrading from 0.1.x
+
+Back up your existing settings first:
+
+```sh
+bb boat config export --output boat-settings-backup.json
+```
+
+Keep that file private: it includes project details and standing instructions.
+Update the plugin with `bb plugin update boat` for a Git install, or reinstall
+its local path. Reload once more with `bb plugin reload boat` to complete the
+settings migration. Existing settings, projects, custom protocol and model
+presets are retained. Do not remove the plugin to upgrade: removal deletes its
+settings. See [settings migration](docs/settings.md).
+
 ## Optional companion: Workbench sidebar
 
 Boat works with bb's regular sidebar. **Workbench sidebar** is a separate
@@ -243,8 +254,15 @@ plugin for provider rings, task/review nesting, quiet unread signals,
 collapsible work groups and pinned parent rows. It also works with ordinary
 bb chats when Boat is absent. Neither plugin requires the other.
 
-The companion is prepared separately for publication. Install and test each
-plugin independently; disabling Workbench restores bb's regular list.
+[Install Workbench](https://github.com/scheinriese/bb-plugin-workbench-sidebar):
+
+```sh
+bb plugin install https://github.com/scheinriese/bb-plugin-workbench-sidebar
+```
+
+Its [short demo](https://github.com/scheinriese/bb-plugin-workbench-sidebar#readme)
+shows nested reviews and pinning. Disable it with
+`bb plugin disable workbench-sidebar` to restore bb’s regular list.
 
 ## Go further: orchestrators
 
