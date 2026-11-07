@@ -1,21 +1,30 @@
 // Task-owned side panel; source chats keep the separate Cloud agents list.
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
-  Markdown, ThreadChat, UrlLink, experimental_useRpcMutation, experimental_useRpcQuery, useSdk,
-  type ExperimentalThreadTabProps, type PluginAppBuilder, type PluginBrowserBbSdk,
+  Markdown, ThreadChat, UrlLink, experimental_useFixedTabTarget, experimental_useRpcMutation, experimental_useRpcQuery, useSdk,
+  type ExperimentalThreadTabProps, type PluginAppBuilder,
 } from "@get-bb/plugin-sdk/app";
+import { mergeRpcContract, type PullRequestFacts } from "../contract-merge";
+import type { HistoryEventDto } from "../contract-fidelity";
 import { rpcContract, type TaskDetailDto, type TaskDto } from "../contract";
 import { Button } from "../components/ui/button";
 import { Icon } from "../components/ui/icon";
 import { cn } from "../lib/utils";
-import { CardTaskState, TaskContextAction } from "./cards";
-import { ReviewDialog } from "./dialogs";
-import { PROVIDER_LABEL, clockTime, dateTime, isRunning, relativeTime } from "./format";
-import { useCloudAgentsNavigation, useInterval, useNow, useSandboxes, useTask, useThreadTask } from "./hooks";
-import { PreviewsSection } from "./previews";
+import { ConfirmDialog } from "./dialogs";
+import { PROVIDER_LABEL, clockTime, isRunning, modelName } from "./format";
+import { useCloudAgentsNavigation, useInterval, useSandboxes, useTask, useThreadTask } from "./hooks";
+import { ShipButton } from "./board";
+import { cardStatus } from "./cards-logic";
+import "./task-tab.css";
+import { DiffStats } from "./diff-stats";
+import { usePreviews } from "./previews";
 import { ResizeDialog } from "./sandbox-size";
-import { AgentBadge, EmptyBox, InlineAlert, ThreadLink, showError } from "./ui";
-import { transcriptPreview, groupTaskTranscript, taskReviews, transcriptMatches } from "./task-tab-logic";
+import { AgentLogo, EmptyBox, InlineAlert, showError } from "./ui";
+import { transcriptPreview, groupTaskTranscript, transcriptMatches } from "./task-tab-logic";
+import { nativeMilestones, nativeWorkCounts, nativeEvidence, nativeActivityTitles, type NativeMilestone, type NativeRow, type NativeTurn } from "./native-transcript";
+
+import { TASK_SECTIONS, TASK_TAB, TASK_TARGET } from "./task-navigation";
+export { useOpenTaskSection, type TaskSection } from "./task-navigation";
 
 export function useHasTask({ threadId }: { threadId: string }): boolean {
   return useThreadTask(threadId) !== null;
@@ -24,26 +33,31 @@ export function useHasTask({ threadId }: { threadId: string }): boolean {
 export function registerTaskTab(app: PluginAppBuilder): void {
   app.slots.experimental_tab({
     context: { kind: "thread" }, availability: "fixed", id: "task", title: "Task", icon: "ComputerCloud",
-    tooltip: "This task's brief, reviews, transcript and sandbox", layout: "flush", component: TaskTab, useVisible: useHasTask,
+    tooltip: "This task's brief, reviews, transcript and sandbox", experimental_target: TASK_TARGET, layout: "flush", component: TaskTab, useVisible: useHasTask,
   });
 }
 
 export function TaskTab({ threadId }: ExperimentalThreadTabProps) {
   const owner = useThreadTask(threadId);
   const { data, error } = useTask(owner?.id ?? null);
-  if (error) return <div className="p-4"><InlineAlert>{error.message}</InlineAlert></div>;
-  if (!owner) return <div className="p-4"><EmptyBox>No cloud task is linked to this chat.</EmptyBox></div>;
-  if (!data) return <div className="p-4"><EmptyBox>Loading task…</EmptyBox></div>;
-  if (!data.task) return <div className="p-4"><EmptyBox>This task is no longer available.</EmptyBox></div>;
+  if (error) return <div className="boat-ui p-4"><InlineAlert>{error.message}</InlineAlert></div>;
+  if (!owner) return <div className="boat-ui p-4"><EmptyBox>No cloud task is linked to this chat.</EmptyBox></div>;
+  if (!data) return <div className="boat-ui p-4"><EmptyBox>Loading task…</EmptyBox></div>;
+  if (!data.task) return <div className="boat-ui p-4"><EmptyBox>This task is no longer available.</EmptyBox></div>;
   return <TaskPanel key={data.task.id} task={data.task} />;
 }
 
-const TABS = ["Overview", "Reviews", "Transcript", "Sandbox"] as const;
+const TABS = TASK_SECTIONS;
 type TaskTabName = typeof TABS[number];
 
 function TaskPanel({ task }: { task: TaskDetailDto }) {
+  const target = experimental_useFixedTabTarget(TASK_TAB);
   const [tab, setTab] = useState<TaskTabName>("Overview");
+  useEffect(() => { if (target?.target.threadId === task.threadId) setTab(target.target.section); }, [target?.sequence, task.threadId]);
   const id = useId();
+  const { data: facts } = experimental_useRpcQuery({ contract: mergeRpcContract, method: "pullRequestFacts", input: { id: task.id }, enabled: !!task.prUrl });
+  const { data: history } = experimental_useRpcQuery({ contract: rpcContract, method: "history", input: { taskId: task.id, limit: 200 } });
+  const state = cardStatus(task);
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   function move(event: KeyboardEvent, index: number) {
     let next: number;
@@ -52,138 +66,175 @@ function TaskPanel({ task }: { task: TaskDetailDto }) {
     else if (event.key === "Home") next = 0;
     else if (event.key === "End") next = TABS.length - 1;
     else return;
-    event.preventDefault(); setTab(TABS[next]); refs.current[next]?.focus();
+    event.preventDefault(); target?.clear(); setTab(TABS[next]); refs.current[next]?.focus();
   }
-  return <div className="flex min-h-full min-w-0 flex-col gap-5 p-4 text-[13px] text-foreground">
-    <header className="space-y-2">
-      <div className="flex items-start gap-2">
-        <Icon name="ComputerCloud" className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
-        <h2 className="min-w-0 flex-1 text-sm font-semibold break-words">{task.title}</h2>
-      </div>
-      <div className="flex flex-wrap items-center gap-2 text-xs"><CardTaskState task={task} />
-        {task.prUrl && <UrlLink href={task.prUrl} className="text-[#7AA7FF]">Pull request</UrlLink>}
-        {task.previewUrl && <UrlLink href={task.previewUrl} className="text-[#7AA7FF]">Preview ↗</UrlLink>}
-        <span className="ml-auto"><TaskContextAction task={task} /></span>
+  return <div className="boat-ui boat-task-panel">
+    <header className="boat-task-heading">
+      <div className="boat-task-title"><AgentLogo provider={task.provider} className="boat-task-logo" /><h2>{task.title}</h2></div>
+      <div className="boat-task-status" data-tone={state.tone}><i aria-hidden="true" /> <span>{state.label}</span>
+        {task.prUrl && <UrlLink href={task.prUrl} className="boat-task-muted">PR #{/\/pull\/(\d+)/.exec(task.prUrl)?.[1]}{facts ? <> · <DiffStats additions={facts.additions} deletions={facts.deletions} /></> : null}</UrlLink>}
+        {task.previewUrl && <UrlLink href={task.previewUrl}>Preview ↗</UrlLink>}
       </div>
     </header>
-    <div role="tablist" aria-label="Task details" className="grid grid-cols-4 gap-0.5 rounded-lg border border-border bg-secondary p-[3px]">
+    <div role="tablist" aria-label="Task details" className="boat-task-tabs">
       {TABS.map((name, index) => <button key={name} ref={(el) => { refs.current[index] = el; }} type="button" role="tab"
         id={`${id}-tab-${name}`} aria-selected={tab === name} aria-controls={`${id}-panel-${name}`} tabIndex={tab === name ? 0 : -1}
-        onKeyDown={(event) => move(event, index)} onClick={() => setTab(name)}
-        className={cn("min-h-8 rounded-md px-1 py-1 text-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring", tab === name ? "bg-state-active text-foreground" : "text-muted-foreground hover:text-foreground")}>
+        onKeyDown={(event) => move(event, index)} onClick={() => { target?.clear(); setTab(name); }}
+        className="boat-task-tab">
         {name}
       </button>)}
     </div>
-    <div role="tabpanel" id={`${id}-panel-${tab}`} aria-labelledby={`${id}-tab-${tab}`} tabIndex={0} className="min-w-0 flex-1 space-y-5 focus-visible:outline-2 focus-visible:outline-ring">
-      {tab === "Overview" ? <Overview task={task} /> : tab === "Reviews" ? <Reviews task={task} /> : tab === "Transcript" ? <Transcript task={task} /> : <Sandbox task={task} />}
+    <div role="tabpanel" id={`${id}-panel-${tab}`} aria-labelledby={`${id}-tab-${tab}`} tabIndex={0} className="boat-task-content">
+      {tab === "Overview" ? <Overview task={task} facts={facts ?? null} history={[...(history?.events ?? [])].sort((a,b) => a.at.localeCompare(b.at) || a.seq-b.seq)} /> : tab === "Reviews" ? <Reviews task={task} history={[...(history?.events ?? [])].sort((a,b) => a.at.localeCompare(b.at) || a.seq-b.seq)} /> : tab === "Transcript" ? <Transcript task={task} /> : <Sandbox task={task} />}
     </div>
   </div>;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="space-y-2"><h3 className="text-xs font-medium text-muted-foreground">{title}</h3>{children}</section>;
+  return <section className="boat-task-section"><h3>{title}</h3>{children}</section>;
 }
-const BOX = "rounded-lg border border-border bg-card p-3";
-
-function Overview({ task }: { task: TaskDetailDto }) {
-  const [reviewing, setReviewing] = useState(false);
-  const canReview = task.role !== "review" && task.status !== "done" && task.status !== "cancelled";
+const BOX = "boat-task-box";
+function MergeAction({ task }: { task: TaskDto }) {
+  const action = experimental_useRpcMutation({ contract: mergeRpcContract, method: "requestMerge" });
+  return <Button size="sm" disabled={action.isPending} onClick={() => void action.mutate({ id: task.id, from: "chat" }).catch(showError)}>Merge PR #{task.prUrl?.match(/\/pull\/(\d+)/)?.[1]}</Button>;
+}
+function Overview({ task, facts, history }: { task: TaskDetailDto; facts: PullRequestFacts | null; history: HistoryEventDto[] }) {
+  const state = cardStatus(task);
+  const sdk = useSdk();
+  const reviewer = history.filter((event) => event.review).at(-1)?.review;
+  const approved = state.status === "ready" && reviewer?.verdict === "approve" ? reviewer : null;
   return <>
     {task.error && <InlineAlert>{task.error}</InlineAlert>}
-    {task.readyNote && <p className="text-xs text-muted-foreground">{task.readyNote}</p>}
-    <Section title="Brief"><div className={BOX}><Markdown content={task.brief || "No brief recorded."} className="text-xs" /></div></Section>
-    <Section title="Change"><div className={cn(BOX, "space-y-2 text-xs")}>
-      {task.repo && <p className="break-all">{task.repo}</p>}
-      {task.branch && <p className="flex items-start gap-2 text-muted-foreground"><Icon name="GitBranch" className="size-3.5 shrink-0" aria-hidden /><span className="break-all">{task.branch}{task.baseBranch ? ` → ${task.baseBranch}` : ""}</span></p>}
-      <p className="text-muted-foreground">{task.delivery === "push" ? `Ships to ${task.baseBranch ?? "the base branch"} after your approval` : "Lands through a pull request"}</p>
-      {task.prUrl ? <UrlLink href={task.prUrl} className="inline-block text-[#7AA7FF]">Open pull request ↗</UrlLink> : <p className="text-muted-foreground">No pull request recorded</p>}
+    <Section title="Status"><div className={cn(BOX, "boat-task-status-box")}>
+      <div className="boat-task-line"><span className="boat-task-status" data-tone={state.tone}><i aria-hidden="true" /><strong>{state.label}</strong></span>
+        {approved && <span className="boat-task-muted">approved by {PROVIDER_LABEL[approved.provider]} · review {approved.round}</span>}</div>
+      <div className="boat-task-actions">{state.status === "ready" && task.delivery === "pr" && task.prUrl ? <MergeAction task={task} /> : task.canShip ? <ShipButton task={task} /> : null}
+        {task.previewUrl && <UrlLink href={task.previewUrl} className="boat-task-outline-link">Preview ↗</UrlLink>}</div>
     </div></Section>
-    <Section title="Who"><div className={cn(BOX, "space-y-3 text-xs")}>
-      <div className="flex items-center justify-between gap-2"><span className="text-muted-foreground">Working on it</span><AgentBadge provider={task.provider} model={task.model} /></div>
-      {task.source.threadId && <div className="flex flex-wrap justify-between gap-2"><span className="text-muted-foreground">Started from</span><ThreadLink threadId={task.source.threadId} label={task.source.title || (task.source.kind === "orchestrator" ? "Orchestrator chat" : "Source chat")} /></div>}
-      <p className="text-muted-foreground">Started {dateTime(task.createdAt)}</p>
+    <Section title="Brief"><div className={BOX}>
+      {task.source.threadId && <p className="boat-task-origin"><AgentLogo provider={task.provider} className="size-[11px]" /> <button type="button" onClick={() => void sdk.threads.open({ threadId: task.source.threadId!, file: null })}>From {task.source.title || "source chat"}</button></p>}
+      <Markdown content={task.brief || "No brief recorded."} className="boat-task-brief" />
     </div></Section>
-    {task.result && <Section title="Latest report"><details className={BOX}><summary className="cursor-pointer text-xs">Read the report</summary><Markdown content={task.result} className="mt-3 text-xs" /></details></Section>}
-    {canReview && <Button size="sm" variant="outline" disabled={isRunning(task.status)} onClick={() => setReviewing(true)}>Request review…</Button>}
-    <ReviewDialog task={task} open={reviewing} onOpenChange={setReviewing} />
+    <Section title="Change"><div className={cn(BOX, "boat-task-change")}>
+      <div className="boat-task-line"><strong>{task.prUrl ? `PR #${task.prUrl.match(/\/pull\/(\d+)/)?.[1]}` : task.repo ?? "Committed change"}</strong>
+        {facts && <span className="boat-task-muted"><DiffStats additions={facts.additions} deletions={facts.deletions} />{facts.fileCount !== undefined ? ` · ${facts.fileCount} files` : ""}</span>}
+        {task.prUrl && <UrlLink href={task.prUrl} className="boat-task-trailing">GitHub ↗</UrlLink>}</div>
+      {facts?.files?.map((file) => <div className="boat-task-file" key={file.path}><code>{file.path}</code><DiffStats additions={file.additions} deletions={file.deletions} className="gap-2" /></div>)}
+      {facts?.filesTruncated && <p className="boat-task-muted">Showing the first 50 files. See the rest on GitHub.</p>}
+      {task.branch && <p className="boat-task-muted">branch <code>{task.branch}</code></p>}
+    </div></Section>
+    <Section title="Who"><div className={cn(BOX, "boat-task-who")}>
+      <div className="boat-task-line"><AgentLogo provider={task.provider} className="size-3" /><span>{PROVIDER_LABEL[task.provider]}{task.model ? ` · ${modelName(task.model)}` : ""}</span>{task.tier && <span className="boat-task-trailing boat-task-muted">{task.tier[0].toUpperCase() + task.tier.slice(1)} preset</span>}</div>
+      <div className="boat-task-line"><span className="boat-task-muted">Started</span><span className="boat-task-trailing">{taskClock(task.createdAt)}{task.source.title ? ` by ${task.source.title}` : ""}</span></div>
+      {reviewer && <div className="boat-task-line"><AgentLogo provider={reviewer.provider} className="size-3" /><span>Reviewer: {PROVIDER_LABEL[reviewer.provider]}{reviewer.model ? ` · ${modelName(reviewer.model)}` : ""}</span></div>}
+    </div></Section>
   </>;
 }
 
-function Reviews({ task }: { task: TaskDetailDto }) {
-  const [reviewing, setReviewing] = useState(false);
-  const { data, error } = experimental_useRpcQuery({ contract: rpcContract, method: "tasks", input: { statuses: null, threadId: null, limit: 500 } });
-  const reviews = useMemo(() => taskReviews(task.id, data?.tasks ?? []), [task.id, data]);
-  const now = useNow();
-  return <>
-    {error && <InlineAlert>{error.message}</InlineAlert>}
-    {!data && !error ? <EmptyBox>Loading reviews…</EmptyBox> : reviews.length === 0 ? <EmptyBox>No reviews recorded for this task yet.</EmptyBox> : <ol className="space-y-4" aria-label="Review history">
-      {reviews.map((review, index) => <li key={review.id} className="relative border-l border-border pl-4">
-        <p className="mb-1 text-[11px] text-muted-foreground">{relativeTime(review.finishedAt ?? review.createdAt, now)}</p>
-        <ReviewEntry review={review} number={index + 1} />
-      </li>)}
-    </ol>}
-    <p className="text-xs text-muted-foreground">Recent recorded reviews. Each review uses its own context.</p>
-    {task.role !== "review" && task.status !== "done" && task.status !== "cancelled" && <Button size="sm" variant="outline" disabled={isRunning(task.status)} onClick={() => setReviewing(true)}>Request another review…</Button>}
-    <ReviewDialog task={task} open={reviewing} onOpenChange={setReviewing} />
-  </>;
-}
-
-function ReviewEntry({ review, number }: { review: TaskDto; number: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const { data, error } = useTask(expanded ? review.id : null);
+function Reviews({ task, history }: { task: TaskDetailDto; history: HistoryEventDto[] }) {
   const { openTask } = useCloudAgentsNavigation();
-  const label = review.verdict === "approve" ? "Approved" : review.verdict === "changes-requested" ? "Changes requested" : isRunning(review.status) ? "Reviewing…" : review.status === "failed" ? "Couldn't run" : "Review finished";
-  return <div className="space-y-2">
-    <p className={cn("text-[13px] font-medium", review.verdict === "approve" ? "text-[#5BD08A]" : review.verdict === "changes-requested" ? "text-[#FC8C45]" : review.status === "failed" ? "text-[#E06C6C]" : "text-foreground")}>Review {number} · {PROVIDER_LABEL[review.provider]} · {label.toLowerCase()}</p>
-    {review.excerpt && <p className="text-xs whitespace-pre-wrap text-muted-foreground">{review.excerpt.split(/===\s*REVIEW\s*===/i)[0]?.trim()}</p>}
-    <details onToggle={(event) => setExpanded(event.currentTarget.open)} className="text-xs">
-      <summary className="cursor-pointer text-muted-foreground">Full review report</summary>
-      {error ? <InlineAlert>{error.message}</InlineAlert> : !data ? <p className="mt-2 text-muted-foreground">Loading report…</p> : <Markdown content={data.task?.result || "No report was recorded."} className="mt-3 text-xs" />}
-    </details>
-    {review.threadId ? <ThreadLink threadId={review.threadId} label="Open full review as a chat ↗" className="text-xs text-[#7AA7FF]" /> : <button type="button" className="text-xs text-[#7AA7FF] underline-offset-4 hover:underline" onClick={() => openTask(review.id)}>Open full review ↗</button>}
-  </div>;
+  const entries = history.filter((event) => event.kind === "review-verdict" || event.kind === "sent-back" || (event.kind === "finished" && history.some((prior) => prior.kind === "sent-back" && prior.seq < event.seq)));
+  const latest = entries.filter((event) => event.review).at(-1)?.review;
+  const sdk = useSdk();
+  const [requested, setRequested] = useState<string | null>(null);
+  const { data: detail } = useTask(requested ?? latest?.reviewTaskId ?? null);
+  useEffect(() => {
+    if (!requested || detail?.task?.id !== requested) return;
+    if (detail.task.threadId) void sdk.threads.open({ threadId: detail.task.threadId, file: null }).catch(showError);
+    else openTask(requested);
+    setRequested(null);
+  }, [requested, detail, sdk, openTask]);
+  return <>
+    {entries.length === 0 ? <EmptyBox>No reviews recorded for this task yet.</EmptyBox> : <ol className="boat-task-history" aria-label="Review history">
+      {entries.map((event) => { const review = event.review; const provider = review?.provider ?? event.provider ?? task.provider;
+        const label = review ? `Review ${review.round} · ${review.verdict === "approve" ? "approved" : review.verdict === "changes-requested" ? `${PROVIDER_LABEL[provider]} asked for ${review.findings.length || ""} changes`.replace("for  changes", "for changes") : "review finished"}`
+          : event.kind === "sent-back" ? `Sent back to ${PROVIDER_LABEL[provider].replace(" Code", "")}` : event.text;
+        return <li className="boat-task-event" key={event.seq}>
+          <time dateTime={event.at}>{taskClock(event.at)}</time><div className="boat-task-event-track"><AgentLogo provider={provider} /><i aria-hidden="true" /></div>
+          <div className="boat-task-event-body"><p className={cn("boat-task-event-title", review?.verdict === "approve" ? "boat-task-added" : review?.verdict === "changes-requested" ? "boat-task-caution" : "")}>
+            {review ? <button type="button" onClick={() => setRequested(review.reviewTaskId)}>{label}</button> : label}</p>
+            {review?.findings.map((finding, index) => <div className="boat-task-finding" key={index}><span className={finding.severity === "must-fix" ? "boat-task-caution" : "boat-task-muted"}>{finding.label ?? (finding.severity === "must-fix" ? "Must fix" : "Should")}</span><span>{finding.text}</span></div>)}
+            {event.kind === "sent-back" && event.detail && <p className="boat-task-event-detail">{event.detail}</p>}
+          </div>
+        </li>;
+      })}
+    </ol>}
+    <p className="boat-task-advice">Each review runs in a fresh context on the {latest?.provider === task.provider ? "review" : "other"} agent. {latest ? <button type="button" onClick={() => setRequested(latest.reviewTaskId)}>Open the full review{detail?.task?.threadId ? " as a chat" : ""} ↗</button> : null}</p>
+  </>;
 }
 
 function Transcript({ task }: { task: TaskDetailDto }) {
   return task.runner === "chat" && task.threadId ? <ChatTranscript task={task} /> : <BoatTranscript task={task} />;
 }
-type OutlineItem = Awaited<ReturnType<PluginBrowserBbSdk["threads"]["conversationOutline"]>>["items"][number];
-
 function ChatTranscript({ task }: { task: TaskDetailDto }) {
   const sdk = useSdk();
-  const [items, setItems] = useState<OutlineItem[] | null>(null);
+  const [rows, setRows] = useState<NativeRow[] | null>(null);
+  const [titles, setTitles] = useState<Map<number, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [revision, refresh] = useState(0);
   const [full, setFull] = useState(false);
   const id = useId();
   useEffect(() => {
     const abort = new AbortController();
-    setError(null);
-    void sdk.threads.conversationOutline({ threadId: task.threadId!, signal: abort.signal }).then((result) => {
-      if (!abort.signal.aborted) setItems(result.items);
-    }).catch((reason: unknown) => { if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : "Couldn't load the conversation."); });
+    void sdk.threads.timeline({ threadId: task.threadId!, includeNestedRows: "true", summaryOnly: "false", segmentLimit: "100", signal: abort.signal })
+      .then((timeline) => { if (!abort.signal.aborted) { setRows(timeline.rows); setError(null); } })
+      .catch((reason: unknown) => { if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : "Couldn't load the conversation."); });
+    // Optional authored labels must never delay the actual timeline.
+    void sdk.threads.events.list({ threadId: task.threadId!, types: ["item/completed"], order: "desc", limit: "100", signal: abort.signal })
+      .then((events) => { if (!abort.signal.aborted) setTitles(nativeActivityTitles(events)); })
+      .catch(() => { if (!abort.signal.aborted) setTitles(new Map()); });
     return () => abort.abort();
-  }, [sdk, task.threadId, task.updatedAt, revision]);
-  const filtered = items?.filter((item) => transcriptPreview(item.preview).toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  }, [sdk, task.threadId, task.updatedAt]);
+  const turns = rows?.filter((row): row is NativeTurn => row.kind === "turn");
+  const messages = rows?.filter((row) => row.kind === "conversation" && row.role === "assistant");
   return <>
-    <div className="flex items-end gap-2"><Search id={id} query={query} onChange={setQuery} /><Button variant="outline" size="sm" onClick={() => refresh((n) => n + 1)}>Refresh</Button></div>
+    <Search id={id} query={query} onChange={setQuery} />
     {error && <InlineAlert>{error}</InlineAlert>}
-    {items === null && !error ? <EmptyBox>Loading conversation…</EmptyBox> : filtered?.length === 0 ? <EmptyBox>{query ? "No matching messages." : "No messages recorded yet."}</EmptyBox> : <ol className="divide-y divide-border">
-      {filtered?.map((item) => <li key={item.id} className="py-2.5"><details>
-        <summary className="cursor-pointer truncate text-xs"><span className="mr-2 text-muted-foreground">{item.role === "user" ? "You" : PROVIDER_LABEL[task.provider]}</span>{transcriptPreview(item.preview) || "Task update"}</summary>
-        <p className="mt-2 text-xs whitespace-pre-wrap text-muted-foreground">{transcriptPreview(item.preview)}</p>
-        {item.attachmentSummary && <p className="mt-1 text-xs text-muted-foreground">{item.attachmentSummary.fileCount} files · {item.attachmentSummary.imageCount} images</p>}
-      </details></li>)}
-    </ol>}
-    <p className="text-xs text-muted-foreground">Search covers message previews. The full log includes tool output and attachments.</p>
-    <Button size="sm" variant="outline" onClick={() => setFull((value) => !value)}>{full ? "Hide full log" : "Open full log"}</Button>
-    {full && <div className="min-h-64 rounded-lg border border-border"><ThreadChat threadId={task.threadId!} variant="timeline" layout="document" /></div>}
+    {rows === null && !error ? <EmptyBox>Loading conversation…</EmptyBox> : turns?.length ? <ol className="boat-task-transcript">
+      {turns.map((turn, index) => <NativeTranscriptTurn key={turn.id} task={task} turn={turn} query={query} initialOpen={index === 0} messages={rows?.filter((row) => row.kind !== "turn") ?? []} titles={titles} />)}
+    </ol> : <ol className="boat-task-transcript">{messages?.map((row) => row.kind === "conversation" && row.role === "assistant" && transcriptPreview(row.text).toLowerCase().includes(query.toLowerCase()) ? <li key={row.id} className="boat-task-turn"><time>{taskClock(row.startedAt)}</time><AgentLogo provider={task.provider} /><p>{transcriptPreview(row.text)}</p></li> : null)}</ol>}
+    <button type="button" className="boat-task-text-link" onClick={() => setFull((value) => !value)}>{full ? "Hide full log" : "Open full log ↗"}</button>
+    {full && <div className="min-h-64"><ThreadChat threadId={task.threadId!} variant="timeline" layout="document" /></div>}
   </>;
+}
+function NativeTranscriptTurn({ task, turn, query, initialOpen, messages, titles }: { task: TaskDetailDto; turn: NativeTurn; query: string; initialOpen: boolean; messages: NativeRow[]; titles: Map<number, string> }) {
+  const sdk = useSdk();
+  const [load, setLoad] = useState(false);
+  const [rows, setRows] = useState<NativeRow[] | null>(turn.children);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { setRows(turn.children); }, [turn]);
+  useEffect(() => {
+    if (!load || rows !== null) return;
+    const abort = new AbortController();
+    void sdk.threads.timelineTurnSummaryDetails({ threadId: task.threadId!, turnId: turn.turnId, sourceSeqStart: String(turn.sourceSeqStart), sourceSeqEnd: String(turn.sourceSeqEnd), signal: abort.signal })
+      .then((data) => { if (!abort.signal.aborted) setRows(data.rows); }).catch((reason: unknown) => { if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : "Couldn't load the turn."); });
+    return () => abort.abort();
+  }, [sdk, task.threadId, turn.turnId, turn.sourceSeqStart, turn.sourceSeqEnd, load, rows]);
+  const milestones = nativeMilestones(turn, rows ?? [], messages);
+  return <>{milestones.map((milestone, index) => <NativeTranscriptMilestone key={milestone.id} task={task} milestone={milestone} query={query} initialOpen={initialOpen && index === 1} loading={rows === null} error={error} onExpand={() => setLoad(true)} title={milestone.message ? titles.get(milestone.message.sourceSeqEnd) : undefined} />)}</>;
+}
+function NativeTranscriptMilestone({ task, milestone, query, initialOpen, loading, error, onExpand, title: authoredTitle }: { task: TaskDetailDto; milestone: NativeMilestone; query: string; initialOpen: boolean; loading: boolean; error: string | null; onExpand(): void; title?: string }) {
+  const [expanded, setExpanded] = useState(initialOpen);
+  useEffect(() => { if (expanded && loading) onExpand(); }, [expanded, loading]);
+  const title = authoredTitle ?? (milestone.message ? transcriptPreview(milestone.message.text).split("\n")[0] : "Agent activity");
+  if (query && !JSON.stringify(milestone.work).toLowerCase().includes(query.toLowerCase()) && !title.toLowerCase().includes(query.toLowerCase())) return null;
+  return <li><details className="boat-task-native-turn" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}><summary>
+    <time>{taskClock(milestone.at)}</time><AgentLogo provider={task.provider} /><span>{title}<small>{nativeWorkCounts(milestone)}</small></span><span className="boat-task-chevron">{expanded ? "⌄" : "›"}</span>
+  </summary>{expanded && <div className="boat-task-turn-detail" aria-label="Selected recorded evidence; the full log contains all activity">{error ? <InlineAlert>{error}</InlineAlert> : loading ? <p>Loading turn…</p> : nativeEvidence(milestone).map((row) => {
+    return row.workKind === "command" ? <div key={row.id}><pre>$ {row.command}</pre>{row.output && <pre className={row.exitCode === 0 ? "boat-task-added" : row.exitCode !== null ? "boat-task-removed" : ""}>{row.output.split("\n").slice(0, 3).join("\n").slice(0, 600)}</pre>}</div>
+      : row.workKind === "file-change" ? <p className="boat-task-code" key={row.id}>edit {row.change.path} <DiffStats additions={row.change.diffStats.added} deletions={row.change.diffStats.removed} /></p>
+      : row.workKind === "tool" ? <pre key={row.id}>{row.toolName}{typeof row.toolArgs?.command === "string" ? ` ${row.toolArgs.command}` : ""}{row.output ? `\n${row.output.slice(0, 8_000)}` : ""}</pre>
+      : row.workKind === "file-read" ? <p className="boat-task-code" key={row.id}>read {row.path}</p>
+      : <p key={row.id}>{("presentation" in row ? row.presentation?.label.completed : null) ?? row.workKind}</p>;
+  })}</div>}</details></li>;
+}
+function taskClock(value: string | number | null) {
+  if (value === null) return "";
+  return new Date(value).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).toLowerCase();
 }
 
 function Search({ id, query, onChange }: { id: string; query: string; onChange(value: string): void }) {
-  return <label htmlFor={id} className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">Search transcript<input id={id} type="search" value={query} onChange={(event) => onChange(event.target.value)} placeholder="Find a message or tool…" className="min-h-8 w-full rounded-md border border-input bg-background px-2 text-base text-foreground focus-visible:outline-2 focus-visible:outline-ring sm:text-xs" /></label>;
+  return <label htmlFor={id} className="boat-task-search"><Icon name="Search" className="size-3.5" aria-hidden /><span className="sr-only">Search transcript</span><input id={id} type="search" value={query} onChange={(event) => onChange(event.target.value)} placeholder="Search transcript" /></label>;
 }
 
 function BoatTranscript({ task }: { task: TaskDetailDto }) {
@@ -194,7 +245,7 @@ function BoatTranscript({ task }: { task: TaskDetailDto }) {
   const turns = useMemo(() => groupTaskTranscript(data?.events ?? []), [data]);
   const visible = turns.filter((turn) => transcriptMatches(turn, query));
   return <>
-    <div className="flex items-end gap-2"><Search id={id} query={query} onChange={setQuery} /><Button size="sm" variant="outline" disabled={isFetching} onClick={() => void refetch()}>Refresh</Button></div>
+    <Search id={id} query={query} onChange={setQuery} />
     {(error || data?.error) && <InlineAlert>{error?.message ?? data?.error}</InlineAlert>}
     {!data && !error ? <EmptyBox>Loading transcript…</EmptyBox> : visible.length === 0 ? <EmptyBox>{query ? "No matching turns." : "No conversation recorded yet."}</EmptyBox> : <ol className="divide-y divide-border">
       {visible.map((turn) => <li key={turn.key} className="py-2.5"><details>
@@ -215,40 +266,61 @@ function Sandbox({ task }: { task: TaskDetailDto }) {
   const sandbox = sandboxes.data?.sandboxes.find((item) => item.id === task.sandboxId);
   const memory = task.memory;
   const [resizing, setResizing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const action = experimental_useRpcMutation({ contract: rpcContract, method: "sandboxAction" });
-  const { openTask } = useCloudAgentsNavigation();
+  const previewAction = experimental_useRpcMutation({ contract: rpcContract, method: "previewAction" });
+  const { data: previews } = usePreviews(null, task.id);
+  const { data: usage } = experimental_useRpcQuery({ contract: rpcContract, method: "fidelityUsage", input: { taskId: task.id } });
+  const { data: settings } = experimental_useRpcQuery({ contract: rpcContract, method: "settings", input: null });
+  const idle = settings?.settings.find((setting) => setting.key === "stopIdleAfterMinutes")?.value;
   const stopped = sandbox?.state === "stopped" || sandbox?.state === "archived";
-  async function run() {
+  const points = memory?.series ?? [];
+  async function run(kind: "stop" | "resume" | "delete") {
     if (!task.sandboxId) return;
-    try { await action.mutate({ id: task.sandboxId, action: stopped ? "resume" : "stop" }); } catch (reason) { showError(reason); }
+    try { await action.mutate({ id: task.sandboxId, action: kind }); setDeleting(false); } catch (reason) { showError(reason); }
   }
   return <>
-    <div className={cn(BOX, "space-y-2 text-xs")}>
-      <p>{sandbox ? `Sandbox ${stopped ? "stopped" : sandbox.state}` : task.sandboxId ? "Sandbox state unavailable" : "No sandbox attached"}</p>
-      {memory?.size && <p className="text-muted-foreground">{memory.size.label} · {memory.size.summary}</p>}
-      {sandboxes.error && <p className="text-[#E06C6C]">{sandboxes.error.message}</p>}
-      {sandboxes.data?.error && <p className="text-[#E06C6C]">{sandboxes.data.error}</p>}
+    {(sandboxes.error || sandboxes.data?.error) && <InlineAlert>{sandboxes.error?.message ?? sandboxes.data?.error}</InlineAlert>}
+    <div className={cn(BOX, "boat-task-sandbox-state")}>
+      <div className="boat-task-line"><span className="boat-task-status" data-tone={!sandbox || stopped ? "neutral" : "positive"}><i aria-hidden="true" /><strong>{sandbox ? stopped ? "Stopped" : "On" : "Sandbox"}</strong></span>
+        {memory?.size && <span className="boat-task-muted">{memory.size.label} · {memory.size.summary.replace(", ", " · ")}</span>}</div>
+      {typeof idle === "number" && <p className="boat-task-muted">{idle > 0 ? `Stops after ${idle >= 60 && idle % 60 === 0 ? `${idle / 60} h` : `${idle} min`} idle · your next message resumes it` : "Stays on while this task is open"}</p>}
     </div>
-    <Section title="Memory"><div className={cn(BOX, "space-y-2 text-xs")}>
-      {memory?.peak ? <>
-        <div className="flex flex-wrap justify-between gap-2"><span>This run</span><span className="text-muted-foreground">Peak {memory.peak.usedGb.toFixed(1)} of {memory.peak.totalGb.toFixed(1)} GB</span></div>
-        <meter className="h-3 w-full accent-[#5BD08A]" min={0} max={100} value={Math.max(0, Math.min(100, memory.peak.percent))} aria-label="Peak memory use" />
-        {memory.peak.shared && <p className="text-muted-foreground">Shared with other tasks on this sandbox</p>}
-        <p className="text-muted-foreground">Measured {dateTime(memory.peak.at)}</p>
-      </> : <p className="text-muted-foreground">No memory measurement for this run</p>}
-      {memory?.oom && <p className="text-[#E06C6C]">{memory.oom.message}</p>}
+    {(memory?.peak || points.length > 0 || memory?.oom) && <Section title="Memory"><div className={cn(BOX, "boat-task-memory")}>
+      <div className="boat-task-line"><span>This run</span>{memory?.peak && <span className="boat-task-trailing boat-task-muted">peak {memory.peak.usedGb.toFixed(1)} of {memory.peak.totalGb} GB</span>}</div>
+      {points.length > 0 && <MemoryChart points={points} />}
+      {memory?.peak?.shared && <p className="boat-task-muted">Shared with other tasks on this sandbox</p>}
+      {memory?.oom && <p className="boat-task-removed">{memory.oom.message}</p>}
+    </div></Section>}
+    {(previews?.previews.length ?? 0) > 0 && <Section title="Preview">{previews!.previews.map((preview) => <div className={cn(BOX, "boat-task-preview")} key={preview.id}>
+      <span className="boat-task-status" data-tone={preview.state === "live" ? "positive" : "neutral"}><i aria-hidden="true" /><span>{preview.state === "live" ? "Live" : preview.state === "sleeping" ? "Sleeping" : "Expired"}</span></span>
+      <UrlLink href={preview.link} className="boat-task-preview-link">{previewHost(preview.link)}</UrlLink>
+      <div className="boat-task-actions"><Button size="sm" variant="outline" className="boat-task-outline-action" disabled={previewAction.isPending} onClick={() => void previewAction.mutate({ id: preview.id, action: "wake" }).catch(showError)}>Wake</Button>
+      <Button size="sm" variant="outline" className="boat-task-outline-action" disabled={previewAction.isPending} onClick={() => void previewAction.mutate({ id: preview.id, action: "extend", hours: 2 }).catch(showError)}>Extend</Button></div>
+    </div>)}</Section>}
+    <Section title="Actions"><div className={cn(BOX, "boat-task-sandbox-actions")}>
+      <div className="boat-task-actions">{sandbox && <Button variant="outline" size="sm" className="boat-task-outline-action" disabled={action.isPending} onClick={() => void run(stopped ? "resume" : "stop")}>{stopped ? "Resume" : "Stop"}</Button>}
+        {memory?.canResize && <Button variant="outline" size="sm" className="boat-task-outline-action" onClick={() => setResizing(true)}>Continue on a larger sandbox</Button>}</div>
+      {memory?.next && <p className="boat-task-caution">{memory.next.label} {memory.next.detail.includes("double rate") ? "costs 2× per hour" : memory.next.detail.includes("half rate") ? "costs half per hour" : memory.next.detail}</p>}
+      {task.ownsSandbox && sandbox && <div className="boat-task-delete-row"><span className="boat-task-muted">Delete removes the sandbox and its files</span><Button size="sm" variant="outline" className="boat-task-outline-action boat-task-removed" disabled={action.isPending} onClick={() => setDeleting(true)}>Delete</Button></div>}
     </div></Section>
-    <PreviewsSection threadId={null} taskId={task.id} showTask={false} />
-    <Section title="Actions"><div className={cn(BOX, "space-y-3 text-xs")}>
-      <div className="flex flex-wrap gap-2">
-        {sandbox && <Button variant="outline" size="sm" disabled={action.isPending} onClick={() => void run()}>{stopped ? "Resume" : "Stop"}</Button>}
-        {memory?.canResize && <Button variant="outline" size="sm" onClick={() => setResizing(true)}>Change sandbox size…</Button>}
-      </div>
-      {memory?.next && <p className="text-[#FC8C45]">{memory.next.label} · {memory.next.detail}</p>}
-      <p className="text-muted-foreground">Changing size stops running processes. Review the cost before continuing.</p>
-      <div className="border-t border-border pt-3"><Button size="sm" variant="ghost" onClick={() => openTask(task.id)}>Open task actions…</Button><p className="mt-1 text-muted-foreground">Close or delete with the task's existing safeguards.</p></div>
-    </div></Section>
-    <Section title="Cost"><div className={cn(BOX, "text-xs text-muted-foreground")}>Task cost is unavailable.</div></Section>
+    {usage?.task && (usage.task.hours !== null || usage.task.dollars !== null) && <Section title="Cost"><div className={cn(BOX, "boat-task-line boat-task-cost")}>
+      <span className="boat-task-muted" title="Sandbox usage during this task's recorded window">This task</span><span className="boat-task-trailing">{usage.task.hours !== null ? `${usage.task.hours.toFixed(1)} sandbox hours` : ""}{usage.task.dollars !== null ? `${usage.task.hours !== null ? " · " : ""}about $${usage.task.dollars.toFixed(2)}` : ""}</span>
+    </div></Section>}
+    <ConfirmDialog open={deleting} onOpenChange={setDeleting} title="Delete this sandbox?" description="The sandbox and its disk are removed. Unpushed work is lost." confirmLabel="Delete sandbox" destructive pending={action.isPending} onConfirm={() => void run("delete")} />
     <ResizeDialog task={task} mode={memory?.oom ? "oom" : "general"} open={resizing} onOpenChange={setResizing} />
   </>;
 }
+function MemoryChart({ points }: { points: NonNullable<TaskDetailDto["memory"]>["series"] & {} }) {
+  const first = points[0]; const last = points.at(-1)!;
+  const start = Date.parse(first.at); const span = Math.max(1, Date.parse(last.at) - start);
+  const width = Math.min(32, 414 / points.length - 3);
+  const peak = Math.max(...points.map((point) => point.usedGb));
+  return <div className="boat-task-memory-chart"><svg viewBox="0 0 414 52" preserveAspectRatio="none" role="img" aria-label={`Measured memory from ${taskClock(first.at)} to ${taskClock(last.at)}`}>
+    <line x1="0" y1="0.5" x2="414" y2="0.5" className="boat-task-memory-rule" />
+    {points.map((point, index) => <rect key={point.at} x={(Date.parse(point.at)-start)/span*(414-Math.max(1,width))} y={52-Math.max(1,point.usedGb/Math.max(peak,0.01)*46)} width={Math.max(1,width)} height={Math.max(1,point.usedGb/Math.max(peak,0.01)*46)} rx="2" className={point.usedGb === peak ? "boat-task-memory-peak" : "boat-task-memory-bar"}><title>{taskClock(point.at)}: {point.usedGb} of {point.totalGb} GB</title></rect>)}
+  </svg><div className="boat-task-line boat-task-memory-window"><span>Observed {taskClock(first.at)}</span><span className="boat-task-trailing">{taskClock(last.at)}</span></div>
+    <span className="sr-only">Observed window only. Missing measurements are not interpolated.</span></div>;
+}
+
+function previewHost(value: string): string { try { return new URL(value).hostname; } catch { return "Open preview"; } }
