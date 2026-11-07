@@ -17,6 +17,7 @@ import {
 } from "./web/page";
 import { BoatSettings, MobileBoatSettings } from "./web/plugin-settings";
 import { registerMergeInteraction } from "./web/merge-interaction";
+import { registerOrchestratorWelcome } from "./web/orchestrator-welcome";
 import "./web/boat-ui.css";
 import {
   HomepageCard,
@@ -110,6 +111,7 @@ export default definePluginApp((app) => {
   registerBoatFooter(app);
   registerShipInteraction(app);
   registerMergeInteraction(app);
+  registerOrchestratorWelcome(app);
 
   app.slots.homepageSection({
     id: "cloud-agents",
