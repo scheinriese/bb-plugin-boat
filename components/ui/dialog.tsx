@@ -258,7 +258,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
       return (
         <ResponsiveDrawerShell
           open={open}
-          contentClassName={compactContentClassName}
+          contentClassName={cn("boat-ui", compactContentClassName)}
           onOpenChange={onOpenChange}
           onAfterCloseAutoFocus={onAfterCloseAutoFocus}
           onContentAnimationEnd={(settledOpen) => {
@@ -273,7 +273,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
           <div
             ref={ref}
             className={cn(
-              "grid grid-cols-[minmax(0,1fr)] gap-4 overflow-y-auto px-4 pt-2 pb-4",
+              "boat-ui grid grid-cols-[minmax(0,1fr)] gap-4 overflow-y-auto px-4 pt-2 pb-4",
               className,
               "max-w-none",
             )}
@@ -297,7 +297,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
             queueMicrotask(() => onAfterCloseAutoFocus?.());
           }}
           className={cn(
-            "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg grid-cols-[minmax(0,1fr)] translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-sm duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg",
+            "boat-ui fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg grid-cols-[minmax(0,1fr)] translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-sm duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg",
             className,
           )}
           {...props}
