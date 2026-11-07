@@ -533,8 +533,8 @@ export default async function plugin(bb: BbPluginApi) {
   });
   // The same note for a message that would go straight to the worker: held a moment, once, to add it.
   bb.experimental_hooks.on("message.dispatch", async (context) => {
-    const start = await nativeStart(context, runtime);
-    if (start?.action === "reject") return start;
+    const start = await nativeStart(context, runtime, quotas);
+    if (start?.action === "wait" || start?.action === "reject") return start;
     return watchdog.dispatch({
       threadId: context.thread.id,
       attempt: context.attempt,
