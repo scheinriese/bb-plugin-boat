@@ -521,6 +521,12 @@ export class TaskStore {
     return row === undefined ? null : toTask(row);
   }
 
+  /** Setup's receipt outlives the board's bounded list of recently closed work. */
+  latestSetupTest(): Task | null {
+    const row = this.db().prepare(`SELECT * FROM tasks WHERE role = 'custom' AND title = 'Test task' AND reason = 'Test task: checks the setup' AND repo IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1`).get() as Row | undefined;
+    return row === undefined ? null : toTask(row);
+  }
+
   /** Accepts a full id or an unambiguous prefix (`t_ab` → `t_ab12cd34`). */
   resolve(idOrPrefix: string): Task | null {
     const exact = this.get(idOrPrefix);

@@ -627,6 +627,11 @@ export function registerRpc(runtime: Runtime): void {
         return { task: await single(task), pending };
       }),
 
+    setupTestTask: async () => {
+      const task = service.store.latestSetupTest();
+      return { task: task === null ? null : await single(task) };
+    },
+
     setup: async ({ force }) => {
       if (runtime.setup === null) throw new experimental_PluginRpcRefusal({ code: "conflict", message: "Setup checks aren't available." });
       return runtime.setup.status({ force });

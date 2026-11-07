@@ -5,6 +5,8 @@ import { DECLARED_SETTINGS_KEY, PLUGIN_SETTINGS_KEY, createMigratingSettingsStor
 import { SETTINGS } from "../src/settings.ts";
 import type { SetupStatusDto } from "../contract.ts";
 import { groupedSettings, setupProgress, setupTestPassed } from "../web/v1-settings-logic.ts";
+import { makeService } from "./fakes.ts";
+import { testTaskInput } from "../src/setup.ts";
 
 test("settings migrate over two generations without losing false, zero, empty or later edits", async (t) => {
   let host = createFakePluginHost({ pluginId: "boat", settings: { agents: "codex", workers: "projects", environment: "", maxActiveSandboxes: 0, pushNotifications: false, machineType: "small" } });
@@ -72,4 +74,14 @@ test("an idle test task needs a passing report before setup claims All set", () 
   assert.equal(setupTestPassed({ status: "idle", error: null, reportStatus: "blocked" }), false);
   assert.equal(setupTestPassed({ status: "idle", error: null, reportStatus: null }), false);
   assert.equal(setupTestPassed({ status: "idle", error: null, reportStatus: "done" }), true);
+});
+
+test("setup receipt survives the board's recent-history limit and newer failures replace it", async () => {
+  const env = makeService();
+  const task = (await env.service.launchTask(testTaskInput(null), 5_000)).task;
+  env.store.update(task.id, { status: "done", result: "=== REPORT ===\nSTATUS: done\n=== END REPORT ===" });
+  for (let i = 0; i < 25; i++) env.store.insert({ ...task, id: `t_later${i}`, title: "Ordinary task", status: "done" });
+  assert.equal(env.store.latestSetupTest()!.id, task.id);
+  env.store.insert({ ...task, id: "t_new_test", status: "failed", error: "Agent could not sign in" });
+  assert.equal(env.store.latestSetupTest()!.id, "t_new_test");
 });

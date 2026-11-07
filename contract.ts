@@ -706,6 +706,12 @@ export const rpcContract = defineRpcContract({
     input: z.object({ notifyThreadId: z.string().nullable(), provider: providerSchema.nullable() }),
     output: launchResult,
   },
+  /** The latest real setup test, including after it leaves the board's history window. */
+  setupTestTask: {
+    input: z.null(),
+    output: z.object({ task: taskSchema.nullable() }),
+    tags: () => [TAGS.tasks, TAGS.setup],
+  },
   startTask: {
     input: z.object({
       title: z.string().trim().min(1).max(200),

@@ -4,7 +4,7 @@
 // and how to fix it: a command to copy, a boat.dev page, or a button.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { experimental_useRpcMutation, useBbNavigate, useSdk } from "@get-bb/plugin-sdk/app";
+import { experimental_useRpcMutation, experimental_useRpcQuery, useBbNavigate, useSdk } from "@get-bb/plugin-sdk/app";
 import { rpcContract, type SetupCheckDto, type SetupStatusDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 import { PANEL_PATH, SIGN_IN_SUBPATH } from "./format";
 import { setupSummaryText, withBoatPath } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
-import { useBoard, useCopy, useHosts, useInterval, useOverview, useProjects, useSettingRows, useSetup, useTask } from "./hooks";
+import { useCopy, useHosts, useInterval, useOverview, useProjects, useSettingRows, useSetup, useTask } from "./hooks";
 import { setupProgress, setupTestPassed } from "./v1-settings-logic";
 import { EmptyBox, InlineAlert, RichText, showError } from "./ui";
 
@@ -494,12 +494,10 @@ export function SetupWarnings() {
 /** Settings → Setup: the same checklist, every row, plus Check again. */
 export function SetupChecklist() {
   const { data, error } = useSetup();
-  const board = useBoard(null).data;
+  const savedTest = experimental_useRpcQuery({ contract: rpcContract, method: "setupTestTask", input: null }).data?.task;
   const start = experimental_useRpcMutation({ contract: rpcContract, method: "startTestTask" });
   const [startedId, setStartedId] = useState<string | null>(null);
-  const test = useTask(startedId).data?.task ?? [...(board?.ready ?? []), ...(board?.running ?? []), ...(board?.done ?? [])]
-    .filter((task) => task.title === "Test task" && task.reason === "Test task: checks the setup")
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const test = useTask(startedId).data?.task ?? savedTest ?? undefined;
   const navigate = useBbNavigate();
   const runTest = async () => {
     try { const result = await start.mutate({ notifyThreadId: null, provider: null }); setStartedId(result.task.id); }
