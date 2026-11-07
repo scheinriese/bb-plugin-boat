@@ -34,6 +34,7 @@ import { MODEL_TIERS_KEY } from "./src/runtime.ts";
 import { parseTierMap } from "./src/tiers.ts";
 import { registerRpc } from "./src/rpc.ts";
 import { registerMergeRpc } from "./src/merge.ts";
+import { registerNativeReviews } from "./src/native-review.ts";
 import { nativeStart, adoptNativeChat } from "./src/native-start.ts";
 import { createRuntime, type Runtime } from "./src/runtime.ts";
 import { BoatService, DeliveryDeferred, type BoatSettings, type Notification } from "./src/service.ts";
@@ -302,6 +303,10 @@ export default async function plugin(bb: BbPluginApi) {
           ...project.protectedBranches,
         ]);
     },
+    projectReviewer: (projectId, repo) => {
+      const own = projectId === null ? null : projects.get(projectId);
+      return (own ?? (repo === null ? null : projects.forRepo(repo)))?.reviewer ?? null;
+    },
     projectInstructions: (projectId, repo) => {
       // The task's project, else every project with its repo.
       const own = projectId === null ? null : projects.get(projectId);
@@ -333,6 +338,7 @@ export default async function plugin(bb: BbPluginApi) {
     wake: () => wakeMonitor(),
   });
   runtimeRef = runtime;
+  const nativeReviews = registerNativeReviews(runtime);
   attentionNotifications = createAttentionNotifications({
     kv: bb.storage.kv,
     enabled: async (kind) => {
@@ -405,6 +411,7 @@ export default async function plugin(bb: BbPluginApi) {
         ...(kind === "failed" ? { error: event.error ?? null } : {}),
         at,
       }))
+      .then(() => nativeReviews.afterThreadSync(threadId))
       .catch((error: unknown) => bb.log.warn(`chat event ${kind} ${threadId}: ${error instanceof Error ? error.message : String(error)}`));
   };
   // A chat someone opens in a worker's workspace joins the task.
@@ -548,6 +555,7 @@ export default async function plugin(bb: BbPluginApi) {
           // Also delivers notices a restart or a failed send left pending.
           if (service.hasOpenWork()) await service.sweep();
           else await service.deliverPending();
+          await nativeReviews.tick();
           await attentionNotifications?.flush();
         } catch (error) {
           bb.log.warn(`monitor sweep failed: ${error instanceof Error ? error.message : String(error)}`);
