@@ -194,6 +194,7 @@ export const projectSchema = z.object({
   instructions: z.string(),
   /** Size of its new task sandboxes (null: the Default sandbox size setting). */
   machineType: machineTypeSchema.nullable(),
+  reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -218,6 +219,7 @@ export const projectInputSchema = z.object({
   instructions: z.string().max(10_000).optional(),
   /** null: the Default sandbox size setting; absent: unchanged. */
   machineType: machineTypeSchema.nullable().optional(),
+  reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
 });
 export type ProjectInputDto = z.infer<typeof projectInputSchema>;
 

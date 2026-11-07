@@ -68,6 +68,19 @@ test("saving keeps ids unique and finds projects by name or repo", () => {
   assert.equal(store.forRepo("ACME/docs")?.id, "docs");
 });
 
+test("project reviewer choices preserve inheritance, explicit no review and legacy records", () => {
+  const store = projectStore();
+  const input = { name: "Shop", repos: [{ repo: "acme/shop", baseBranch: "main" }] };
+  const inherited = store.save(input);
+  assert.equal(inherited.reviewer, null);
+  const none = store.save({ ...input, id: inherited.id, reviewer: "none" });
+  assert.equal(none.reviewer, "none");
+  assert.equal(store.save({ ...input, id: inherited.id }).reviewer, "none", "unrelated edits preserve the choice");
+  assert.equal(store.save({ ...input, id: inherited.id, reviewer: null }).reviewer, null);
+  assert.equal(store.save({ ...input, id: inherited.id, reviewer: "codex" }).reviewer, "codex");
+  assert.throws(() => store.save({ ...input, reviewer: "unknown" as "codex" }));
+});
+
 test("base branches are always protected", () => {
   const project = toOrchestratorProject(
     normalizeProject({ name: "p", repos: [{ repo: "a/b", baseBranch: "release" }, { repo: "a/c", baseBranch: "trunk" }] }),

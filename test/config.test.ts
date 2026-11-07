@@ -234,7 +234,7 @@ function ownerFile() {
   };
 }
 
-const withoutDates = (projects: Record<string, unknown>[]) => projects.map(({ createdAt: _c, updatedAt: _u, ...rest }) => rest);
+const withoutDates = (projects: Record<string, unknown>[]) => projects.map(({ createdAt: _c, updatedAt: _u, ...rest }) => ({ ...rest, reviewer: rest.reviewer ?? null }));
 
 test("export: every setting, the projects, tiers and protocol, and nothing else", async (t) => {
   const { harness, cli, exported, writes } = await setup();

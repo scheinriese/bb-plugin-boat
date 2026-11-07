@@ -30,6 +30,8 @@ export const projectInputSchema = z.object({
   instructions: z.string().max(MAX_PROJECT_INSTRUCTIONS).optional(),
   /** Size of its new task sandboxes; null: the Default sandbox size setting; absent: unchanged. */
   machineType: z.enum(MACHINE_TYPES).nullable().optional(),
+  /** null: configured reviewer; none: no automatic review. */
+  reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
 });
 export type ProjectInput = z.infer<typeof projectInputSchema>;
 
@@ -60,6 +62,7 @@ export interface BoatProject {
   instructions: string;
   /** Size of new task sandboxes for this project (and their reviews); null: the Default sandbox size setting. */
   machineType: MachineType | null;
+  reviewer?: "codex" | "claude" | "none" | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -121,6 +124,7 @@ export function normalizeProject(input: ProjectInput, existing?: BoatProject | n
     protectedBranches: protectedList,
     instructions: parsed.instructions !== undefined ? parsed.instructions.trim() : (existing?.instructions ?? ""),
     machineType: parsed.machineType !== undefined ? parsed.machineType : (existing?.machineType ?? null),
+    reviewer: parsed.reviewer !== undefined ? parsed.reviewer : (existing?.reviewer ?? null),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -161,6 +165,7 @@ function withDefaults(project: BoatProject): BoatProject {
     protectedBranches: Array.isArray(project.protectedBranches) ? project.protectedBranches.filter((name) => typeof name === "string") : [],
     instructions: typeof project.instructions === "string" ? project.instructions : "",
     machineType: (MACHINE_TYPES as readonly unknown[]).includes(project.machineType) ? project.machineType : null,
+    reviewer: ["codex", "claude", "none"].includes(project.reviewer ?? "") ? project.reviewer : null,
   };
 }
 
