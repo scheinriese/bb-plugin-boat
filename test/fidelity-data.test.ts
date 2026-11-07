@@ -167,12 +167,13 @@ test("ready changes survive a neutral idle stop while errors and explicit interr
 });
 
 
-test("sidebar counts a paid recovery once and deduplicates its explicit decision", async () => {
+test("sidebar rollups keep paid recovery in the stopped category and deduplicate explicit decisions", async () => {
   const env = makeService({ chat: true });
   const task = (await env.service.launchTask({ title: "Add Apple Pay", role: "implement", brief: "Add it.", repo: "acme/web", orchestratorThreadId: "thr_plain" }, 5000)).task;
   const actual = env.service.publicStatus.bind(env.service);
   env.service.publicStatus = (entry, context) => entry.id === task.id ? { status: "broken", label: "Stopped", tone: "danger", reason: "Out of memory", needsYou: true, moving: false } : actual(entry, context);
-  assert.equal(sidebarState(env.service).threads.find((row) => row.threadId === "thr_plain")!.rollup!.needsYou, 1);
+  assert.equal(sidebarState(env.service).threads.find((row) => row.threadId === "thr_plain")!.rollup!.needsYou, 0);
+  assert.equal(sidebarState(env.service).threads.find((row) => row.threadId === "thr_plain")!.rollup!.stopped, 1);
   env.store.addDecision({ orchestratorThreadId: "thr_plain", question: "Continue on Large?", recommendation: "Large", options: ["Large"], taskIds: [task.id] });
   assert.equal(sidebarState(env.service).threads.find((row) => row.threadId === "thr_plain")!.rollup!.needsYou, 1);
 });

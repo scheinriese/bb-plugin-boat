@@ -35,7 +35,7 @@ export function sidebarState(service: Pick<BoatService, "store" | "publicStatus"
     const openDecisions = decisions.filter((decision) => decision.orchestratorThreadId === orchestrator.threadId);
     const decisionTasks = new Set(openDecisions.flatMap((decision) => decision.taskIds));
     const rollup = {
-      needsYou: openDecisions.length + children.filter((task) => statuses.get(task.id)!.needsYou && !decisionTasks.has(task.id)).length,
+      needsYou: openDecisions.length + children.filter((task) => statuses.get(task.id)!.status === "needs-you" && !decisionTasks.has(task.id)).length,
       stopped: rows.filter((state) => state.status === "broken").length,
       ready: rows.filter((state) => state.status === "ready").length,
       working: rows.filter((state) => state.status === "working" || state.status === "review").length,
