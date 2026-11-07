@@ -43,13 +43,13 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
     ...(relay?.agents ?? []).flatMap(agent => agent.usedPercent === null ? [] : [`${agent.provider === "codex" ? "Codex" : "Claude"} ${Math.round(agent.usedPercent)}%`]),
   ].filter(Boolean).join(" · ");
   return <section className="boat-ui relative" aria-label="Cloud agents">
-    <span className="absolute -top-8 right-0 text-right text-xs leading-4 text-[color:var(--boat-faint)]">{meta}</span>
-    {firstRun ? <div className="grid gap-2 sm:grid-cols-3">
+    <span className="absolute -top-8 right-0 text-right text-xs leading-4 text-[color:var(--boat-faint)]">{firstRun ? "All set · nothing running" : meta}</span>
+    {firstRun ? <div className="grid gap-[10px] sm:grid-cols-3">
       {[
-        {icon:"ComputerCloud", title:"Start a task", detail:"One task in its own sandbox.", act:()=>fill("Help me work on one task in this repository. ")},
-        {icon:"FolderGit", title:"Add a project", detail:"Choose a repo and its rules.", act:()=>setAdding(true)},
-        {icon:"Workflow", title:"Start an orchestrator", detail:"Plan and coordinate a project.", act:()=>{fill("Help me plan and coordinate work for this project. ");toast("Choose Start as orchestrator in the send menu");}},
-      ].map(item=><button key={item.title} type="button" onClick={item.act} className="rounded-[10px] border border-border bg-card p-3.5 text-left hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring"><Icon name={item.icon} className="mb-2 size-4 text-muted-foreground"/><span className="block text-[13px] leading-5">{item.title}</span><span className="mt-1 block text-xs leading-4 text-muted-foreground">{item.detail}</span></button>)}
+        {icon:"ComputerCloud", title:"Try a one-off task", detail:"Fills the box above with a small task; runs in its own sandbox.", action:"Try it", act:()=>fill("Check this repository runs: install dependencies, build it, and run the tests. Report what works and what needs fixing; don't change any code.")},
+        {icon:"Folder", title:"Add a project", detail:"A repo with its rules. It gets a section in the sidebar.", action:"Add project", act:()=>setAdding(true)},
+        {icon:"Workflow", title:"Start an orchestrator", detail:"Plans the work, starts tasks, gets each change reviewed.", action:"Pick a project first", act:()=>{fill("Help me plan and coordinate work for this project. ");toast("Pick a project, then choose Start as orchestrator in the send menu");}},
+      ].map(item=><div key={item.title} className="flex flex-col gap-2 rounded-md border border-border bg-card p-[14px] text-left"><div className="flex items-center gap-2"><Icon name={item.icon} className="size-3.5 text-muted-foreground"/><span className="text-[13px] font-medium leading-5">{item.title}</span></div><p className="text-xs leading-[17px] text-muted-foreground">{item.detail}</p><button type="button" onClick={item.act} className="self-start text-xs leading-4 text-link hover:underline focus-visible:ring-1 focus-visible:ring-ring">{item.action}</button></div>)}
     </div> : <div className="overflow-hidden rounded-[10px] border border-border bg-card">
       {decisions.map(decision => {
         const task = tasks.find(task => task.id === (decision.askedByTaskId ?? decision.taskIds[0]));

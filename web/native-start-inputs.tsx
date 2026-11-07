@@ -52,7 +52,7 @@ export function BoatSizeChip({value,onChange}:PluginMachineProviderInputsProps) 
   };
   const blocked=state.change.status==="blocked"?state.change.reason:null;
   const label=data?.sizes.find(size=>size.type===state.type)?.label ?? ({small:"Small",default:"Default",large:"Large",xlarge:"Extra large"}[state.type]);
-  const trigger=<button type="button" onClick={compact?()=>setOpen(true):undefined} className={cn("boat-ui inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-xs font-normal leading-4 text-foreground hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring",blocked&&"text-warning-text")} aria-label={`Boat sandbox: ${label}, ${reviewerLabel(reviewer)}`} title={blocked??undefined}>
+  const trigger=<button type="button" onClick={compact?()=>setOpen(true):undefined} className={cn("boat-ui inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-card px-2 text-xs font-normal leading-4 text-foreground hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring",blocked&&"text-warning-text")} aria-label={`Boat sandbox: ${label}, ${reviewerLabel(reviewer)}`} title={blocked??undefined}>
     <span>{label}</span><span className="text-muted-foreground">·</span>{reviewer!=="none"&&<AgentLogo provider={reviewer} className="size-3"/>}<span className="text-muted-foreground">{reviewerLabel(reviewer)}</span><Icon name="ChevronDown" className="size-3 text-muted-foreground"/>
   </button>;
   const content=<div className="boat-ui flex flex-col gap-[14px] text-[13px] leading-4">
