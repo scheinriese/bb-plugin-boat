@@ -8,6 +8,7 @@ import { normalizeDecisionOptions, decisionOptionInputSchema, historyInputSchema
 import { parseSandboxUsage, parseUsagePlan, usageWindows } from "../src/usage.ts";
 import { reviewFindings } from "../src/history.ts";
 import { fidelityHandlers } from "../src/rpc-fidelity.ts";
+import { resolveTaskStatus } from "../src/board.ts";
 import { sidebarState } from "../src/sidebar.ts";
 import { makeService, memoryStore } from "./fakes.ts";
 
@@ -154,4 +155,13 @@ test("ordinary chat rollups count recorded shipping once and preserve finished i
   env.store.update(task.id, { status: "idle" });
   const idle = sidebarState(env.service).threads.find((row) => row.threadId === task.threadId)!;
   assert.equal(idle.hidden, false); assert.equal(idle.moving, false);
+});
+
+
+test("ready changes survive a neutral idle stop while errors and explicit interrupts win", () => {
+  const task = { status: "idle", role: "implement", error: null, readyAt: "2026-11-07" } as const;
+  assert.equal(resolveTaskStatus(task, { sandboxState: "stopped" }).status, "ready");
+  assert.equal(resolveTaskStatus({ ...task, readyAt: null }, { ready: true, sandboxState: "stopped" }).status, "stopped", "inferred unreviewed work retains neutral stop semantics");
+  assert.equal(resolveTaskStatus({ ...task, error: "Out of memory" }, { sandboxState: "stopped" }).status, "broken");
+  assert.equal(resolveTaskStatus({ ...task, error: "The turn was interrupted." }, { sandboxState: "stopped" }).status, "stopped");
 });

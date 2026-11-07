@@ -54,6 +54,9 @@ export function resolveTaskStatus(
   if (reviewing || (task.role === "review" && busy)) {
     return state("review", "Review", "neutral", context.reason ?? null, false, busy || reviewing);
   }
+  // A neutral idle stop preserves an approved change; errors and explicit interrupts still win.
+  const approvedChange = task.readyAt !== null || context.latestReview === "approve";
+  if (!busy && !interrupted && approvedChange && (context.ready ?? approvedChange)) return state("ready", "Ready", "positive", context.reason ?? null);
   if (!busy && (interrupted || /^(?:stopped|suspended|suspending|exited)$/i.test(context.sandboxState ?? ""))) {
     return state("stopped", "Stopped", "neutral", context.reason ?? "Resumes on the next message.");
   }
