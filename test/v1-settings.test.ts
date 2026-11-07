@@ -18,6 +18,9 @@ test("settings migrate over two generations without losing false, zero, empty or
   const expected = await first.get();
   assert.equal(expected.avoidExtraUsage, false);
   assert.equal(expected.maxActiveSandboxes, 0);
+  // A legacy host field changed just before the reload must be mirrored too.
+  await host.harness.behavior.setSettings({ reviewProvider: "claude" });
+  expected.reviewProvider = "claude";
   let next!: SettingsStore;
   host = await host.harness.lifecycle.reload(async (bb) => { next = await createMigratingSettingsStore(bb); });
   assert.equal(next.declaredInPlugin, true);
