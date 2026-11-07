@@ -141,3 +141,17 @@ test("structured decision CLI, agent tool and RPC preserve their shared boundary
   const sidebar = await harness.callRpc("sidebarState", { version: 1 }) as { version: number };
   assert.equal(sidebar.version, 1);
 });
+
+test("ordinary chat rollups count recorded shipping once and preserve finished idle visibility", async () => {
+  const env = makeService({ chat: true });
+  const task = (await env.service.launchTask({ title: "Fix the cart", role: "implement", brief: "Fix it.", repo: "acme/web", orchestratorThreadId: "thr_plain" }, 5000)).task;
+  env.store.update(task.id, { status: "done", finishedAt: new Date().toISOString() });
+  const closed = sidebarState(env.service).threads.find((row) => row.threadId === "thr_plain")!;
+  assert.equal(closed.role, "chat"); assert.equal(closed.rollup!.shippedToday, 0);
+  env.store.addEvent(task.id, "shipped", "Shipped the cart fix"); env.store.addEvent(task.id, "merged", "Merged the same cart fix");
+  const shipped = sidebarState(env.service).threads.find((row) => row.threadId === "thr_plain")!;
+  assert.equal(shipped.rollup!.shippedToday, 1);
+  env.store.update(task.id, { status: "idle" });
+  const idle = sidebarState(env.service).threads.find((row) => row.threadId === task.threadId)!;
+  assert.equal(idle.hidden, false); assert.equal(idle.moving, false);
+});

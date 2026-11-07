@@ -735,6 +735,12 @@ export class TaskStore {
       .run(taskId, new Date().toISOString(), kind, text.slice(0, 4000), JSON.stringify(clean));
   }
 
+  /** Distinct tasks with a recorded ship/merge, including chats that are not orchestrators. */
+  shippedCount(orchestratorThreadId: string, since: string, until: string): number {
+    const row = this.db().prepare(`SELECT COUNT(DISTINCT e.task_id) AS count FROM task_events e JOIN tasks t ON t.id = e.task_id WHERE t.orchestrator_thread_id = ? AND e.kind IN ('shipped', 'merged') AND julianday(e.at) >= julianday(?) AND julianday(e.at) < julianday(?)`).get(orchestratorThreadId, since, until) as Row;
+    return Number(row.count);
+  }
+
   /** Newest first, stable seq cursor; scan bounds apply before presentation filtering. */
   history(input: { taskId?: string; orchestratorThreadId?: string; beforeSeq?: number; since?: string; until?: string; limit?: number } = {}): { events: HistoryEventDto[]; nextBeforeSeq: number | null } {
     const filter = historyInputSchema.parse(input);

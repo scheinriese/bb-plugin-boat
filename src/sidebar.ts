@@ -24,8 +24,12 @@ export function sidebarState(service: Pick<BoatService, "store" | "publicStatus"
       listedIn: service.store.latestEvent(task.id, "native-chat") === null ? parent : null, rollup: null,
       hidden: task.status === "done" || task.status === "cancelled" || (task.role === "review" && task.status === "idle" && parseReport(task.result ?? "").verdict !== null), updatedAt: task.updatedAt });
   }
-  const today = new Date().toISOString().slice(0, 10);
-  for (const orchestrator of service.store.orchestrators()) {
+  const now = new Date(); const midnight = new Date(now); midnight.setHours(0, 0, 0, 0);
+  const orchestrators = service.store.orchestrators();
+  const known = new Set(orchestrators.map((entry) => entry.threadId));
+  const parents = new Map(orchestrators.map((entry) => [entry.threadId, entry]));
+  for (const task of tasks) if (task.orchestratorThreadId && !parents.has(task.orchestratorThreadId)) parents.set(task.orchestratorThreadId, { threadId: task.orchestratorThreadId, createdAt: task.createdAt, projectId: null, projectName: null });
+  for (const orchestrator of parents.values()) {
     const children = tasks.filter((task) => task.orchestratorThreadId === orchestrator.threadId && task.role !== "review");
     const rows = children.map((task) => statuses.get(task.id)!);
     const rollup = {
@@ -33,11 +37,11 @@ export function sidebarState(service: Pick<BoatService, "store" | "publicStatus"
       stopped: rows.filter((state) => state.status === "broken").length,
       ready: rows.filter((state) => state.status === "ready").length,
       working: rows.filter((state) => state.status === "working" || state.status === "review").length,
-      shippedToday: children.filter((task) => task.status === "done" && task.finishedAt?.startsWith(today)).length,
+      shippedToday: service.store.shippedCount(orchestrator.threadId, midnight.toISOString(), new Date(now.getTime() + 1).toISOString()),
     };
     const status = rollup.needsYou ? "needs-you" : rollup.stopped ? "broken" : rollup.ready ? "ready" : rollup.working ? "working" : "stopped";
     const summary = [rollup.needsYou ? `${rollup.needsYou} need you` : "", rollup.stopped ? `${rollup.stopped} stopped` : "", rollup.ready ? `${rollup.ready} ready` : "", rollup.working ? `${rollup.working} working` : ""].filter(Boolean).join(" · ");
-    threads.push({ threadId: orchestrator.threadId, role: "orchestrator", status, provider: null,
+    threads.push({ threadId: orchestrator.threadId, role: known.has(orchestrator.threadId) ? "orchestrator" : "chat", status, provider: null,
       secondLine: summary && ["needs-you", "broken", "ready"].includes(status) ? { text: summary, tone: status === "needs-you" ? "attention" : status === "broken" ? "danger" : "success" } : null,
       parentThreadId: null, moving: rollup.working > 0, createdFor: null, listedIn: null, rollup, hidden: false, updatedAt: children.reduce((at, task) => task.updatedAt > at ? task.updatedAt : at, orchestrator.createdAt) });
   }
