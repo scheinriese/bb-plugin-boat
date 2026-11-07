@@ -48,3 +48,8 @@ export function taskReviews(taskId: string, tasks: readonly TaskDto[]): TaskDto[
 export function transcriptMatches(turn: TaskTranscriptTurn, query: string): boolean {
   return [turn.prompt, ...turn.content, ...turn.tools, ...turn.errors].join("\n").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
 }
+
+/** Plugin markers are rendered cards in the conversation, not useful preview text. */
+export function transcriptPreview(text: string): string {
+  return text.replace(/::boat-[a-z-]+\{[^}]*\}/g, "").replace(/\s{2,}/g, " ").trim();
+}

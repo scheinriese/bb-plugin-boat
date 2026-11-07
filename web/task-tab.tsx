@@ -15,7 +15,7 @@ import { useCloudAgentsNavigation, useInterval, useNow, useSandboxes, useTask, u
 import { PreviewsSection } from "./previews";
 import { ResizeDialog } from "./sandbox-size";
 import { AgentBadge, EmptyBox, InlineAlert, ThreadLink, showError } from "./ui";
-import { groupTaskTranscript, taskReviews, transcriptMatches } from "./task-tab-logic";
+import { transcriptPreview, groupTaskTranscript, taskReviews, transcriptMatches } from "./task-tab-logic";
 
 export function useHasTask({ threadId }: { threadId: string }): boolean {
   return useThreadTask(threadId) !== null;
@@ -135,7 +135,7 @@ function ReviewEntry({ review, number }: { review: TaskDto; number: number }) {
   const label = review.verdict === "approve" ? "Approved" : review.verdict === "changes-requested" ? "Changes requested" : isRunning(review.status) ? "Reviewing…" : review.status === "failed" ? "Couldn't run" : "Review finished";
   return <div className="space-y-2">
     <p className={cn("text-[13px] font-medium", review.verdict === "approve" ? "text-[#5BD08A]" : review.verdict === "changes-requested" ? "text-[#FC8C45]" : review.status === "failed" ? "text-[#E06C6C]" : "text-foreground")}>Review {number} · {PROVIDER_LABEL[review.provider]} · {label.toLowerCase()}</p>
-    {review.excerpt && <p className="text-xs whitespace-pre-wrap text-muted-foreground">{review.excerpt}</p>}
+    {review.excerpt && <p className="text-xs whitespace-pre-wrap text-muted-foreground">{review.excerpt.split(/===\s*REVIEW\s*===/i)[0]?.trim()}</p>}
     <details onToggle={(event) => setExpanded(event.currentTarget.open)} className="text-xs">
       <summary className="cursor-pointer text-muted-foreground">Full review report</summary>
       {error ? <InlineAlert>{error.message}</InlineAlert> : !data ? <p className="mt-2 text-muted-foreground">Loading report…</p> : <Markdown content={data.task?.result || "No report was recorded."} className="mt-3 text-xs" />}
@@ -165,14 +165,14 @@ function ChatTranscript({ task }: { task: TaskDetailDto }) {
     }).catch((reason: unknown) => { if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : "Couldn't load the conversation."); });
     return () => abort.abort();
   }, [sdk, task.threadId, task.updatedAt, revision]);
-  const filtered = items?.filter((item) => item.preview.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const filtered = items?.filter((item) => transcriptPreview(item.preview).toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   return <>
     <div className="flex items-end gap-2"><Search id={id} query={query} onChange={setQuery} /><Button variant="outline" size="sm" onClick={() => refresh((n) => n + 1)}>Refresh</Button></div>
     {error && <InlineAlert>{error}</InlineAlert>}
     {items === null && !error ? <EmptyBox>Loading conversation…</EmptyBox> : filtered?.length === 0 ? <EmptyBox>{query ? "No matching messages." : "No messages recorded yet."}</EmptyBox> : <ol className="divide-y divide-border">
       {filtered?.map((item) => <li key={item.id} className="py-2.5"><details>
-        <summary className="cursor-pointer truncate text-xs"><span className="mr-2 text-muted-foreground">{item.role === "user" ? "You" : PROVIDER_LABEL[task.provider]}</span>{item.preview || "Message"}</summary>
-        <p className="mt-2 text-xs whitespace-pre-wrap text-muted-foreground">{item.preview}</p>
+        <summary className="cursor-pointer truncate text-xs"><span className="mr-2 text-muted-foreground">{item.role === "user" ? "You" : PROVIDER_LABEL[task.provider]}</span>{transcriptPreview(item.preview) || "Task update"}</summary>
+        <p className="mt-2 text-xs whitespace-pre-wrap text-muted-foreground">{transcriptPreview(item.preview)}</p>
         {item.attachmentSummary && <p className="mt-1 text-xs text-muted-foreground">{item.attachmentSummary.fileCount} files · {item.attachmentSummary.imageCount} images</p>}
       </details></li>)}
     </ol>}

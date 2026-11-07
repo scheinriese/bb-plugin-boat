@@ -11,6 +11,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
+  attentionCount,
   CARD_TONES,
   cardStatus,
   recommendedOption,
@@ -80,14 +81,12 @@ export function Today() {
   const shipped = recent.filter(
     (t) =>
       t.role === "implement" &&
-      t.status === "done" &&
+      cardStatus(t).status === "shipped" &&
       Date.parse(t.finishedAt ?? t.updatedAt) >= weekStart(now),
   );
   const broken =
     data?.running.filter((t) => cardStatus(t).status === "broken") ?? [];
-  const needsCount =
-    (data?.needsYou.length ?? 0) +
-    broken.filter((t) => cardStatus(t).needsYou && !data?.needsYou.some(decision => decision.taskIds.includes(t.id))).length;
+  const needsCount = attentionCount(data ? [...data.ready,...data.running] : [],data?.needsYou ?? []);
   const timeline = [...recent]
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 16);

@@ -44,3 +44,8 @@ test("reviews belong to their implementation and stay chronological across task 
   assert.deepEqual(taskReviews("implementation", tasks).map((row) => row.id), ["r1", "r2"]);
   assert.equal(tasks[0].id, "r2", "does not reorder the shared query cache");
 });
+
+test("transcript previews omit card markers but retain the message", async () => {
+  const { transcriptPreview } = await import("../web/task-tab-logic.ts");
+  assert.equal(transcriptPreview('Ready for review. ::boat-review{id="t_1234"} ::boat-ready{id="t_1234"}'), "Ready for review.");
+});
