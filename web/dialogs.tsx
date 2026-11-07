@@ -366,7 +366,7 @@ export function NewTaskForm({
         openTask(task.id);
         return;
       }
-      const { task, pending } = await start.mutate({
+      const result = await start.mutate({
         title: effectiveTitle,
         brief: brief.trim(),
         role,
@@ -386,6 +386,11 @@ export function NewTaskForm({
         // The repo check measures its peak memory and recommends a size.
         measureMemory: starter === "check-repo",
       });
+      if ("queued" in result) {
+        toast("Waiting for a usage reset", { description: "No sandbox has been created. This request will retry when an agent has room." });
+        onStarted?.(); onDone(); return;
+      }
+      const { task, pending } = result;
       toast.success(pending ? `${task.title}: starting` : `${task.title}: started`);
       onStarted?.();
       onDone();

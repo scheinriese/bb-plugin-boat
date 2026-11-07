@@ -491,7 +491,9 @@ test("with one agent (Coding agents), the relay stays off and won't move an orch
   assert.equal(JSON.parse(switched.stdout).error.code, "agent_unavailable");
   // New workers don't go to Codex either: Claude is near its limit, so new work waits.
   const started = await harness.runCli(["task", "start", "--title", "Header", "--repo", "acme/storefront", "--brief", "Do it.", "--json"], { threadId: "thr_old" });
-  assert.equal(JSON.parse(started.stdout).error.code, "agents_at_limit");
+  assert.equal(started.exitCode, 0, started.stderr);
+  assert.equal(JSON.parse(started.stdout).queued.state, "waiting");
+  assert.equal(JSON.parse(started.stdout).queued.taskId, null);
   // The overview tells the dialogs.
   const overview = (await harness.callRpc("overview", null)) as { defaults: { onlyAgent: string | null; reviewProvider: string } };
   assert.equal(overview.defaults.onlyAgent, "claude");

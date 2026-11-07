@@ -287,6 +287,8 @@ export interface StartTaskInput {
   measureMemory?: boolean;
   /** Internal automatic native review binding; never accepted from RPC/tool input. */
   nativeReview?: { source: NativeReviewSource; signal?: AbortSignal; beforeDispatch(reviewTaskId: string): Promise<void> };
+  /** Internal durable-queue insertion capability; never accepted from RPC/tool input. */
+  queuedStart?: { taskId: string; beforeInsert(): Promise<void>; insert(task: Task, save: () => Task, preparedSettings: BoatSettings): Task };
   signal?: AbortSignal;
 }
 
@@ -1213,7 +1215,7 @@ export class BoatService {
         throw new TaskError("The selected native reviewer requires a separate review sandbox and its selected agent.", "review_source_changed");
       }
     }
-    const id = newTaskId();
+    const id = input.queuedStart?.taskId ?? newTaskId();
     const now = new Date().toISOString();
 
     let branch: string | null = null;
@@ -1255,7 +1257,7 @@ export class BoatService {
         : projectDelivery === "push" && checkout !== null && (checkout.kind === "new-branch" || checkout.kind === "default-branch")
           ? "push"
           : "pr";
-    const task: Task = this.store.insert({
+    const record: Task = {
       id,
       title: clip(title, 200),
       compactTitle: input.compactTitle?.trim().slice(0, 120) || null,
@@ -1299,7 +1301,9 @@ export class BoatService {
       notifiedAt: null,
       unshipped: null,
       shipApproval: null,
-    });
+    };
+    if (input.queuedStart) await input.queuedStart.beforeInsert();
+    const task = input.queuedStart ? input.queuedStart.insert(record, () => this.store.insert(record), settings) : this.store.insert(record);
     if (input.nativeReview) this.store.addEvent(id, "native-review-source", JSON.stringify(input.nativeReview.source));
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
     if (input.measureMemory) this.sizes.watch(id); // sizes

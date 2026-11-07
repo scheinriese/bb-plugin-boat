@@ -50,6 +50,10 @@ import { TaskError, type BoatService } from "./service.ts";
 import { OPEN_STATUSES } from "./store.ts";
 import { changedApprovalReason, changedSinceApproval } from "./ship-approval.ts";
 import { WATCHDOG_PREFIX } from "./format.ts";
+import { createStartQueue, type StartQueue, type StartLaunch } from "./start-queue.ts";
+import { StartQueueStore, queueDigest } from "./start-queue-store.ts";
+import type { StartTaskInput } from "./service.ts";
+import { START_QUEUE_TAG } from "../contract-start-queue.ts";
 
 /** How a caller names a project: a configured one, or a local bb project. */
 export type ProjectRef = { kind: "boat"; id: string } | { kind: "local"; bbProjectId: string };
@@ -88,6 +92,9 @@ export interface Runtime {
   orchestratorProtocol(project: OrchestratorProject | null, signal?: AbortSignal): Promise<string>;
   /** How long CLI/tool calls wait for a dispatch before returning "starting". */
   launchWaitMs: number;
+  /** New work waits durably on agents_at_limit; internal review/test launch paths stay direct. */
+  launchTask(input: StartTaskInput, waitMs?: number): Promise<StartLaunch>;
+  startQueue: StartQueue;
   readInvokerFile(ctx: { threadId?: string; cwd?: string }, path: string): Promise<string>;
   isOrchestrator(threadId: string): Promise<boolean>;
   setOrchestrator(threadId: string, on: boolean, project?: OrchestratorProject | null): Promise<void>;
@@ -173,6 +180,8 @@ export { DEFAULT_TIERS };
 
 export function createRuntime(deps: RuntimeDeps): Runtime {
   const { bb, service, projects } = deps;
+  let startPolicyRevision = 0;
+  deps.settings.onChange(() => { startPolicyRevision++; });
 
   /** The machine a CLI call came from: the invoking thread's host, else the server's. */
   async function invokingHostId(threadId: string | undefined): Promise<string | undefined> {
@@ -226,6 +235,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   async function storeModelTiers(tiers: TierMap | null): Promise<void> {
     if (tiers === null) await bb.storage.kv.delete(MODEL_TIERS_KEY);
     else await bb.storage.kv.set(MODEL_TIERS_KEY, tiers);
+    startPolicyRevision++;
   }
 
   async function modelTiers(): Promise<{ tiers: TierMap; custom: boolean }> {
@@ -761,6 +771,10 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     await bb.storage.kv.set(relayKey(threadId), { ...state, note: text.slice(0, 20_000), noteAt: when } satisfies RelayState).catch(() => undefined);
   }
 
+  const startQueue = createStartQueue({ bb, service, store: new StartQueueStore(() => bb.storage.database()), quotas: deps.quotas,
+    policyRevision: () => startPolicyRevision,
+    projectCurrent(input) { if (input.project?.source !== "boat") return true; const current = projects.get(input.project.id); return current !== null && queueDigest(toOrchestratorProject(current)) === queueDigest(input.project); },
+    changed() { deps.changed(); bb.rpc.experimental_invalidate([START_QUEUE_TAG]); }, wake: deps.wake });
   return {
     bb,
     service,
@@ -777,6 +791,8 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       return composeProtocol(shared, project, rules);
     },
     launchWaitMs: 90_000,
+    launchTask: (input, waitMs = 90_000) => startQueue.launch(input, waitMs),
+    startQueue,
 
     async readInvokerFile(ctx, path) {
       const absolute = posix.isAbsolute(path) ? path : posix.join(ctx.cwd ?? "/", path);

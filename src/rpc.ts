@@ -593,7 +593,7 @@ export function registerRpc(runtime: Runtime): void {
 
     startTask: (input) =>
       refuse(async () => {
-        const { task, pending } = await service.launchTask(
+        const result = await runtime.launchTask(
           {
             title: input.title,
             brief: input.brief,
@@ -619,6 +619,8 @@ export function registerRpc(runtime: Runtime): void {
           runtime.launchWaitMs,
         );
         runtime.wake();
+        if (result.kind === "queued") return { queued: result.request, pending: true as const };
+        const { task, pending } = result;
         return { task: await single(task), pending };
       }),
 

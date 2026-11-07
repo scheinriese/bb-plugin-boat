@@ -4,6 +4,7 @@
 // boat sandbox, dispatched by (usually) an orchestrator thread.
 import { eventMetadata, projectHistoryEvent, reviewFindings, type EventMetadata } from "./history.ts";
 import { randomBytes } from "node:crypto";
+import { START_QUEUE_MIGRATIONS } from "./start-queue-migrations.ts";
 import type Database from "better-sqlite3";
 import { normalizeDecisionOptions, type DecisionOption, type DecisionOptionInput, historyInputSchema, type HistoryEventDto } from "../contract-fidelity.ts";
 
@@ -253,6 +254,7 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS task_events_time ON task_events(at, seq)`,
   `ALTER TABLE decisions ADD COLUMN short_label TEXT`,
   `ALTER TABLE tasks ADD COLUMN compact_title TEXT`,
+  ...START_QUEUE_MIGRATIONS,
 ];
 
 export const DECISION_STATUSES = ["open", "answered", "withdrawn"] as const;

@@ -1,5 +1,6 @@
 import { projectRpcMethods } from "./contract-projects.ts";
 import { sidebarRpcMethods } from "./contract-sidebar.ts";
+import { queuedStartSchema } from "./contract-start-queue.ts";
 export * from "./contract-sidebar.ts";
 // Shared RPC contract between server.ts and app.tsx.
 //
@@ -759,7 +760,7 @@ export const rpcContract = defineRpcContract({
       /** Measure the first turn's peak memory and recommend a size (Check this repo runs in a sandbox). */
       measureMemory: z.boolean().optional(),
     }),
-    output: launchResult,
+    output: z.union([launchResult, z.object({ queued: queuedStartSchema, pending: z.literal(true) })]),
   },
   review: {
     input: z.object({

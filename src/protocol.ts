@@ -242,5 +242,6 @@ export function composeProtocol(shared: string, project: OrchestratorProject | n
   }
   const review = projectReviewInstructions(project);
   if (review) parts.push("# Project review policy", review);
+  parts.push("# Waiting work", "When boat_dispatch returns a ::boat-start-queue{id=\"...\"} receipt, reproduce that exact returned marker once in your message. If several requests for the same chat are queued together, emit only the first marker; its live card lists the waiting siblings. The original requests are persisted and no sandbox has been created. Do not dispatch replacements or name an agent to bypass the wait; paid extra usage requires the user's separate in-thread confirmation for each request.");
   return parts.join("\n\n");
 }

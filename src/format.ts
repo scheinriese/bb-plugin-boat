@@ -15,6 +15,7 @@ export function taskMarker(kind: "task" | "review" | "ready" | "problem", id: st
 export function tasksMarker(threadId: string): string {
   return `::boat-tasks{thread=${JSON.stringify(threadId)}}`;
 }
+export function queuedStartMarker(id: string): string { return `::boat-start-queue{id=${JSON.stringify(id)}}`; }
 
 /** App link to an orchestrator's overview on the Cloud agents page. */
 export function overviewLink(threadId: string | null | undefined): string {

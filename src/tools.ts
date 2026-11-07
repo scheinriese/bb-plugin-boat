@@ -6,7 +6,7 @@ import { z } from "zod";
 import { MACHINE_TYPES, type MachineType } from "./boat-api.ts";
 import { BoatError } from "./boat.ts";
 import { describeClose } from "./close-outcome.ts";
-import { agentLine, ago, decisionLines, limitsLine, overviewLink, taskDetail, taskNote, taskTable, tasksAtOnceLine } from "./format.ts";
+import { agentLine, ago, decisionLines, limitsLine, overviewLink, taskDetail, taskNote, taskTable, tasksAtOnceLine, queuedStartMarker } from "./format.ts";
 import { parseProjectRef, type Runtime } from "./runtime.ts";
 import { TaskError } from "./service.ts";
 import { explainBoatError } from "./setup.ts";
@@ -167,7 +167,7 @@ export function registerTools(runtime: Runtime): void {
         const project = params.project
           ? await runtime.resolveProject(parseProjectRef(params.project))
           : await runtime.projectForThread(ctx.threadId);
-        const { task, pending } = await service.launchTask(
+        const result = await runtime.launchTask(
           {
             title: params.title,
             compactTitle: params.compact_title,
@@ -197,7 +197,9 @@ export function registerTools(runtime: Runtime): void {
           runtime.launchWaitMs,
         );
         runtime.wake();
-        return launched(task, pending);
+        return result.kind === "queued"
+          ? `Request ${result.request.id} is waiting for a usage reset. No sandbox has been created. It will retry automatically when an agent has confirmed subscription room. Do not start a replacement or name an agent to bypass this wait; paid extra usage needs the user's separate in-thread confirmation.\nShow this returned live receipt once:\n${queuedStartMarker(result.request.id)}`
+          : launched(result.task, result.pending);
       }),
   });
 

@@ -20,7 +20,7 @@ export type Quotas = Map<Provider, AgentQuota>;
 
 export interface QuotaReader {
   /** Known quotas per agent; an agent missing from the map is unknown. */
-  read(signal?: AbortSignal): Promise<Quotas>;
+  read(signal?: AbortSignal, options?: { fresh?: boolean }): Promise<Quotas>;
 }
 
 const PROVIDER_OF: Record<string, Provider> = { "claude-code": "claude", codex: "codex" };
@@ -84,12 +84,12 @@ export interface QuotaReaderOptions {
 export function createQuotaReader(bb: BbPluginApi, options: QuotaReaderOptions = {}): QuotaReader {
   const { sources = USAGE_SOURCES, cacheMs = 60_000 } = options;
   let cache: { at: number; quotas: Quotas } | null = null;
-  async function readings(signal?: AbortSignal): Promise<Quotas> {
-    if (cache !== null && Date.now() - cache.at < cacheMs) return cache.quotas;
+  async function readings(signal?: AbortSignal, fresh = false): Promise<Quotas> {
+    if (!fresh && cache !== null && Date.now() - cache.at < cacheMs) return cache.quotas;
     const quotas: Quotas = new Map();
     for (const source of sources) {
       // Each agent's numbers come from the first source that has them.
-      const found = await readSource(bb, source, signal);
+      const found = await readSource(bb, source, signal, fresh);
       for (const [provider, quota] of found) if (!quotas.has(provider)) quotas.set(provider, quota);
       if (quotas.size === 2) break;
     }
@@ -97,8 +97,8 @@ export function createQuotaReader(bb: BbPluginApi, options: QuotaReaderOptions =
     return quotas;
   }
   return {
-    async read(signal) {
-      const quotas = await readings(signal);
+    async read(signal, readOptions) {
+      const quotas = await readings(signal, readOptions?.fresh);
       const flags = options.limits ? await options.limits().catch(() => ({})) : {};
       return applyLimitFlags(quotas, flags);
     },
@@ -144,7 +144,7 @@ async function poolFilter(bb: BbPluginApi, signal?: AbortSignal): Promise<(resou
   };
 }
 
-async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: AbortSignal): Promise<Quotas> {
+async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: AbortSignal, fresh = false): Promise<Quotas> {
   const quotas: Quotas = new Map();
   try {
     // Without the pool's routing state, its readings can't be trusted for either agent.
@@ -164,7 +164,7 @@ async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: Abor
         .callRpc({
           pluginId: sourcePluginId,
           method: "provider-usage.v1.getResource",
-          input: { resourceId: resource.id, refresh: false },
+          input: { resourceId: resource.id, refresh: fresh },
           outputSchema: resourceSchema,
           ...(signal ? { signal } : {}),
         } as never)

@@ -14,6 +14,7 @@ import {
   taskDetail,
   taskTable,
   tasksAtOnceLine,
+  queuedStartMarker,
 } from "./format.ts";
 import { ConfigError, applyImport, changeCount, exportConfig, planImport, summarize, summaryText } from "./config.ts";
 import { listLocalProjects } from "./local-projects.ts";
@@ -578,7 +579,7 @@ export function buildCli(runtime: Runtime) {
             const project = options.project
               ? await runtime.resolveProject(parseProjectRef(options.project))
               : await runtime.projectForThread(ctx.threadId);
-            const { task, pending } = await service.launchTask(
+            const result = await runtime.launchTask(
               {
                 title: options.title,
                 compactTitle: options["compact-title"] ? compactTitleSchema.parse(options["compact-title"]) : null,
@@ -609,7 +610,9 @@ export function buildCli(runtime: Runtime) {
               runtime.launchWaitMs,
             );
             runtime.wake();
-            return out({ task, pending }, options.json, () => launchMessage(task, pending));
+            return result.kind === "queued"
+              ? out({ queued: result.request, pending: true }, options.json, () => `Request ${result.request.id}: waiting for a usage reset. No sandbox has been created. It will retry automatically when an agent has room.\n${queuedStartMarker(result.request.id)}`)
+              : out({ task: result.task, pending: result.pending }, options.json, () => launchMessage(result.task, result.pending));
           });
         },
       }),
