@@ -16,7 +16,7 @@ import { DEFAULT_PROTOCOL } from "./default-protocol.ts";
 import { MAX_PROTOCOL_CHARS } from "./protocol.ts";
 import { TaskError } from "./service.ts";
 import { DEFAULT_TIERS, tierMapSchema } from "./tiers.ts";
-import { buildBoard, isReady, phaseOf, reviewState } from "./board.ts";
+import { buildBoard, isReady, phaseOf, reviewState, resolveTaskStatus, type TaskPublicStatus } from "./board.ts";
 import { ConfigError, applyImport, changeCount, exportConfig, exportFileName, planImport, summarize } from "./config.ts";
 import { CHAT_PROVIDER } from "./chat.ts";
 import { OPEN_STATUSES, PROVIDERS, type Provider, type Task } from "./store.ts";
@@ -28,6 +28,8 @@ import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import { HIDDEN_EVENT_KINDS } from "./memory.ts";
 import { sizeHandlers } from "./rpc-size.ts";
 import { currentChanges } from "./ship-approval.ts";
+import { shipRpcContract } from "../contract-ship.ts";
+import { createShipInteractions, parseShipSnapshot, shipSnapshotScript } from "./ship-interaction.ts";
 
 /** Chats that are or were orchestrators (store.orchestratorThreadIds). */
 export interface OrchestratorSets {
@@ -66,7 +68,7 @@ export function shipApprovalDto(task: Pick<Task, "turns" | "shipApproval">): Tas
 
 export function toTaskDto(
   task: Task,
-  extras: { ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean } = {},
+  extras: { ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean; publicStatus?: TaskPublicStatus } = {},
 ): TaskDto {
   const report = task.result ? parseReport(task.result) : { status: null, verdict: null };
   const unshipped = holdsUnshippedWork(task);
@@ -75,6 +77,7 @@ export function toTaskDto(
       extras.source ??
       (task.orchestratorThreadId === null ? { kind: "page", threadId: null, title: null } : { kind: "chat", threadId: task.orchestratorThreadId, title: null }),
     phase: phaseOf(task, extras.ready ?? task.readyAt !== null),
+    publicStatus: extras.publicStatus ?? resolveTaskStatus(task, { ready: extras.ready, latestReview: extras.latestReview }),
     readyNote: task.readyNote,
     latestReview: extras.latestReview ?? null,
     previewUrl: extras.previewUrl ?? null,
@@ -200,7 +203,36 @@ export async function refuse<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Separate contract so cards can request approval without importing page DTOs. */
+export function registerShipRpc(runtime: Runtime): void {
+  const { service, bb } = runtime;
+  const interactions = createShipInteractions({
+    getTask: (id) => service.mustGet(id),
+    latestReview: (id) => service.store.latestEvent(id, "review")?.text ?? null,
+    async snapshot(task, targets, signal) {
+      const result = await service.boat.exec(task.sandboxId!, shipSnapshotScript(targets), { timeoutMs: 30_000, signal });
+      if (result.exitCode !== 0) throw new TaskError("Couldn't check a clean checkout. Resume the sandbox, commit any changes, and request shipping again.", "ship_check_failed");
+      return parseShipSnapshot(result.stdout, targets.length);
+    },
+    requestInput: (request, options) => bb.ui.requestInput(request, options),
+    async ship(id, options) {
+      const result = await service.shipTask(id, options);
+      const outcome = await describeClose(service, result);
+      const where = result.shipped.map((entry) => `${entry.baseBranch} (${entry.sha.slice(0, 7)}, ${entry.commits} commit${entry.commits === 1 ? "" : "s"})`).join(", ");
+      const text = `[boat] Shipped task ${result.task.id} "${result.task.title}" to ${where}, approved in the in-thread confirmation. ${outcome.text}`;
+      const threadIds = new Set([result.task.threadId, result.task.orchestratorThreadId].filter((id): id is string => id !== null));
+      for (const threadId of threadIds) await runtime.tellOrchestrator(threadId, text).catch(() => undefined);
+    },
+    record: (id, kind, text) => { service.store.addEvent(id, kind, text); },
+    changed: () => runtime.changed(),
+    report: (threadId, text) => runtime.tellOrchestrator(threadId, text),
+  });
+  bb.onDispose(() => interactions.dispose());
+  bb.rpc.register(shipRpcContract, { requestShip: (input) => refuse(async () => interactions.request(input)) });
+}
+
 export function registerRpc(runtime: Runtime): void {
+  registerShipRpc(runtime);
   const latestReview = (task: Task) =>
     task.role === "implement" ? reviewState(runtime.service.store.latestEvent(task.id, "review")?.text) : null;
   /** A task for the UI, with its review state and whether it's ready for the user. */
@@ -267,6 +299,7 @@ export function registerRpc(runtime: Runtime): void {
 
   const dto = (task: Task, sources: Sourcing, all?: readonly Task[]) =>
     toTaskDto(task, {
+      publicStatus: service.publicStatus(task, { ready: isReady(task, all ?? service.store.list({ parentTaskId: task.id, limit: 100 }).concat(task), latestReview, sources.isOrchestrator) }),
       untrustedRepo: untrusted(task),
       movingToChat: service.isMovingToChat(task.id),
       latestReview: latestReview(task),
@@ -705,27 +738,9 @@ export function registerRpc(runtime: Runtime): void {
         return { preview: toPreviewDto(view) };
       }),
 
-    shipTask: ({ id, keepOpen, from }) =>
-      refuse(async () => {
-        // The user's click (on the page, or Ship in the task chat's header) is the approval.
-        const place = from === "chat" ? "in the task chat" : "on the overview";
-        const result = await service.shipTask(id, { keepOpen: keepOpen === true, approval: `by the user ${place}` });
-        const task = result.task;
-        const outcome = await describeClose(service, result);
-        if (task.orchestratorThreadId) {
-          const where = result.shipped.map((entry) => `${entry.baseBranch} (${entry.sha.slice(0, 7)}, ${entry.commits} commit${entry.commits === 1 ? "" : "s"})`).join(", ");
-          await runtime
-            .tellOrchestrator(task.orchestratorThreadId, `[boat] The user shipped task ${task.id} "${task.title}" to ${where} ${from === "chat" ? "from the task chat" : "from the overview"}. ${outcome.text} Mention it in your next update.`)
-            .catch(() => undefined);
-        }
-        runtime.changed();
-        return {
-          task: await single(task),
-          shipped: result.shipped.map(({ baseBranch, sha, commits }) => ({ baseBranch, sha, commits })),
-          sandbox: result.sandbox,
-          keptBecause: outcome.keptBecause,
-        };
-      }),
+    shipTask: () => refuse(async () => {
+      throw new TaskError("Request shipping and confirm it in the task chat.", "ship_confirmation_required");
+    }),
 
     projectAccess: ({ projectId }) =>
       refuse(async () => {
@@ -998,12 +1013,12 @@ export function registerRpc(runtime: Runtime): void {
       return {
         needsYou: board.needsYou.map(toDecisionDto),
         ready: board.ready.map((task) =>
-          toTaskDto(task, { ready: true, latestReview: latestReview(task), untrustedRepo: untrusted(task), movingToChat: service.isMovingToChat(task.id), previewUrl: service.previewLinkFor(task.id), source: sources.source(task) }),
+          dto(task, sources, tasks),
         ),
         running: board.running.map((task) =>
-          toTaskDto(task, { ready: false, latestReview: latestReview(task), untrustedRepo: untrusted(task), movingToChat: service.isMovingToChat(task.id), previewUrl: service.previewLinkFor(task.id), source: sources.source(task) }),
+          dto(task, sources, tasks),
         ),
-        done: board.done.map((task) => toTaskDto(task, { latestReview: latestReview(task), untrustedRepo: untrusted(task), source: sources.source(task) })),
+        done: board.done.map((task) => dto(task, sources, tasks)),
       };
     },
 

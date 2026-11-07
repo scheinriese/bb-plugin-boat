@@ -212,7 +212,7 @@ test("bbProjectRepo finds a bb project's repo and the project that has it", asyn
   assert.deepEqual(await repo("proj_missing"), { repo: null, projectId: null });
 });
 
-test("Ship from a task chat's header ships like the page and says where the user approved", async (t) => {
+test("the old Ship RPC cannot bypass the in-thread confirmation", async (t) => {
   const { harness, store, statePath } = await setup();
   t.after(() => harness.lifecycle.dispose());
   // The task's sandbox, as boat knows it.
@@ -223,11 +223,7 @@ test("Ship from a task chat's header ships like the page and says where the user
   writeFileSync(statePath, JSON.stringify(state));
   chatTask(store);
 
-  const result = (await harness.callRpc("shipTask", { id: "t_chat01", from: "chat" })) as { shipped: { baseBranch: string }[]; task: { status: string } };
-  assert.deepEqual(result.shipped.map((entry) => entry.baseBranch), ["master"]);
-  assert.equal(result.task.status, "done");
-  assert.ok(store.events("t_chat01", 50).some((event) => event.kind === "shipped" && /approved by the user in the task chat$/.test(event.text)));
-  // The chat that started it hears where it was shipped from.
-  const told = harness.inspection.sdk.callsTo("threads.send").map((call) => (call[0] as { input: { text: string }[] }).input[0]!.text);
-  assert.ok(told.some((text) => /shipped task t_chat01 "Header" to master .* from the task chat\./.test(text)), told.join("\n"));
+  await assert.rejects(harness.callRpc("shipTask", { id: "t_chat01", from: "chat" }), /confirm it in the task chat/);
+  assert.equal(store.latestEvent("t_chat01", "shipped"), null);
+  assert.equal(store.get("t_chat01")?.status, "idle");
 });

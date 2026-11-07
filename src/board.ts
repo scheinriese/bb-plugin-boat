@@ -1,6 +1,69 @@
 // The orchestrator overview: everything grouped the way the user thinks
 // about it. Needs you (decisions), Ready to review, Running, Done.
 import type { Decision, Task } from "./store.ts";
+import { parseReport } from "./briefs.ts";
+
+/** Public vocabulary. Persisted task/phase values remain lifecycle details. */
+export const PUBLIC_STATUSES = ["working", "review", "ready", "shipped", "needs-you", "broken", "stopped", "waiting-reset"] as const;
+export type PublicStatus = (typeof PUBLIC_STATUSES)[number];
+export interface TaskPublicStatus {
+  status: PublicStatus;
+  label: string;
+  tone: "neutral" | "attention" | "positive" | "danger";
+  reason: string | null;
+  needsYou: boolean;
+  moving: boolean;
+}
+export interface StatusContext {
+  ready?: boolean;
+  latestReview?: string | null;
+  reviewOpen?: boolean;
+  /** An actual unresolved owner decision; idle alone never means needs you. */
+  needsYou?: boolean;
+  reason?: string | null;
+  sandboxState?: string | null;
+  waitingReset?: boolean;
+  /** A confirmed current-turn OOM cause, not an old memory warning. */
+  outOfMemory?: boolean;
+  /** The suggested recovery costs more, so a broken task also needs the owner. */
+  recoveryCostsMore?: boolean;
+}
+
+/** The same resolver is usable by server DTOs, cards, pages and sidebar rows. */
+export function resolveTaskStatus(
+  task: Pick<Task, "status" | "role" | "error" | "readyAt">,
+  context: StatusContext = {},
+): TaskPublicStatus {
+  const state = (status: PublicStatus, label: string, tone: TaskPublicStatus["tone"], reason: string | null = null, needsYou = false, moving = false): TaskPublicStatus =>
+    ({ status, label, tone, reason, needsYou, moving });
+  if (task.status === "done") return state("shipped", "Shipped", "positive");
+  if (task.status === "cancelled") return state("stopped", "Stopped", "neutral");
+  const error = task.error?.trim() || null;
+  const busy = task.status === "running" || task.status === "starting";
+  // Old errors and old OOM findings must not interrupt a new running turn.
+  if (!busy && (context.waitingReset || (error !== null && /usage.?limit|rate.?limit|quota|wait(?:ing)? for.*reset|hit.*limit/i.test(error)))) {
+    return state("waiting-reset", "Waiting for reset", "neutral", context.reason ?? error);
+  }
+  const interrupted = error !== null && /^(?:The )?turn was interrupted[.\s]*$/i.test(error);
+  if (!busy && (context.outOfMemory || task.status === "failed" || (error !== null && !interrupted))) {
+    return state("broken", "Broken", "danger", context.reason ?? error ?? "The task stopped with an error.", context.needsYou === true || context.recoveryCostsMore === true);
+  }
+  if (context.needsYou) return state("needs-you", "Needs you", "attention", context.reason ?? null, true);
+  const reviewing = context.reviewOpen ?? context.latestReview === "reviewing";
+  if (reviewing || (task.role === "review" && busy)) {
+    return state("review", "Review", "neutral", context.reason ?? null, false, busy || reviewing);
+  }
+  if (!busy && (interrupted || /^(?:stopped|suspended|suspending|exited)$/i.test(context.sandboxState ?? ""))) {
+    return state("stopped", "Stopped", "neutral", context.reason ?? "Resumes on the next message.");
+  }
+  if (!busy && (context.ready ?? task.readyAt !== null)) return state("ready", "Ready", "positive", context.reason ?? null);
+  return state("working", "Working", "neutral", context.reason ?? (busy ? null : "Waiting for the next step."), false, busy);
+}
+
+/** Completed reviews live in their task's history, rather than the active board. */
+export function completedReview(task: Task): boolean {
+  return task.role === "review" && task.status === "idle" && parseReport(task.result ?? "").verdict !== null;
+}
 
 /** The latest review event of an implementation → "reviewing", "approve", "changes-requested", … */
 export function reviewState(eventText: string | null | undefined): string | null {
@@ -43,14 +106,15 @@ export function isReady(
   latestVerdict: (task: Task) => string | null,
   isOrchestrator: (threadId: string) => boolean = () => true,
 ): boolean {
-  if (task.status !== "idle") return false;
+  if (task.status !== "idle" || task.role === "review" || task.error !== null) return false;
+  const reviewOpen = tasks.some(
+    (other) => other.parentTaskId === task.id && other.role === "review" && (other.status === "running" || other.status === "starting"),
+  );
+  if (reviewOpen) return false;
   if (task.readyAt !== null) return true;
   // Started by hand or from a plain chat: a finished turn waits on the user.
   if (task.orchestratorThreadId === null || !isOrchestrator(task.orchestratorThreadId)) return true;
   if (task.role !== "implement" || task.prUrl === null) return false;
-  const reviewOpen = tasks.some(
-    (other) => other.parentTaskId === task.id && other.role === "review" && (other.status === "running" || other.status === "starting"),
-  );
   return !reviewOpen && latestVerdict(task) === "approve";
 }
 
@@ -64,7 +128,7 @@ export function phaseOf(task: Task, ready: boolean): Phase {
 }
 
 export function buildBoard(input: BoardInput): Board {
-  const open = input.tasks.filter((task) => task.status !== "done" && task.status !== "cancelled");
+  const open = input.tasks.filter((task) => task.status !== "done" && task.status !== "cancelled" && !completedReview(task));
   const ready: Task[] = [];
   const running: Task[] = [];
   for (const task of open) (isReady(task, input.tasks, input.latestVerdict, input.isOrchestrator) ? ready : running).push(task);

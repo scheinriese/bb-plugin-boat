@@ -6,6 +6,15 @@ import type { Decision, Task, TaskEvent } from "./store.ts";
 import { tierSummary } from "./tiers.ts";
 import { HIDDEN_EVENT_KINDS, memoryNoticeLines } from "./memory.ts";
 import { sinceApprovalNotice } from "./ship-approval.ts";
+import { resolveTaskStatus, type StatusContext } from "./board.ts";
+
+/** One-line live-card markers; JSON quoting keeps marker attributes bounded. */
+export function taskMarker(kind: "task" | "review" | "ready" | "problem", id: string): string {
+  return `::boat-${kind}{id=${JSON.stringify(id)}}`;
+}
+export function tasksMarker(threadId: string): string {
+  return `::boat-tasks{thread=${JSON.stringify(threadId)}}`;
+}
 
 /** App link to an orchestrator's overview on the Cloud agents page. */
 export function overviewLink(threadId: string | null | undefined): string {
@@ -34,17 +43,8 @@ export function agentLine(task: Task): string {
   return summary ? `${task.provider} · ${summary}` : task.provider;
 }
 
-const STATUS_LABEL: Record<Task["status"], string> = {
-  starting: "starting",
-  running: "running",
-  idle: "waiting for you",
-  failed: "failed",
-  done: "done",
-  cancelled: "cancelled",
-};
-
-export function statusLabel(task: Task): string {
-  return STATUS_LABEL[task.status];
+export function statusLabel(task: Task, context: StatusContext = {}): string {
+  return resolveTaskStatus(task, context).label.toLowerCase();
 }
 
 export function ago(iso: string | null, now = Date.now()): string {
@@ -71,7 +71,7 @@ export function taskLine(task: Task, note: string | null = null): string {
     task.parentTaskId ? `reviews ${task.parentTaskId}` : null,
     note,
     task.prUrl,
-    task.runner === "chat" && task.threadId ? `chat @thread:${task.threadId}` : task.sandboxId ? `sandbox ${task.sandboxId}` : null,
+    task.threadId ? `chat @thread:${task.threadId}` : task.sandboxId ? `sandbox ${task.sandboxId}` : null,
     ago(task.updatedAt),
   ].filter(Boolean);
   return `${parts.join("  ")}${extras.length ? `  (${extras.join(", ")})` : ""}`;
@@ -293,7 +293,8 @@ export function notificationText(
   // One move of a shared sandbox moves every task on it: the notice says so once.
   const oomSandboxes = new Map<string, string>();
   const blocks = tasks.map((task) => {
-    const head = `### ${task.id} · ${task.role} · ${task.status === "failed" ? "FAILED" : "ready for you"} — ${task.title}`;
+    const head = `### ${task.id} · ${task.role} · ${statusLabel(task, { ready: task.role !== "review" && task.status === "idle" })} — ${task.title}`;
+    const marker = taskMarker(task.role === "review" ? "review" : task.error ? "problem" : task.readyAt !== null ? "ready" : "task", task.id);
     const meta = [
       `Agent: ${agentLine(task)}, turn ${task.turns}`,
       task.prUrl ? `PR: ${task.prUrl}` : null,
@@ -346,7 +347,7 @@ export function notificationText(
     const body = task.status === "failed" ? `Error: ${task.error ?? "unknown"}\n\n${quoted}` : quoted;
     // The turn after a ship conflict: what the user is asked to approve again.
     const since = sinceApprovalNotice(task);
-    return `${head}\n${meta}${preview ? `\nPreview: ${preview}` : ""}${delivery}${handover}${evidence}${memoryText}${since ? `\n\n${since}` : ""}\n\n${body}`;
+    return `${head}\n${marker}\n${meta}${preview ? `\nPreview: ${preview}` : ""}${delivery}${handover}${evidence}${memoryText}${since ? `\n\n${since}` : ""}\n\n${body}`;
   });
   const next = [
     "Before acting, reconcile every open task with `boat_tasks` (`bb boat task list --mine`), not only these. Then, per task:",

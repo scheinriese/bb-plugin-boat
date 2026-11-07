@@ -243,9 +243,16 @@ export default async function plugin(bb: BbPluginApi) {
         },
       ],
     });
-    const first = tasks[0];
+    // Turn reports still reach the dispatching chat, but device notifications
+    // are reserved for work ready to inspect and actual owner decisions.
+    const attention = tasks.filter((task) => {
+      const status = service.publicStatus(task);
+      return status.status === "ready" || status.needsYou;
+    });
+    if (attention.length === 0) return;
+    const first = attention[0];
     await pushNotice(
-      tasks.length === 1 && first ? `Cloud agent ${first.status === "failed" ? "failed" : "finished"}: ${first.title}` : `${tasks.length} cloud agents finished a turn`,
+      attention.length === 1 && first ? `${service.publicStatus(first).label}: ${first.title}` : `${attention.length} cloud tasks need a look`,
       first?.prUrl ?? "",
       { threadId },
     );

@@ -248,6 +248,16 @@ export const taskSourceSchema = z.object({
 });
 export type TaskSourceDto = z.infer<typeof taskSourceSchema>;
 
+export const taskPublicStatusSchema = z.object({
+  status: z.enum(["working", "review", "ready", "shipped", "needs-you", "broken", "stopped", "waiting-reset"]),
+  label: z.string(),
+  tone: z.enum(["neutral", "attention", "positive", "danger"]),
+  reason: z.string().nullable(),
+  needsYou: z.boolean(),
+  moving: z.boolean(),
+});
+export type TaskPublicStatusDto = z.infer<typeof taskPublicStatusSchema>;
+
 export const taskSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -278,6 +288,8 @@ export const taskSchema = z.object({
    * or work its orchestrator marked ready), done, cancelled.
    */
   phase: z.enum(["starting", "working", "waiting", "failed", "ready", "done", "cancelled"]),
+  /** Shared v1 status, additive for older cached task responses. */
+  publicStatus: taskPublicStatusSchema.optional(),
   /** The orchestrator's note when it marked the work ready for review. */
   readyNote: z.string().nullable(),
   /** Latest review of an implementation: "reviewing", "approve", "changes-requested", … */
@@ -814,9 +826,8 @@ export const rpcContract = defineRpcContract({
     output: z.object({ preview: previewSchema }),
   },
   /**
-   * Ship a task's work to its base branch (push delivery). The user's click is
-   * the approval; `from` says where they clicked (the Cloud agents page, or the
-   * Ship button in a task chat's header), for the task history.
+   * Retired UI write: refuses with ship_confirmation_required. Use
+   * shipRpcContract.requestShip and the in-thread confirmation instead.
    */
   shipTask: {
     input: z.object({ id: z.string(), keepOpen: z.boolean().optional(), from: z.enum(["page", "chat"]).optional() }),

@@ -75,6 +75,8 @@ import { renderBoatTranscript, transcriptDir, transcriptPath } from "./transcrip
 import type { PreflightInput } from "./setup.ts";
 import type { PlanSize, SizedProject } from "./memory.ts";
 import { SandboxSizes } from "./sandbox-size.ts";
+import { completedReview, isReady, resolveTaskStatus, reviewState, type StatusContext, type TaskPublicStatus } from "./board.ts";
+import { taskMarker } from "./format.ts";
 
 export interface BoatSettings {
   boatPath: string;
@@ -605,6 +607,68 @@ function errorText(error: unknown): string {
 }
 
 export class BoatService {
+  /** Last observed sandbox state; views never start or resume a sandbox. */
+  private readonly observedSandboxStates = new Map<string, string>();
+  private readonly settlingReviews = new Set<string>();
+
+  publicStatus(task: Task, context: StatusContext = {}): TaskPublicStatus {
+    const decision = this.store.decisions({ statuses: ["open"] }).find((entry) => entry.taskIds.includes(task.id));
+    const reviewOpen = this.store.list({ parentTaskId: task.id, statuses: ["starting", "running"], limit: 100 }).some((entry) => entry.role === "review");
+    const orchestrators = this.store.orchestratorThreadIds().current;
+    return resolveTaskStatus(task, {
+      ready: isReady(task, this.store.list({ parentTaskId: task.id, limit: 100 }), (entry) => reviewState(this.store.latestEvent(entry.id, "review")?.text), (id) => orchestrators.has(id)),
+      latestReview: reviewState(this.store.latestEvent(task.id, "review")?.text),
+      reviewOpen,
+      sandboxState: task.sandboxId === null ? null : this.observedSandboxStates.get(task.sandboxId),
+      needsYou: decision !== undefined,
+      reason: decision?.question,
+      ...context,
+    });
+  }
+
+  /** A review belongs below the task, including handovers and explicit moves. */
+  private parentChat(task: Task): string | null {
+    return task.role === "review" && task.parentTaskId !== null
+      ? this.store.get(task.parentTaskId)?.threadId ?? task.orchestratorThreadId
+      : task.orchestratorThreadId;
+  }
+
+  private chatTitle(task: Task, provider = task.provider): string {
+    return task.role === "review" ? `${AGENT_NAME[provider]} reviewing…` : task.title;
+  }
+
+  /** Save a verdict exactly once and retire only the review chat, never its sandbox. */
+  private async settleReview(task: Task, verdict: string): Promise<void> {
+    if (task.role !== "review" || task.parentTaskId === null) return;
+    if (this.settlingReviews.has(task.id)) return;
+    this.settlingReviews.add(task.id);
+    try {
+      const marker = taskMarker("review", task.id);
+      const publication = `${task.turns}:${verdict}`;
+      let changed = false;
+      if (this.store.latestEvent(task.id, "review-published")?.text !== publication) {
+        this.store.addEvent(task.parentTaskId, "review", `Review ${task.id}: ${verdict}`);
+        // A passive timeline append is not available in this SDK. The Task tab
+        // and notifications can render this marker without starting an agent.
+        this.store.addEvent(task.parentTaskId, "review-card", `${marker}\n${verdict}`);
+        this.store.addEvent(task.id, "review-published", publication);
+        changed = true;
+      }
+      if (task.threadId !== null && this.hooks.chat !== undefined && this.store.latestEvent(task.id, "review-archived")?.text !== task.threadId) {
+        try {
+          await this.hooks.chat.archive(task.threadId);
+          await this.hooks.chat.stop(task.threadId);
+          this.store.addEvent(task.id, "review-archived", task.threadId);
+          changed = true;
+        } catch (error) {
+          this.hooks.log.warn(`archive review ${task.id}: ${errorText(error)}`);
+        }
+      }
+      if (changed) this.hooks.changed([task.id, task.parentTaskId]);
+    } finally {
+      this.settlingReviews.delete(task.id);
+    }
+  }
   private sweeping: Promise<void> | null = null;
   private delivering: Promise<void> | null = null;
   /** Serializes capacity checks with the create/resume that follows them. */
@@ -853,6 +917,7 @@ export class BoatService {
     for (;;) {
       const sandbox = await this.boat.findInfo(sandboxId, signal);
       if (sandbox === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
+      this.observedSandboxStates.set(sandboxId, sandbox.state);
       if (ACTIVE_STATES.has(sandbox.state)) return sandbox;
       if (sandbox.state === "stopped" || sandbox.state === "archived") {
         const resumed = await this.withSlotLock(async () => {
@@ -1653,6 +1718,7 @@ export class BoatService {
         extraInstructions: [
           settings.workerInstructions,
           ...projectNotes,
+          `Before your final report block, put this live card marker on its own line: ${taskMarker(task.role === "review" ? "review" : "task", task.id)}. Keep the report block intact.`,
           sharesParentCheckout
             ? "You share this sandbox and checkout with the task you review. Do not edit files, commit, push, or switch branches; only read, build, and test."
             : "",
@@ -1793,12 +1859,12 @@ export class BoatService {
     ctx.stillWanted();
     const spawned = await chat.spawn({
       taskId: id,
-      title: task.title,
+      title: this.chatTitle(task),
       prompt: ctx.prompt,
       provider: task.provider,
       model: task.model,
       effort: task.reasoningEffort,
-      parentThreadId: task.orchestratorThreadId,
+      parentThreadId: this.parentChat(task),
       projectId: input.projectId ?? null,
       where,
     });
@@ -2388,7 +2454,7 @@ export class BoatService {
     const note = await this.resumeNoteFor(task.id);
     const spawned = await this.hooks.chat!.spawn({
       taskId: task.id,
-      title: task.title,
+      title: this.chatTitle(task, next.provider),
       prompt: this.withNote(note, composeHandoverPrompt({
         ...fromBoat,
         taskId: task.id,
@@ -2411,7 +2477,7 @@ export class BoatService {
       provider: next.provider,
       model: next.model,
       effort: next.reasoningEffort,
-      parentThreadId: task.orchestratorThreadId,
+      parentThreadId: this.parentChat(task),
       projectId: task.projectId,
       where: { kind: "environment", environmentId },
     });
@@ -2618,6 +2684,7 @@ export class BoatService {
       if (action === "stop") await this.boat.stop(sandboxId, signal);
       else if (action === "resume") await withinAutoStopCap(ttlSeconds, (ttl) => this.boat.resume(sandboxId, ttl, signal));
       else await this.boat.delete(sandboxId, signal);
+      this.observedSandboxStates.set(sandboxId, action === "stop" ? "stopped" : action === "resume" ? "running" : "deleted");
       return;
     }
     const chat = this.hooks.chat!;
@@ -2635,6 +2702,7 @@ export class BoatService {
       }
       await chat.removeMachine(hostId);
     }
+    this.observedSandboxStates.set(sandboxId, action === "stop" ? "stopped" : action === "resume" ? "running" : "deleted");
   }
 
   /**
@@ -3214,12 +3282,12 @@ export class BoatService {
       // 7. The chat, in the task's checkout on the machine.
       const spawned = await chat.spawn({
         taskId: id,
-        title: initial.title,
+        title: this.chatTitle(initial),
         prompt,
         provider: initial.provider,
         model: choice.model,
         effort,
-        parentThreadId: initial.orchestratorThreadId,
+        parentThreadId: this.parentChat(initial),
         projectId: initial.projectId,
         where: { kind: "machine", hostId, path: initial.repoPath },
       });
@@ -3509,6 +3577,7 @@ export class BoatService {
       sandbox = await this.ensureRunning(sandboxId, signal);
     }
     this.store.resetPreviewHealthForSandbox(sandboxId);
+    this.observedSandboxStates.set(sandboxId, sandbox.state);
     return sandbox;
   }
 
@@ -3521,6 +3590,7 @@ export class BoatService {
     } else {
       await this.boat.stop(sandboxId, signal);
     }
+    this.observedSandboxStates.set(sandboxId, "stopped");
   }
 
   private mustGetPreview(id: string): { preview: Preview; task: Task } {
@@ -3680,7 +3750,7 @@ export class BoatService {
    * it (the caller checks that): the worker itself can't push in these
    * projects.
    */
-  async shipTask(idOrPrefix: string, options: { keepOpen?: boolean; approval: string; signal?: AbortSignal }): Promise<{ task: Task; shipped: ShipResult["shipped"]; sandbox: "deleted" | "kept" | "gone" | "none" }> {
+  async shipTask(idOrPrefix: string, options: { keepOpen?: boolean; approval: string; signal?: AbortSignal; beforeShip?: (task: Task, targets: { path: string; baseBranch: string }[]) => Promise<void> }): Promise<{ task: Task; shipped: ShipResult["shipped"]; sandbox: "deleted" | "kept" | "gone" | "none" }> {
     const task = await this.refreshChatTask(idOrPrefix);
     this.assertNotMoving(task.id);
     if (task.delivery !== "push") {
@@ -3708,6 +3778,9 @@ export class BoatService {
         }
       }
       await this.assertGithubLogin(task, { signal: options.signal, forShip: true });
+      // Recheck a concrete approval while this sandbox is claimed, immediately
+      // before any irreversible push. A rejected guard leaves the work intact.
+      await options.beforeShip?.(this.store.get(task.id) ?? task, this.shipTargets(task));
       try {
         // Base commits another task of this plugin shipped are named with it.
         result = await this.boat.ship(task.sandboxId, this.shipTargets(task), options.signal, (sha) => this.store.shippedBy(sha, task.id));
@@ -4055,7 +4128,10 @@ export class BoatService {
     const sandboxes = new Map<string, Sandbox>();
     if (running.length > 0 || settings.stopIdleAfterMinutes > 0) {
       try {
-        for (const sandbox of await this.boat.list({ all: true, signal: this.hooks.lifecycle })) sandboxes.set(sandbox.id, sandbox);
+        for (const sandbox of await this.boat.list({ all: true, signal: this.hooks.lifecycle })) {
+          sandboxes.set(sandbox.id, sandbox);
+          this.observedSandboxStates.set(sandbox.id, sandbox.state);
+        }
       } catch (error) {
         this.hooks.log.warn(`sweep: boat list failed: ${errorText(error)}`);
         if (changed.length > 0) this.hooks.changed(changed);
@@ -4160,6 +4236,10 @@ export class BoatService {
       task = this.store.update(task.id, { environmentId: state.environmentId }) ?? task;
     }
     if (state === null || state.archived || hint?.kind === "archived") {
+      if (completedReview(task)) {
+        await this.settleReview(task, parseReport(task.result!).verdict!);
+        return false;
+      }
       // Archived or deleted by hand: the work there is over, and so is its machine.
       const closed = this.store.transition(task.id, ["running", "idle", "failed"], { status: "cancelled", finishedAt: nowIso, shipApproval: null });
       if (closed === null) return false;
@@ -4181,6 +4261,7 @@ export class BoatService {
     const busy = (state.status !== "idle" && state.status !== "error") || state.queued > 0 || state.backgroundAgents > 0 || (state.workflows ?? 0) > 0;
     if (busy) {
       this.chatTurnSeen.add(task.id);
+      if (task.sandboxId !== null) this.observedSandboxStates.set(task.sandboxId, "running");
       if (task.hostId !== null) this.suspendedHosts.delete(task.hostId);
       if (task.status === "running") return false;
       // Someone wrote in the worker chat directly: that's a turn too.
@@ -4198,6 +4279,10 @@ export class BoatService {
       this.store.addEvent(task.id, "turn", "A new turn started in the chat");
       this.markChangedSinceReview(task);
       return true;
+    }
+    if (completedReview(task)) {
+      await this.settleReview(task, parseReport(task.result!).verdict!);
+      return false;
     }
     if (task.status !== "running") return false;
     // A follow-up bb hasn't started yet still reads idle. An idle/failed event
@@ -4272,7 +4357,7 @@ export class BoatService {
         .join(" · "),
     );
     if (task.role === "review" && task.parentTaskId !== null && report.verdict !== null) {
-      this.store.addEvent(task.parentTaskId, "review", `Review ${task.id}: ${report.verdict}`);
+      await this.settleReview(done, report.verdict);
     }
     // A turn that ended without a new message may have been cut short (sizes).
     this.sizes.afterTurn(done, { failed: !fresh });
@@ -4423,7 +4508,7 @@ export class BoatService {
       .join(" · ");
     this.store.addEvent(task.id, "finished", summary);
     if (task.role === "review" && task.parentTaskId !== null && report.verdict !== null) {
-      this.store.addEvent(task.parentTaskId, "review", `Review ${task.id}: ${report.verdict}`);
+      await this.settleReview(updated, report.verdict);
     }
     this.sizes.afterTurn(updated, { failed: cutOff, interrupted: status === "interrupted", sandbox }); // sizes
     await this.noteUnshipped(updated, sandbox);
