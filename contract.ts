@@ -814,9 +814,8 @@ export const rpcContract = defineRpcContract({
     output: z.object({ preview: previewSchema }),
   },
   /**
-   * Ship a task's work to its base branch (push delivery). The user's click is
-   * the approval; `from` says where they clicked (the Cloud agents page, or the
-   * Ship button in a task chat's header), for the task history.
+   * Retired UI write: refuses with ship_confirmation_required. Use
+   * shipRpcContract.requestShip and the in-thread confirmation instead.
    */
   shipTask: {
     input: z.object({ id: z.string(), keepOpen: z.boolean().optional(), from: z.enum(["page", "chat"]).optional() }),

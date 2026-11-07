@@ -119,6 +119,11 @@ switch (command) {
       print({ exitCode: 0, stdout: `${lines.join("\n")}\n`, stderr: "" });
       break;
     }
+    if (script.includes("BOAT_SHIP_SNAPSHOT")) {
+      const count = [...script.matchAll(/printf 'BOAT_SHIP_SNAPSHOT /g)].length;
+      print({ exitCode: state.shipSnapshotExitCode ?? 0, stdout: state.shipSnapshotOutput ?? Array.from({ length: count }, (_, index) => `BOAT_SHIP_SNAPSHOT ${index} ${"1".repeat(40)} ${"2".repeat(40)} boat/demo 2\n`).join(""), stderr: "" });
+      break;
+    }
     if (script.includes("BOAT_SHIP_DONE")) {
       (state.ships ??= []).push({ id: rest[0], script });
       // shipOutput: what the ship script printed (a conflict's detail, say).
