@@ -69,7 +69,7 @@ test("request returns while checks and form are pending; duplicates reuse the ta
   assert.equal(f.harness.inspection.pendingInteractions.length, 1);
   const payload = pending.payload as { checks: { text: string }[]; commits: number };
   assert.equal(payload.commits, 6);
-  assert.ok(payload.checks.some((row) => row.text === "Tests not independently checked"));
+  assert.ok(!payload.checks.some((row) => /tests/i.test(row.text)), "no test claim without independent evidence");
   f.harness.behavior.cancelInteraction(pending.id);
   await f.controller.settled();
   assert.equal(f.shipped, 0);
@@ -178,6 +178,11 @@ test("snapshot script is read-only, requires a clean tree, and parses each repos
   const snapshots = parseShipSnapshot(result.stdout, 1);
   assert.equal(snapshots[0].head, before);
   assert.equal(snapshots[0].commits, 1);
+  assert.equal(snapshots[0].additions, 1);
+  assert.equal(snapshots[0].deletions, 1);
+  assert.equal(snapshots[0].rebasesCleanly, true);
+  assert.match(snapshots[0].changes ?? "", /cart.txt/);
+  assert.equal(git("status", "--porcelain"), "");
   assert.equal(git("rev-parse", "HEAD"), before);
   writeFileSync(join(dir, "new.txt"), "untracked\n");
   assert.equal(run().status, 3, "untracked work cannot be silently approved");

@@ -21,6 +21,12 @@ export const shipFormSchema = z.object({
   repositories: z.number().int().positive(),
   checks: z.array(z.object({ text: z.string(), tone: z.enum(["ready", "caution", "neutral"]) })),
   changedSinceApproval: z.string().nullable(),
+  projectName: z.string().nullable().optional(),
+  additions: z.number().int().nonnegative().optional(),
+  deletions: z.number().int().nonnegative().optional(),
+  changes: z.string().nullable().optional(),
+  changesUrl: z.string().url().nullable().optional(),
+  closesSandbox: z.boolean().optional(),
 });
 export type ShipForm = z.infer<typeof shipFormSchema>;
 

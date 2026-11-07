@@ -19,15 +19,17 @@ export function ShipInteraction({ interaction, submit, cancel }: PluginPendingIn
   );
 }
 
-function ShipFormView({ form, submit, cancel }: Pick<PluginPendingInteractionProps, "submit" | "cancel"> & { form: import("../contract-ship").ShipForm }) {
+export function ShipFormView({ form, submit, cancel, merge }: Pick<PluginPendingInteractionProps, "submit" | "cancel"> & { form: import("../contract-ship").ShipForm; merge?: { number: number; head: string } }) {
   const host = experimental_useQuestionFormHost();
   const id = useId();
   const [choice, setChoice] = useState<"ship" | "not-yet">("ship");
   const [note, setNote] = useState("");
+  const [showChanges, setShowChanges] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
-  const label = `Ship to ${form.baseBranch}`;
+  const mode = merge ? "merge" : "ship";
+  const label = merge ? `Merge PR #${merge.number}` : `Ship to ${form.baseBranch}`;
   async function act(action: "submit" | "cancel") {
     if (busy.current) return;
     busy.current = true;
@@ -62,23 +64,31 @@ function ShipFormView({ form, submit, cancel }: Pick<PluginPendingInteractionPro
   return (
     <form className="boat-ship-form" data-question-form aria-labelledby={`${id}-title`} aria-busy={pending}
       onSubmit={(event) => { event.preventDefault(); void act("submit"); }}>
+      <div className="boat-ship-body">
       <div className="boat-ship-heading">
         <span className="boat-ship-dot" aria-hidden="true" />
-        <h3 id={`${id}-title`}>Ship “{form.title}” to {form.baseBranch}?</h3>
-        <span className="boat-ship-muted">Ships after your OK</span>
+        <h3 id={`${id}-title`}>{mode === "merge" ? `${label} into ${form.baseBranch}?` : `Ship "${form.title}" to ${form.baseBranch}?`}</h3>
+        <span className="boat-ship-muted">{mode === "merge" ? "Merges after your OK" : `${form.projectName ? `${form.projectName} ships` : "Ships"} after your OK`}</span>
       </div>
-      <ul className="boat-ship-checks" aria-label="Shipping checks">
+      <ul className="boat-ship-checks" aria-label={merge ? "Merge checks" : "Shipping checks"}>
         {form.checks.map((check, index) => <li key={index} data-tone={check.tone}>
           {check.tone === "ready" ? <span aria-hidden="true">✓ </span> : null}{check.text}
         </li>)}
       </ul>
-      <p className="boat-ship-summary">{form.commits} commit{form.commits === 1 ? "" : "s"} to {form.baseBranch}
-        {form.repositories > 1 ? ` · ${form.repositories} repositories` : ""}</p>
+      <div className="boat-ship-summary">{form.commits} commit{form.commits === 1 ? "" : "s"}
+        {form.additions !== undefined && form.deletions !== undefined ? <> · +{form.additions} −{form.deletions}</> : null}
+        {merge ? <> · commit <code>{merge.head.slice(0, 7)}</code></> : null}
+        {mode === "ship" && form.repositories > 1 ? ` · ${form.repositories} repositories` : ""}
+        {form.changes ? <> · <button type="button" className="boat-ship-link" onClick={() => setShowChanges(!showChanges)}>see the changes</button></>
+          : form.changesUrl ? <> · <a className="boat-ship-link" href={form.changesUrl} target="_blank" rel="noreferrer">see the changes</a></> : null}
+      </div>
+      {merge ? <p className="boat-ship-consequence">This changes {form.baseBranch}. You can’t undo this from bb.</p> : null}
+      {showChanges && form.changes ? <pre className="boat-ship-diff">{form.changes}</pre> : null}
       {form.changedSinceApproval !== null ? <details className="boat-ship-changes">
         <summary>What changed since you approved</summary><pre>{form.changedSinceApproval}</pre>
       </details> : null}
       <fieldset disabled={pending} className="boat-ship-options">
-        <legend className="sr-only">Shipping choice</legend>
+        <legend className="sr-only">{merge ? "Merge choice" : "Shipping choice"}</legend>
         {(["ship", "not-yet"] as const).map((value, index) => {
           const shortcut = index === 0 ? first : second;
           return <label key={value} className="boat-ship-option" data-selected={choice === value}>
@@ -86,15 +96,20 @@ function ShipFormView({ form, submit, cancel }: Pick<PluginPendingInteractionPro
               aria-keyshortcuts={shortcut?.ariaKeyshortcuts} />
             <kbd aria-hidden="true">{shortcut?.label ?? index + 1}</kbd>
             <span className="boat-ship-option-label">{value === "ship" ? label : "Not yet"}</span>
-            <span className="boat-ship-muted">{value === "not-yet" ? "Keep the sandbox and preview" : form.keepOpen ? "Push the commits and keep the task open" : "Push the commits, then close the task and delete its sandbox if unused"}</span>
+            <span className="boat-ship-muted">{value === "not-yet" ? "keep the sandbox and preview; tell the agent what to change"
+              : mode === "merge" ? `merge the approved commits into ${form.baseBranch}; keep the sandbox`
+              : form.keepOpen ? `push the ${form.commits} commits and keep the task open`
+              : form.closesSandbox ? `push the ${form.commits} commits, then delete the sandbox if unused`
+              : `push the ${form.commits} commits, then close the task`}</span>
           </label>;
         })}
       </fieldset>
-      <label className="boat-ship-note" htmlFor={`${id}-note`}>A note (optional)
+      <label className="boat-ship-note" htmlFor={`${id}-note`}><span className="sr-only">A note (optional)</span>
         <textarea id={`${id}-note`} name="note" rows={1} maxLength={4_000} value={note} disabled={pending}
-          onChange={(event) => setNote(event.target.value)} placeholder="Anything to keep with this choice…" />
+          onChange={(event) => setNote(event.target.value)} placeholder="A note (optional)…" />
       </label>
       {error ? <p role="alert" className="boat-ship-error">{error}</p> : null}
+      </div>
       <div className="boat-ship-footer">
         <span className="boat-ship-muted">{hints}</span>
         <Button type="button" variant="outline" size="sm" disabled={pending} onClick={() => void act("cancel")}

@@ -9,29 +9,48 @@ import { TaskError } from "./service.ts";
 import type { Task } from "./store.ts";
 
 export interface ShipTarget { path: string; baseBranch: string }
-export interface ShipSnapshot { head: string; base: string; branch: string; commits: number }
+export interface ShipSnapshot { head: string; base: string; branch: string; commits: number; additions?: number; deletions?: number; rebasesCleanly?: boolean; changes?: string }
 
-/** Read-only: no fetch, checkout, rebase or write. Dirty work cannot be approved. */
+/** No task-checkout mutations: diff reads and a rebase probe in a disposable clone. */
 export function shipSnapshotScript(targets: readonly ShipTarget[]): string {
-  return `set -eu\nexport GIT_TERMINAL_PROMPT=0\n${targets.map((target, index) => `cd ${shellQuote(target.path)}
+  return `set -eu\nexport GIT_TERMINAL_PROMPT=0\nexport GIT_OPTIONAL_LOCKS=0\n${targets.map((target, index) => `cd ${shellQuote(target.path)}
 HEAD_SHA=$(git rev-parse --verify HEAD)
 BASE_SHA=$(git rev-parse --verify ${shellQuote(`origin/${target.baseBranch}`)})
 BRANCH=$(git symbolic-ref --short HEAD)
 DIRTY=$(git status --porcelain)
 [ -z "$DIRTY" ] || exit 3
 COUNT=$(git rev-list --count "$BASE_SHA..$HEAD_SHA")
-printf 'BOAT_SHIP_SNAPSHOT ${index} %s %s %s %s\\n' "$HEAD_SHA" "$BASE_SHA" "$BRANCH" "$COUNT"`).join("\n")}\n`;
+NUMSTAT=$(git diff --numstat "$BASE_SHA...$HEAD_SHA" | awk 'BEGIN {a=0;d=0} $1 ~ /^[0-9]+$/ {a+=$1;d+=$2} END {printf "%d %d", a,d}')
+# Rebase only an isolated disposable clone; never change the approved checkout.
+CHECK_DIR=$(mktemp -d)
+trap 'rm -rf "$CHECK_DIR"' EXIT HUP INT TERM
+REBASE=unknown
+if git -c core.hooksPath=/dev/null clone --shared --no-checkout --quiet . "$CHECK_DIR/repo" 2>/dev/null; then
+  if git -C "$CHECK_DIR/repo" -c core.hooksPath=/dev/null checkout --quiet --detach "$HEAD_SHA" 2>/dev/null; then
+    if git -C "$CHECK_DIR/repo" -c core.hooksPath=/dev/null -c commit.gpgSign=false -c rebase.updateRefs=false -c user.name=Boat -c user.email=boat@example.invalid rebase --no-verify "$BASE_SHA" >/dev/null 2>&1; then REBASE=clean; else REBASE=conflict; fi
+  fi
+fi
+rm -rf "$CHECK_DIR"
+# A compact bounded diff stat is supplied separately below the snapshot marker.
+printf 'BOAT_SHIP_SNAPSHOT ${index} %s %s %s %s\\n' "$HEAD_SHA" "$BASE_SHA" "$BRANCH" "$COUNT"
+printf 'BOAT_SHIP_FACTS ${index} %s %s\\n' "$NUMSTAT" "$REBASE"
+git diff --stat "$BASE_SHA...$HEAD_SHA" | head -n 40 | sed 's/^/BOAT_SHIP_DIFF ${index} /'`).join("\n")}\n`;
 }
 
 export function parseShipSnapshot(stdout: string, count: number): ShipSnapshot[] {
-  const rows = stdout.trim().split("\n");
+  const rows = stdout.trim().split("\n").filter((row) => row.startsWith("BOAT_SHIP_SNAPSHOT "));
   if (rows.length !== count) throw new TaskError("Couldn't check the commits to ship. Resume the sandbox and try again.", "ship_check_failed");
   return rows.map((line, index) => {
     const match = /^BOAT_SHIP_SNAPSHOT (\d+) ([a-f0-9]{40,64}) ([a-f0-9]{40,64}) (\S+) (\d+)$/.exec(line);
     if (!match || Number(match[1]) !== index || !Number.isSafeInteger(Number(match[5]))) {
       throw new TaskError("Couldn't check the commits to ship. Try again after the task finishes.", "ship_check_failed");
     }
-    return { head: match[2], base: match[3], branch: match[4], commits: Number(match[5]) };
+    const facts = new RegExp(`^BOAT_SHIP_FACTS ${index} ([0-9]+) ([0-9]+) (clean|conflict|unknown)$`, "m").exec(stdout);
+    const changes = stdout.split("\n").filter((line) => line.startsWith(`BOAT_SHIP_DIFF ${index} `)).map((line) => line.slice(`BOAT_SHIP_DIFF ${index} `.length)).join("\n").slice(0, 8_000);
+    return { head: match[2], base: match[3], branch: match[4], commits: Number(match[5]),
+      ...(facts ? { additions: Number(facts[1]), deletions: Number(facts[2]), ...(facts[3] === "unknown" ? {} : { rebasesCleanly: facts[3] === "clean" }) } : {}),
+      ...(changes ? { changes } : {}),
+    };
   });
 }
 
@@ -52,6 +71,7 @@ export function shipGeneration(task: Task): string {
 export interface ShipInteractionDeps {
   getTask(id: string): Task;
   latestReview(id: string): string | null;
+  presentation?(task: Task): Promise<{ projectName?: string | null; closesSandbox?: boolean; reviewText?: string; checks?: ShipForm["checks"] }>;
   snapshot(task: Task, targets: ShipTarget[], signal: AbortSignal): Promise<ShipSnapshot[]>;
   requestInput(request: PluginInteractionRequest, options: { signal: AbortSignal }): Promise<PluginInteractionResult>;
   ship(id: string, options: { keepOpen: boolean; approval: string; signal: AbortSignal; beforeShip(task: Task, targets: ShipTarget[]): Promise<void> }): Promise<void>;
@@ -88,15 +108,25 @@ export function createShipInteractions(deps: ShipInteractionDeps) {
     const reviewText = verdict === "approve" ? "Review approved" : verdict === "changes-requested" ? "Changes requested in review"
       : verdict === "reviewing" ? "Review in progress" : verdict === "outdated" ? "Work changed since review" : "No recorded review approval";
     const changes = currentChanges(task);
+    const presentation = await deps.presentation?.(task);
+    if (signal.aborted) return;
+    if (shipGeneration(deps.getTask(task.id)) !== generation || deps.latestReview(task.id) !== review) stale();
+    const totalsKnown = snapshot.every((repo) => repo.additions !== undefined && repo.deletions !== undefined);
     const payload: ShipForm = {
       requestId, taskId: task.id, title: task.title, baseBranch: task.baseBranch!, keepOpen,
       commits, repositories: targets.length,
       checks: [
-        { text: reviewText, tone: verdict === "approve" ? "ready" : "caution" },
-        { text: "Working tree clean", tone: "ready" },
-        { text: "Tests not independently checked", tone: "neutral" },
-        { text: "Rebase and push checks run when shipping", tone: "neutral" },
+        { text: presentation?.reviewText ?? reviewText, tone: verdict === "approve" ? "ready" : "caution" },
+        ...(presentation?.checks ?? []),
+        ...(snapshot.every((repo) => repo.rebasesCleanly === true) ? [{ text: `Rebases cleanly on ${task.baseBranch}`, tone: "ready" as const }]
+          : snapshot.some((repo) => repo.rebasesCleanly === false) ? [{ text: `Rebase needs attention on ${task.baseBranch}`, tone: "caution" as const }]
+          : [{ text: "Working tree clean", tone: "ready" as const }]),
       ],
+      projectName: presentation?.projectName ?? null,
+      closesSandbox: presentation?.closesSandbox ?? false,
+      ...(totalsKnown ? { additions: snapshot.reduce((sum, repo) => sum + repo.additions!, 0), deletions: snapshot.reduce((sum, repo) => sum + repo.deletions!, 0) } : {}),
+      changes: snapshot.map((repo) => repo.changes).filter(Boolean).join("\n") || null,
+      changesUrl: task.repo && task.branch ? `https://github.com/${task.repo}/compare/${encodeURIComponent(task.baseBranch!)}...${encodeURIComponent(task.branch)}` : null,
       changedSinceApproval: changes ? `${changes.text}${changes.omitted ? `\n${changes.omitted} more lines not shown` : ""}` : null,
     };
     const answer = await deps.requestInput({
