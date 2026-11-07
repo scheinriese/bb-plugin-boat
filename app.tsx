@@ -24,6 +24,7 @@ import {
   ThreadInfoSection,
   ThreadSegmentDetails,
   ThreadSegmentSummary,
+  ThreadSegmentAction,
   useSegmentVisible,
   useThreadHasTasks,
 } from "./web/thread-surfaces";
@@ -61,6 +62,7 @@ export default definePluginApp((app) => {
     title: "Cloud agents",
     group: "2_cloudAgents",
     summary: ThreadSegmentSummary,
+    action: ThreadSegmentAction,
     details: ThreadSegmentDetails,
     useVisible: useSegmentVisible,
   });

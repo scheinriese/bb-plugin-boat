@@ -10,6 +10,7 @@ import {
   experimental_InfoSection as InfoSection,
   experimental_ThreadContextCardRow as ThreadContextCardRow,
   useBbNavigate,
+  UrlLink,
   experimental_useAppPanel,
   experimental_useThreadContextKind,
   type ExperimentalThreadContextCardProps,
@@ -37,7 +38,7 @@ import {
   summarizeBoard,
   workerChatId,
 } from "./format";
-import { useBoard, useCloudAgentsNavigation, useOrchestrators, useOverview, useThreadTask, useThreadTasks } from "./hooks";
+import { useBoard, useCloudAgentsNavigation, useOrchestrators, useOverview, useTask, useThreadTask, useThreadTasks } from "./hooks";
 import { taskPhaseLabel } from "./logic";
 import { cardStatus, contextCounts } from "./cards-logic";
 import { CardTaskState, TaskContextAction } from "./cards";
@@ -82,30 +83,20 @@ export function ThreadSegmentSummary({ threadId, isExpanded, onToggle }: Experim
   const own = useThreadTask(threadId);
   const tasks = own ? [own] : data ? [...data.ready, ...data.running, ...data.done] : [];
   const anyRunning = tasks.some(task => cardStatus(task).moving);
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={isExpanded}
-      className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-    >
-      <Icon name="ComputerCloud" className="size-3.5 shrink-0" aria-hidden />
-      {needsYou ? (
-        <StatusDot className="bg-warning" />
-      ) : anyRunning ? (
-        <StatusDot className="bg-muted-foreground motion-safe:animate-pulse" />
-      ) : null}
-      <span className="truncate">
-        <span className="sr-only">Cloud agents: </span>
-        {data || own ? contextCounts(tasks, data?.needsYou.length ?? 0, data?.needsYou.flatMap(item => item.taskIds)) : "…"}
-      </span>
-      <Icon
-        name="ChevronDown"
-        className={cn("size-3 shrink-0 transition-transform duration-150", isExpanded && "rotate-180")}
-        aria-hidden
-      />
-    </button>
-  );
+  if (own?.prUrl && cardStatus(own).status==='ready') return <span className="inline-flex items-center gap-2 px-1.5 text-xs"><PrLink url={own.prUrl} prefixed/>{own.previewUrl&&<UrlLink href={own.previewUrl} className="text-[#7AA7FF]">Preview</UrlLink>}</span>;
+  return <button type="button" onClick={onToggle} aria-expanded={isExpanded} className={cn("inline-flex h-6 max-w-full items-center gap-1.5 rounded-md px-1.5 text-xs hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring",needsYou?'text-[#F0B135]':'text-muted-foreground')}>
+    <StatusDot className={needsYou?'bg-[#F0B135]':anyRunning?'bg-muted-foreground motion-safe:animate-pulse':'bg-[#5BD08A]'}/>
+    <span className="truncate">{data||own?contextCounts(tasks,data?.needsYou.length??0,data?.needsYou.flatMap(item=>item.taskIds)):'…'}</span>
+  </button>;
+}
+/** SDK action renders at the row end, after all native segments. */
+export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentProps){
+  const {data}=useBoard(threadId);const own=useThreadTask(threadId);
+  const detail=useTask(own?.id??null).data?.task;
+  const decisionTask=[...(data?.running??[]),...(data?.ready??[])].find(task=>data?.needsYou.some(item=>item.taskIds.includes(task.id)));
+  if((data?.needsYou.length??0)>0)return <span className="hidden text-xs text-muted-foreground md:inline">{decisionTask?.provider==='claude'?'Claude':decisionTask?.provider==='codex'?'Codex':'The agent'} waits in its sandbox; nothing is lost</span>;
+  if(own && cardStatus(own).status==='ready')return <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><span className="size-1.5 rounded-full bg-[#5BD08A]"/>Sandbox on{detail?.memory?.size?' · '+detail.memory.size.label:''}</span>;
+  return null;
 }
 
 export function ThreadSegmentDetails({ threadId, isExpanded }: ExperimentalThreadContextSegmentProps) {

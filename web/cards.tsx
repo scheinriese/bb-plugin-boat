@@ -15,6 +15,7 @@ import {
   type DecisionDto,
   type TaskDetailDto,
   type TaskDto,
+  type DecisionOption,
 } from "../contract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -152,7 +153,7 @@ function TaskCard({
     );
   const task = data.task;
   if (kind === "chip") return <TaskChip task={task} />;
-  if (kind === "review") return <ReviewCard task={task} />;
+  if (kind === "review") return <ReviewCard task={task} round={Number(props.attributes.round) || undefined} />;
   if (kind === "ready") return <ReadyCard task={task} />;
   if (kind === "problem") return <ProblemCard task={task} />;
   return (
@@ -184,54 +185,27 @@ function TaskChip({ task }: { task: TaskDto }) {
     </button>
   );
 }
-function ReviewCard({ task }: { task: TaskDetailDto }) {
+function ReviewCard({ task, round }: { task: TaskDetailDto; round?: number }) {
   const { openTask } = useCloudAgentsNavigation();
-  const summary = task.excerpt?.split(/===\s*REVIEW\s*===/i)[0]?.trim();
-  const verdict = task.verdict;
-  const approved = verdict === "approve" || verdict === "approved";
-  const changes = verdict === "changes-requested";
-  const heading = approved
-    ? "Review approved"
-    : changes
-      ? "Changes requested"
-      : task.status === "running" || task.status === "starting"
-        ? "Reviewing…"
-        : "The review couldn’t run";
-  return (
-    <Frame
-      className={
-        approved ? "border-[#5BD08A]/20 bg-[#5BD08A]/[0.04]" : undefined
-      }
-    >
-      <div className="flex flex-wrap items-center gap-2 px-3.5 py-2.5">
-        <Icon name="Eye" className="size-3.5 text-muted-foreground" />
-        <span
-          className={cn(
-            "font-medium",
-            approved
-              ? "text-[#5BD08A]"
-              : changes
-                ? "text-[#F0B135]"
-                : "text-foreground",
-          )}
-        >
-          {heading}
-        </span>
-        <AgentBadge provider={task.provider} model={task.model} />
-        <button
-          className="ml-auto text-xs text-[#7AA7FF] hover:underline"
-          onClick={() => openTask(task.id)}
-        >
-          Full review
-        </button>
-      </div>
-      {(summary || task.error) && (
-        <p className="whitespace-pre-wrap px-3.5 pb-3 text-xs text-muted-foreground">
-          {summary || task.error}
-        </p>
-      )}
-    </Frame>
-  );
+  const history = experimental_useRpcQuery({contract:rpcContract,method:"history",input:{taskId:task.id,limit:100}}).data?.events;
+  const entry=history?.find(event=>event.review && (!round || event.review.round===round) && event.kind==='review-verdict');
+  const review=entry?.review;
+  const verdict=review?.verdict ?? task.verdict;
+  const approved=verdict==='approve'||verdict==='approved';
+  const changes=verdict==='changes-requested';
+  const provider=review?.provider??task.provider;
+  const name=provider==='codex'?'Codex':'Claude';
+  const findings=review?.findings??[];
+  const heading=approved?`${name} approved`:changes?`${name} asked for ${findings.length || 'some'} changes`:cardStatus(task).moving?`${name} reviewing…`:'The review couldn’t run';
+  return <Frame className={approved?'border-[#5BD08A]/15 bg-[#5BD08A]/[0.06]':'bg-[#191919]'}>
+    <div className="flex flex-wrap items-center gap-2 px-3.5 py-2.5">
+      <AgentLogo provider={provider}/><span className={approved?'text-[#B8DEC6]':'text-foreground'}>{heading}</span>
+      <span className="text-xs text-muted-foreground">{review?`Review ${review.round}${review.model?' · '+review.model:''}${review.freshContext?' · fresh context':''}`:task.model}</span>
+      <button className="ml-auto text-xs text-muted-foreground hover:underline" onClick={()=>openTask(review?.reviewTaskId??task.id)}>Full review</button>
+    </div>
+    {!approved && findings.length>0 && <ul className="space-y-1 px-9 pb-3">{findings.map((finding,index)=><li key={index} className="flex gap-4 text-[13px] leading-5"><span className={cn('w-11 shrink-0 text-xs',finding.severity==='must-fix'?'text-[#FC8C45]':'text-muted-foreground')}>{finding.label??(finding.severity==='must-fix'?'Must fix':'Should')}</span><span className="text-muted-foreground">{finding.text}</span></li>)}</ul>}
+    {!approved && !findings.length && task.error && <p className="px-3.5 pb-3 text-xs text-muted-foreground">{task.error}</p>}
+  </Frame>;
 }
 
 /** Uses the pane's composer; never sends an own-words answer automatically. */
@@ -404,9 +378,8 @@ export function DecisionCard({
       decision.options.length ? decision.options : [decision.recommendation],
     ),
   ].filter(Boolean);
-  // Additive data contract keeps old string-only decisions readable.
-  const richer = decision as DecisionDto & { context?: string | null; askedByTaskId?: string | null; optionDetails?: Array<{ label: string; summary?: string; facts?: Record<string, string | number | boolean | null>; verdict?: { text: string; label?: string; tone: "good" | "caution" | "bad" }; recommended?: boolean }> };
-  const details: NonNullable<typeof richer.optionDetails> = richer.optionDetails?.length ? richer.optionDetails : options.map(label => ({label}));
+  const richer = decision;
+  const details: DecisionOption[] = decision.optionDetails?.length ? decision.optionDetails : options.map(label => ({label}));
   const recommended = details.find(option => option.recommended)?.label ?? recommendedOption(options, decision.recommendation);
   const columns = [...new Set(details.flatMap(option => Object.keys(option.facts ?? {})))];
   const asked = useTask(richer.askedByTaskId ?? decision.taskIds[0] ?? null).data?.task;
