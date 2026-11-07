@@ -49,8 +49,9 @@ const weekStart = (now: number) => {
   return date.getTime();
 };
 const HEADING =
-  "text-[14px] font-semibold leading-5 text-[color:var(--boat-heading)]";
-const SURFACE = "overflow-hidden rounded-[10px] border border-border bg-card";
+  "text-[15px] font-semibold leading-5 text-[color:var(--boat-heading)] sm:text-[14px]";
+const SURFACE =
+  "overflow-hidden rounded-xl border sm:rounded-[10px] border-border bg-card";
 const countNumber = (n: number) =>
   n.toLocaleString(undefined, { maximumFractionDigits: 1 });
 export function Today() {
@@ -177,7 +178,7 @@ export function Today() {
   return (
     <div className="pb-10 pt-[14px]">
       <div
-        className="mb-[30px] flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] leading-[18px] text-muted-foreground"
+        className="mb-[18px] flex flex-wrap items-center gap-x-[14px] gap-y-1.5 text-[14px] leading-5 sm:mb-[30px] sm:gap-x-4 sm:gap-y-2 sm:leading-[18px] text-muted-foreground sm:text-[13px]"
         aria-label="Work counts"
       >
         <span className="inline-flex items-center gap-1.5 text-foreground">
@@ -223,9 +224,9 @@ export function Today() {
         </section>
       ) : (
         <div className="grid items-start gap-10 min-[1100px]:grid-cols-[minmax(0,1fr)_330px]">
-          <div className="min-w-0 space-y-[30px]">
+          <div className="min-w-0 space-y-5 sm:space-y-[30px]">
             {needsCount > 0 && (
-              <section className="space-y-[10px]">
+              <section className="space-y-2 sm:space-y-[10px]">
                 <h2 className={HEADING}>Start here</h2>
                 <div className={cn(SURFACE, "divide-y divide-border/60")}>
                   {data.needsYou.map((decision) => (
@@ -253,10 +254,10 @@ export function Today() {
                 </div>
               </section>
             )}
-            <section className="space-y-[10px]">
-              <div className="flex h-6 items-center justify-between gap-2">
+            <section className="space-y-2 sm:space-y-[10px]">
+              <div className="flex h-5 items-center justify-between gap-2 sm:h-6">
                 <h2 className={HEADING}>Running now</h2>
-                <span className="text-xs leading-5 text-muted-foreground">
+                <span className="text-[13px] leading-[18px] text-[color:var(--boat-faint)] sm:text-xs sm:leading-5">
                   {overview.data?.activeSandboxes ?? "…"}
                   {overview.data?.cap ? ` of ${overview.data.cap}` : ""}{" "}
                   sandboxes on
@@ -300,24 +301,46 @@ export function Today() {
                             : 3;
                     return order(a) - order(b);
                   });
+                  // Phone cards summarize the three most actionable tasks; the
+                  // counts above still cover every task on the board.
+                  const mobilePriority = (task: TaskDto) => {
+                    const state = cardStatus(task);
+                    return state.status === "review"
+                      ? 0
+                      : state.status === "broken"
+                        ? 1
+                        : state.status === "needs-you"
+                          ? 2
+                          : state.status === "ready"
+                            ? 3
+                            : state.moving
+                              ? 4
+                              : 5;
+                  };
+                  const mobileTasks = new Set(
+                    [...tasks]
+                      .sort((a, b) => mobilePriority(a) - mobilePriority(b))
+                      .slice(0, 3)
+                      .map((task) => task.id),
+                  );
                   return (
                     <div
                       key={threadId}
-                      className="space-y-[10px] px-[14px] py-3"
+                      className="space-y-2 px-3 py-3 sm:space-y-[10px] sm:px-[14px]"
                     >
-                      <div className="flex flex-wrap items-center gap-2 text-[13px] leading-5">
+                      <div className="flex flex-wrap items-center gap-2 text-[15px] leading-5 sm:text-[13px]">
                         <AgentLogo provider={provider} className="size-3" />
                         {threadId === "one-off" ? (
                           <span>Tasks</span>
                         ) : (
-                          <span className="font-medium text-[color:var(--boat-heading)]">
+                          <span className="font-normal text-[color:var(--boat-heading)] sm:font-medium">
                             <ThreadName threadId={threadId} />
                           </span>
                         )}
-                        <span className="text-xs text-muted-foreground">
+                        <span className="text-[13px] text-[color:var(--boat-faint)] sm:text-xs">
                           {entry?.projectName ?? projectName(tasks[0])}
                         </span>
-                        <div className="ml-auto flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                        <div className="ml-auto hidden flex-wrap items-center gap-3 text-xs text-muted-foreground sm:flex">
                           {counts.stopped > 0 && (
                             <span>
                               <span className="text-[#E06C6C]">•</span>{" "}
@@ -341,7 +364,7 @@ export function Today() {
                           )}
                         </div>
                       </div>
-                      <div className="flex flex-wrap gap-1.5 pl-5">
+                      <div className="flex flex-wrap gap-1.5 sm:pl-5">
                         {sorted.map((task) => {
                           const state = cardStatus(task);
                           const activeReview = recent.find(
@@ -366,14 +389,26 @@ export function Today() {
                               key={task.id}
                               type="button"
                               onClick={() => openChat(task)}
-                              className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-border/70 bg-[color:var(--boat-chip)] py-[5px] pl-[7px] pr-[10px] text-xs leading-4 hover:bg-state-hover"
+                              className={cn(
+                                "inline-flex max-w-full items-center gap-1.5 rounded-lg border border-border/70 bg-[color:var(--boat-chip)] px-2 py-[5px] text-[13px] leading-[18px] hover:bg-state-hover sm:pl-[7px] sm:pr-[10px] sm:text-xs sm:leading-4",
+                                !mobileTasks.has(task.id) &&
+                                  !["broken", "needs-you", "ready"].includes(
+                                    state.status,
+                                  ) &&
+                                  "hidden sm:inline-flex",
+                              )}
                             >
                               <AgentActivity
                                 provider={task.provider}
                                 moving={state.moving}
                               />
-                              <span className="truncate text-[color:var(--boat-content)]">
-                                {task.title.replace(/ to checkout$/, "")}
+                              <span className="truncate text-[color:var(--boat-content)] dark:max-sm:text-[#D0D0D0]">
+                                <span className="hidden sm:inline">
+                                  {task.title.replace(/ to checkout$/, "")}
+                                </span>
+                                <span className="sm:hidden">
+                                  {task.compactTitle ?? task.title}
+                                </span>
                               </span>
                               <span
                                 className={cn(
@@ -398,7 +433,7 @@ export function Today() {
                 })}
               </div>
             </section>
-            <section className="space-y-[10px]">
+            <section className="space-y-2 sm:space-y-[10px]">
               <h2 className={HEADING}>Timeline</h2>
               <ol>
                 {timeline.map((event, index) => {
@@ -597,7 +632,9 @@ export function Today() {
 }
 function Dot({
   tone,
+  className,
 }: {
+  className?: string;
   tone: "attention" | "positive" | "danger" | "neutral";
 }) {
   return (
@@ -611,6 +648,7 @@ function Dot({
           danger: "bg-[#E06C6C]",
           neutral: "bg-foreground/75",
         }[tone],
+        className,
       )}
     />
   );
@@ -683,8 +721,8 @@ function StartDecision({
     });
   };
   return (
-    <div className="flex flex-wrap items-center gap-3 px-[14px] py-[11px]">
-      <Dot tone="attention" />
+    <div className="grid grid-cols-[6px_minmax(0,1fr)] items-start gap-x-[10px] gap-y-[10px] px-3 py-3 sm:flex sm:flex-nowrap sm:items-center sm:gap-3 sm:px-[14px] sm:py-[11px]">
+      <Dot tone="attention" className="mt-[7px] sm:mt-0" />
       <button
         type="button"
         className="min-w-0 flex-1 text-left hover:underline"
@@ -693,17 +731,17 @@ function StartDecision({
           navigate.toThread(decision.orchestratorThreadId)
         }
       >
-        <span className="block text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">
+        <span className="block text-[15px] font-normal leading-[21px] text-[color:var(--boat-heading)] sm:text-[13px] sm:font-medium sm:leading-5">
           {decision.question}
         </span>
-        <span className="mt-0.5 block text-xs leading-4 text-muted-foreground text-[color:var(--boat-description)]">
+        <span className="mt-0.5 block text-[13px] leading-[18px] text-[color:var(--boat-description)] sm:text-xs sm:leading-4">
           {subline}
         </span>
       </button>
       <Button
         type="button"
         size="sm"
-        className="h-[26px] shrink-0 rounded-md bg-primary px-3 text-xs text-primary-foreground hover:bg-primary/90"
+        className="col-start-2 h-[34px] shrink-0 justify-self-start rounded-lg bg-primary px-3 text-[14px] leading-[18px] text-primary-foreground hover:bg-primary/90 sm:h-[26px] sm:rounded-md sm:text-xs sm:leading-4"
         disabled={pending}
         onClick={choose}
       >
@@ -728,27 +766,40 @@ function StoppedStart({
   const detail = useTask(task.id);
   const [resize, setResize] = useState(false);
   const oom = /out.of.memory|oom/i.test(task.error ?? "");
-  const canResize = detail.data?.task?.memory?.canResize;
+  const memory = detail.data?.task?.memory;
+  const canResize = memory?.canResize;
+  const nextLabel = memory?.next?.label;
+  const doubleRate =
+    memory?.size?.type === "default" && memory.next?.type === "large";
   return (
-    <div className="flex flex-wrap items-center gap-3 px-[14px] py-[11px]">
-      <Dot tone="danger" />
+    <div className="grid grid-cols-[6px_minmax(0,1fr)] items-start gap-x-[10px] gap-y-[10px] px-3 py-3 sm:flex sm:flex-nowrap sm:items-center sm:gap-3 sm:px-[14px] sm:py-[11px]">
+      <Dot tone="danger" className="mt-[7px] sm:mt-0" />
       <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">
+        <p className="text-[15px] font-normal leading-[21px] text-[color:var(--boat-heading)] sm:text-[13px] sm:font-medium sm:leading-5">
           {oom
-            ? `${task.title.replace(/^Add /, "").replace(/ to checkout$/, "")} ran out of memory. Continue on Large?`
+            ? `${task.title.replace(/^Add /, "").replace(/ to checkout$/, "")} ran out of memory.${canResize && nextLabel ? ` Continue on ${nextLabel}?` : ""}`
             : (task.error ?? `${task.title} stopped`)}
         </p>
-        <p className="mt-0.5 text-xs leading-4 text-muted-foreground text-[color:var(--boat-description)]">
+        <p className="mt-0.5 text-[13px] leading-[18px] text-[color:var(--boat-description)] sm:text-xs sm:leading-4">
           {task.title.replace(/ to checkout$/, "")} · {project} · work is saved
         </p>
       </div>
-      <Button
-        size="sm"
-        className="h-[26px] shrink-0 rounded-md bg-primary px-3 text-xs text-primary-foreground hover:bg-primary/90"
-        onClick={() => (canResize ? setResize(true) : onOpen())}
-      >
-        {canResize ? "Continue on Large" : "Continue in chat"}
-      </Button>
+      <div className="col-start-2 flex items-center gap-[10px]">
+        <Button
+          size="sm"
+          className="col-start-2 h-[34px] shrink-0 justify-self-start rounded-lg bg-primary px-3 text-[14px] leading-[18px] text-primary-foreground hover:bg-primary/90 sm:h-[26px] sm:rounded-md sm:text-xs sm:leading-4"
+          onClick={() => (canResize ? setResize(true) : onOpen())}
+        >
+          {canResize && nextLabel
+            ? `Continue on ${nextLabel}`
+            : "Continue in chat"}
+        </Button>
+        {canResize && doubleRate && (
+          <span className="text-[13px] leading-[18px] text-[#FC8C45] sm:hidden">
+            2× per hour
+          </span>
+        )}
+      </div>
       {detail.data?.task && (
         <ResizeDialog
           task={detail.data.task}

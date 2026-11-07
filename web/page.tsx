@@ -76,7 +76,7 @@ function CloudPageTabs({ section }: { section: string }) {
       >
         <nav
           aria-label="Cloud agents pages"
-          className="flex gap-7 border-b border-border"
+          className="flex gap-[22px] border-b border-border sm:gap-7"
         >
           {["today", "sandboxes", "projects"].map((tab) => (
             <button
@@ -89,7 +89,7 @@ function CloudPageTabs({ section }: { section: string }) {
                 })
               }
               className={
-                "border-b-2 pb-2 text-[20px] leading-[26px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
+                "border-b-2 pb-2 text-[18px] leading-6 sm:text-[20px] sm:leading-[26px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
                 (section === tab
                   ? "border-[color:var(--boat-heading)] font-semibold text-[color:var(--boat-heading)]"
                   : "border-transparent text-[color:var(--boat-faint)] hover:text-foreground")
