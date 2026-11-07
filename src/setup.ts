@@ -841,7 +841,8 @@ export function machineProblem(facts: BoatFacts, settings: SetupSettings, connec
 
 export const TEST_TASK_TITLE = "Test task";
 export const TEST_TASK_BRIEF =
-  "Report the output of `uname -a`, `node --version`, `git --version` and whether GitHub access works (`gh auth status`). Change nothing.";
+  "Report the output of `uname -a`, `node --version`, `git --version` and whether GitHub access works (`gh auth status`). Change nothing. " +
+  "After each check, emit the observations obtained so far in a plain block: === SETUP CHECK ===, then one field per line OS: <observed distribution>, NODE: <observed version>, GIT: <observed version>, GITHUB: ok or failed, then === END SETUP CHECK ===. Omit fields not yet checked; never guess a value. For GitHub report only whether access works, never credentials or account details. Include the final block in your final report; use STATUS: blocked if a check failed.";
 
 /**
  * A task with no repo, headless in boat on a small sandbox: it proves sign-in,
