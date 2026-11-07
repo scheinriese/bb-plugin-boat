@@ -944,6 +944,11 @@ export const rpcContract = defineRpcContract({
     tags: () => [TAGS.tasks],
   },
   /** Answer a decision from the overview: the orchestrator gets it as a message. */
+  decision: {
+    input: z.object({ id: z.string().min(1).max(128) }),
+    output: z.object({ decision: decisionSchema.nullable() }),
+    tags: () => [TAGS.tasks],
+  },
   answerDecision: {
     input: z.object({
       id: z.string(),

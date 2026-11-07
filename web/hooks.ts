@@ -119,6 +119,14 @@ export function useThreadTasks(threadId: string): readonly TaskDto[] {
   return data?.[threadId] ?? EMPTY_TASKS;
 }
 
+/** The task that owns this chat, including secondary workspace chats. */
+export function useThreadTask(threadId: string): TaskDto | null {
+  const keys = useMemo(() => [threadId], [threadId]);
+  const { data } = experimental_useRpcKeyedQuery({ contract: rpcContract, method: "threadRoles", keys });
+  const role = data?.[threadId];
+  return role?.kind === "task" ? role.task : null;
+}
+
 /** Nav badge: what the board asks of the user, decisions and work ready to review. */
 export function useAttentionBadge(): ExperimentalBadge | null {
   const { data } = useBoard(null);

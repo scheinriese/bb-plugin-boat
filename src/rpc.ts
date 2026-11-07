@@ -1020,6 +1020,8 @@ export function registerRpc(runtime: Runtime): void {
       };
     },
 
+    decision: ({ id }) => ({ decision: service.store.decision(id) }),
+
     answerDecision: ({ id, accept, answer }) =>
       refuse(async () => {
         const decision = service.store.decision(id);

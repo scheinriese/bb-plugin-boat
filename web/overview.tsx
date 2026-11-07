@@ -436,7 +436,7 @@ function StepUpCard() {
 
 // ----------------------------------------------------------------- sandboxes
 
-function SandboxesSection({ hideWhenEmpty = false }: { hideWhenEmpty?: boolean }) {
+export function SandboxesSection({ hideWhenEmpty = false }: { hideWhenEmpty?: boolean }) {
   const { data, error } = useSandboxes();
   const now = useNow();
   const sandboxes = useMemo(
