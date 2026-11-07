@@ -181,28 +181,6 @@ export function registerEntryPoints(app: PluginAppBuilder): void {
   );
 
   // ---------------------------------------------------------- thread header
-  attempt("header: Open board", () =>
-    app.slots.experimental_threadAction<Roles>({
-      id: "open-board",
-      title: "Open board",
-      icon: "Workflow",
-      group: ACTION_GROUP,
-      order: 10,
-      placement: "header",
-      useData: useThreadRoles,
-      item: ({ thread, data, navigate }) =>
-        data?.[thread.id]?.kind === "orchestrator"
-          ? {
-              label: "Open board",
-              icon: "Workflow",
-              run: () =>
-                navigate.toPluginPanel(PANEL_PATH, {
-                  subPath: orchestratorSubPath(thread.id),
-                }),
-            }
-          : null,
-    }),
-  );
   if (!overlay) return;
   attempt("header: Task action", () =>
     app.slots.experimental_threadAction<ReturnType<typeof useHeaderData>>({
@@ -225,6 +203,7 @@ export function registerEntryPoints(app: PluginAppBuilder): void {
             disabled: data.busy,
             run: () => data.resume(task.sandboxId!),
           };
+        if (["broken","waiting-reset"].includes(state.status))return null;
         if (task.canShip)
           return {
             label: `Ship to ${task.baseBranch ?? "main"}`,
@@ -242,7 +221,8 @@ export function registerEntryPoints(app: PluginAppBuilder): void {
         if (state.status === "ready" && task.prUrl)
           return {
             label: `Merge PR ${prLabel(task.prUrl)}`,
-            icon: "ArrowUpRight",
+            variant: "default",
+            icon: "GitMerge",
             run: () => {
               void data.merge(task.id).then(result=>navigate.toThread(result.threadId)).catch(showError);
             },

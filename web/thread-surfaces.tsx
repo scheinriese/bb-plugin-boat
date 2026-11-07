@@ -18,7 +18,10 @@ import {
   type ExperimentalThreadInfoProps,
   type ExperimentalThreadTabProps,
 } from "@get-bb/plugin-sdk/app";
-import type { DecisionDto, TaskDto } from "../contract";
+import { DiffStats } from "./diff-stats";
+import { mergeRpcContract } from "../contract-merge";
+import { experimental_useRpcQuery } from "@get-bb/plugin-sdk/app";
+import { rpcContract, type DecisionDto, type TaskDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
@@ -33,10 +36,10 @@ import {
   summarizeBoard,
   workerChatId,
 } from "./format";
-import { useBoard, useCloudAgentsNavigation, useTask, useThreadTask, useThreadTasks } from "./hooks";
+import { useBoard, useCloudAgentsNavigation, useOverview, useTask, useThreadTask, useThreadTasks, useSetup, useRelay } from "./hooks";
 import { taskPhaseLabel } from "./logic";
 import { cardStatus, contextCounts } from "./cards-logic";
-import { CardTaskState, TaskContextAction } from "./cards";
+import { CardTaskState, TaskContextAction, useNativePaused } from "./cards";
 export { TaskDirective, registerChatCards } from "./cards";
 import {
   IconButton,
@@ -76,21 +79,31 @@ export function ThreadSegmentSummary({ threadId, isExpanded, onToggle }: Experim
   const { data } = useBoard(threadId);
   const needsYou = (data?.needsYou.length ?? 0) > 0;
   const own = useThreadTask(threadId);
+  const facts=experimental_useRpcQuery({contract:mergeRpcContract,method:"pullRequestFacts",input:{id:own?.id??""},enabled:Boolean(own?.prUrl)}).data;
+  const preview=experimental_useRpcQuery({contract:rpcContract,method:'previews',input:{taskId:own?.id??null,threadId:null},enabled:Boolean(own?.previewUrl)}).data?.previews.find(preview=>preview.link===own?.previewUrl);
   const tasks = own ? [own] : data ? [...data.ready, ...data.running, ...data.done] : [];
   const anyRunning = tasks.some(task => cardStatus(task).moving);
-  if (own?.prUrl && cardStatus(own).status==='ready') return <span className="inline-flex items-center gap-2 px-1.5 text-xs"><PrLink url={own.prUrl} prefixed/>{own.previewUrl&&<UrlLink href={own.previewUrl} className="text-[#7AA7FF]">Preview</UrlLink>}</span>;
-  return <button type="button" onClick={onToggle} aria-expanded={isExpanded} className={cn("inline-flex h-6 max-w-full items-center gap-1.5 rounded-md px-1.5 text-xs hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring",needsYou?'text-[#F0B135]':'text-muted-foreground')}>
-    <StatusDot className={needsYou?'bg-[#F0B135]':anyRunning?'bg-muted-foreground motion-safe:animate-pulse':'bg-[#5BD08A]'}/>
-    <span className="truncate">{data||own?contextCounts(tasks,data?.needsYou.length??0,data?.needsYou.flatMap(item=>item.taskIds)):'…'}</span>
+  const summary=data||own?contextCounts(tasks,data?.needsYou.length??0,data?.needsYou.flatMap(item=>item.taskIds)):'…';
+  if (own?.prUrl) return <span className="boat-ui inline-flex items-center gap-2 px-1.5 text-[12px]">{facts?.draft&&<span className="text-muted-foreground">Draft</span>}<PrLink url={own.prUrl} prefixed/>{facts&&<DiffStats additions={facts.additions} deletions={facts.deletions}/>}{own.previewUrl&&<UrlLink href={own.previewUrl} className={cn('inline-flex items-center gap-1',preview&&preview.state!=='live'?'text-muted-foreground':'text-[#7AA7FF]')}><Icon name="Globe" className="hidden size-3 sm:inline"/>{preview?.state==='sleeping'?'Preview asleep':preview?.state==='expired'?'Preview expired':'Preview'}</UrlLink>}</span>;
+  return <button type="button" onClick={onToggle} aria-expanded={isExpanded} className={cn("boat-ui inline-flex h-6 max-w-full items-center gap-1.5 rounded-md px-1.5 text-xs hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring",needsYou?'text-[#F0B135]':'text-muted-foreground')}>
+    <Icon name="ComputerCloud" className="size-3.5 shrink-0 text-muted-foreground sm:hidden"/>
+    <span className="flex items-center gap-3 sm:gap-[14px]">{summary.split(' · ').map(part=><span key={part} className={cn('flex items-center gap-1.5 whitespace-nowrap',part.includes('need')?'order-0 text-[#F0B135]':part.includes('ready')?'order-1 text-foreground':'order-2 text-foreground','sm:order-none')}><span aria-hidden className={cn('size-1.5 shrink-0 rounded-full',part.includes('need')?'bg-[#F0B135]':part.includes('ready')?'bg-[#5BD08A]':anyRunning?'bg-muted-foreground motion-safe:animate-pulse':'bg-muted-foreground')}/>{part}</span>)}</span>
+    <Icon name="ChevronDown" className="size-3 shrink-0 text-muted-foreground sm:hidden"/>
   </button>;
 }
 /** SDK action renders at the row end, after all native segments. */
 export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentProps){
   const {data}=useBoard(threadId);const own=useThreadTask(threadId);
+  const paused=useNativePaused(threadId);
+  const setup=useSetup().data;
+  const relay=useRelay().data;
   const detail=useTask(own?.id??null).data?.task;
   const decisionTask=[...(data?.running??[]),...(data?.ready??[])].find(task=>data?.needsYou.some(item=>item.taskIds.includes(task.id)));
-  if((data?.needsYou.length??0)>0)return <span className="hidden text-xs text-muted-foreground md:inline">{decisionTask?.provider==='claude'?'Claude':decisionTask?.provider==='codex'?'Codex':'The agent'} waits in its sandbox; nothing is lost</span>;
-  if(own && cardStatus(own).status==='ready')return <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><span className="size-1.5 rounded-full bg-[#5BD08A]"/>Sandbox on{detail?.memory?.size?' · '+detail.memory.size.label:''}</span>;
+  const currentAgent=relay?.orchestrators.find(row=>row.threadId===threadId)?.provider;
+  const usage=relay?.agents.find(agent=>agent.provider===currentAgent);
+  if(!own&&(data?.ready.length??0)>0&&setup?.plan)return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{setup.plan.activeSandboxes}{setup.plan.maxActiveSandboxes!==null?' of '+setup.plan.maxActiveSandboxes:''} sandboxes{usage?.usedPercent!==null&&usage?.usedPercent!==undefined?` · ${usage.provider==='claude'?'Claude':'Codex'} ${Math.round(usage.usedPercent)}%`:''}</span>;
+  if((data?.needsYou.length??0)>0)return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{decisionTask?.provider==='claude'?'Claude':decisionTask?.provider==='codex'?'Codex':'The agent'} waits in its sandbox; nothing is lost</span>;
+  if(own?.sandboxId)return <span className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground"><span className={cn("size-1.5 rounded-full",paused?'bg-muted-foreground':'bg-[#5BD08A]')}/><span className="sm:hidden">{paused?'stopped':'on'}</span><span className="hidden sm:inline">{paused?'Sandbox stopped':'Sandbox on'}{detail?.memory?.size?' · '+detail.memory.size.label:''}</span>{cardStatus(own).status==='ready'&&<span className="sm:hidden"><TaskContextAction task={own} compact/></span>}</span>;
   return null;
 }
 

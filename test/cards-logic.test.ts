@@ -62,6 +62,12 @@ test("markers accept identifiers and reject path-like or unbounded attributes", 
   ])
     assert.equal(markerId(value), null);
 });
+test("context counts a review with its parent and leaves decision-linked work waiting", () => {
+  const parent = task("t_parent", "review", { moving: true });
+  const review = { ...task("t_review", "working"), role: "review" } as TaskDto;
+  const waiting = task("t_waiting", "working");
+  assert.equal(contextCounts([parent, review, waiting], 1, [waiting.id]), "1 needs you · 1 working");
+});
 test("Undo cancels queued delivery before any mutation", async () => {
   let sent = 0;
   const cancel = queueDelivery(async () => {

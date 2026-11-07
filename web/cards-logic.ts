@@ -77,9 +77,12 @@ export function contextCounts(
     needs = decisions;
   const linked = new Set(linkedTaskIds);
   for (const task of tasks) {
+    // A review belongs to its parent task; a decision-linked task is waiting
+    // for the owner even when its worker process remains alive.
+    if (task.role === "review") continue;
     const state = cardStatus(task);
     if (state.status === "ready") ready++;
-    else if (state.moving) working++;
+    else if (state.moving && !linked.has(task.id)) working++;
     if (state.needsYou && !linked.has(task.id)) needs++;
   }
   return (
