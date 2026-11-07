@@ -17,6 +17,7 @@ import {
 } from "./web/page";
 import { BoatSettings, MobileBoatSettings } from "./web/plugin-settings";
 import { registerMergeInteraction } from "./web/merge-interaction";
+import "./web/boat-ui.css";
 import {
   HomepageCard,
   ThreadAgentsTab,
