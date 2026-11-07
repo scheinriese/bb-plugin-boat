@@ -7,7 +7,7 @@ export function registerStartQueueRpc(runtime: Runtime): void {
   const { bb, startQueue } = runtime;
   const interactions = createPaidStartInteractions({ queue: startQueue, waitMs: runtime.launchWaitMs,
     requestInput: (request, options) => bb.ui.requestInput(request, options),
-    report: (threadId, text) => runtime.tellOrchestrator(threadId, text), changed: () => runtime.changed(),
+    changed: () => runtime.changed(),
   });
   bb.onDispose(() => interactions.dispose());
   bb.rpc.register(startQueueRpcContract, {

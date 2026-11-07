@@ -115,7 +115,7 @@ export function createStartQueue(deps: StartQueueDeps) {
         if (current.dto.taskId) { deps.changed(); throw error; }
         const code = error instanceof TaskError ? error.code : "";
         const to = lifecycle.signal.aborted || signal.aborted || code === "agents_at_limit" || code === "paid_start_stale" || code === "queued_policy_changed" || code === "queued_usage_unknown" ? "waiting" : code === "queued_source_changed" ? "cancelled" : "failed";
-        store.transition(entry.dto.id, entry.dto.revision, ["dispatching"], to, to === "waiting" ? waitingMessage : error instanceof Error ? error.message : "This request could not start.", quotaReset(quotas)); deps.changed();
+        store.transition(entry.dto.id, entry.dto.revision, ["dispatching"], to, to === "waiting" && !paid ? waitingMessage : error instanceof Error ? error.message : "This request could not start.", quotaReset(quotas)); deps.changed();
         if (to === "waiting" && !paid) return { kind: "queued", request: must(entry.dto.id).dto, pending: true };
         throw error;
       }
@@ -143,6 +143,15 @@ export function createStartQueue(deps: StartQueueDeps) {
     },
     list: (includeFinished = false) => store.list(includeFinished).map(e=>e.dto),
     get: (id: string) => store.get(id)?.dto ?? null,
+    paidFailure(id: string, revision: number, error: unknown) {
+      const entry = store.get(id);
+      // A stale form cannot overwrite a newer request state or a task receipt.
+      if (!entry || entry.dto.revision !== revision || entry.dto.state !== "waiting") return;
+      const closed = error instanceof TaskError && error.code === "queued_source_changed";
+      const message = error instanceof Error ? error.message : "Request a fresh paid-start confirmation.";
+      store.transition(id, revision, ["waiting"], closed ? "cancelled" : "waiting", `Paid start stopped. ${message}`, entry.dto.resetsAt);
+      deps.changed();
+    },
     cancel(id: string, revision: number) {
       const entry = must(id);
       if (entry.dto.state === "started" || entry.dto.state === "cancelled") return entry.dto;

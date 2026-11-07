@@ -141,12 +141,17 @@ test("settings changes during confirmation or async preparation invalidate paid 
  assert.equal(e.queue.get(q.id)!.state,"waiting");assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);}
 });
 test("native paid interaction returns promptly, deduplicates, and requires a matching explicit Start submission",async t=>{
- for(const choice of ["wait","wrong-id","start","cancel"] as const){const e=setup();t.after(()=>e.dispose());const q=await e.queued();const reports:string[]=[];
- const interaction=createPaidStartInteractions({queue:e.queue,waitMs:5000,requestInput:(r,o)=>e.bb.ui.requestInput(r,o),report:async(_id,text)=>{reports.push(text);},changed(){}});t.after(()=>interaction.dispose());
+ for(const choice of ["wait","wrong-id","start","cancel","stale-usage","closed-source"] as const){const e=setup();t.after(()=>e.dispose());const q=await e.queued();
+ const interaction=createPaidStartInteractions({queue:e.queue,waitMs:5000,requestInput:(r,o)=>e.bb.ui.requestInput(r,o),changed(){}});t.after(()=>interaction.dispose());
  const request=interaction.request({id:q.id,revision:q.revision,provider:"codex"});assert.equal(request.pending,true);assert.equal(request.threadId,"thr_orch");assert.equal(interaction.request({id:q.id,revision:q.revision,provider:"codex"}).duplicate,true);
  await until(()=>e.harness.inspection.pendingInteractions.length>0);const pending=e.harness.inspection.pendingInteractions[0]!;assert.equal(pending.rendererId,"paid-task-start");assert.equal(e.boat.calls.length,0);
+ if(choice==="stale-usage")e.setUsage(quotas(96,98));if(choice==="closed-source")e.setClosed();
  if(choice==="cancel")e.harness.behavior.cancelInteraction(pending.id);else e.harness.behavior.submitInteraction(pending.id,{requestId:choice==="wrong-id"?"stale":request.requestId,choice:choice==="wait"?"wait":"start"} as never);
- await interaction.settled();assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,choice==="start"?1:0);assert.equal(reports.length,choice==="wrong-id"?1:0);}
+ await interaction.settled();assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,choice==="start"?1:0);assert.equal(e.harness.sdk.callsTo("threads.send").length,0);assert.equal(e.harness.sdk.callsTo("threads.spawn").length,0);if(choice==="wrong-id")assert.match(e.queue.get(q.id)!.message,/choice is invalid/);if(choice==="stale-usage")assert.match(e.queue.get(q.id)!.message,/usage changed/);if(choice==="closed-source")assert.equal(e.queue.get(q.id)!.state,"cancelled");}
+});
+test("an unavailable paid reviewer publishes queue feedback without opening a question or waking an agent",async t=>{
+ const e=setup();t.after(()=>e.dispose());const q=await e.queued();e.setSettings({notConnectedAgents:["codex"]});const interaction=createPaidStartInteractions({queue:e.queue,waitMs:5000,requestInput:(r,o)=>e.bb.ui.requestInput(r,o),changed(){}});t.after(()=>interaction.dispose());
+ interaction.request({id:q.id,revision:q.revision,provider:"codex"});await interaction.settled();assert.match(e.queue.get(q.id)!.message,/selected agent is unavailable/);assert.equal(e.harness.inspection.pendingInteractions.length,0);assert.equal(e.harness.sdk.callsTo("threads.send").length,0);assert.equal(e.harness.sdk.callsTo("threads.spawn").length,0);assert.equal(e.boat.calls.length,0);
 });
 test("queue capacity and serialized data are bounded; corrupt original input cannot authorize a launch",async t=>{
  const e=setup();t.after(()=>e.dispose());for(let i=0;i<100;i++)await e.queued({title:`Task ${i}`});await assert.rejects(e.queued({title:"Overflow"}),/queue is full/);assert.equal(e.queue.list().length,100);assert.equal(e.boat.calls.length,0);

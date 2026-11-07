@@ -8,7 +8,7 @@ import type { StartQueue } from "./start-queue.ts";
 export function createPaidStartInteractions(deps: {
   queue: StartQueue; waitMs: number;
   requestInput(request: PluginInteractionRequest, options: { signal: AbortSignal }): Promise<PluginInteractionResult>;
-  report(threadId: string, text: string): Promise<void>; changed(): void;
+  changed(): void;
 }) {
   const lifecycle = new AbortController();
   const active = new Map<string, { requestId: string; threadId: string; abort: AbortController; done: Promise<void> }>();
@@ -39,7 +39,9 @@ export function createPaidStartInteractions(deps: {
         await deps.queue.confirmPaid(quote, deps.waitMs, abort.signal);
       }).catch(async (error: unknown) => {
         if (abort.signal.aborted) return;
-        await deps.report(threadId, `[boat] Paid start stopped: ${error instanceof Error ? error.message : "Request a fresh confirmation."}`).catch(()=>undefined);
+        // Persist feedback for the live receipt. Sending a chat message here
+        // would wake an agent merely to report a failed confirmation.
+        try { deps.queue.paidFailure(input.id, input.revision, error); } catch { /* A corrupt/missing request stays non-dispatchable. */ }
       }).finally(() => { active.delete(input.id); deps.changed(); });
       deps.changed(); return { pending: true as const, requestId, threadId, duplicate: false };
     },
