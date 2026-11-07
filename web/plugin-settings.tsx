@@ -599,7 +599,7 @@ function EverydaySettingRow({ row, saver, sizes, master }: { row: SettingDto; sa
 export function MobileBoatSettings() {
   const query = useSettingRows();
   const setup = useSetup().data;
-  const usage = experimental_useRpcQuery({contract: rpcContract, method:"fidelityUsage", input:{timezoneOffsetMinutes: -new Date().getTimezoneOffset()}}).data;
+  const usage = experimental_useRpcQuery({contract: rpcContract, method:"fidelityUsage", input:{timezoneOffsetMinutes: new Date().getTimezoneOffset()}}).data;
   const saver = useSaveSetting();
   const navigate = useBbNavigate();
   const rows = query.data?.settings ?? [];
