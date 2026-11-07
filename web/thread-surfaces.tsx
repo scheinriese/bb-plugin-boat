@@ -9,6 +9,7 @@ import {
   experimental_InfoListRow as InfoListRow,
   experimental_InfoSection as InfoSection,
   experimental_ThreadContextCardRow as ThreadContextCardRow,
+  useBbNavigate,
   experimental_useAppPanel,
   experimental_useThreadContextKind,
   type ExperimentalThreadContextCardProps,
@@ -17,18 +18,16 @@ import {
   type ExperimentalThreadInfoProps,
   type ExperimentalThreadTabProps,
   type PluginHomepageSectionProps,
-  type PluginMessageDirectiveProps,
 } from "@get-bb/plugin-sdk/app";
 import type { DecisionDto, TaskDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { Board } from "./board";
-import { NewOrchestratorDialog, NewTaskDialog } from "./dialogs";
+import { NewOrchestratorDialog } from "./dialogs";
 import {
   PHASE_DOT,
   ROLE_ICON,
-  TASK_ID_PATTERN,
   agentWords,
   plural,
   prLabel,
@@ -36,14 +35,15 @@ import {
   summarizeBoard,
   workerChatId,
 } from "./format";
-import { useBoard, useCloudAgentsNavigation, useOrchestrators, useOverview, useTask, useThreadTasks } from "./hooks";
+import { useBoard, useCloudAgentsNavigation, useOrchestrators, useOverview, useThreadTask, useThreadTasks } from "./hooks";
 import { taskPhaseLabel } from "./logic";
+import { cardStatus, contextCounts } from "./cards-logic";
+import { CardTaskState, TaskContextAction } from "./cards";
+export { TaskDirective, registerChatCards } from "./cards";
 import {
-  AgentBadge,
   IconButton,
   ThreadName,
   OpenChatButton,
-  PhasePill,
   PrLink,
   ReportChip,
   RoleIcon,
@@ -59,7 +59,8 @@ const AGENTS_TAB = { id: "cloud-agents", context: { kind: "thread" }, availabili
 function useThreadHasBoard(threadId: string): boolean {
   const tasks = useThreadTasks(threadId);
   const { data } = useBoard(threadId);
-  return tasks.length > 0 || (data?.needsYou.length ?? 0) > 0;
+  const own = useThreadTask(threadId);
+  return own !== null || tasks.length > 0 || (data?.needsYou.length ?? 0) > 0;
 }
 
 /** Banner mode only (the context card shows the same tasks in card mode). */
@@ -76,7 +77,9 @@ export function useThreadHasTasks({ threadId }: { threadId: string }): boolean {
 export function ThreadSegmentSummary({ threadId, isExpanded, onToggle }: ExperimentalThreadContextSegmentProps) {
   const { data } = useBoard(threadId);
   const needsYou = (data?.needsYou.length ?? 0) > 0;
-  const anyRunning = data?.running.some((task) => task.phase === "working" || task.phase === "starting") ?? false;
+  const own = useThreadTask(threadId);
+  const tasks = own ? [own] : data ? [...data.ready, ...data.running, ...data.done] : [];
+  const anyRunning = tasks.some(task => cardStatus(task).moving);
   return (
     <button
       type="button"
@@ -88,11 +91,11 @@ export function ThreadSegmentSummary({ threadId, isExpanded, onToggle }: Experim
       {needsYou ? (
         <StatusDot className="bg-warning" />
       ) : anyRunning ? (
-        <StatusDot className="bg-success animate-pulse" />
+        <StatusDot className="bg-muted-foreground motion-safe:animate-pulse" />
       ) : null}
       <span className="truncate">
         <span className="sr-only">Cloud agents: </span>
-        {data ? summarizeBoard(data) : "…"}
+        {data || own ? contextCounts(tasks, data?.needsYou.length ?? 0, data?.needsYou.flatMap(item => item.taskIds)) : "…"}
       </span>
       <Icon
         name="ChevronDown"
@@ -105,8 +108,9 @@ export function ThreadSegmentSummary({ threadId, isExpanded, onToggle }: Experim
 
 export function ThreadSegmentDetails({ threadId, isExpanded }: ExperimentalThreadContextSegmentProps) {
   const { data } = useBoard(threadId);
+  const own = useThreadTask(threadId);
   if (!isExpanded || data === undefined) return null;
-  const tasks = [...data.ready, ...data.running, ...data.done];
+  const tasks = own ? [own] : [...data.ready, ...data.running, ...data.done];
   if (data.needsYou.length === 0 && tasks.length === 0) return null;
   return (
     <ul aria-label="Cloud agents" className="max-h-64 space-y-px overflow-y-auto py-1">
@@ -201,14 +205,18 @@ export function ThreadInfoSection({ threadId }: ExperimentalThreadInfoProps) {
 // -------------------------------------------------------------- context card
 
 export function ThreadCardSection({ threadId }: ExperimentalThreadContextCardProps) {
-  const tasks = useThreadTasks(threadId);
-  const decisions = useBoard(threadId).data?.needsYou.length ?? 0;
+  const children = useThreadTasks(threadId);
+  const own = useThreadTask(threadId);
+  const tasks = own ? [own] : children;
+  const board = useBoard(threadId).data;
+  const decisions = board?.needsYou.length ?? 0;
   const { openTask } = useCloudAgentsNavigation();
   const openDecisions = useOpenDecisions(threadId);
   if (tasks.length === 0 && decisions === 0) return null;
   const decisionsLabel = `${plural(decisions, "decision")} ${decisions === 1 ? "needs" : "need"} you`;
   return (
     <>
+      <ThreadContextCardRow icon="ComputerCloud" label={contextCounts(tasks, decisions, board?.needsYou.flatMap(item => item.taskIds))} action={tasks.find(task => ["ready", "stopped"].includes(cardStatus(task).status)) ? <TaskContextAction task={tasks.find(task => ["ready", "stopped"].includes(cardStatus(task).status))!} /> : undefined} onClick={openDecisions} />
       {decisions > 0 ? (
         <ThreadContextCardRow
           icon="ComputerCloud"
@@ -224,7 +232,7 @@ export function ThreadCardSection({ threadId }: ExperimentalThreadContextCardPro
           icon={ROLE_ICON[task.role]}
           label={task.title}
           title={`${task.title} · ${taskPhaseLabel(task)}`}
-          trailing={<StatusDot className={PHASE_DOT[task.phase]} label={taskPhaseLabel(task)} />}
+          trailing={<CardTaskState task={task} />}
           action={workerChatId(task) ? <OpenChatButton task={task} className="size-6" /> : undefined}
           onClick={() => openTask(task.id)}
         />
@@ -258,68 +266,6 @@ export function ThreadAgentsTab({ threadId }: ExperimentalThreadTabProps) {
 
 // ------------------------------------------------------------ message card
 
-/** `::boat-task{id="t_…"}` in an assistant message → a live task card. */
-export function TaskDirective({ attributes, source }: PluginMessageDirectiveProps) {
-  const raw = typeof attributes.id === "string" ? attributes.id.trim() : "";
-  const id = TASK_ID_PATTERN.test(raw) ? raw : null;
-  const { data, error } = useTask(id);
-  const { openTask } = useCloudAgentsNavigation();
-
-  if (id === null) {
-    return <code className="rounded bg-secondary px-1 py-0.5 font-mono text-xs text-muted-foreground">{source}</code>;
-  }
-  const task = data?.task;
-  if (!task) {
-    return (
-      <div className="my-2 flex max-w-xl items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-        <Icon name="ComputerCloud" className="size-3.5" aria-hidden />
-        {data?.task === null ? (
-          <span>
-            Task <span className="font-mono">{id}</span> not found
-          </span>
-        ) : error ? (
-          <span>{error.message}</span>
-        ) : (
-          <span>
-            Loading task <span className="font-mono">{id}</span>…
-          </span>
-        )}
-      </div>
-    );
-  }
-  return (
-    <div className="relative my-2 flex max-w-xl items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5 hover:bg-state-hover">
-      <RoleIcon role={task.role} />
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={() => openTask(task.id)}
-            className="min-w-0 truncate text-left text-sm font-medium text-foreground after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none focus-visible:after:ring-1 focus-visible:after:ring-ring"
-          >
-            {task.title}
-          </button>
-          <ReportChip task={task} />
-        </div>
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs text-muted-foreground">
-          <AgentBadge provider={task.provider} model={task.model} />
-          {task.prUrl ? <PrLink url={task.prUrl} /> : null}
-          <span className="tabular-nums">{plural(task.turns, "turn")}</span>
-          <span className="font-mono">{task.id}</span>
-        </div>
-      </div>
-      <PhasePill task={task} />
-      <OpenChatButton task={task} />
-      <IconButton
-        label="Open task"
-        icon="ArrowUpRight"
-        className="relative z-10"
-        onClick={() => openTask(task.id)}
-      />
-    </div>
-  );
-}
-
 // ------------------------------------------------------------ homepage card
 
 /**
@@ -327,7 +273,7 @@ export function TaskDirective({ attributes, source }: PluginMessageDirectiveProp
  * Once you have orchestrators, the ones that need you are listed with Open.
  */
 export function HomepageCard({ projectId }: PluginHomepageSectionProps) {
-  const [creating, setCreating] = useState(false);
+  const navigate = useBbNavigate();
   const [orchestrating, setOrchestrating] = useState(false);
   const { openOverview, openOrchestrator } = useCloudAgentsNavigation();
   const orchestrators = (useOrchestrators().data?.orchestrators ?? []).filter((entry) => !entry.archived);
@@ -363,8 +309,8 @@ export function HomepageCard({ projectId }: PluginHomepageSectionProps) {
           <Button variant="ghost" size="sm" onClick={openOverview}>
             Open Cloud agents
           </Button>
-          <Button size="sm" onClick={() => setCreating(true)}>
-            <Icon name="Plus" /> New task
+          <Button size="sm" onClick={() => navigate.toCompose({ projectId: projectId ?? undefined, focusPrompt: true })}>
+            <Icon name="Plus" /> Start a task
           </Button>
         </div>
       </div>
@@ -387,7 +333,6 @@ export function HomepageCard({ projectId }: PluginHomepageSectionProps) {
           })}
         </ul>
       ) : null}
-      <NewTaskDialog open={creating} onOpenChange={setCreating} />
       <NewOrchestratorDialog open={orchestrating} onOpenChange={setOrchestrating} projectId={projectId} />
     </div>
   );

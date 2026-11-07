@@ -31,11 +31,11 @@ export const STATUS_LABEL: Record<Status, string> = {
 };
 
 export const STATUS_DOT: Record<Status, string> = {
-  starting: "bg-warning animate-pulse",
-  running: "bg-success animate-pulse",
-  idle: "bg-warning",
-  failed: "bg-destructive",
-  done: "bg-success",
+  starting: "bg-muted-foreground motion-safe:animate-pulse",
+  running: "bg-muted-foreground motion-safe:animate-pulse",
+  idle: "bg-muted-foreground",
+  failed: "bg-[#E06C6C]",
+  done: "bg-[#5BD08A]",
   cancelled: "bg-muted-foreground/50",
 };
 
@@ -51,12 +51,12 @@ export const PHASE_LABEL: Record<Phase, string> = {
 };
 
 export const PHASE_DOT: Record<Phase, string> = {
-  starting: "bg-warning animate-pulse",
-  working: "bg-success animate-pulse",
+  starting: "bg-muted-foreground motion-safe:animate-pulse",
+  working: "bg-muted-foreground motion-safe:animate-pulse",
   waiting: "bg-muted-foreground",
-  failed: "bg-destructive",
-  ready: "bg-success",
-  done: "bg-success",
+  failed: "bg-[#E06C6C]",
+  ready: "bg-[#5BD08A]",
+  done: "bg-[#5BD08A]",
   cancelled: "bg-muted-foreground/50",
 };
 
