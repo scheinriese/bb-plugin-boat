@@ -286,9 +286,12 @@ Each project picks one (Projects → "How work lands", or
   its sandbox. A git hook refuses its pushes to GitHub, so nothing gets
   there until you approve. Reviews run in the task's sandbox, where the commits
   are. Then you ship:
-  - **Ship** on the task's page, card or task chat header: your click is the
-    approval. It shows once a finished turn left commits or changed files;
-    a task that changed nothing has nothing to ship.
+  - **Ship** on the task's page, card or task chat header opens a confirmation
+    in the task chat (or the chat that started it). Check the recorded review
+    and measured commit count, then choose **Ship to main** or **Not yet**.
+    A note never grants approval. **Not now** cancels without shipping.
+    If the work changes while the form waits, request a fresh confirmation.
+    Uncommitted changes must be committed before the form can open.
   - Or tell the orchestrator in its chat; it calls `boat_ship`. The plugin
     only ships from the task's own orchestrator chat, after the latest turn
     was reported there and you wrote in that chat since. An agent claiming
