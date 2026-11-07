@@ -37,6 +37,7 @@ import {
   probeScript,
   recommendSize,
   samplerScript,
+  memorySeries,
   sandboxLine,
   settledOomMessage,
   sizeDetail,
@@ -343,7 +344,7 @@ export class SandboxSizes {
       const summary = sizeSummary(size);
       if (summary !== null) this.say(task.id, SIZE_KIND, `Sandbox size: ${summary}`);
     }
-    if (this.watched(task.id)) await this.startSampler(task, sandbox.id, options.signal);
+    if (this.watched(task.id) || task.role === "implement") await this.startSampler(task, sandbox.id, options.signal);
     return sandboxLine(size, task.runner);
   }
 
@@ -459,7 +460,7 @@ export class SandboxSizes {
   }
 
   private measuredTurn(task: Task): DataOf<"sampler"> | null {
-    if (!this.watched(task.id)) return null;
+    if (!this.watched(task.id) && task.role !== "implement") return null;
     const sampler = this.latest(task.id, "sampler");
     if (sampler === null || sampler.data.turn !== task.turns) return null;
     const peak = this.latest(task.id, "peak");
@@ -483,10 +484,11 @@ export class SandboxSizes {
     const deadline = Date.now() + this.timing.checkMs;
     this.holding.set(task.id, deadline + 5_000);
     const check: Promise<void> = this.check(task, { suspicious, measured, sandbox: context.sandbox, interrupted: context.interrupted === true, deadline })
-      .catch((error) => this.deps.hooks.log.warn(`memory check ${task.id}: ${message(error)}`))
+      .catch((error) => { if (!this.deps.hooks.lifecycle.aborted) this.deps.hooks.log.warn(`memory check ${task.id}: ${message(error)}`); })
       .finally(() => {
         this.holding.delete(task.id);
         this.checks.delete(check);
+        if (this.deps.hooks.lifecycle.aborted) return;
         this.deps.hooks.changed([task.id]);
         void this.deps.deliverPending().catch(() => undefined);
       });
@@ -508,7 +510,7 @@ export class SandboxSizes {
     const measured = context.measured;
     // A wide window for journalctl (the sandbox's clock isn't known yet); the exact one below.
     const read = await this.probe(sandboxId, { since: window.since - 300, task: measured ? task.id : null, stopSampler: measured !== null, capMs: left() });
-    if (read === null) return;
+    if (read === null || this.deps.hooks.lifecycle.aborted) return;
     const { probe, hostAt } = read;
     const skew = probe.now !== null ? probe.now - hostAt : 0;
     const since = window.since + skew;
@@ -616,6 +618,7 @@ export class SandboxSizes {
       memTotalKb: peak.memTotalKb,
       swapKb: peak.swapKb,
       samples: peak.samples,
+      series: memorySeries(probe.series, { since: peak.start, until: peak.last }),
       machineType: context.current,
       oom: context.oom,
       shared,
@@ -1397,6 +1400,9 @@ export class SandboxSizes {
         size: size === null ? null : { type: size.type, label: size.type ? LABEL(size.type) : "Unknown size", summary: (size.type ? specText(size.type) : sizeSummary(size)) ?? "" },
         oom: oomView,
         peak: peakView,
+        series: peak === null || running || peak.data.turn !== task.turns ? [] : memorySeries(peak.data.series).map((point) => ({
+          at: new Date(point.at * 1000).toISOString(), usedGb: gb(point.usedKb), totalGb: gb(point.totalKb), percent: Math.round(100 * point.usedKb / point.totalKb),
+        })),
         recommendation,
         next: next === null ? null : { type: next, label: LABEL(next), detail: sizeDetail(next), ...(({ allowed, reason }) => ({ available: allowed, reason }))(planVerdict(next, plan)) },
         project: project === null ? null : { id: project.id, name: project.name, machineType: project.machineType, effective: project.machineType ?? setting },

@@ -52,6 +52,8 @@ export const taskMemorySchema = z.object({
       at: z.string(),
     })
     .nullable(),
+  /** Actual sampled measurements from the completed measured turn; never interpolated. */
+  series: z.array(z.object({ at: z.string(), usedGb: z.number().nonnegative(), totalGb: z.number().positive(), percent: z.number().nonnegative() })).max(480).optional(),
   recommendation: z
     .object({
       type: sizeSchema,

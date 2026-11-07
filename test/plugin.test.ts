@@ -96,6 +96,7 @@ test("help, status and an end-to-end task through the CLI", async (t) => {
   assert.match(show.stdout, /Status: working/);
   assert.match(show.stdout, /pull\/9/);
 
+  for (let poll = 0; poll < 100 && harness.inspection.sdk.callsTo("threads.send").length === 0; poll++) await new Promise((resolve) => setTimeout(resolve, 10));
   const sends = harness.inspection.sdk.callsTo("threads.send");
   assert.equal(sends.length, 1);
   const sent = sends[0]![0] as { threadId: string; mode: string; input: { text: string }[] };
@@ -244,7 +245,7 @@ test("orchestrators need a project, store it, and dispatches default from it", a
   assert.equal(task.environment, "docs");
   const newCall = state().calls.filter((call: string[]) => call[0] === "new").at(-1);
   assert.ok(newCall.includes("--environment") && newCall.includes("docs"), JSON.stringify(newCall));
-  const execCall = state().calls.filter((call: string[]) => call[0] === "exec" && !call.at(-1)!.includes("BOAT_MEM_PROBE")).at(-1);
+  const execCall = state().calls.filter((call: string[]) => call[0] === "exec" && !call.includes("--detach") && !call.at(-1)!.includes("BOAT_MEM_PROBE")).at(-1);
   assert.match(execCall.at(-1), /pre-push/);
   assert.match(execCall.at(-1), /'develop'/);
 });
@@ -640,7 +641,7 @@ test("a new install's defaults: boat conversations, the relay off, both agents, 
   const started = await harness.runCli(["task", "start", "--project", "docs", "--title", "x", "--brief", "b", "--json"], { threadId: "thr_orch" });
   assert.equal(started.exitCode, 0, started.stderr || started.stdout);
   assert.equal(JSON.parse(started.stdout).task.runner, "boat");
-  const prepare = state().calls.filter((call: string[]) => call[0] === "exec" && !call.at(-1)!.includes("BOAT_MEM_PROBE")).at(-1);
+  const prepare = state().calls.filter((call: string[]) => call[0] === "exec" && !call.includes("--detach") && !call.at(-1)!.includes("BOAT_MEM_PROBE")).at(-1);
   assert.match(prepare.at(-1), /printf '%s\\n' 'main' 'master'; \}/);
 });
 
@@ -649,7 +650,7 @@ test("extra protected branches from the settings reach every sandbox", async (t)
   t.after(() => harness.lifecycle.dispose());
   const started = await harness.runCli(["task", "start", "--title", "x", "--repo", "acme/web", "--brief", "b", "--json"], { threadId: "thr_orch" });
   assert.equal(started.exitCode, 0, started.stderr || started.stdout);
-  const prepare = state().calls.filter((call: string[]) => call[0] === "exec" && !call.at(-1)!.includes("BOAT_MEM_PROBE")).at(-1);
+  const prepare = state().calls.filter((call: string[]) => call[0] === "exec" && !call.includes("--detach") && !call.at(-1)!.includes("BOAT_MEM_PROBE")).at(-1);
   assert.match(prepare.at(-1), /printf '%s\\n' 'main' 'master' 'staging' 'release\/eu'; \}/);
   const prompt = state().calls.find((call: string[]) => call[0] === "prompt");
   assert.match(prompt.at(-1), /Never push to `main`, `master`, `staging`, `release\/eu`/);
@@ -671,7 +672,7 @@ test("a project's own protected branches and instructions reach its tasks, and t
   assert.equal(project.instructions, "Use pnpm, never npm.");
   assert.match((await harness.runCli(["project", "list"])).stdout, /protects release, qa\/eu {2}has instructions/);
 
-  const lastPrepare = () => state().calls.filter((call: string[]) => call[0] === "exec" && !call.at(-1)!.includes("BOAT_MEM_PROBE")).at(-1).at(-1) as string;
+  const lastPrepare = () => state().calls.filter((call: string[]) => call[0] === "exec" && !call.includes("--detach") && !call.at(-1)!.includes("BOAT_MEM_PROBE")).at(-1).at(-1) as string;
   const lastPrompt = () => state().calls.filter((call: string[]) => call[0] === "prompt").at(-1).at(-1) as string;
   for (const extra of [["--project", "web-app"], ["--repo", "acme/web"]]) {
     const started = await harness.runCli(["task", "start", "--title", "x", ...extra, "--brief", "b", "--json"], { threadId: "thr_orch" });
@@ -759,7 +760,7 @@ test("a repo's base branch in any project is protected, even for a task outside 
   assert.equal(JSON.parse(refused.stdout).error.code, "invalid_branch");
   const started = await harness.runCli(["task", "start", "--title", "y", "--repo", "acme/docs", "--base", "main", "--brief", "b", "--json"], { threadId: "thr_orch" });
   assert.equal(started.exitCode, 0, started.stderr || started.stdout);
-  const prepare = state().calls.filter((call: string[]) => call[0] === "exec" && !call.at(-1)!.includes("BOAT_MEM_PROBE")).at(-1);
+  const prepare = state().calls.filter((call: string[]) => call[0] === "exec" && !call.includes("--detach") && !call.at(-1)!.includes("BOAT_MEM_PROBE")).at(-1);
   assert.match(prepare.at(-1), /'develop'/);
   const prompt = state().calls.filter((call: string[]) => call[0] === "prompt").at(-1);
   assert.match(prompt.at(-1), /Never push to `main`, `master`, `develop`/);

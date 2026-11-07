@@ -105,7 +105,7 @@ function gh(args: string[], signal?: AbortSignal): Promise<string> {
     (error, stdout, stderr) => error ? reject(new Error((String(stderr).trim() || error.message).slice(0, 600))) : resolve(stdout)));
 }
 
-const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed pullRequest(number:$number){number url title headRefOid baseRefOid headRefName baseRefName additions deletions state isDraft mergeable mergeStateStatus reviewDecision commits(last:1){totalCount nodes{commit{statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion detailsUrl} ... on StatusContext{context state targetUrl}}}}}}}}}}`;
+const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed pullRequest(number:$number){number url title headRefOid baseRefOid headRefName baseRefName additions deletions state isDraft mergeable mergeStateStatus reviewDecision files(first:50){totalCount pageInfo{hasNextPage} nodes{path additions deletions}} commits(last:1){totalCount nodes{commit{statusCheckRollup{contexts(first:100){pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name status conclusion detailsUrl} ... on StatusContext{context state targetUrl}}}}}}}}}}`;
 
 /** No cache: confirmations always see fresh HEAD, branch rules and checks. */
 export async function getPullRequest(repo: string, url: string, signal?: AbortSignal): Promise<import("../contract-merge.ts").PullRequestFacts> {
@@ -124,6 +124,7 @@ export async function getPullRequest(repo: string, url: string, signal?: AbortSi
     checks: (contexts?.nodes ?? []).map((check: Record<string, string | null>) => ({ name: check.name ?? check.context,
       state: check.__typename === "CheckRun" ? check.status === "COMPLETED" ? check.conclusion ?? "UNKNOWN" : check.status : check.state,
       url: check.detailsUrl || check.targetUrl || null })), checksTruncated: contexts?.pageInfo?.hasNextPage ?? false,
+    ...(pr.files ? { files: pr.files.nodes, fileCount: pr.files.totalCount, filesTruncated: pr.files.pageInfo.hasNextPage } : {}),
     mergeMethod: repository.mergeCommitAllowed ? "merge" : repository.squashMergeAllowed ? "squash" : repository.rebaseMergeAllowed ? "rebase" : null,
   });
   if (facts.number !== number || pullRequestNumber(repo, facts.url) !== number) throw new Error("GitHub returned a different pull request.");

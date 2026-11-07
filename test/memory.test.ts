@@ -344,3 +344,16 @@ test("records survive the history's 4000 characters, and only the project that g
   assert.equal(governingProject(projects, "local:proj_1", "acme/web")?.id, "web");
   assert.equal(governingProject(projects, null, "acme/other"), null);
 });
+
+test("sampled series keeps only bounded real points in the measured turn", async () => {
+  const { memorySeries, MAX_MEMORY_SAMPLES } = await import("../src/memory.ts");
+  const at = 1762400000;
+  const row = (offset: number) => ({ at: at + offset, usedKb: 1000 + offset, totalKb: 8 * 1048576, swapKb: 0 });
+  const rows = Array.from({ length: 600 }, (_, i) => row(i));
+  const kept = memorySeries(rows);
+  assert.equal(kept.length, MAX_MEMORY_SAMPLES); assert.equal(kept[0].at, at + 120); assert.equal(kept.at(-1)?.at, at + 599);
+  assert.deepEqual(memorySeries([row(1), row(1), row(0), { ...row(2), usedKb: -1 }, { ...row(3), totalKb: 999999999999 }, row(5)], { since: at + 1, until: at + 4 }), [row(1)]);
+  const probe = parseProbe(`BOAT_MEM_PROBE 1\nNOW ${at + 90}\nMEM 8388608 1000000 0 0\nPEAK 6000000 8388608 90 ${at} ${at + 90} 0 42\nSAMPLE ${at - 1} 1 8388608 0\nSAMPLE ${at} 1000 8388608 0\nSAMPLE ${at + 30} 2000 8388608 0\nSAMPLE ${at + 120} 3000 8388608 0\nEND`)!;
+  assert.deepEqual(probe.series, [{ at, usedKb: 1000, totalKb: 8388608, swapKb: 0 }, { at: at + 30, usedKb: 2000, totalKb: 8388608, swapKb: 0 }]);
+  assert.equal(probe.peak?.peakKb, 6000000, "chart retention never changes existing peak evidence");
+});

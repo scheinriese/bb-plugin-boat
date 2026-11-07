@@ -16,12 +16,13 @@ test("fake gh proves bounded facts and atomic merge HEAD args without any GitHub
   writeFileSync(fake, `#!${process.execPath}\nconst fs=require('node:fs');fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2))+'\\n');if(process.argv[2]==='api')process.stdout.write(fs.readFileSync(${JSON.stringify(response)}));`, { mode: 0o700 });
   process.env.BOAT_PLUGIN_GH = fake;
   t.after(() => { if (before === undefined) delete process.env.BOAT_PLUGIN_GH; else process.env.BOAT_PLUGIN_GH = before; rmSync(dir, { recursive: true, force: true }); });
-  const pr = { number: 482, url: "https://github.com/demo/storefront/pull/482", title: "Cart drawer", headRefOid: "1".repeat(40), baseRefOid: "2".repeat(40), headRefName: "boat/cart", baseRefName: "main", additions: 214, deletions: 61, state: "OPEN", isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: "APPROVED", commits: { totalCount: 6, nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: [
+  const pr = { number: 482, url: "https://github.com/demo/storefront/pull/482", title: "Cart drawer", headRefOid: "1".repeat(40), baseRefOid: "2".repeat(40), headRefName: "boat/cart", baseRefName: "main", additions: 214, deletions: 61, state: "OPEN", isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: "APPROVED", files: { totalCount: 1, pageInfo: { hasNextPage: false }, nodes: [{ path: "src/cart.tsx", additions: 214, deletions: 61 }] }, commits: { totalCount: 6, nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: [
     { __typename: "CheckRun", name: "Tests", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: null },
     { __typename: "StatusContext", context: "Build", state: "PENDING", targetUrl: "https://github.com/demo/storefront/actions" },
   ] } } } }] } };
   writeFileSync(response, JSON.stringify({ data: { repository: { mergeCommitAllowed: false, squashMergeAllowed: true, rebaseMergeAllowed: false, pullRequest: pr } } }));
   const facts = await getPullRequest("demo/storefront", pr.url);
+  assert.equal(facts.fileCount, 1); assert.deepEqual(facts.files, [{ path: "src/cart.tsx", additions: 214, deletions: 61 }]); assert.equal(facts.filesTruncated, false);
   assert.equal(facts.commits, 6); assert.equal(facts.additions, 214); assert.equal(facts.deletions, 61); assert.equal(facts.mergeMethod, "squash");
   assert.deepEqual(facts.checks.map((check) => check.state), ["SUCCESS", "PENDING"]);
   // The action wrapper only receives already approved facts; the controller checks readiness.

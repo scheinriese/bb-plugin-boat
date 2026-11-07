@@ -151,6 +151,7 @@ export function probeScript(
     lines.push(
       `P=/tmp/boat-memory/${task}.peak`,
       `if [ -s "$P" ]; then echo "PEAK $(head -c 200 "$P" | tr -d '\\n')"; else echo "PEAK -"; fi`,
+      `H=/tmp/boat-memory/${task}.samples; if [ -s "$H" ]; then tail -n 480 "$H" | head -c 32768 | sed 's/^/SAMPLE /'; fi`,
     );
     if (options.stopSampler) lines.push(`touch /tmp/boat-memory/${task}.stop 2>/dev/null`);
   }
@@ -190,7 +191,7 @@ export function samplerScript(taskId: string): string {
   const task = safeTaskId(taskId);
   return [
     "mkdir -p /tmp/boat-memory || exit 0",
-    `P=/tmp/boat-memory/${task}.peak; S=/tmp/boat-memory/${task}.stop; rm -f "$S" "$P"`,
+    `P=/tmp/boat-memory/${task}.peak; S=/tmp/boat-memory/${task}.stop; H=/tmp/boat-memory/${task}.samples; rm -f "$S" "$P" "$H"`,
     `sudo -n sh -c "echo -1000 > /proc/$$/oom_score_adj" 2>/dev/null`,
     "printf -v start '%(%s)T' -1; end=$((start + 14400)); max=0; smax=0; n=0; t=0",
     'while [ ! -e "$S" ]; do',
@@ -198,6 +199,10 @@ export function samplerScript(taskId: string): string {
     "  t=0; a=0; st=0; sf=0",
     '  while read -r k v _; do case "$k" in MemTotal:) t=$v;; MemAvailable:) a=$v;; SwapTotal:) st=$v;; SwapFree:) sf=$v; break;; esac; done < /proc/meminfo',
     "  s=$((st - sf)); u=$((t - a + s)); n=$((n + 1))",
+    '  if [ $((n % 30)) -eq 1 ]; then',
+    '    echo "$now $u $t $s" >> "$H"',
+    '    tail -n 480 "$H" > "$H.tmp" && mv -f "$H.tmp" "$H"',
+    '  fi',
     '  if [ "$u" -gt "$max" ] || [ $((n % 30)) -eq 0 ]; then',
     '    if [ "$u" -gt "$max" ]; then max=$u; smax=$s; fi',
     '    echo "$max $t $n $start $now $smax $$" > "$P.tmp" && mv -f "$P.tmp" "$P"',
@@ -206,6 +211,23 @@ export function samplerScript(taskId: string): string {
     "done",
     "printf -v now '%(%s)T' -1; echo \"$max $t $n $start $now $smax $$\" > \"$P.tmp\" && mv -f \"$P.tmp\" \"$P\"",
   ].join("\n");
+}
+
+export const MAX_MEMORY_SAMPLES = 480;
+export interface MemorySample { at: number; usedKb: number; totalKb: number; swapKb: number }
+
+/** Bounds untrusted persisted/probe rows; only real measured points survive. */
+export function memorySeries(value: unknown, bounds: { since?: number; until?: number } = {}): MemorySample[] {
+  if (!Array.isArray(value)) return [];
+  const samples: MemorySample[] = [];
+  for (const row of value.slice(-MAX_MEMORY_SAMPLES)) {
+    if (!row || typeof row !== "object") continue;
+    const { at, usedKb, totalKb, swapKb } = row as MemorySample;
+    if (![at, usedKb, totalKb, swapKb].every(Number.isSafeInteger) || epoch(at) === null || totalKb <= 0 || totalKb > MAX_MEM_KB || swapKb < 0 || swapKb > MAX_SWAP_KB || usedKb < 0 || usedKb > totalKb + swapKb || at < (bounds.since ?? 0) || at > (bounds.until ?? Infinity)) continue;
+    if (samples.length && at <= samples.at(-1)!.at) continue;
+    samples.push({ at, usedKb, totalKb, swapKb });
+  }
+  return samples;
 }
 
 export interface ProbePeak {
@@ -236,6 +258,7 @@ export interface Probe {
   /** /proc/vmstat oom_kill: kills since boot. */
   oomKills: number | null;
   peak: ProbePeak | null;
+  series?: MemorySample[];
   /** How the kernel log was read (none: not readable; null: not asked). */
   klog: KlogMode | "none" | null;
   /** The journal read ran out of time: its lines may be incomplete. */
@@ -293,6 +316,7 @@ export function parseProbe(stdout: string): Probe | null {
     oomd: [],
   };
   let peakText: string | null = null;
+  const rawSeries: MemorySample[] = [];
   for (const line of lines.slice(start + 1, end)) {
     const [key, ...rest] = line.split(" ");
     const values = rest.filter((part) => part !== "");
@@ -320,6 +344,9 @@ export function parseProbe(stdout: string): Probe | null {
       case "PEAK":
         peakText = values[0] === "-" ? null : values.join(" ");
         break;
+      case "SAMPLE":
+        if (rawSeries.length < MAX_MEMORY_SAMPLES) rawSeries.push({ at: Number(values[0]), usedKb: Number(values[1]), totalKb: Number(values[2]), swapKb: Number(values[3]) });
+        break;
       case "KLOG":
         probe.klog = values[0] === "journal" || values[0] === "sudo" ? values[0] : "none";
         break;
@@ -341,6 +368,7 @@ export function parseProbe(stdout: string): Probe | null {
     }
   }
   if (peakText !== null) probe.peak = parsePeak(peakText, probe);
+  probe.series = memorySeries(rawSeries, { since: probe.peak?.start, until: probe.peak?.last ?? probe.now ?? undefined });
   return probe;
 }
 
@@ -850,6 +878,7 @@ export type MemoryData =
       memTotalKb: number;
       swapKb: number | null;
       samples: number;
+      series?: MemorySample[];
       machineType: MachineType | null;
       oom: boolean;
       /** Other tasks worked on the sandbox during the turn: the peak is theirs too. */
@@ -952,6 +981,7 @@ export function memoryNoticeLines(task: { id: string; turns: number }, events: r
   }
   const peak = latestData(events, "peak");
   let peakText: string | null = null;
+  const rawSeries: MemorySample[] = [];
   if (peak !== null && peak.turn === task.turns) {
     const recommendation = peak.recommended && peak.reason ? { type: peak.recommended, reason: peak.reason, allowed: peak.allowed, planReason: peak.planReason } : null;
     peakText = `${peakLine({ peakKb: peak.peakKb, memTotalKb: peak.memTotalKb, machineType: peak.machineType, swapKb: peak.swapKb }, recommendation)}${peak.shared ? " Other tasks worked on this sandbox meanwhile." : ""}`;

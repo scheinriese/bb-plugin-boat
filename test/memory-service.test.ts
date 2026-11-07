@@ -126,7 +126,7 @@ test("a handover chat is told the size", async () => {
 test("a headless turn that failed: out of memory says so, keeps the original error, and the notice says what to do", async () => {
   const env = makeService();
   const task = await start(env);
-  env.boat.probe(task.sandboxId!).kernel = oomLines({ at: now() + 1, pid: 4242, comm: "claude", unit: "agent", rssKb: 2_000_000 });
+  env.boat.probe(task.sandboxId!).kernel = oomLines({ at: now() + 1, pid: 4343, comm: "claude", unit: "agent", rssKb: 2_000_000 });
   env.boat.probe(task.sandboxId!).oomKills = 1;
   env.boat.finish(task.conversationId!, "", "failed", "harness exited");
   await env.service.sweep();
@@ -136,7 +136,7 @@ test("a headless turn that failed: out of memory says so, keeps the original err
   assert.equal(failed.status, "failed");
   assert.match(failed.error!, /^The sandbox ran out of memory: the system stopped Claude Code \(1\.9 GB\)\. Run fewer tests at once, or continue on a larger sandbox\./);
   assert.match(failed.error!, /\n\nOriginal error: harness exited$/);
-  assert.deepEqual(history(env, task.id, "memory"), ["Out of memory: the system stopped Claude Code (1.9 GB)."]);
+  assert.deepEqual(history(env, task.id, "memory").filter((line) => line.startsWith("Out of memory:")), ["Out of memory: the system stopped Claude Code (1.9 GB)."]);
   const text = notice(env);
   assert.match(text, /Out of memory: The Default sandbox \(8 GB\) ran out of memory during this turn\./);
   assert.match(text, /`boat_followup` with `sandbox_size: "large"`/);
@@ -195,7 +195,7 @@ test("no kill, no claim: an unchanged counter and a quiet log leave the failure 
   await env.service.sizes.settled();
   await env.service.deliverPending();
   assert.equal(env.store.get(task.id)!.error, "harness exited");
-  assert.deepEqual(history(env, task.id, "memory"), []);
+  assert.ok(history(env, task.id, "memory").every((line) => !/out of memory|peak memory during this turn:/.test(line)));
   assert.doesNotMatch(notice(env), /memory/i);
 
   // Kills from another task's earlier turn on the same sandbox, with an unreadable log: only a "may have".
@@ -207,7 +207,7 @@ test("no kill, no claim: an unchanged counter and a quiet log leave the failure 
   await blind.service.sweep();
   await blind.service.sizes.settled();
   assert.equal(blind.store.get(first.id)!.error, "harness exited");
-  assert.match(history(blind, first.id, "memory")[0]!, /^The sandbox may have run out of memory/);
+  assert.ok(history(blind, first.id, "memory").some((line) => /^The sandbox may have run out of memory/.test(line)));
   assert.equal((await blind.service.sizes.view(blind.store.get(first.id)!))!.oom, null);
 });
 
@@ -223,7 +223,7 @@ test("the check is capped: a probe that hangs never holds the failure or its not
   assert.ok(Date.now() - started < 1_000);
   assert.equal(env.store.get(task.id)!.status, "failed");
   assert.equal(env.notifications.length, 1);
-  assert.deepEqual(history(env, task.id, "memory"), []);
+  assert.ok(history(env, task.id, "memory").every((line) => !/out of memory|peak memory during this turn:/.test(line)));
   assert.ok(env.warnings.some((line) => /memory check/.test(line)));
 });
 
@@ -239,7 +239,7 @@ test("a stopped sandbox isn't resumed to check it, and a finished turn of an unm
   assert.ok(!env.boat.calls.some((call) => call.startsWith("resume")));
 
   const ok = makeService();
-  const fine = await start(ok);
+  const fine = await start(ok, { role: "custom" });
   const count = probes(ok).length;
   ok.boat.finish(fine.conversationId!, REPORT);
   await ok.service.sweep();
@@ -351,7 +351,7 @@ test("the test task measures too; without measuring, no sampler; a lost sampler 
   assert.equal(view.recommendation?.reason, "near-limit");
 
   const plain = makeService();
-  await start(plain);
+  await start(plain, { role: "custom" });
   assert.equal(plain.boat.detached.length, 0);
 
   const lost = makeService();
@@ -392,7 +392,7 @@ test("after a stop and resume: a way to read the log from the old boot isn't tru
   env.boat.finish(task.conversationId!, "", "failed", "harness exited");
   await env.service.sweep();
   await env.service.sizes.settled();
-  assert.deepEqual(history(env, task.id, "memory"), []);
+  assert.ok(history(env, task.id, "memory").every((line) => !/out of memory|peak memory during this turn:/.test(line)));
   // An idle stop, then a follow-up resumes it: a new boot whose journal this user can't read.
   await env.boat.stop(sandboxId);
   await env.service.followup(task.id, "Try again.");
@@ -530,7 +530,7 @@ test("what a size costs, against the size it is now", () => {
 test("public status uses confirmed current unmoved OOM evidence for paid recovery", async () => {
   const env = makeService();
   const task = await start(env);
-  env.boat.probe(task.sandboxId!).kernel = oomLines({ at: now() + 1, pid: 4242, comm: "claude", unit: "agent", rssKb: 2_000_000 });
+  env.boat.probe(task.sandboxId!).kernel = oomLines({ at: now() + 1, pid: 4343, comm: "claude", unit: "agent", rssKb: 2_000_000 });
   env.boat.probe(task.sandboxId!).oomKills = 1;
   env.boat.finish(task.conversationId!, "", "failed", "harness exited");
   await env.service.sweep();
@@ -548,4 +548,28 @@ test("public status uses confirmed current unmoved OOM evidence for paid recover
   assert.deepEqual(env.service.sizes.statusContext(failed), { outOfMemory: true, recoveryCostsMore: false });
   env.store.addEvent(task.id, "memory-data", JSON.stringify({ type: "resize", state: "done", from: "default", to: "large", at: now() + 2 }));
   assert.deepEqual(env.service.sizes.statusContext(failed), { outOfMemory: false, recoveryCostsMore: false });
+});
+
+test("task memory view exposes actual retained series only for its measured turn", async () => {
+  const env = makeService(); const task = await start(env); const at = Math.floor(Date.now() / 1000);
+  env.store.addEvent(task.id, "memory-data", JSON.stringify({ type: "peak", turn: task.turns, sandboxId: task.sandboxId, peakKb: 6396314, memTotalKb: 8388608, swapKb: 0, samples: 120, machineType: "default", oom: false, shared: false, recommended: null, reason: null, allowed: true, planReason: null, at,
+    series: [{ at: at - 30, usedKb: 5000000, totalKb: 8388608, swapKb: 0 }, { at, usedKb: 6396314, totalKb: 8388608, swapKb: 0 }, { at: at + 30, usedKb: -1, totalKb: 8388608, swapKb: 0 }],
+  }));
+  env.store.update(task.id, { status: "idle" });
+  const view = (await env.service.sizes.view(env.store.get(task.id)!))!;
+  assert.equal(view.series?.length, 2); assert.equal(view.series?.[1].usedGb, 6.1); assert.equal(view.peak?.usedGb, 6.1);
+  env.store.update(task.id, { turns: task.turns + 1 });
+  assert.deepEqual((await env.service.sizes.view(env.store.get(task.id)!))?.series, [], "previous turn isn't presented as this run");
+});
+
+
+test("ordinary implementation dispatch starts bounded sampling and completion stops it", async () => {
+  const env = makeService(); const task = await start(env);
+  assert.equal(env.boat.detached.length, 1);
+  assert.match(env.boat.detached[0].command, /n % 30/);
+  assert.match(env.boat.detached[0].command, /tail -n 480/);
+  assert.equal(data(env, task.id, "watch").length, 0, "routine sampling doesn't mark a setup test");
+  env.boat.finish(task.conversationId!, REPORT); await env.service.sweep(); await env.service.sizes.settled();
+  assert.ok(probes(env).some((entry) => entry.script.includes(`touch /tmp/boat-memory/${task.id}.stop`)));
+  assert.equal(env.store.get(task.id)?.status, "idle");
 });

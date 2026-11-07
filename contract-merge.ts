@@ -10,6 +10,8 @@ export const pullRequestFactsSchema = z.object({
   commits: z.number().int().nonnegative(), state: z.enum(["OPEN", "CLOSED", "MERGED"]), draft: z.boolean(),
   mergeable: z.string(), mergeState: z.string(), reviewDecision: z.string(),
   checks: z.array(z.object({ name: z.string(), state: z.string(), url: z.string().nullable() })).max(100),
+  files: z.array(z.object({ path: z.string().max(1024), additions: z.number().int().nonnegative(), deletions: z.number().int().nonnegative() })).max(50).optional(),
+  fileCount: z.number().int().nonnegative().optional(), filesTruncated: z.boolean().optional(),
   checksTruncated: z.boolean(), mergeMethod: z.enum(["merge", "squash", "rebase"]).nullable(),
 });
 export type PullRequestFacts = z.infer<typeof pullRequestFactsSchema>;

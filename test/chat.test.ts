@@ -36,6 +36,8 @@ async function dispatch(env: ReturnType<typeof makeService>, overrides: Record<s
 /** Let the monitor see a finished turn (the 60 s "not started yet" grace is skipped once the chat was seen busy). */
 async function settle(env: ReturnType<typeof makeService>) {
   await env.service.sweep();
+  await env.service.sizes.settled();
+  await env.service.deliverPending();
 }
 
 test("a worker is a bb chat on its prepared sandbox, nested under the orchestrator", async () => {
@@ -306,6 +308,8 @@ test("a bb idle event records the turn at once, with its text, and wakes the orc
   // No sweep saw it busy, and it's well within the old 60 s guess.
   env.chat.finish(task.threadId!, REPORT);
   await env.service.syncChatThread(task.threadId!, { kind: "idle", text: REPORT, at: Date.now() });
+  await env.service.sizes.settled();
+  await env.service.deliverPending();
   assert.equal(env.store.get(task.id)!.status, "idle");
   assert.equal(env.notifications.length, 1);
   // Events for a chat that isn't the task's current one are ignored.
