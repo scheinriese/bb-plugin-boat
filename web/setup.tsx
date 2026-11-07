@@ -12,7 +12,8 @@ import { cn } from "@/lib/utils";
 import { PANEL_PATH, SIGN_IN_SUBPATH } from "./format";
 import { setupSummaryText, withBoatPath } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
-import { useCopy, useHosts, useInterval, useOverview, useProjects, useSettingRows, useSetup } from "./hooks";
+import { useBoard, useCopy, useHosts, useInterval, useOverview, useProjects, useSettingRows, useSetup, useTask } from "./hooks";
+import { setupProgress } from "./v1-settings-logic";
 import { EmptyBox, InlineAlert, RichText, showError } from "./ui";
 
 /** U7: what a task costs, in one plain paragraph (rates from `boat new --help`). */
@@ -493,26 +494,36 @@ export function SetupWarnings() {
 /** Settings → Setup: the same checklist, every row, plus Check again. */
 export function SetupChecklist() {
   const { data, error } = useSetup();
+  const board = useBoard(null).data;
+  const start = experimental_useRpcMutation({ contract: rpcContract, method: "startTestTask" });
+  const [startedId, setStartedId] = useState<string | null>(null);
+  const test = useTask(startedId).data?.task ?? [...(board?.ready ?? []), ...(board?.running ?? []), ...(board?.done ?? [])]
+    .filter((task) => task.title === "Test task" && task.reason === "Test task: checks the setup")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const navigate = useBbNavigate();
+  const runTest = async () => {
+    try { const result = await start.mutate({ notifyThreadId: null, provider: null }); setStartedId(result.task.id); }
+    catch (error) { showError(error); }
+  };
   if (data === undefined) {
     return error ? <InlineAlert>{error.message}</InlineAlert> : <EmptyBox>Checking your boat.dev setup…</EmptyBox>;
   }
-  return (
-    <div className="space-y-2">
-      <div className="flex min-h-8 items-center gap-2">
-        <p className={cn("min-w-0 flex-1 text-xs", data.ok ? "text-muted-foreground" : "text-warning-text")}>
-          {/* The checklist is right here: no need to point at `bb boat doctor`. */}
-          {setupSummaryText(data.summary)}
-        </p>
-        <CheckAgainButton />
-      </div>
-      <div className="overflow-hidden rounded-lg border border-border bg-card">
-        <CheckList checks={data.checks} label="Setup checks" where="settings" />
-        <div className="border-t border-border bg-secondary/30 px-4 py-3">
-          <p className="text-xs text-pretty text-muted-foreground">
-            <span className="font-medium text-foreground">Costs.</span> {COSTS_TEXT}
-          </p>
-        </div>
-      </div>
+  const { checks, complete, current } = setupProgress(data);
+  const testPassed = test !== undefined && (test.status === "idle" || test.status === "done") && test.error === null;
+  const testBusy = test?.status === "starting" || test?.status === "running";
+  if (data.ok && testPassed) return <div className="flex flex-wrap items-center gap-3 rounded-[10px] border border-border bg-card px-3.5 py-3">
+    <Icon name="CircleCheck" className="size-4 text-[#5BD08A]" aria-hidden /><div className="min-w-0 flex-1"><p className="text-[13px] text-[#5BD08A]">All set</p><p className="text-xs text-muted-foreground">{data.plan?.name ?? "Boat plan"} · {data.agents.effective === "both" ? "Claude and Codex" : data.agents.effective === "claude" ? "Claude" : "Codex"} · test task passed</p></div><CheckAgainButton variant="ghost" />
+  </div>;
+  return <div className="overflow-hidden rounded-[10px] border border-border bg-card">
+    <header className="flex flex-wrap items-center gap-2 border-b border-border px-3.5 py-3"><h3 className="flex-1 text-[13px] font-medium">Set up cloud agents</h3><span className="text-xs tabular-nums text-muted-foreground">{complete.length + (testPassed ? 1 : 0)} of 6</span><CheckAgainButton variant="ghost" /></header>
+    {testPassed && !data.ok ? <p role="alert" className="border-b border-border bg-destructive/10 px-3.5 py-3 text-xs text-[#E06C6C]">Cloud agents need a fix. Your saved tasks are still available.</p> : null}
+    {complete.length ? <details className="border-b border-border px-3.5 py-2.5"><summary className="cursor-pointer text-xs text-[#5BD08A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{complete.length} checks passed or not needed</summary><CheckList checks={complete} label="Completed setup checks" where="settings" /></details> : null}
+    {current ? <CheckList checks={[current]} label="Current setup step" where="settings" /> : null}
+    {checks.filter((check) => !complete.includes(check) && check !== current).map((check) => <div key={check.id} className="flex items-center gap-3 border-t border-border px-3.5 py-3 text-xs text-muted-foreground"><Icon name="Circle" className="size-4" aria-hidden /><span>{check.label}</span></div>)}
+    <div className="space-y-2 border-t border-border px-3.5 py-3">
+      <div className="flex flex-wrap items-center gap-3"><div className="min-w-0 flex-1"><p className="text-[13px]">Run a test task</p><p className="text-xs text-muted-foreground">Checks the sandbox and agent login. Uses a small sandbox and agent usage.</p></div>
+      <Button size="sm" variant="outline" disabled={!data.ok || testBusy || start.pendingInputs.length > 0} onClick={() => void runTest()}>{testBusy ? "Test task working…" : "Run test task"}</Button></div>
+      {test ? <button type="button" className={cn("w-full rounded-md border border-border px-3 py-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", test.error ? "text-[#E06C6C]" : testPassed ? "text-[#5BD08A]" : "text-muted-foreground")} onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: `task/${test.id}` })}>{test.error ?? (testPassed ? "Test task passed" : "Test task is working")} · Open task →</button> : null}
     </div>
-  );
+  </div>;
 }

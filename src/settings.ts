@@ -118,7 +118,7 @@ export const SETTINGS = {
     type: "boolean",
     label: "Notify my devices",
     description:
-      "A desktop or phone notice when a task finishes a turn. Notices that an orchestrator switched agents, or that both agents are near their limits, always go out.",
+      "A desktop or phone notice when work needs your answer or is ready to inspect. Tapping opens the chat.",
     default: false,
   },
   workerInstructions: {

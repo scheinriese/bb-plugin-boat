@@ -2,7 +2,7 @@
 // declared SETTINGS) and the plugin's own (PLUGIN_SETTINGS, one kv key).
 // The rest of the plugin reads merged values and doesn't care where a value
 // lives; writes check everything first and then save all of it or nothing.
-import type { PluginKvStorage, PluginSettingDescriptor, PluginSettingValue, PluginSettingsHandle } from "@get-bb/plugin-sdk";
+import type { BbPluginApi, PluginKvStorage, PluginSettingDescriptor, PluginSettingValue, PluginSettingsHandle } from "@get-bb/plugin-sdk";
 import {
   ALL_SETTINGS,
   BOTH_AGENTS_ONLY,
@@ -26,6 +26,77 @@ import {
 
 /** kv key of the plugin's own settings (only values that were set; defaults come from the code). */
 export const PLUGIN_SETTINGS_KEY = "pluginSettings";
+/** A complete validated snapshot also acts as the second-generation marker. */
+export const DECLARED_SETTINGS_KEY = "declaredSettingsV1";
+
+function declaredValues(raw: unknown): DeclaredValues | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const values = raw as Record<string, unknown>;
+  for (const [key, descriptor] of Object.entries(SETTINGS)) {
+    if (settingProblem(key, descriptor, values[key]) !== null) return null;
+  }
+  return Object.fromEntries(Object.keys(SETTINGS).map((key) => [key, values[key]])) as DeclaredValues;
+}
+
+/**
+ * SDK-only migration across two plugin generations. The first keeps every
+ * legacy descriptor readable and snapshots its effective values. On the next
+ * reload the host renders no declared fields; the same controls use our KV.
+ * No reload is initiated here: the installer/owner controls plugin lifecycle.
+ */
+export async function createMigratingSettingsStore(bb: BbPluginApi): Promise<SettingsStore> {
+  const snapshot = await bb.storage.kv.get<unknown>(DECLARED_SETTINGS_KEY);
+  if (snapshot === undefined) {
+    const handle = bb.settings.define(SETTINGS);
+    let saved = "";
+    let writes: Promise<unknown> = Promise.resolve();
+    const mirror = (values: DeclaredValues): Promise<unknown> => {
+      const valid = declaredValues(values);
+      if (valid === null) throw new Error("Cannot migrate invalid Boat settings.");
+      const text = JSON.stringify(valid);
+      if (text === saved) return writes;
+      saved = text;
+      writes = writes.catch(() => undefined).then(() => bb.storage.kv.set(DECLARED_SETTINGS_KEY, valid)).catch((error) => { saved = ""; throw error; });
+      return writes;
+    };
+    await mirror(await handle.get());
+    handle.onChange((values) => { void mirror(values).catch((error) => bb.log.warn(`settings migration: ${String(error)}`)); });
+    const mirrored: PluginSettingsHandle<typeof SETTINGS> = {
+      async get() { const values = await handle.get(); await mirror(values); return values; },
+      async experimental_set(patch) { const values = await handle.experimental_set(patch); await mirror(values); return values; },
+      onChange: (listener) => handle.onChange(listener),
+    };
+    return createSettingsStore(mirrored, bb.storage.kv);
+  }
+  // A corrupted snapshot is a blocking error, never permission to silently
+  // replace the owner's migrated choices with defaults or stale host values.
+  if (declaredValues(snapshot) === null) throw new Error("Boat settings could not be read. Restore the settings backup before reloading.");
+  bb.settings.define({});
+  const listeners: ((next: DeclaredValues, previous: DeclaredValues) => void)[] = [];
+  const read = async () => {
+    const values = declaredValues(await bb.storage.kv.get(DECLARED_SETTINGS_KEY));
+    if (values === null) throw new Error("Boat settings could not be read. Restore the settings backup.");
+    return values;
+  };
+  const handle: PluginSettingsHandle<typeof SETTINGS> = {
+    get: read,
+    async experimental_set(patch) {
+      const previous = await read();
+      const next = { ...previous };
+      for (const [key, value] of Object.entries(patch)) {
+        if (!isDeclaredKey(key)) throw new Error(`Unknown setting ${key}`);
+        const problem = value === null ? null : settingProblem(key, SETTINGS[key], value);
+        if (problem !== null) throw new Error(problem);
+        (next as Record<string, PluginSettingValue>)[key] = value ?? SETTINGS[key].default;
+      }
+      await bb.storage.kv.set(DECLARED_SETTINGS_KEY, next);
+      for (const listener of listeners) listener(next, previous);
+      return next;
+    },
+    onChange: (listener) => { listeners.push(listener); },
+  };
+  return createSettingsStore(handle, bb.storage.kv, { declaredInPlugin: true });
+}
 
 /** Values that can't be saved; nothing was written. One line per problem. */
 export class SettingsError extends Error {
@@ -44,6 +115,7 @@ const RELAY_RULE_KEYS = ["relaySwitchAt", "relaySwitchBackBelow"];
 export type SettingsPatch = Record<string, PluginSettingValue | null>;
 
 export interface SettingsStore {
+  readonly declaredInPlugin: boolean;
   /** Every setting: bb's list first, then the plugin's own. */
   readonly descriptors: Record<string, PluginSettingDescriptor>;
   /** Every setting's effective value. */
@@ -71,7 +143,7 @@ function changedKeys(before: Record<string, unknown>, after: Record<string, unkn
   return Object.keys(after).filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
 }
 
-export function createSettingsStore(handle: PluginSettingsHandle<typeof SETTINGS>, kv: PluginKvStorage): SettingsStore {
+export function createSettingsStore(handle: PluginSettingsHandle<typeof SETTINGS>, kv: PluginKvStorage, options: { declaredInPlugin?: boolean } = {}): SettingsStore {
   /** Stored plugin values (only what was set); read once, then kept here (only this plugin writes it). */
   let stored: Record<string, PluginSettingValue> | null = null;
   let queue: Promise<unknown> = Promise.resolve();
@@ -159,6 +231,7 @@ export function createSettingsStore(handle: PluginSettingsHandle<typeof SETTINGS
   }
 
   return {
+    declaredInPlugin: options.declaredInPlugin === true,
     descriptors: ALL_SETTINGS,
     get,
     set(values) {
@@ -168,7 +241,7 @@ export function createSettingsStore(handle: PluginSettingsHandle<typeof SETTINGS
       return run;
     },
     where(key) {
-      return isDeclaredKey(key) ? "bb" : isPluginKey(key) ? "plugin" : null;
+      return isDeclaredKey(key) ? options.declaredInPlugin ? "plugin" : "bb" : isPluginKey(key) ? "plugin" : null;
     },
     onChange(listener) {
       listeners.push(listener);
@@ -199,7 +272,7 @@ export interface SettingRow {
 }
 
 /** Every setting as a row: bb's list first, then the plugin's own in section order. */
-export function settingRows(values: SettingsValues, context: { onlyAgent: string | null }): SettingRow[] {
+export function settingRows(values: SettingsValues, context: { onlyAgent: string | null; declaredInPlugin?: boolean }): SettingRow[] {
   const sectionOrder = SETTING_SECTIONS.map((section) => section.id as string);
   const rows = (Object.entries(ALL_SETTINGS) as [SettingKey, PluginSettingDescriptor][]).map(([key, descriptor]): SettingRow => {
     const spec = isPluginKey(key) ? (PLUGIN_SETTINGS[key] as PluginSettingSpec) : null;
@@ -210,8 +283,8 @@ export function settingRows(values: SettingsValues, context: { onlyAgent: string
       key,
       label: descriptor.label,
       description: descriptor.description ?? "",
-      where: spec === null ? "bb" : "plugin",
-      section: spec?.section ?? null,
+      where: spec === null && !context.declaredInPlugin ? "bb" : "plugin",
+      section: spec?.section ?? (context.declaredInPlugin ? key === "pushNotifications" ? "usage-limits" : ["agents", "implementProvider", "reviewProvider"].includes(key) ? "models" : "advanced" : null),
       group: spec?.group ?? null,
       fold: spec?.fold ?? null,
       type: descriptor.type === "project" ? "string" : descriptor.type,
