@@ -345,7 +345,7 @@ export function registerRpc(runtime: Runtime): void {
     const values = await runtime.settings.get();
     const only = onlyAgent((await service.settings()).agents);
     return {
-      settings: settingRows(values, { onlyAgent: only }),
+      settings: settingRows(values, { onlyAgent: only, declaredInPlugin: runtime.settings.declaredInPlugin }),
       sections: SETTING_SECTIONS.map((section) => ({ id: section.id, title: section.title })),
       onlyAgent: only,
       cliFound: resolveBoatBinary(values.boatPath) !== null,

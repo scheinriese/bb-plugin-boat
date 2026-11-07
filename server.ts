@@ -27,8 +27,8 @@ import { createQuotaReader } from "./src/quota.ts";
 import { PROVIDER_OF_ID, createLimitTracker, limitFromErrorText, limitFromTurnFailure, type TurnFailure } from "./src/limits.ts";
 import { createEvidenceSource, parseEvidenceSource } from "./src/evidence.ts";
 import { CLI_MISSING_STATUS, createSetup, effectiveAgents, parseAgentsSetting, type SetupSettings } from "./src/setup.ts";
-import { SETTINGS, runnersFor } from "./src/settings.ts";
-import { createSettingsStore } from "./src/settings-store.ts";
+import { runnersFor } from "./src/settings.ts";
+import { createMigratingSettingsStore } from "./src/settings-store.ts";
 import { MODEL_TIERS_KEY } from "./src/runtime.ts";
 import { parseTierMap } from "./src/tiers.ts";
 import { registerRpc } from "./src/rpc.ts";
@@ -63,7 +63,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 
 export default async function plugin(bb: BbPluginApi) {
   // bb's settings list plus the plugin's own settings, read and written as one.
-  const settings = createSettingsStore(bb.settings.define(SETTINGS), bb.storage.kv);
+  const settings = await createMigratingSettingsStore(bb);
 
   // Storage
   bb.storage.migrate(bb.storage.database(), TaskStore.migrations());

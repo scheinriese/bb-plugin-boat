@@ -123,7 +123,7 @@ async function saveSettings(runtime: Runtime, values: Record<string, string | nu
 /** One setting as a row (after a change). */
 async function settingRow(runtime: Runtime, key: SettingKey): Promise<SettingRow> {
   const settings = await runtime.service.settings();
-  return settingRows(await runtime.settings.get(), { onlyAgent: onlyAgent(settings.agents) }).find((row) => row.key === key)!;
+  return settingRows(await runtime.settings.get(), { onlyAgent: onlyAgent(settings.agents), declaredInPlugin: runtime.settings.declaredInPlugin }).find((row) => row.key === key)!;
 }
 
 /** The setup checklist (runtime.setup; absent only in tests that build a bare runtime). */
@@ -1532,7 +1532,7 @@ export function buildCli(runtime: Runtime) {
         async run({ positionals, options }) {
           return guard(async () => {
             const settings = await service.settings();
-            const rows = settingRows(await runtime.settings.get(), { onlyAgent: onlyAgent(settings.agents) });
+            const rows = settingRows(await runtime.settings.get(), { onlyAgent: onlyAgent(settings.agents), declaredInPlugin: runtime.settings.declaredInPlugin });
             if (positionals.key === undefined) return out({ settings: rows }, options.json, () => settingsText(rows));
             const key = settingKey(positionals.key);
             const row = rows.find((entry) => entry.key === key)!;

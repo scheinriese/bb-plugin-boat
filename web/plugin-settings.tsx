@@ -5,18 +5,20 @@
 // selects save at once, text and numbers when you leave the field.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { experimental_useRpcMutation } from "@get-bb/plugin-sdk/app";
+import { experimental_useRpcMutation, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { rpcContract, rpcErrorInfo, type SandboxSizeDto, type SettingDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { PROVIDER_LABEL } from "./format";
-import { useOrchestratorCardHidden, useOrchestrators, useSandboxSizes, useSettingRows } from "./hooks";
+import { PANEL_PATH, PROVIDER_LABEL } from "./format";
+import { useOrchestratorCardHidden, useOrchestrators, useSandboxSizes, useSettingRows, useProjects, useBoard, useSetup } from "./hooks";
 import { EVIDENCE_VARIABLES, ORCHESTRATOR_CARD_RULE, cardShownToast, evidenceMode, type EvidenceMode } from "./logic";
 import { ModelPresetsEditor, ProtocolEditor } from "./protocol-settings";
 import { SetupChecklist } from "./setup";
+import { BackupSettings } from "./backup-settings";
+import { groupedSettings } from "./v1-settings-logic";
 import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, focusNeighbour, showError } from "./ui";
 
 type SettingValue = string | number | boolean;
@@ -524,4 +526,47 @@ export function AdvancedSettings() {
       </div>
     </Disclosure>
   );
+}
+
+/** One SDK settings section owns ordering; no host DOM or duplicate toggles. */
+export function BoatSettings() {
+  const query = useSettingRows();
+  const saver = useSaveSetting();
+  const sizes = useSandboxSizes().data?.sizes;
+  const projects = useProjects().data?.projects ?? [];
+  const navigate = useBbNavigate();
+  const grouped = groupedSettings(query.data?.settings ?? []);
+  return <div className="space-y-6 text-[13px]">
+    <SetupChecklist />
+    <Loading error={query.error} rows={query.data?.settings.length ?? 0} />
+    {grouped.groups.map((group) => <section key={group.title} aria-label={group.title} className="space-y-2">
+      <h3 className="text-xs font-medium text-muted-foreground">{group.title}</h3>
+      <SettingsCard><Rows rows={group.rows} saver={saver} extra={() => ({ sizes })} /></SettingsCard>
+    </section>)}
+    <div className="flex flex-wrap items-center gap-3 rounded-[10px] border border-border bg-card px-3.5 py-3">
+      <div className="min-w-0 flex-1"><p>Projects</p><p className="text-xs text-muted-foreground">{projects.length ? projects.map((project) => project.name).join(", ") : "Repos, how work lands, sizes and reviewers"}</p></div>
+      <Button variant="link" size="sm" className="text-[#7AA7FF]" onClick={() => navigate.toPluginPanel(PANEL_PATH, { subPath: "projects" })}>Open the Projects page →</Button>
+    </div>
+    <details className="rounded-[10px] border border-border bg-card px-3.5 py-3">
+      <summary className="cursor-pointer text-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Advanced<span className="mt-1 block text-xs text-muted-foreground">Models, switching, task instructions, backup and restore</span></summary>
+      <div className="mt-5 space-y-5"><Rows rows={grouped.advanced} saver={saver} extra={() => ({ sizes })} /><ModelPresetsEditor /><ProtocolEditor /><BackupSettings /></div>
+    </details>
+  </div>;
+}
+
+/** Mobile settings use the same actual settings, with one notification switch. */
+export function MobileBoatSettings() {
+  const query = useSettingRows();
+  const setup = useSetup().data;
+  const board = useBoard(null).data;
+  const saver = useSaveSetting();
+  const navigate = useBbNavigate();
+  const rows = query.data?.settings ?? [];
+  const needsYou = (board?.needsYou.length ?? 0) + (board?.running.filter((task) => task.publicStatus?.needsYou).length ?? 0);
+  return <div className="space-y-3">
+    <p className={setup?.ok ? "text-[#5BD08A]" : "text-[#F0B135]"}>{setup === undefined ? "Checking cloud agents…" : setup.ok ? "Cloud agents are ready" : "Cloud agents need setup"}</p>
+    <p className="text-sm text-muted-foreground">{needsYou} need you · {board?.ready.length ?? 0} ready</p>
+    <SettingsCard><Rows rows={rows.filter((row) => row.key === "pushNotifications" || row.key === "avoidExtraUsage")} saver={saver} /></SettingsCard>
+    <Button variant="outline" onClick={() => navigate.toPluginPanel(PANEL_PATH)}>Open cloud agents</Button>
+  </div>;
 }
