@@ -201,7 +201,7 @@ export interface ImportPlan {
   replaceProjects: boolean;
 }
 
-const PROJECT_FIELDS = ["name", "repos", "environment", "snapshot", "protocolPath", "workerMode", "delivery", "protectedBranches", "instructions", "machineType", "reviewer"] as const;
+const PROJECT_FIELDS = ["name", "repos", "environment", "snapshot", "protocolPath", "workerMode", "delivery", "protectedBranches", "instructions", "machineType", "reviewer", "localBbProjectId"] as const;
 
 /**
  * A file's settings by today's keys. Older files: workerMode and

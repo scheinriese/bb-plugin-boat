@@ -2674,7 +2674,11 @@ export class BoatService {
       );
     }
     try {
-      return await this.boat.snapshot(sandboxId, name, signal);
+      const saved = await this.boat.snapshot(sandboxId, name, signal);
+      const checks = this.store.sandboxTasks(sandboxId).filter(task => task.runner === "boat" && task.role === "custom" && task.reason === `Project snapshot check: ${task.boatProject}`);
+      for (const task of checks) this.store.addEvent(task.id, "snapshot-saved", `Saved snapshot ${saved.name}`);
+      if (checks.length) this.hooks.changed(checks.map(task => task.id));
+      return saved;
     } catch (error) {
       throw snapshotError(error, name) ?? error;
     }

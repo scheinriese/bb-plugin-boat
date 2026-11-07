@@ -13,6 +13,7 @@ export const projectRepoSchema = z.object({
 });
 
 export const projectInputSchema = z.object({
+  localBbProjectId: z.string().trim().min(1).max(200).nullable().optional(),
   /** Stable id (slug); generated from the name when empty. */
   id: z.string().trim().max(64).optional(),
   name: z.string().trim().min(1).max(80),
@@ -42,6 +43,7 @@ export interface ProjectRepo {
 }
 
 export interface BoatProject {
+  localBbProjectId?: string | null;
   id: string;
   name: string;
   /** The first repo is the main one: branches, PRs and the protocol file live there. */
@@ -113,6 +115,7 @@ export function normalizeProject(input: ProjectInput, existing?: BoatProject | n
   }
   const now = new Date().toISOString();
   return {
+    localBbProjectId: parsed.localBbProjectId !== undefined ? parsed.localBbProjectId : (existing?.localBbProjectId ?? null),
     id: existing?.id ?? (clean(parsed.id) ? slugify(parsed.id!) : slugify(parsed.name)),
     name: parsed.name,
     repos,
@@ -160,6 +163,7 @@ type Row = Record<string, unknown>;
 function withDefaults(project: BoatProject): BoatProject {
   return {
     ...project,
+    localBbProjectId: typeof project.localBbProjectId === "string" && project.localBbProjectId.length <= 200 ? project.localBbProjectId : null,
     workerMode: project.workerMode === "boat" ? "boat" : "chat",
     delivery: project.delivery === "push" ? "push" : "pr",
     protectedBranches: Array.isArray(project.protectedBranches) ? project.protectedBranches.filter((name) => typeof name === "string") : [],
@@ -229,6 +233,7 @@ export class ProjectStore {
  * a configured project, or a local bb project resolved to its GitHub repo.
  */
 export interface OrchestratorProject {
+  reviewer?: "codex" | "claude" | "none" | null;
   id: string;
   name: string;
   repos: ProjectRepo[];
@@ -256,12 +261,14 @@ export function toOrchestratorProject(project: BoatProject): OrchestratorProject
     delivery: project.delivery,
     protectedBranches: project.protectedBranches,
     instructions: project.instructions,
+    reviewer: project.reviewer ?? null,
     source: "boat",
-    bbProjectId: null,
+    bbProjectId: project.localBbProjectId ?? null,
   };
 }
 
 const orchestratorProjectSchema = z.object({
+  reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
   id: z.string().min(1),
   name: z.string().min(1),
   repos: z.array(projectRepoSchema).min(1),

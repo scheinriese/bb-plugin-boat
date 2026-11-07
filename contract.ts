@@ -1,3 +1,4 @@
+import { projectRpcMethods } from "./contract-projects.ts";
 import { sidebarRpcMethods } from "./contract-sidebar.ts";
 export * from "./contract-sidebar.ts";
 // Shared RPC contract between server.ts and app.tsx.
@@ -178,6 +179,7 @@ export function rpcErrorInfo(error: unknown): RpcErrorInfo {
 export const projectRepoSchema = z.object({ repo: z.string(), baseBranch: z.string() });
 
 export const projectSchema = z.object({
+  localBbProjectId: z.string().nullable().optional(),
   id: z.string(),
   name: z.string(),
   repos: z.array(projectRepoSchema),
@@ -202,6 +204,7 @@ export type ProjectDto = z.infer<typeof projectSchema>;
 
 // Same limits as the server's projects.ts schema, so the form gets field errors.
 export const projectInputSchema = z.object({
+  localBbProjectId: z.string().trim().min(1).max(200).nullable().optional(),
   id: z.string().max(64).optional(),
   name: z.string().trim().min(1).max(80),
   repos: z
@@ -556,6 +559,7 @@ export const sandboxSizeSchema = z.object({
 export type SandboxSizeDto = z.infer<typeof sandboxSizeSchema>;
 
 export const rpcContract = defineRpcContract({
+  ...projectRpcMethods,
   // Sandbox sizes and memory (contract-size.ts).
   ...sizeRpcMethods,
   ...fidelityRpcMethods,

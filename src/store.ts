@@ -546,6 +546,12 @@ export class TaskStore {
     return row === undefined ? null : toTask(row);
   }
 
+  /** Persisted attribution for the fresh headless check behind Project → Rebuild. */
+  latestProjectSnapshotCheck(projectId: string): Task | null {
+    const row = this.db().prepare(`SELECT * FROM tasks WHERE role = 'custom' AND boat_project = ? AND reason = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(projectId, `Project snapshot check: ${projectId}`) as Row | undefined;
+    return row === undefined ? null : toTask(row);
+  }
+
   /** Accepts a full id or an unambiguous prefix (`t_ab` → `t_ab12cd34`). */
   resolve(idOrPrefix: string): Task | null {
     const exact = this.get(idOrPrefix);

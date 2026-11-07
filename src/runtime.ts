@@ -1,3 +1,4 @@
+import { validateLocalProjectLink } from "./project-catalog.ts";
 // Shared plumbing for the CLI, agent tools and RPC handlers.
 import { posix } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -202,6 +203,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
             : "Add one in Settings → Plugins → Boat Cloud Agents, or with `bb boat project add`.",
         );
       }
+      await validateLocalProjectLink(bb, project.localBbProjectId, project.repos[0]!.repo);
       return toOrchestratorProject(project);
     }
     const local = await findLocalProject(bb, projects, ref.bbProjectId);

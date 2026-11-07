@@ -1,3 +1,5 @@
+import { projectSnapshotHandlers } from "./project-snapshot.ts";
+import { readProjectCatalog, validateLocalProjectLink } from "./project-catalog.ts";
 import { fidelityHandlers } from "./rpc-fidelity.ts";
 import { shipPresentation } from "./ship-presentation.ts";
 // RPC handlers behind the Cloud agents UI (contract in ../contract.ts).
@@ -358,8 +360,18 @@ export function registerRpc(runtime: Runtime): void {
     };
   }
 
+  const projectSnapshots = projectSnapshotHandlers(runtime);
   bb.rpc.register(rpcContract, {
     ...fidelityHandlers(runtime),
+    ...projectSnapshots,
+    startProjectSnapshot: input => refuse(() => projectSnapshots.startProjectSnapshot(input)),
+    projectCatalog: (() => {
+      let cached: { at: number; value: ReturnType<typeof readProjectCatalog> } | null = null;
+      return () => {
+        if (!cached || Date.now() - cached.at > 60_000) cached = { at: Date.now(), value: readProjectCatalog(bb, service.boat) };
+        return cached.value;
+      };
+    })(),
     // Sandbox sizes and memory (src/rpc-size.ts).
     ...sizeHandlers(runtime, refuse),
     overview: async () => {
@@ -806,7 +818,7 @@ export function registerRpc(runtime: Runtime): void {
         return { sandbox: toSandboxDto(sandbox, []) };
       }),
 
-    saveSnapshot: ({ sandboxId, name }) => refuse(() => service.saveSnapshot(sandboxId, name)),
+    saveSnapshot: ({ sandboxId, name }) => refuse(async () => { const saved = await service.saveSnapshot(sandboxId, name); runtime.changed(); return saved; }),
 
     sandboxAction: ({ id, action }) =>
       refuse(async () => {
@@ -857,6 +869,8 @@ export function registerRpc(runtime: Runtime): void {
 
     saveProject: async (input) => {
       try {
+        const previous = input.id ? runtime.projects.get(input.id) : null;
+        await validateLocalProjectLink(bb, input.localBbProjectId !== undefined ? input.localBbProjectId : previous?.localBbProjectId, input.repos[0]!.repo);
         const project = runtime.projects.save(input);
         runtime.changed();
         return { project };

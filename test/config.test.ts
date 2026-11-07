@@ -234,7 +234,7 @@ function ownerFile() {
   };
 }
 
-const withoutDates = (projects: Record<string, unknown>[]) => projects.map(({ createdAt: _c, updatedAt: _u, ...rest }) => ({ ...rest, reviewer: rest.reviewer ?? null }));
+const withoutDates = (projects: Record<string, unknown>[]) => projects.map(({ createdAt: _c, updatedAt: _u, ...rest }) => ({ ...rest, reviewer: rest.reviewer ?? null, localBbProjectId: rest.localBbProjectId ?? null }));
 
 test("export: every setting, the projects, tiers and protocol, and nothing else", async (t) => {
   const { harness, cli, exported, writes } = await setup();
@@ -618,4 +618,20 @@ test("a project's sandbox size: exported, kept by older files, listed when it ch
   assert.notEqual(bad.exitCode, 0);
   assert.match(bad.stderr, /Project "Web app": machineType: /);
   assert.equal((await exported()).projects.find((project) => project.id === "web")?.machineType, "large");
+});
+
+
+test("local bb project links survive backup roundtrip and unrelated legacy imports", async (t) => {
+  const { harness, exported, importFile } = await setup();
+  t.after(() => harness.lifecycle.dispose());
+  const file = { ...ownerFile(), projects: [{ ...PROJECTS[0], localBbProjectId: "proj_demo", reviewer: "claude" }] };
+  const imported = await importFile(file);
+  assert.equal(imported.exitCode, 0, imported.stderr);
+  const first = await exported();
+  assert.equal(first.projects[0].localBbProjectId, "proj_demo");
+  assert.equal(first.projects[0].reviewer, "claude");
+  const { localBbProjectId, ...legacy } = first.projects[0];
+  const unchanged = await importFile({ ...file, projects: [legacy] });
+  assert.equal(unchanged.exitCode, 0, unchanged.stderr);
+  assert.equal((await exported()).projects[0].localBbProjectId, "proj_demo");
 });
