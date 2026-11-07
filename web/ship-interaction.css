@@ -40,7 +40,7 @@
 .boat-ship-changes { font-size: 12px; }
 .boat-ship-changes pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
 @media (max-width: 480px) {
-  .boat-ship-form { padding: 12px; }
+  .boat-ship-form { max-height: min(45dvh, 340px); padding: 12px; }
   .boat-ship-checks { gap: 4px 12px; padding-left: 0; font-size: 11px; }
   .boat-ship-summary { padding-left: 0; }
   .boat-ship-heading > .boat-ship-muted { width: 100%; padding-left: 14px; }
