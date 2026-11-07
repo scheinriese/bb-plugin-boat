@@ -13,9 +13,9 @@ Version 0.2 adds a redesigned Today page, live decision and review cards,
 Task panels, project rules and explicit shipping confirmations. The screenshots
 below use demo data and the optional [Workbench sidebar](https://github.com/scheinriese/bb-plugin-workbench-sidebar).
 
-[![Watch the Boat v1 demo](docs/demos/boat-v1-poster.jpg)](docs/demos/boat-v1.mp4)
+[![Watch the Boat v1 demo](docs/demos/boat-v1-poster.jpg)](https://scheinriese.github.io/bb-plugin-boat/)
 
-[Watch the v1 demo](docs/demos/boat-v1.mp4): Boat with bb’s regular sidebar first,
+[Watch the v1 demo](https://scheinriese.github.io/bb-plugin-boat/): Boat with bb’s regular sidebar first,
 then paired with the optional Workbench sidebar. The recording uses staged demo
 data, captions and occasional focus outlines; no real cloud work is started.
 
