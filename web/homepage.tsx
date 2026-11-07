@@ -61,11 +61,13 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
         const ready = owned.filter(task => cardStatus(task).status === "ready").length;
         const stopped = owned.filter(task => cardStatus(task).status === "broken").length;
         const working = owned.filter(task => ["working","review"].includes(cardStatus(task).status)).length;
+        const needs = decisions.filter(decision=>decision.orchestratorThreadId===entry.threadId).length + owned.filter(task=>cardStatus(task).status==="needs-you"&&!linked.has(task.id)).length;
         const provider = relay?.orchestrators.find(item=>item.threadId===entry.threadId)?.provider ?? (threads.find(thread=>thread.id===entry.threadId)?.providerId === "codex" ? "codex" : "claude");
         return <div key={entry.threadId} className={`${ROW} sm:h-10 sm:min-h-10`}>
           <AgentLogo provider={provider} className="size-3"/>
           <button type="button" className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 text-left hover:underline focus-visible:ring-1 focus-visible:ring-ring" onClick={()=>navigate.toThread(entry.threadId)}><span className="truncate text-[13px] leading-4">{entry.title ?? entry.projectName ?? "Orchestrator"}</span><span className="text-xs leading-4 text-[color:var(--boat-faint)]">{entry.projectName}</span></button>
           <span className="flex shrink-0 flex-wrap justify-end gap-x-3.5 gap-y-1 text-xs leading-4 text-muted-foreground">
+            {needs>0 && <Count color="#F0B135">{needs} {needs===1?"needs":"need"} you</Count>}
             {stopped>0 && <Count color="#E06C6C">{stopped} stopped</Count>}
             {ready>0 && <Count color="#5BD08A">{ready} ready</Count>}
             {working>0 && <Count color="#8A8A8A">{working} working</Count>}
