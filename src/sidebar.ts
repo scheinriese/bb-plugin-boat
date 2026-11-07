@@ -1,10 +1,11 @@
+import { resetWaitText, type PausedReset } from "./sidebar-reset.ts";
 import { createHash } from "node:crypto";
 import type { SidebarThreadDto } from "../contract-sidebar.ts";
 import type { BoatService } from "./service.ts";
 import { parseReport } from "./briefs.ts";
 
 /** Public DTO only. No sandbox IDs, repo paths, settings, credentials or report bodies. */
-export function sidebarState(service: Pick<BoatService, "store" | "publicStatus">) {
+export function sidebarState(service: Pick<BoatService, "store" | "publicStatus">, pausedResets: ReadonlyMap<string, PausedReset> = new Map(), timezoneOffsetMinutes?: number) {
   const open = service.store.list({ statuses: ["starting", "running", "idle", "failed"], limit: 1000 });
   const closed = service.store.list({ statuses: ["done", "cancelled"], limit: 1000 });
   const tasks = [...open, ...closed];
@@ -46,6 +47,14 @@ export function sidebarState(service: Pick<BoatService, "store" | "publicStatus"
     threads.push({ threadId: orchestrator.threadId, role: known.has(orchestrator.threadId) ? "orchestrator" : "chat", status, provider: null,
       secondLine: summary && ["needs-you", "broken", "ready"].includes(status) ? { text: summary, tone: status === "needs-you" ? "attention" : status === "broken" ? "danger" : "success" } : null,
       parentThreadId: null, moving: rollup.working > 0, createdFor: null, listedIn: null, rollup, hidden: false, updatedAt: children.reduce((at, task) => task.updatedAt > at ? task.updatedAt : at, orchestrator.createdAt) });
+  }
+  for (const row of threads) {
+    const reset = pausedResets.get(row.threadId);
+    if (!reset || reset.sendAt <= Date.now() || row.hidden || row.moving || ["needs-you", "broken", "ready", "shipped"].includes(row.status)) continue;
+    row.status = "waiting-reset";
+    row.moving = false;
+    row.secondLine = { text: resetWaitText(reset.sendAt, timezoneOffsetMinutes), tone: "neutral" };
+    if (reset.updatedAt > Date.parse(row.updatedAt)) row.updatedAt = new Date(reset.updatedAt).toISOString();
   }
   const bounded = threads.slice(0, 2000);
   return { version: 1 as const, revision: createHash("sha256").update(JSON.stringify(bounded)).digest("hex").slice(0, 24), threads: bounded, truncated: threads.length > 2000 || open.length === 1000 || closed.length === 1000 };

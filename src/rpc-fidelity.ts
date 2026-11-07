@@ -1,11 +1,13 @@
+import { readPausedResets, type PausedReset } from "./sidebar-reset.ts";
 import type { Runtime } from "./runtime.ts";
 import type { FidelityUsageDto } from "../contract-fidelity.ts";
 import { usageWindows } from "./usage.ts";
 import { sidebarState } from "./sidebar.ts";
 
 /** Additive handlers; no sandbox lifecycle, billing, or shipping mutations. */
-export function fidelityHandlers(runtime: Pick<Runtime, "service">) {
+export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pick<Runtime, "bb">>) {
   const { service } = runtime;
+  let pausedCache: { at: number; value: Promise<Map<string, PausedReset>> } | null = null;
   const cache = new Map<string, { at: number; value: Promise<FidelityUsageDto> }>();
   async function readUsage(input: { taskId?: string; timezoneOffsetMinutes: number }): Promise<FidelityUsageDto> {
     const signal = AbortSignal.timeout(20_000);
@@ -54,6 +56,10 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service">) {
       if (cache.size >= 16) cache.delete(cache.keys().next().value!);
       const value = readUsage(input); cache.set(key, { at: Date.now(), value }); return value;
     },
-    sidebarState: (_input: { version: 1 }) => sidebarState(service),
+    sidebarState: async (input: { version: 1; timezoneOffsetMinutes?: number }) => {
+      if (!runtime.bb) return sidebarState(service);
+      if (!pausedCache || Date.now() - pausedCache.at > 15_000) pausedCache = { at: Date.now(), value: readPausedResets(runtime.bb) };
+      return sidebarState(service, await pausedCache.value, input.timezoneOffsetMinutes);
+    },
   };
 }

@@ -59,3 +59,5 @@ See [created-for-you rules](new-threads.md).
 status while its latest completed turn is idle. The provider ring runs only
 for working/review with moving !== false; older producers without it keep the
 v1 behavior. Idle completion is not presented as a stopped sandbox.
+
+A genuinely paused subscription retry may carry neutral `Waits for reset · 4:00 pm`. Producer eligibility requires a live public `threads.queue.list` row authored by provider-retry, retry payload reason exactly `Rate limited`, scheduled/waiting state, finite future sendAt, and native thread status idle/error. A moving Boat turn, attention/error/ready state, archived/deleted thread, historical retry diagnostic, or bare quota reset never produces this line. The optional v1 input timezoneOffsetMinutes uses Date.getTimezoneOffset() sign (Berlin winter -60), bounded±840; omitted falls back to server-local time. Reads cache15seconds, inspect≤1000 queue rows/50 candidates with4 concurrent thread reads and4s signal; failures quietly retain ordinary rows. Core owns scheduled retry dispatch; disabling provider-retry does not cancel queued work.
