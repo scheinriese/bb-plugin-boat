@@ -162,6 +162,7 @@ export function sizeChipState(
   }
   const kept: Record<string, string | boolean> =
     picked === null ? {} : { type: picked };
+  if (inputs.reviewer === "codex" || inputs.reviewer === "claude" || inputs.reviewer === "none") kept.reviewer = inputs.reviewer;
   if (
     typeof inputs.snapshot === "string" &&
     inputs.snapshot.length > 0 &&

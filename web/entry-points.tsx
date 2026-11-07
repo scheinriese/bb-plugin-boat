@@ -17,7 +17,6 @@ import {
   useBbContext,
   type PluginAppBuilder,
   type PluginComposerApi,
-  type PluginMachineProviderInputsProps,
   type PluginThreadActionDataInput,
 } from "@get-bb/plugin-sdk/app";
 import { rpcContract, type TaskDto, type ThreadRoleDto } from "../contract";
@@ -61,10 +60,9 @@ import {
   coordinateProject,
   prefixDraft,
   reviewFromChat,
-  sizeChipState,
   unprefixDraft,
 } from "./entry-logic";
-import { MACHINE_TYPE_VALUES as MACHINE_TYPES } from "../contract";
+import { BoatSizeChip } from "./native-start-inputs";
 import {
   MACHINE_LABEL,
   PANEL_PATH,
@@ -80,7 +78,6 @@ import {
   useOrchestrators,
   useProjects,
   useRelay,
-  useSandboxSizes,
   useThreadTasks,
   useThreadTask,
 } from "./hooks";
@@ -589,191 +586,6 @@ async function sendToCloudAgent(composer: PluginComposerApi) {
       (current) => unprefixDraft(current, CLOUD_AGENT_PREFIX) ?? current,
     );
   }
-}
-
-const CHIP =
-  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-state-hover data-[state=open]:text-foreground";
-
-/**
- * The sandbox size for a chat that starts on a new Boat sandbox. Unpicked, the
- * machine gets Size for chats on a Boat sandbox; sizes the plan can't use are
- * greyed out with boat's reason, and a picked one that the plan lost blocks
- * the send until another is picked.
- */
-function BoatSizeChip({ value, onChange }: PluginMachineProviderInputsProps) {
-  const { data } = useSandboxSizes();
-  const [open, setOpen] = useState(false);
-  const snapshots = experimental_useRpcQuery({
-    contract: rpcContract,
-    method: "snapshots",
-    input: null,
-    enabled: open,
-  });
-  const sizes = data?.sizes ?? null;
-  const state = sizeChipState(
-    value,
-    data?.known === false ? null : sizes,
-    data?.chatDefault ?? "small",
-  );
-  // Report what this chat's machine will get (a ready default on mount), or why it can't start.
-  // `report` stands for state.change (onChange may be a new function every render).
-  const report = JSON.stringify(state.change);
-  useEffect(() => {
-    if (
-      report !==
-      JSON.stringify(value === null ? null : { status: "ready", value })
-    )
-      onChange(state.change);
-  }, [report]);
-  if (state.adopted) return null;
-
-  const entries =
-    sizes ??
-    MACHINE_TYPES.map((type) => ({
-      type,
-      label: MACHINE_LABEL[type].split(" · ")[0]!,
-      detail: MACHINE_LABEL[type].split(" · ")[1] ?? "",
-      available: true,
-      reason: null,
-    }));
-  const current = entries.find((entry) => entry.type === state.type);
-  const defaultLabel =
-    entries.find((entry) => entry.type === (data?.chatDefault ?? "small"))
-      ?.label ?? "Small";
-  const label = data === undefined ? "Size" : (current?.label ?? state.type);
-  const blocked =
-    state.change.status === "blocked" ? state.change.reason : null;
-  return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            CHIP,
-            blocked !== null && "text-warning-text hover:text-warning-text",
-          )}
-          aria-label={`Boat sandbox size: ${label}${blocked !== null ? `. ${blocked}` : ""}`}
-          title={
-            blocked ??
-            (current?.detail ? `${label} · ${current.detail}` : undefined)
-          }
-        >
-          <Icon
-            name={blocked !== null ? "AlertTriangle" : "SlidersHorizontal"}
-            fallback="ComputerCloud"
-            className="size-3.5"
-            aria-hidden
-          />
-          <span>Boat · {label}</span>
-          <Icon name="ChevronDown" className="size-3 opacity-60" aria-hidden />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="start"
-        mobileTitle="Boat sandbox size"
-        className="w-72"
-      >
-        <DropdownMenuLabel>Boat sandbox size</DropdownMenuLabel>
-        {entries.map((entry) => {
-          const selected = entry.type === state.type;
-          return (
-            <DropdownMenuItem
-              key={entry.type}
-              disabled={!entry.available}
-              aria-checked={selected}
-              role="menuitemradio"
-              onSelect={() =>
-                onChange({
-                  status: "ready",
-                  value: {
-                    ...(state.change.status === "ready"
-                      ? state.change.value
-                      : {}),
-                    type: entry.type,
-                  },
-                })
-              }
-              className="items-start gap-2"
-            >
-              <Icon
-                name="Check"
-                className={cn(
-                  "mt-0.5 size-3.5 shrink-0",
-                  !selected && "invisible",
-                )}
-                aria-hidden
-              />
-              <span className="min-w-0 flex-1">
-                <span className="block text-foreground">{entry.label}</span>
-                {entry.detail ? (
-                  <span className="block text-muted-foreground">
-                    {entry.detail}
-                  </span>
-                ) : null}
-                {entry.available ? null : (
-                  <span className="block text-muted-foreground">
-                    {entry.reason ?? "Not on your boat plan"}
-                  </span>
-                )}
-              </span>
-            </DropdownMenuItem>
-          );
-        })}
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>Start from a snapshot</DropdownMenuLabel>
-        <DropdownMenuItem
-          role="menuitemradio"
-          aria-checked={
-            !(state.change.status === "ready" && state.change.value.snapshot)
-          }
-          onSelect={() => {
-            const next = {
-              ...(state.change.status === "ready" ? state.change.value : {}),
-            };
-            delete next.snapshot;
-            onChange({ status: "ready", value: next });
-          }}
-        >
-          Fresh sandbox
-        </DropdownMenuItem>
-        {snapshots.data?.snapshots.map((snapshot) => (
-          <DropdownMenuItem
-            key={snapshot.name}
-            role="menuitemradio"
-            aria-checked={
-              state.change.status === "ready" &&
-              state.change.value.snapshot === snapshot.name
-            }
-            onSelect={() =>
-              onChange({
-                status: "ready",
-                value: {
-                  ...(state.change.status === "ready"
-                    ? state.change.value
-                    : {}),
-                  snapshot: snapshot.name,
-                },
-              })
-            }
-          >
-            {snapshot.name}
-          </DropdownMenuItem>
-        ))}
-        {snapshots.data?.error && (
-          <p className="px-2 text-xs text-muted-foreground">
-            {snapshots.data.error}
-          </p>
-        )}
-        <DropdownMenuSeparator />
-        <p className="px-2 py-1.5 text-xs text-pretty text-muted-foreground">
-          Default: {defaultLabel} (Settings → Size for chats on a Boat sandbox).
-          {data?.autoStopCapHours
-            ? ` Your ${data.plan ?? "boat"} plan stops sandboxes after ${data.autoStopCapHours} h.`
-            : ""}
-        </p>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
 }
 
 // ------------------------------------------------------------ coordinate

@@ -232,3 +232,8 @@ test("native size changes preserve snapshots and prepared sandbox keep flags", (
   assert.deepEqual(sizeChipState({ type: "default", snapshot: "repo-base" }, SIZES, "small").change, { status: "ready", value: { type: "default", snapshot: "repo-base" } });
   assert.deepEqual(sizeChipState({ sandboxId: "bx_ready", taskId: "t_1234", keepSandbox: true }, SIZES, "small").change, { status: "ready", value: { sandboxId: "bx_ready", taskId: "t_1234", keepSandbox: true } });
 });
+
+test("native size changes preserve only validated explicit reviewer policy", () => {
+  assert.deepEqual(sizeChipState({type:"default",reviewer:"none",snapshot:"repo-base"}, SIZES,"small").change,{status:"ready",value:{type:"default",reviewer:"none",snapshot:"repo-base"}});
+  assert.deepEqual(sizeChipState({type:"default",reviewer:"untrusted"}, SIZES,"small").change,{status:"ready",value:{type:"default"}});
+});
