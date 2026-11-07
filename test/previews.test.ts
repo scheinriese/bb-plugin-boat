@@ -123,17 +123,18 @@ test("a reported preview is hosted privately and named in the orchestrator's not
 test("a server that didn't survive the turn is started again; Wake resumes, restarts and re-hosts", async () => {
   // The server answers once the plugin has started it (again).
   let started = 0;
-  const env = makeService({ checkPreview: async () => (env.boat.detached.length > started ? "up" : "down") });
+  const previewsStarted = () => env.boat.detached.filter((entry) => entry.command.includes("/tmp/preview-4321.log"));
+  const env = makeService({ checkPreview: async () => (previewsStarted().length > started ? "up" : "down") });
   const { task } = await env.service.launchTask(brief(), 5_000);
   env.boat.finish(task.conversationId!, PREVIEW_REPORT);
   // The first check at the end of the turn fails; the plugin restarts the server.
   await env.service.sweep();
-  assert.equal(env.boat.detached.length, 1);
+  assert.equal(previewsStarted().length, 1);
   // …but it stops answering again.
   started = 1;
   const [first] = await env.service.previews({ taskId: task.id });
   env.store.setPreviewHealth(first!.preview.id, "down");
-  assert.equal(env.boat.detached[0]!.command, previewStartScript("/home/user/work/storefront", 4321, "npm run dev -- --host 0.0.0.0 --port 4321"));
+  assert.equal(previewsStarted()[0]!.command, previewStartScript("/home/user/work/storefront", 4321, "npm run dev -- --host 0.0.0.0 --port 4321"));
   const [down] = await env.service.previews({ taskId: task.id });
   assert.equal(down?.state, "sleeping");
   assert.equal(down?.reason, "the server isn't running");
@@ -144,7 +145,7 @@ test("a server that didn't survive the turn is started again; Wake resumes, rest
   const woken = await env.service.wakePreview(down!.preview.id);
   assert.equal(woken.state, "live");
   assert.ok(env.boat.calls.some((call) => call.startsWith(`resume ${task.sandboxId}`)));
-  assert.equal(env.boat.detached.length, 2);
+  assert.equal(previewsStarted().length, 2);
   assert.equal(env.boat.hosts.length, 2);
 
   // Extend and Stop.
