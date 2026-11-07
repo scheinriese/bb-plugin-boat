@@ -13,14 +13,19 @@ The v1 preview has a redesigned Today page, live decision and review cards,
 Task panels, project rules and explicit shipping confirmations. The screenshots
 below use demo data and the optional Workbench sidebar.
 
+[![Watch the Boat v1 demo](docs/demos/boat-v1-poster.jpg)](docs/demos/boat-v1.mp4)
+
+[Watch the v1 demo](docs/demos/boat-v1.mp4): Boat with bb’s regular sidebar first,
+then paired with the optional Workbench sidebar. The recording uses staged demo
+data, captions and occasional focus outlines; no real cloud work is started.
+
 ![Today: decisions, active projects, usage and event history](docs/screenshots/v1/today.png)
 
 ![Projects with a docked editor for delivery, sizes, reviewers and rules](docs/screenshots/v1/projects.png)
 
 ![A task with its reviews, pull request, change summary and sandbox facts](docs/screenshots/v1/task.png)
 
-A new framed demo recording is being prepared for this preview. The previous
-[0.1.2 recording](https://github.com/user-attachments/assets/769a7fcc-e995-48c4-b4fa-097ea47a7b97)
+The previous [0.1.2 recording](https://github.com/user-attachments/assets/769a7fcc-e995-48c4-b4fa-097ea47a7b97)
 shows the earlier UI.
 
 ## Getting started
