@@ -514,7 +514,8 @@ export function SetupChecklist() {
   useInterval(()=>{void transcript.refetch();},test?.status==="running"||test?.status==="starting"?5000:null);
   const evidence = setupEvidence([...(transcript.data?.events.map(event=>event.content)??[]),detailedTest?.result]);
   const elapsed = test ? setupDuration(test.createdAt,test.finishedAt,clock) : null;
-  const receipt = [evidence.node?`Node ${evidence.node}`:null,evidence.git?`git ${evidence.git}`:null,evidence.github=== "ok"?"GitHub access ok":null,elapsed?`${elapsed} on a Small sandbox`:null].filter(Boolean).join(" · ");
+  const testUsage = experimental_useRpcQuery({contract:rpcContract,method:"fidelityUsage",input:{taskId:test?.id??"",timezoneOffsetMinutes:new Date().getTimezoneOffset()},enabled:startedId!==null&&!!test&&test.status!=="starting"&&test.status!=="running"}).data?.task;
+  const receipt = [evidence.node?`Node ${evidence.node}`:null,evidence.git?`git ${evidence.git}`:null,evidence.github=== "ok"?"GitHub access ok":null,elapsed?`${elapsed} on a Small sandbox`:null,testUsage?.dollars!=null?`about ${testUsage.dollars.toLocaleString("en-US",{style:"currency",currency:"USD"})}`:null].filter(Boolean).join(" · ");
   const runTest = async () => {
     try { const result = await start.mutate({ notifyThreadId: null, provider: null }); setStartedId(result.task.id); }
     catch (error) { showError(error); }
