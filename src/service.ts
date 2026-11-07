@@ -612,7 +612,7 @@ export class BoatService {
   private readonly settlingReviews = new Set<string>();
 
   publicStatus(task: Task, context: StatusContext = {}): TaskPublicStatus {
-    if (task.status === "done" && this.isNativeChat(task) && this.store.latestEvent(task.id, "shipped") === null) return {
+    if (task.status === "done" && this.isNativeChat(task) && this.store.latestEvent(task.id, "shipped") === null && this.store.latestEvent(task.id, "merged") === null) return {
       status: "stopped", label: "Closed", tone: "neutral", reason: "Closed without shipping.", needsYou: false, moving: false,
     };
     const decision = this.store.decisions({ statuses: ["open"] }).find((entry) => entry.taskIds.includes(task.id));

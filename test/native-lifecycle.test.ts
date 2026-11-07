@@ -68,3 +68,14 @@ test("a closed review never claims its changes shipped", () => {
   assert.equal(state.tone, "neutral");
   assert.equal(state.moving, false);
 });
+
+
+test("native confirmed merge is shipped, while queued and neutral close remain closed", async () => {
+  const env = await adopted(); const closed = await env.service.closeTask(env.task.id);
+  assert.equal(env.service.publicStatus(closed.task).label, "Closed");
+  env.store.addEvent(closed.task.id, "merge-queued", "GitHub accepted a queue request");
+  assert.equal(env.service.publicStatus(closed.task).label, "Closed");
+  env.store.addEvent(closed.task.id, "merged", "Merged PR #482; approved HEAD " + "1".repeat(40));
+  assert.equal(env.service.publicStatus(closed.task).status, "shipped");
+  assert.deepEqual(env.chat.removed, []); assert.deepEqual(env.boat.calls, []);
+});
