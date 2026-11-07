@@ -43,6 +43,7 @@ import { CardTaskState, TaskContextAction, useNativePaused } from "./cards";
 export { TaskDirective, registerChatCards } from "./cards";
 import {
   IconButton,
+  AgentLogo,
   ThreadName,
   OpenChatButton,
   PrLink,
@@ -101,6 +102,13 @@ export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentP
   const decisionTask=[...(data?.running??[]),...(data?.ready??[])].find(task=>data?.needsYou.some(item=>item.taskIds.includes(task.id)));
   const currentAgent=relay?.orchestrators.find(row=>row.threadId===threadId)?.provider;
   const usage=relay?.agents.find(agent=>agent.provider===currentAgent);
+  if(!own&&relay?.enabled&&currentAgent){
+    const preferredUsage=relay.agents.find(agent=>agent.provider===relay.preferred);
+    if(currentAgent!==relay.preferred&&preferredUsage?.usedPercent!==null&&preferredUsage?.usedPercent!==undefined&&preferredUsage.usedPercent>=relay.switchAtPercent)
+      return <span className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex"><AgentLogo provider={currentAgent} className="size-3"/>On {currentAgent==='claude'?'Claude':'Codex'} · back to {relay.preferred==='claude'?'Claude':'Codex'} after its reset</span>;
+    if(usage?.usedPercent!==null&&usage?.usedPercent!==undefined&&usage.usedPercent>=Math.max(0,relay.switchAtPercent-10))
+      return <span className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex"><AgentLogo provider={currentAgent} className="size-3"/>{currentAgent==='claude'?'Claude':'Codex'} <span className="text-[#FC8C45]">{Math.round(usage.usedPercent)}%</span> · switches to {currentAgent==='claude'?'Codex':'Claude'} at {relay.switchAtPercent}%</span>;
+  }
   if(!own&&(data?.ready.length??0)>0&&setup?.plan)return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{setup.plan.activeSandboxes}{setup.plan.maxActiveSandboxes!==null?' of '+setup.plan.maxActiveSandboxes:''} sandboxes{usage?.usedPercent!==null&&usage?.usedPercent!==undefined?` · ${usage.provider==='claude'?'Claude':'Codex'} ${Math.round(usage.usedPercent)}%`:''}</span>;
   if((data?.needsYou.length??0)>0)return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{decisionTask?.provider==='claude'?'Claude':decisionTask?.provider==='codex'?'Codex':'The agent'} waits in its sandbox; nothing is lost</span>;
   if(own?.sandboxId)return <span className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground"><span className={cn("size-1.5 rounded-full",paused?'bg-muted-foreground':'bg-[#5BD08A]')}/><span className="sm:hidden">{paused?'stopped':'on'}</span><span className="hidden sm:inline">{paused?'Sandbox stopped':'Sandbox on'}{detail?.memory?.size?' · '+detail.memory.size.label:''}</span>{cardStatus(own).status==='ready'&&<span className="sm:hidden"><TaskContextAction task={own} compact/></span>}</span>;

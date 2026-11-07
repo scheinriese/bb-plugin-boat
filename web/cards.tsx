@@ -12,6 +12,8 @@ import {
   type ExperimentalMessageMetadataProps,
 } from "@get-bb/plugin-sdk/app";
 import { useOpenTaskSection } from "./task-navigation";
+import { HandoffDirective } from "./relay-cards";
+export { HandoffDirective } from "./relay-cards";
 import { mergeRpcContract } from "../contract-merge";
 import { modelName, prLabel, clockTime } from "./format";
 import { toast } from "sonner";
@@ -94,21 +96,21 @@ export function CardTaskState({ task }: { task: TaskDto }) {
   );
 }
 
-export function LiveTaskRow({ task,waiting=false,reviewer }: { task: TaskDto;waiting?:boolean;reviewer?:string }) {
+export function LiveTaskRow({ task,waiting=false,reviewer,reviewRound }: { task: TaskDto;waiting?:boolean;reviewer?:string;reviewRound?:number }) {
   const { openTask } = useCloudAgentsNavigation();
   const state=cardStatus(task);
   return (
-    <li className="flex items-center gap-[10px] border-t border-[#242424] px-[12px] py-[10px]">
-      <span className="relative flex size-5 shrink-0 items-center justify-center">{state.moving&&<span aria-hidden className="absolute inset-0 rounded-full border border-[#2C2C2C] border-t-muted-foreground motion-safe:animate-spin"/>}<AgentLogo provider={task.provider} className="size-[13px]"/></span>
+    <li className="flex items-center gap-[10px] border-t border-[#242424] px-[12px] py-[10px] sm:px-[14px] sm:py-[9px]">
+      <span className="relative flex size-5 sm:size-4 shrink-0 items-center justify-center">{state.moving&&<span aria-hidden className="absolute inset-0 rounded-full border border-[#2C2C2C] border-t-muted-foreground motion-safe:animate-spin"/>}<AgentLogo provider={task.provider} className={cn("size-[13px]",state.moving?"sm:size-[9px]":"sm:size-3")}/></span>
       <span className="min-w-0 flex-1">
         <button
-          className="block w-full truncate rounded-sm text-left text-[14px] leading-5 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="block w-full truncate rounded-sm text-left text-[14px] leading-5 hover:underline sm:text-[13px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           onClick={() => openTask(task.id)}
         >
           {task.title}
         </button>
       </span>
-      <span className={cn('shrink-0 text-[13px] leading-[18px]',waiting?'text-[#F0B135]':state.status==='ready'?'text-[#5BD08A]':'text-muted-foreground')}>{waiting?'● Needs you':state.status==='review'?`${reviewer?reviewer+' ':''}reviewing`:state.status==='ready'?`${task.prUrl?'PR '+prLabel(task.prUrl)+' · ':''}Ready`:state.label}</span>
+      <span className={cn('shrink-0 text-[13px] leading-[18px] sm:text-[12px] sm:leading-4',waiting?'text-[#F0B135]':state.status==='ready'?'text-[#5BD08A]':'text-muted-foreground')}>{waiting?<><span className="sm:hidden">● </span>Needs you</>:state.status==='review'?<><span className="sm:hidden">{reviewer?reviewer+' ':''}reviewing</span><span className="hidden sm:inline">{reviewer??'Review'}{reviewRound&&reviewRound>1?` · ${reviewRound}${reviewRound===2?'nd':reviewRound===3?'rd':'th'} look`:' reviewing'}</span></>:state.status==='ready'?<><span className="sm:hidden">{task.prUrl?'PR '+prLabel(task.prUrl)+' · ':''}Ready</span><span className="hidden sm:inline">Ready{task.prUrl?' · PR '+prLabel(task.prUrl):''}</span></>:state.label}</span>
     </li>
   );
 }
@@ -121,15 +123,15 @@ export function TasksDirective(props: PluginMessageDirectiveProps) {
   const events=experimental_useRpcQuery({contract:rpcContract,method:'history',input:{orchestratorThreadId:id,limit:100}}).data?.events??[];
   return (
     <Frame className="border-[#2A2A2A] bg-[#181818]">
-      <header className="px-[12px] py-[10px] text-[14px] font-medium leading-5">
+      <header className="px-[12px] py-[10px] text-[14px] font-medium leading-5 sm:px-[14px] sm:text-[13px]">
         {tasks.length} {tasks.length === 1 ? "task" : "tasks"}
-        <span className="ml-2 text-[13px] font-normal text-muted-foreground">
-          {project?.name}
+        <span className="ml-2 text-[13px] font-normal text-muted-foreground sm:text-[12px]">
+          {project?.name}{tasks.length>0&&tasks.every(task=>task.ownsSandbox&&task.sandboxId)&&new Set(tasks.map(task=>task.sandboxId)).size===tasks.length&&<span className="hidden sm:inline"> · each in its own sandbox</span>}
         </span>
       </header>
       <ul aria-label="Tasks">
         {tasks.map((task) => (
-          <LiveTaskRow key={task.id} task={task} waiting={board?.needsYou.some(decision=>decision.taskIds.includes(task.id))} reviewer={events.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.provider==='codex'?'Codex':events.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.provider==='claude'?'Claude':undefined}/>
+          <LiveTaskRow key={task.id} task={task} reviewRound={events.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.round} waiting={board?.needsYou.some(decision=>decision.taskIds.includes(task.id))} reviewer={events.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.provider==='codex'?'Codex':events.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.provider==='claude'?'Claude':undefined}/>
         ))}
       </ul>
       {tasks.length === 0 && (
@@ -501,26 +503,6 @@ export function DigestDirective(props: PluginMessageDirectiveProps) {
     {(terminal.length>0||active.length>0)&&<ul className="space-y-[6px] px-3.5 pb-3 pt-[10px] text-[12px] leading-4 text-muted-foreground">{terminal.map(event=><li key={event.seq} className="flex gap-2"><Icon name="Check" className="size-3.5"/>{event.text}{event.detail?' · '+event.detail:''}</li>)}{active.map(task=><li key={task.id} className="flex items-center gap-2"><AgentLogo provider={task.provider}/>{task.title} · {cardStatus(task).status==='review'?(history.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.provider==='claude'?'Claude is reviewing it now':history.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.provider==='codex'?'Codex is reviewing it now':'reviewing now'):'working'}</li>)}</ul>}
   </Frame>;
 }
-/** Only actual recorded switches become a handoff note. */
-export function HandoffDirective(props: PluginMessageDirectiveProps) {
-  const threadId = markerId(props.attributes.thread) ?? props.message.threadId;
-  const own = useThreadTask(threadId);
-  const detail = useTask(own?.id ?? null).data?.task;
-  const event = detail?.events
-    .filter((item) =>
-      ["failover", "followup-switch", "moved-to-chat"].includes(item.kind),
-    )
-    .at(-1);
-  if (!event) return null;
-  return (
-    <aside className="my-3 flex items-start gap-2 border-t border-border py-2 text-[12px] text-muted-foreground">
-      <Icon name="ArrowRight" className="mt-0.5 size-3 shrink-0" />
-      <span>{event.text}</span>
-    </aside>
-  );
-}
-
-/** bb already supplies its machine banner for a suspended native host. */
 export function useNativePaused(threadId:string){
   const sdk=useSdk();const [paused,setPaused]=useState(false);
   useEffect(()=>{let active=true;setPaused(false);if(!threadId)return()=>{active=false};
@@ -562,8 +544,11 @@ function StoppedBanner({task}:{task:TaskDetailDto}) {
 /** Agent-dispatched briefs retain provenance using bb's above-message slot. */
 function BriefMetadata({message}:ExperimentalMessageMetadataProps){
   const task=useThreadTask(message.threadId);
+  const history=experimental_useRpcQuery({contract:rpcContract,method:'history',input:{taskId:task?.id??'',limit:100},enabled:Boolean(task)}).data?.events;
+  const firstSwitch=history?.filter(event=>event.kind==='provider-changed').at(-1);
+  const originalProvider=firstSwitch?.from==='claude'||firstSwitch?.from==='codex'?firstSwitch.from:task?.provider;
   if(message.role!=="user" || message.initiator!=="agent" || !task?.source.title)return null;
-  return <span className="boat-ui inline-flex items-center gap-1.5 text-[12px] text-muted-foreground"><AgentLogo provider={task.provider}/>Brief from {task.source.title}<span className="hidden sm:inline">{task.tier?' · '+task.tier[0].toUpperCase()+task.tier.slice(1):''}{task.model?' · '+modelName(task.model):''}</span></span>;
+  return <span className="boat-ui inline-flex items-center gap-1.5 text-[12px] text-muted-foreground"><AgentLogo provider={originalProvider??task.provider}/>Brief from {task.source.title}<span className="hidden sm:inline">{task.tier?' · '+task.tier[0].toUpperCase()+task.tier.slice(1):''}{task.model&&!firstSwitch?' · '+modelName(task.model):''}</span></span>;
 }
 
 export function registerChatCards(app: PluginAppBuilder): void {
