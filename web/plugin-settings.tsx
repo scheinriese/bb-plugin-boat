@@ -562,11 +562,11 @@ export function MobileBoatSettings() {
   const saver = useSaveSetting();
   const navigate = useBbNavigate();
   const rows = query.data?.settings ?? [];
-  const needsYou = (board?.needsYou.length ?? 0) + (board?.running.filter((task) => task.publicStatus?.needsYou).length ?? 0);
+  const needsYou = (board?.needsYou.length ?? 0) + (board?.running.filter((task) => task.publicStatus?.needsYou && !board.needsYou.some((decision) => decision.taskIds.includes(task.id))).length ?? 0);
   return <div className="space-y-3">
     <p className={setup?.ok ? "text-[#5BD08A]" : "text-[#F0B135]"}>{setup === undefined ? "Checking cloud agents…" : setup.ok ? "Cloud agents are ready" : "Cloud agents need setup"}</p>
-    <p className="text-sm text-muted-foreground">{needsYou} need you · {board?.ready.length ?? 0} ready</p>
-    <SettingsCard><Rows rows={rows.filter((row) => row.key === "pushNotifications" || row.key === "avoidExtraUsage")} saver={saver} /></SettingsCard>
+    <p className="text-sm text-muted-foreground">{board ? `${needsYou} need you · ${board.ready.length} ready` : "Checking tasks…"}</p>
+    <SettingsCard><Rows rows={rows.filter((row) => row.key === "pushNotifications" || row.key === "avoidExtraUsage").map((row) => row.key === "avoidExtraUsage" ? { ...row, label: "Wait for a usage reset", description: "Keeps new tasks off paid extra usage when your agents reach their limits." } : row)} saver={saver} /></SettingsCard>
     <Button variant="outline" onClick={() => navigate.toPluginPanel(PANEL_PATH)}>Open cloud agents</Button>
   </div>;
 }
