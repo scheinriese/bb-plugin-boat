@@ -1,6 +1,8 @@
 /* Paper's explicit text rendering, scoped to SDK-rendered plugin content.
    bb's own Inter face and theme font tokens remain inherited. */
 .boat-ui {
+  --boat-footer: var(--card);
+  --boat-action-border: var(--border);
   --boat-heading: var(--foreground);
   --boat-content: var(--foreground);
   --boat-description: var(--muted-foreground);
@@ -20,6 +22,8 @@
 /* Match the handoff's dark surfaces through scoped semantic tokens.
    Light appearance keeps bb's tokens. Host chrome is outside this root. */
 .dark .boat-ui {
+  --boat-footer: #202020;
+  --boat-action-border: #333333;
   --boat-heading: #ededed;
   --boat-content: #d6d6d6;
   --boat-description: #7a7a7a;
