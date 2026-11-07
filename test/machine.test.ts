@@ -123,3 +123,11 @@ test("a machine for a move to a chat keeps its sandbox: removal and cleanup leav
   assert.equal((await provider().reconcileCleanup({ key: "task-t_2" })).status, "removed");
   assert.ok(boat.calls.includes(`delete ${other.id}`));
 });
+
+test("native machine starts from the selected snapshot", async () => {
+  const { boat, provider, args } = setup();
+  const result = await provider().create(args("snapshot-chat", { type: "default", snapshot: "repo-base" }));
+  assert.equal(result.status, "created", result.message);
+  assert.equal(boat.created.at(-1)!.from, "repo-base");
+  assert.equal((result.resource as unknown as { snapshot: string }).snapshot, "repo-base");
+});
