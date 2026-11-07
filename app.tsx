@@ -10,9 +10,19 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { PANEL_PATH } from "./web/format";
 import { useAttentionBadge } from "./web/hooks";
-import { CloudAgentsHeader, CloudAgentsPage, useCloudAgentsPageTitle } from "./web/page";
+import {
+  CloudAgentsHeader,
+  CloudAgentsPage,
+  useCloudAgentsPageTitle,
+} from "./web/page";
 import { BackupSettings } from "./web/backup-settings";
-import { AdvancedSettings, ModelsSettings, OrchestratorsSettings, SetupSettings, UsageLimitsSettings } from "./web/plugin-settings";
+import {
+  AdvancedSettings,
+  ModelsSettings,
+  OrchestratorsSettings,
+  SetupSettings,
+  UsageLimitsSettings,
+} from "./web/plugin-settings";
 import { ProjectsSettings } from "./web/projects-settings";
 import {
   HomepageCard,
@@ -24,12 +34,16 @@ import {
   useSegmentVisible,
   useThreadHasTasks,
 } from "./web/thread-surfaces";
+import { registerTaskTab, useHasTask } from "./web/task-tab";
 import { registerRowSignals } from "./web/row-signals";
 import { registerShipInteraction } from "./web/ship-interaction";
 import { registerChatCards } from "./web/cards";
 import { registerEntryPoints } from "./web/entry-points";
 import { SailIcon } from "./web/ui";
-import { WorkspaceStrip, useWorkspaceStripVisible } from "./web/workspace-strip";
+import {
+  WorkspaceStrip,
+  useWorkspaceStripVisible,
+} from "./web/workspace-strip";
 
 export default definePluginApp((app) => {
   app.experimental_icons.register({ name: "boat-sail", component: SailIcon });
@@ -89,21 +103,27 @@ export default definePluginApp((app) => {
     tooltip: "Cloud agent tasks from this chat",
     layout: "padded",
     component: ThreadAgentsTab,
-    useVisible: useThreadHasTasks,
+    useVisible: useSourceHasTasks,
   });
 
   // `::boat-task{id="t_…"}` in assistant messages → a live task card.
   registerChatCards(app);
   registerRowSignals(app);
+  registerTaskTab(app);
   registerShipInteraction(app);
 
-  app.slots.homepageSection({ id: "cloud-agents", title: "Cloud agents", component: HomepageCard });
+  app.slots.homepageSection({
+    id: "cloud-agents",
+    title: "Cloud agents",
+    component: HomepageCard,
+  });
 
   // Settings → Plugins → Boat Cloud Agents, below bb's list, in this order.
   app.slots.settingsSection({
     id: "setup",
     title: "Setup",
-    description: "What cloud agents need on boat.dev, checked without starting anything.",
+    description:
+      "What cloud agents need on boat.dev, checked without starting anything.",
     component: SetupSettings,
   });
   app.slots.settingsSection({
@@ -128,20 +148,23 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "orchestrators",
     title: "Orchestrators (optional)",
-    description: "An orchestrator is a chat that plans and coordinates tasks for one project. Skip this if you start tasks yourself.",
+    description:
+      "An orchestrator is a chat that plans and coordinates tasks for one project. Skip this if you start tasks yourself.",
     component: OrchestratorsSettings,
   });
   app.slots.settingsSection({
     id: "advanced",
     title: "Advanced",
-    description: "Sandbox lifetimes, reviews, protected branches and the boat CLI location.",
+    description:
+      "Sandbox lifetimes, reviews, protected branches and the boat CLI location.",
     component: AdvancedSettings,
   });
   // …and a backup of all of it (`bb boat config export|import`).
   app.slots.settingsSection({
     id: "backup",
     title: "Back up and restore",
-    description: "Save your settings, projects, model presets and protocol to a file, or restore them from one.",
+    description:
+      "Save your settings, projects, model presets and protocol to a file, or restore them from one.",
     component: BackupSettings,
   });
 
@@ -149,3 +172,9 @@ export default definePluginApp((app) => {
   // sandbox size chip, thread header and menu (each skipped if this bb lacks it).
   registerEntryPoints(app);
 });
+
+function useSourceHasTasks(props: { threadId: string }): boolean {
+  const hasTasks = useThreadHasTasks(props);
+  const isTask = useHasTask(props);
+  return hasTasks && !isTask;
+}

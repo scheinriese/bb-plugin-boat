@@ -185,6 +185,7 @@ function TaskChip({ task }: { task: TaskDto }) {
 }
 function ReviewCard({ task }: { task: TaskDetailDto }) {
   const { openTask } = useCloudAgentsNavigation();
+  const summary = task.excerpt?.split(/===\s*REVIEW\s*===/i)[0]?.trim();
   const verdict = task.verdict;
   const approved = verdict === "approve" || verdict === "approved";
   const changes = verdict === "changes-requested";
@@ -223,9 +224,9 @@ function ReviewCard({ task }: { task: TaskDetailDto }) {
           Full review
         </button>
       </div>
-      {(task.excerpt || task.error) && (
+      {(summary || task.error) && (
         <p className="whitespace-pre-wrap px-3.5 pb-3 text-xs text-muted-foreground">
-          {task.excerpt || task.error}
+          {summary || task.error}
         </p>
       )}
     </Frame>

@@ -6,7 +6,11 @@
 // page, so it only relies on the RPC hooks and its own dialogs.
 import { useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { experimental_useRpcMutation, experimental_useRpcQuery, useSettings } from "@get-bb/plugin-sdk/app";
+import {
+  experimental_useRpcMutation,
+  experimental_useRpcQuery,
+  useSettings,
+} from "@get-bb/plugin-sdk/app";
 import { rpcContract, type ProjectDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -20,14 +24,36 @@ import {
 } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "./dialogs";
-import { MACHINE_LABEL, environmentLabel, errorMessage, plural, repoAtBase, shortRepo } from "./format";
+import {
+  MACHINE_LABEL,
+  environmentLabel,
+  errorMessage,
+  plural,
+  repoAtBase,
+  shortRepo,
+} from "./format";
 import { useProjects } from "./hooks";
 import { accessNotes, aiProxyCost } from "./logic";
 import { ProjectSizeField } from "./sandbox-size";
-import { Disclosure, EmptyBox, Field, IconButton, InlineAlert, ListPanel, SUGGEST_INPUT, showError } from "./ui";
+import {
+  Disclosure,
+  EmptyBox,
+  Field,
+  IconButton,
+  InlineAlert,
+  ListPanel,
+  SUGGEST_INPUT,
+  showError,
+} from "./ui";
 
 /** The contract allows up to 8 repos per project. */
 const MAX_REPOS = 8;
@@ -61,7 +87,12 @@ export function ProjectsSettings({ page = false }: { page?: boolean } = {}) {
         <p className="text-xs tabular-nums text-muted-foreground">
           {data ? plural(projects.length, "project") : null}
         </p>
-        <Button variant="outline" size="sm" className="ml-auto h-7" onClick={() => setEditing("new")}>
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto h-7"
+          onClick={() => setEditing("new")}
+        >
           <Icon name="Plus" /> Add project
         </Button>
       </div>
@@ -70,9 +101,12 @@ export function ProjectsSettings({ page = false }: { page?: boolean } = {}) {
         <EmptyBox>Loading projects…</EmptyBox>
       ) : projects.length === 0 && !error ? (
         <EmptyBox>
-          <span className="block font-medium text-foreground">Add your first project</span>
+          <span className="block font-medium text-foreground">
+            Add your first project
+          </span>
           <span className="mt-1 block text-xs">
-            Repos you trust: tasks on them get the project's environment and rules. Use Add project, or run{" "}
+            Repos you trust: tasks on them get the project's environment and
+            rules. Use Add project, or run{" "}
             <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]">
               bb boat project add --name "Web app" --repo acme/web@main
             </code>
@@ -80,7 +114,77 @@ export function ProjectsSettings({ page = false }: { page?: boolean } = {}) {
           </span>
         </EmptyBox>
       ) : projects.length > 0 ? (
-        page ? <div className="space-y-3">{projects.map(project=><article key={project.id} className="rounded-[10px] border border-border bg-card p-4"><div className="mb-4 flex items-center gap-3"><h2 className="min-w-0 flex-1 text-sm font-medium">{project.name}</h2><Button size="sm" variant="outline" className="h-7 text-xs" onClick={()=>setEditing(project)}>Edit</Button></div><dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs"><dt className="text-muted-foreground">Repos</dt><dd className="break-words">{project.repos.map(repo=>`${shortRepo(repo.repo)} · base ${repo.baseBranch}`).join(" · ")}</dd><dt className="text-muted-foreground">Work lands</dt><dd>{project.delivery==="push"?"Ships to the base branch after your OK":"Pull requests"}</dd><dt className="text-muted-foreground">Sandbox</dt><dd>{project.machineType ? MACHINE_LABEL[project.machineType].split(" · ")[0] : "Default size"}</dd><dt className="text-muted-foreground">Snapshot</dt><dd className={project.snapshot?"text-[#5BD08A]":"text-muted-foreground"}>{project.snapshot??"None yet"}</dd><dt className="text-muted-foreground">Orchestrator rules</dt><dd className="break-words text-[#7AA7FF]">{project.protocolPath??"—"}</dd></dl></article>)}</div> : <ListPanel label="Projects">{projects.map(project=><ProjectRow key={project.id} project={project} onEdit={()=>setEditing(project)}/>)}</ListPanel>
+        page ? (
+          <div className="space-y-3">
+            {projects.map((project) => (
+              <article
+                key={project.id}
+                className="rounded-[10px] border border-border bg-card p-4"
+              >
+                <div className="mb-4 flex items-center gap-3">
+                  <h2 className="min-w-0 flex-1 text-sm font-medium">
+                    {project.name}
+                  </h2>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => setEditing(project)}
+                  >
+                    Edit
+                  </Button>
+                </div>
+                <dl className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
+                  <dt className="text-muted-foreground">Repos</dt>
+                  <dd className="break-words">
+                    {project.repos
+                      .map(
+                        (repo) =>
+                          `${shortRepo(repo.repo)} · base ${repo.baseBranch}`,
+                      )
+                      .join(" · ")}
+                  </dd>
+                  <dt className="text-muted-foreground">Work lands</dt>
+                  <dd>
+                    {project.delivery === "push"
+                      ? "Ships to the base branch after your OK"
+                      : "Pull requests"}
+                  </dd>
+                  <dt className="text-muted-foreground">Sandbox</dt>
+                  <dd>
+                    {project.machineType
+                      ? MACHINE_LABEL[project.machineType].split(" · ")[0]
+                      : "Default size"}
+                  </dd>
+                  <dt className="text-muted-foreground">Snapshot</dt>
+                  <dd
+                    className={
+                      project.snapshot
+                        ? "text-[#5BD08A]"
+                        : "text-muted-foreground"
+                    }
+                  >
+                    {project.snapshot ?? "None yet"}
+                  </dd>
+                  <dt className="text-muted-foreground">Orchestrator rules</dt>
+                  <dd className="break-words text-[#7AA7FF]">
+                    {project.protocolPath ?? "—"}
+                  </dd>
+                </dl>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <ListPanel label="Projects">
+            {projects.map((project) => (
+              <ProjectRow
+                key={project.id}
+                project={project}
+                onEdit={() => setEditing(project)}
+              />
+            ))}
+          </ListPanel>
+        )
       ) : null}
       <ProjectDialog
         sheet={page}
@@ -93,8 +197,17 @@ export function ProjectsSettings({ page = false }: { page?: boolean } = {}) {
   );
 }
 
-function ProjectRow({ project, onEdit }: { project: ProjectDto; onEdit: () => void }) {
-  const remove = experimental_useRpcMutation({ contract: rpcContract, method: "deleteProject" });
+function ProjectRow({
+  project,
+  onEdit,
+}: {
+  project: ProjectDto;
+  onEdit: () => void;
+}) {
+  const remove = experimental_useRpcMutation({
+    contract: rpcContract,
+    method: "deleteProject",
+  });
   const [confirming, setConfirming] = useState(false);
 
   const runDelete = async () => {
@@ -109,11 +222,19 @@ function ProjectRow({ project, onEdit }: { project: ProjectDto; onEdit: () => vo
 
   return (
     <li className="flex items-start gap-3 px-4 py-2.5">
-      <Icon name="FolderGit" className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <Icon
+        name="FolderGit"
+        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+        aria-hidden
+      />
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex min-w-0 items-baseline gap-2">
-          <span className="truncate text-sm font-medium text-foreground">{project.name}</span>
-          <span className="shrink-0 font-mono text-xs text-muted-foreground">{project.id}</span>
+          <span className="truncate text-sm font-medium text-foreground">
+            {project.name}
+          </span>
+          <span className="shrink-0 font-mono text-xs text-muted-foreground">
+            {project.id}
+          </span>
         </div>
         <ul
           aria-label="Repos"
@@ -137,27 +258,54 @@ function ProjectRow({ project, onEdit }: { project: ProjectDto; onEdit: () => vo
           ) : null}
           {project.protocolPath ? (
             <span className="inline-flex min-w-0 max-w-full items-center gap-1">
-              <Icon name="FileText" className="size-3.5 shrink-0" aria-label="Protocol file" />
+              <Icon
+                name="FileText"
+                className="size-3.5 shrink-0"
+                aria-label="Protocol file"
+              />
               <span className="truncate font-mono">{project.protocolPath}</span>
             </span>
           ) : null}
-          {project.machineType ? <span title="The size of its new task sandboxes">{MACHINE_LABEL[project.machineType].split(" · ")[0]} sandboxes</span> : null}
-          {project.workerMode === "boat" ? <span title="Its tasks always run headless in boat, with no access to your bb">tasks in boat only</span> : null}
+          {project.machineType ? (
+            <span title="The size of its new task sandboxes">
+              {MACHINE_LABEL[project.machineType].split(" · ")[0]} sandboxes
+            </span>
+          ) : null}
+          {project.workerMode === "boat" ? (
+            <span title="Its tasks always run headless in boat, with no access to your bb">
+              tasks in boat only
+            </span>
+          ) : null}
           {project.delivery === "push" ? (
-            <span title="No pull requests: tasks commit, and you ship approved work to the base branch">ships after approval</span>
+            <span title="No pull requests: tasks commit, and you ship approved work to the base branch">
+              ships after approval
+            </span>
           ) : null}
           {project.protectedBranches.length > 0 ? (
             <span title="No task may push to these, on top of the base branches">
-              protects <span className="font-mono">{project.protectedBranches.join(", ")}</span>
+              protects{" "}
+              <span className="font-mono">
+                {project.protectedBranches.join(", ")}
+              </span>
             </span>
           ) : null}
-          {project.instructions.trim() !== "" ? <span title={project.instructions}>has instructions</span> : null}
+          {project.instructions.trim() !== "" ? (
+            <span title={project.instructions}>has instructions</span>
+          ) : null}
         </div>
         <ProjectAccessLine projectId={project.id} />
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
-        <IconButton label={`Edit ${project.name}`} icon="Edit" onClick={onEdit} />
-        <IconButton label={`Delete ${project.name}`} icon="Trash2" onClick={() => setConfirming(true)} />
+        <IconButton
+          label={`Edit ${project.name}`}
+          icon="Edit"
+          onClick={onEdit}
+        />
+        <IconButton
+          label={`Delete ${project.name}`}
+          icon="Trash2"
+          onClick={() => setConfirming(true)}
+        />
       </div>
       <ConfirmDialog
         open={confirming}
@@ -175,12 +323,29 @@ function ProjectRow({ project, onEdit }: { project: ProjectDto; onEdit: () => vo
 
 // -------------------------------------------------------------------- editor
 
-function ProjectDialog({ editing, onOpenChange, sheet = false }: { editing: Editing; onOpenChange: (open: boolean) => void; sheet?: boolean }) {
+function ProjectDialog({
+  editing,
+  onOpenChange,
+  sheet = false,
+}: {
+  editing: Editing;
+  onOpenChange: (open: boolean) => void;
+  sheet?: boolean;
+}) {
   return (
     <Dialog open={editing !== null} onOpenChange={onOpenChange}>
-      <DialogContent className={sheet ? "bottom-0 left-auto right-0 top-0 h-full max-h-none w-full translate-x-0 translate-y-0 overflow-y-auto rounded-none sm:max-w-[440px]" : "max-h-[90vh] overflow-y-auto sm:max-w-xl"}>
+      <DialogContent
+        className={
+          sheet
+            ? "bottom-0 left-auto right-0 top-0 h-full max-h-none w-full translate-x-0 translate-y-0 overflow-y-auto rounded-none sm:max-w-[440px]"
+            : "max-h-[90vh] overflow-y-auto sm:max-w-xl"
+        }
+      >
         {editing !== null ? (
-          <ProjectForm project={editing === "new" ? null : editing} onDone={() => onOpenChange(false)} />
+          <ProjectForm
+            project={editing === "new" ? null : editing}
+            onDone={() => onOpenChange(false)}
+          />
         ) : null}
       </DialogContent>
     </Dialog>
@@ -202,7 +367,12 @@ export function NewProjectDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
         {open ? (
-          <ProjectForm project={null} draft={draft} onSaved={onSaved} onDone={() => onOpenChange(false)} />
+          <ProjectForm
+            project={null}
+            draft={draft}
+            onSaved={onSaved}
+            onDone={() => onOpenChange(false)}
+          />
         ) : null}
       </DialogContent>
     </Dialog>
@@ -227,12 +397,22 @@ function ProjectForm({
   onSaved?: (project: ProjectDto) => void;
   onDone: () => void;
 }) {
-  const save = experimental_useRpcMutation({ contract: rpcContract, method: "saveProject" });
+  const save = experimental_useRpcMutation({
+    contract: rpcContract,
+    method: "saveProject",
+  });
   const nextKey = useRef(0);
   // A new repo starts on main (a real value, not a placeholder): edit it for another base.
-  const makeRow = (repo = "", baseBranch = ""): RepoRow => ({ key: nextKey.current++, repo, baseBranch: baseBranch || "main" });
+  const makeRow = (repo = "", baseBranch = ""): RepoRow => ({
+    key: nextKey.current++,
+    repo,
+    baseBranch: baseBranch || "main",
+  });
 
-  const [name, setName] = useState(project?.name ?? (draft ? (shortRepo(draft.repo).split("/").pop() ?? "") : ""));
+  const [name, setName] = useState(
+    project?.name ??
+      (draft ? (shortRepo(draft.repo).split("/").pop() ?? "") : ""),
+  );
   const [repos, setRepos] = useState<RepoRow[]>(() =>
     project && project.repos.length > 0
       ? project.repos.map((entry) => makeRow(entry.repo, entry.baseBranch))
@@ -241,13 +421,23 @@ function ProjectForm({
   const [environment, setEnvironment] = useState(project?.environment ?? "");
   const [snapshot, setSnapshot] = useState(project?.snapshot ?? "");
   const [protocolPath, setProtocolPath] = useState(project?.protocolPath ?? "");
-  const [workerMode, setWorkerMode] = useState<WorkerMode>(project?.workerMode ?? "chat");
+  const [workerMode, setWorkerMode] = useState<WorkerMode>(
+    project?.workerMode ?? "chat",
+  );
   const [delivery, setDelivery] = useState<Delivery>(project?.delivery ?? "pr");
-  const [protectedText, setProtectedText] = useState((project?.protectedBranches ?? []).join(", "));
+  const [protectedText, setProtectedText] = useState(
+    (project?.protectedBranches ?? []).join(", "),
+  );
   const [instructions, setInstructions] = useState(project?.instructions ?? "");
-  const [machineType, setMachineType] = useState<ProjectDto["machineType"]>(project?.machineType ?? null);
+  const [machineType, setMachineType] = useState<ProjectDto["machineType"]>(
+    project?.machineType ?? null,
+  );
   const workers = useSettings().values?.workers;
-  const snapshots = experimental_useRpcQuery({ contract: rpcContract, method: "snapshots", input: null });
+  const snapshots = experimental_useRpcQuery({
+    contract: rpcContract,
+    method: "snapshots",
+    input: null,
+  });
   const [failure, setFailure] = useState<string | null>(null);
 
   // What's still empty, said next to the disabled button.
@@ -259,10 +449,16 @@ function ProjectForm({
   const canSubmit = missing.length === 0;
 
   const updateRow = (key: number, patch: Partial<Omit<RepoRow, "key">>) =>
-    setRepos((rows) => rows.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+    setRepos((rows) =>
+      rows.map((row) => (row.key === key ? { ...row, ...patch } : row)),
+    );
   // Rows mount and unmount under the pointer: move focus to the row that's left to edit.
   const focusRow = (key: number | undefined) => {
-    if (key !== undefined) setTimeout(() => document.getElementById(`ca-project-repo-${key}`)?.focus(), 0);
+    if (key !== undefined)
+      setTimeout(
+        () => document.getElementById(`ca-project-repo-${key}`)?.focus(),
+        0,
+      );
   };
   const addRow = () => {
     const row = makeRow();
@@ -286,7 +482,10 @@ function ProjectForm({
       const { project: saved } = await save.mutate({
         ...(project ? { id: project.id } : {}),
         name: name.trim(),
-        repos: repos.map((row) => ({ repo: row.repo.trim(), baseBranch: row.baseBranch.trim() })),
+        repos: repos.map((row) => ({
+          repo: row.repo.trim(),
+          baseBranch: row.baseBranch.trim(),
+        })),
         environment: environment.trim() || null,
         snapshot: snapshot.trim() || null,
         protocolPath: protocolPath.trim() || null,
@@ -307,7 +506,9 @@ function ProjectForm({
   return (
     <form onSubmit={submit} className="grid gap-4">
       <DialogHeader>
-        <DialogTitle>{project ? `Edit ${project.name}` : "Add project"}</DialogTitle>
+        <DialogTitle>
+          {project ? `Edit ${project.name}` : "Add project"}
+        </DialogTitle>
         <DialogDescription>
           Choose the repos, sandbox and rules for this project.
         </DialogDescription>
@@ -328,12 +529,17 @@ function ProjectForm({
         {repos.map((row, index) => {
           const label = index === 0 ? "Main repo" : `Repo ${index + 1}`;
           return (
-            <div key={row.key} className="grid grid-cols-[minmax(0,1fr)_minmax(0,9rem)_auto] items-end gap-2">
+            <div
+              key={row.key}
+              className="grid grid-cols-[minmax(0,1fr)_minmax(0,9rem)_auto] items-end gap-2"
+            >
               <Field label={label} htmlFor={`ca-project-repo-${row.key}`}>
                 <Input
                   id={`ca-project-repo-${row.key}`}
                   value={row.repo}
-                  onChange={(event) => updateRow(row.key, { repo: event.target.value })}
+                  onChange={(event) =>
+                    updateRow(row.key, { repo: event.target.value })
+                  }
                   placeholder="owner/name or GitHub URL"
                   required
                 />
@@ -342,7 +548,9 @@ function ProjectForm({
                 <Input
                   id={`ca-project-base-${row.key}`}
                   value={row.baseBranch}
-                  onChange={(event) => updateRow(row.key, { baseBranch: event.target.value })}
+                  onChange={(event) =>
+                    updateRow(row.key, { baseBranch: event.target.value })
+                  }
                   aria-label={`${label} base branch`}
                   required
                 />
@@ -369,7 +577,8 @@ function ProjectForm({
             <Icon name="Plus" /> Add repo
           </Button>
           <p className="text-xs text-muted-foreground">
-            Branches, PRs and the protocol file live in the main repo; the others are cloned next to it.
+            Branches, PRs and the protocol file live in the main repo; the
+            others are cloned next to it.
           </p>
         </div>
       </fieldset>
@@ -380,7 +589,9 @@ function ProjectForm({
           hint={
             <>
               The boat environment its tasks start in (
-              <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]">boat new --environment</code>
+              <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]">
+                boat new --environment
+              </code>
               ).
             </>
           }
@@ -397,14 +608,18 @@ function ProjectForm({
           label="Snapshot"
           htmlFor="ca-project-snapshot"
           hint={
-            snapshots.data?.error
-              ? "A saved boat snapshot its tasks start from. Couldn't list yours."
-              : (
-                  <>
-                    A saved boat snapshot its tasks start from (Save as snapshot on a finished repo check, or{" "}
-                    <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]">bb boat sandbox snapshot</code>); not on the trial.
-                  </>
-                )
+            snapshots.data?.error ? (
+              "A saved boat snapshot its tasks start from. Couldn't list yours."
+            ) : (
+              <>
+                A saved boat snapshot its tasks start from (Save as snapshot on
+                a finished repo check, or{" "}
+                <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]">
+                  bb boat sandbox snapshot
+                </code>
+                ); not on the trial.
+              </>
+            )
           }
         >
           <Input
@@ -425,12 +640,17 @@ function ProjectForm({
         </Field>
       </div>
       <ProjectSizeField value={machineType} onChange={setMachineType} />
-      <label htmlFor="ca-project-chats" className="flex items-start gap-2 text-sm">
+      <label
+        htmlFor="ca-project-chats"
+        className="flex items-start gap-2 text-sm"
+      >
         <Checkbox
           id="ca-project-chats"
           className="mt-0.5"
           checked={workerMode === "chat"}
-          onCheckedChange={(checked) => setWorkerMode(checked === true ? "chat" : "boat")}
+          onCheckedChange={(checked) =>
+            setWorkerMode(checked === true ? "chat" : "boat")
+          }
         />
         <span className="min-w-0">
           Run tasks as chats
@@ -450,7 +670,10 @@ function ProjectForm({
             : "Each task pushes its own branch and opens a draft pull request."
         }
       >
-        <Select value={delivery} onValueChange={(next) => setDelivery(next as Delivery)}>
+        <Select
+          value={delivery}
+          onValueChange={(next) => setDelivery(next as Delivery)}
+        >
           <SelectTrigger id="ca-project-delivery">
             <SelectValue />
           </SelectTrigger>
@@ -463,7 +686,12 @@ function ProjectForm({
           </SelectContent>
         </Select>
       </Field>
-      <Disclosure label="Protected branches, instructions and rules file" defaultOpen={protectedText !== "" || instructions !== "" || protocolPath !== ""}>
+      <Disclosure
+        label="Protected branches, instructions and rules file"
+        defaultOpen={
+          protectedText !== "" || instructions !== "" || protocolPath !== ""
+        }
+      >
         <div className="grid gap-4">
           <Field
             label="Protected branches"
@@ -511,14 +739,20 @@ function ProjectForm({
       <DialogFooter>
         {missing.length > 0 ? (
           <p className="self-center text-xs text-muted-foreground sm:mr-auto">
-            Needs {missing.length > 1 ? `${missing.slice(0, -1).join(", ")} and ${missing.at(-1)}` : missing[0]}.
+            Needs{" "}
+            {missing.length > 1
+              ? `${missing.slice(0, -1).join(", ")} and ${missing.at(-1)}`
+              : missing[0]}
+            .
           </p>
         ) : null}
         <Button type="button" variant="outline" onClick={onDone}>
           Cancel
         </Button>
         <Button type="submit" disabled={save.isPending || !canSubmit}>
-          {save.isPending ? <Icon name="Loading" className="animate-spin" /> : null}
+          {save.isPending ? (
+            <Icon name="Loading" className="animate-spin" />
+          ) : null}
           {project ? "Save project" : "Add project"}
         </Button>
       </DialogFooter>
@@ -532,40 +766,81 @@ function ProjectForm({
  * warning for boat credentials, and a note when real AI keys go in.
  */
 function ProjectAccessLine({ projectId }: { projectId: string }) {
-  const { data, error } = experimental_useRpcQuery({ contract: rpcContract, method: "projectAccess", input: { projectId } });
-  if (error) return <p className="text-xs text-warning-text">{error.message}</p>;
+  const { data, error } = experimental_useRpcQuery({
+    contract: rpcContract,
+    method: "projectAccess",
+    input: { projectId },
+  });
+  if (error)
+    return <p className="text-xs text-warning-text">{error.message}</p>;
   if (data === undefined) return null;
   const secrets = data.secretNames;
   const notes = accessNotes(data);
   return (
     <div className="space-y-0.5 text-xs text-muted-foreground">
       {data.error ? (
-        <p className="text-warning-text">Couldn't read the environment: {data.error}</p>
+        <p className="text-warning-text">
+          Couldn't read the environment: {data.error}
+        </p>
       ) : (
         <p className="text-pretty">
           <span className="sr-only">Environment secrets: </span>
-          {secrets.length === 0 ? "No secrets" : `${secrets.length} secret${secrets.length === 1 ? "" : "s"}: `}
-          {secrets.length > 0 ? <span className="font-mono">{secrets.join(", ")}</span> : null}
-          {data.secretFiles.length > 0 ? <span> · files <span className="font-mono">{data.secretFiles.join(", ")}</span></span> : null}
-          {data.passSecrets === false ? <span className="text-warning-text"> · secrets aren't passed in</span> : null}
-          {data.passGithub === false ? <span className="text-warning-text"> · GitHub access isn't passed in</span> : null}
-          {notes.includes("boat-credentials") ? (
-            <span className="text-warning-text"> · boat credentials are passed in: workers can start, stop and delete any of your sandboxes</span>
+          {secrets.length === 0
+            ? "No secrets"
+            : `${secrets.length} secret${secrets.length === 1 ? "" : "s"}: `}
+          {secrets.length > 0 ? (
+            <span className="font-mono">{secrets.join(", ")}</span>
           ) : null}
-          {notes.includes("boat-credentials-unknown") ? <span> · couldn't tell whether boat credentials are passed in</span> : null}
+          {data.secretFiles.length > 0 ? (
+            <span>
+              {" "}
+              · files{" "}
+              <span className="font-mono">{data.secretFiles.join(", ")}</span>
+            </span>
+          ) : null}
+          {data.passSecrets === false ? (
+            <span className="text-warning-text">
+              {" "}
+              · secrets aren't passed in
+            </span>
+          ) : null}
+          {data.passGithub === false ? (
+            <span className="text-warning-text">
+              {" "}
+              · GitHub access isn't passed in
+            </span>
+          ) : null}
+          {notes.includes("boat-credentials") ? (
+            <span className="text-warning-text">
+              {" "}
+              · boat credentials are passed in: workers can start, stop and
+              delete any of your sandboxes
+            </span>
+          ) : null}
+          {notes.includes("boat-credentials-unknown") ? (
+            <span> · couldn't tell whether boat credentials are passed in</span>
+          ) : null}
           {/* Information, not a warning: the proxy is a paid add-on. */}
           {notes.includes("real-ai-keys") ? (
             <span>
               {" "}
-              · real AI keys are passed in; <span className="font-mono">boat ai proxy on</span> passes placeholders ({aiProxyCost(data.aiProxyPrice)})
+              · real AI keys are passed in;{" "}
+              <span className="font-mono">boat ai proxy on</span> passes
+              placeholders ({aiProxyCost(data.aiProxyPrice)})
             </span>
           ) : null}
         </p>
       )}
-      <ul aria-label="GitHub access" className="flex flex-wrap gap-x-3 gap-y-0.5">
+      <ul
+        aria-label="GitHub access"
+        className="flex flex-wrap gap-x-3 gap-y-0.5"
+      >
         {data.repos.map((repo) => {
           const check = repo.lastCheck?.access ?? null;
-          const tone = check === "none" || check === "expired" || check === "read" ? "text-warning-text" : undefined;
+          const tone =
+            check === "none" || check === "expired" || check === "read"
+              ? "text-warning-text"
+              : undefined;
           const label =
             check === "write"
               ? "can push"
@@ -579,7 +854,11 @@ function ProjectAccessLine({ projectId }: { projectId: string }) {
                       ? `${repo.environmentPermission} (not checked in a sandbox yet)`
                       : "not checked yet";
           return (
-            <li key={repo.repo} className={tone} title={repo.lastCheck?.detail ?? undefined}>
+            <li
+              key={repo.repo}
+              className={tone}
+              title={repo.lastCheck?.detail ?? undefined}
+            >
               <span className="font-mono">{repo.repo}</span>: {label}
             </li>
           );
