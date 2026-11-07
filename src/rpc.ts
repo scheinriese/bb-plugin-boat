@@ -1,3 +1,4 @@
+import { fidelityHandlers } from "./rpc-fidelity.ts";
 // RPC handlers behind the Cloud agents UI (contract in ../contract.ts).
 import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import { TAGS, rpcContract, type PreviewDto, type SandboxDto, type TaskDetailDto, type TaskDto, type TaskSourceDto, type ThreadRoleDto } from "../contract.ts";
@@ -354,6 +355,7 @@ export function registerRpc(runtime: Runtime): void {
   }
 
   bb.rpc.register(rpcContract, {
+    ...fidelityHandlers(runtime),
     // Sandbox sizes and memory (src/rpc-size.ts).
     ...sizeHandlers(runtime, refuse),
     overview: async () => {
@@ -1010,6 +1012,9 @@ export function registerRpc(runtime: Runtime): void {
         question: decision.question,
         recommendation: decision.recommendation,
         options: decision.options,
+        optionDetails: decision.optionDetails,
+        context: decision.context ?? null,
+        askedByTaskId: decision.askedByTaskId ?? null,
         taskIds: decision.taskIds,
         status: decision.status,
         answer: decision.answer,

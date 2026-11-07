@@ -1,3 +1,5 @@
+import { sidebarRpcMethods } from "./contract-sidebar.ts";
+export * from "./contract-sidebar.ts";
 // Shared RPC contract between server.ts and app.tsx.
 //
 // Imported as a VALUE by both sides (the app's live query hooks need it), so
@@ -6,6 +8,8 @@
 // is an identity function.
 import type { defineRpcContract as DefineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { decisionOptionSchema, fidelityRpcMethods } from "./contract-fidelity.ts";
+export * from "./contract-fidelity.ts";
 import { sizeRpcMethods, taskMemorySchema } from "./contract-size.ts";
 
 export { SIZE_VALUES, taskMemorySchema, resizeInfoSchema, type TaskMemoryDto, type ResizeInfoDto } from "./contract-size.ts";
@@ -450,6 +454,9 @@ export const decisionSchema = z.object({
   question: z.string(),
   recommendation: z.string(),
   options: z.array(z.string()),
+  optionDetails: z.array(decisionOptionSchema).optional(),
+  context: z.string().nullable().optional(),
+  askedByTaskId: z.string().nullable().optional(),
   taskIds: z.array(z.string()),
   status: z.enum(["open", "answered", "withdrawn"]),
   answer: z.string().nullable(),
@@ -546,6 +553,8 @@ export type SandboxSizeDto = z.infer<typeof sandboxSizeSchema>;
 export const rpcContract = defineRpcContract({
   // Sandbox sizes and memory (contract-size.ts).
   ...sizeRpcMethods,
+  ...fidelityRpcMethods,
+  ...sidebarRpcMethods,
   // ------------------------------------------------------------- reads
   overview: {
     input: z.null(),

@@ -1,3 +1,4 @@
+import { parseSandboxUsage, parseUsagePlan } from "./usage.ts";
 // Typed boat operations built on the CLI wrapper. All JSON shapes were
 // observed from boat CLI 1.0.89; every accessor tolerates missing fields.
 import { randomUUID } from "node:crypto";
@@ -801,6 +802,15 @@ export class BoatApi {
       checkoutRequired: bool(raw.checkoutRequired) ?? false,
       autoStopCapHours: autoStopCapFromLimits(raw),
     };
+  }
+
+  /** Read-only machine time/cost; billing seconds already include the size multiplier. */
+  async usage(id: string, window: { since?: string; until?: string } = {}, signal?: AbortSignal) {
+    return parseSandboxUsage(await this.cli.json(["usage", id, ...(window.since ? ["--since", window.since] : []), ...(window.until ? ["--until", window.until] : [])], { signal }));
+  }
+
+  async usagePlan(signal?: AbortSignal) {
+    return parseUsagePlan(await this.cli.json(["limits"], { signal }));
   }
 
   /** Names of the account's boat environments. */

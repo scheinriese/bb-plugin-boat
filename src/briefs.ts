@@ -106,6 +106,8 @@ const REVIEW_CONTRACT = `When you are finished, end your final message with this
 
 === REVIEW ===
 VERDICT: approve | changes-requested | blocked
+FINDINGS: [{"severity":"must-fix","label":"Must fix","text":"One concrete issue and why it matters","file":"src/example.ts","line":12}]
+Use severity must-fix or should. Put a bounded JSON array on one line, at most 20 findings; use [] when there are none. File and line are optional.
 PR: <pull request URL, or "none">
 BLOCKING ISSUES:
 1. <file:line — problem — suggested fix> (or "none")

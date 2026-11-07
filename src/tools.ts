@@ -1,3 +1,4 @@
+import { decisionOptionInputSchema } from "../contract-fidelity.ts";
 // Native agent tools for orchestrator threads. Same operations as the CLI,
 // with schemas (no shell quoting for long briefs) and timeline labels.
 import type { PluginAgentToolResult } from "@get-bb/plugin-sdk";
@@ -422,7 +423,9 @@ export function registerTools(runtime: Runtime): void {
     parameters: z.object({
       question: z.string().trim().min(3).max(500).describe("The decision, in plain words"),
       recommendation: z.string().trim().min(1).max(500).describe("What you recommend, and why in a few words"),
-      options: z.array(z.string().trim().min(1).max(200)).max(5).optional().describe("The choices, if there are a few"),
+      options: z.array(decisionOptionInputSchema).max(5).optional().describe("Choices as labels or objects: label, summary, facts (column/value), verdict (text/tone good|caution|bad), recommended"),
+      context: z.string().trim().max(1000).optional().describe("One context line under the question"),
+      asked_by_task_id: z.string().optional().describe("Task that asked the question, when applicable"),
       task_ids: z.array(z.string().min(4)).max(10).optional().describe("Tasks it's about"),
     }),
     execute: (params, ctx) =>
@@ -433,6 +436,8 @@ export function registerTools(runtime: Runtime): void {
           question: params.question,
           recommendation: params.recommendation,
           options: params.options ?? [],
+          context: params.context,
+          askedByTaskId: params.asked_by_task_id ? service.mustGet(params.asked_by_task_id).id : null,
           taskIds,
         });
         runtime.changed();

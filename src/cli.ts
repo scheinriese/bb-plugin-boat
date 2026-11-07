@@ -1,3 +1,4 @@
+import { decisionOptionInputSchema } from "../contract-fidelity.ts";
 // `bb boat …` — the agent- and human-facing command line.
 import { PluginCliError, cliCommand, defineCli, type PluginCliContext } from "@get-bb/plugin-sdk";
 import { MACHINE_TYPES, autoStopHours, dashboardUrl, type MachineType } from "./boat-api.ts";
@@ -1113,7 +1114,9 @@ export function buildCli(runtime: Runtime) {
         options: {
           question: { type: "string", required: true, description: "The decision, in plain words" },
           recommendation: { type: "string", required: true, description: "What you recommend, and why in a few words" },
-          option: { type: "string", repeatable: true, description: "A choice (repeat for each)" },
+          option: { type: "string", repeatable: true, description: "A choice label or JSON object with label, summary, facts, verdict, recommended (repeat for each)" },
+          context: { type: "string", description: "One context line under the question" },
+          "asked-by-task": { type: "string", description: "Task that asked the question" },
           task: { type: "string", repeatable: true, split: ",", description: "Task ids it's about" },
           thread: { type: "string", description: "Orchestrator thread (default: this one)" },
           json,
@@ -1125,7 +1128,14 @@ export function buildCli(runtime: Runtime) {
               orchestratorThreadId: threadId,
               question: options.question.trim(),
               recommendation: options.recommendation.trim(),
-              options: (options.option ?? []).map((entry) => entry.trim()).filter(Boolean),
+              options: (options.option ?? []).map((entry) => {
+                const value = entry.trim();
+                if (!value.startsWith("{")) return decisionOptionInputSchema.parse(value);
+                try { return decisionOptionInputSchema.parse(JSON.parse(value)); }
+                catch { throw new PluginCliError("Each JSON option needs a label and valid optional summary, facts, verdict and recommended fields.", { code: "invalid" }); }
+              }),
+              context: options.context,
+              askedByTaskId: options["asked-by-task"] ? service.mustGet(options["asked-by-task"]).id : null,
               taskIds: (options.task ?? []).map((id) => service.mustGet(id).id),
             });
             runtime.changed();

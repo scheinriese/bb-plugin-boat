@@ -2,8 +2,10 @@
 //
 // A task is one piece of delegated work: a coding agent conversation inside a
 // boat sandbox, dispatched by (usually) an orchestrator thread.
+import { eventMetadata, projectHistoryEvent, reviewFindings, type EventMetadata } from "./history.ts";
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
+import { normalizeDecisionOptions, type DecisionOption, type DecisionOptionInput, historyInputSchema, type HistoryEventDto } from "../contract-fidelity.ts";
 
 export const TASK_ROLES = ["implement", "review", "custom"] as const;
 export type TaskRole = (typeof TASK_ROLES)[number];
@@ -244,6 +246,10 @@ const MIGRATIONS = [
   `ALTER TABLE orchestrators ADD COLUMN retired_at TEXT`,
   `ALTER TABLE tasks ADD COLUMN unshipped INTEGER`,
   `ALTER TABLE tasks ADD COLUMN ship_approval TEXT`,
+  `ALTER TABLE decisions ADD COLUMN context TEXT`,
+  `ALTER TABLE decisions ADD COLUMN asked_by_task_id TEXT`,
+  `ALTER TABLE task_events ADD COLUMN metadata TEXT`,
+  `CREATE INDEX IF NOT EXISTS task_events_time ON task_events(at, seq)`,
 ];
 
 export const DECISION_STATUSES = ["open", "answered", "withdrawn"] as const;
@@ -299,6 +305,9 @@ export interface Decision {
   question: string;
   recommendation: string;
   options: string[];
+  optionDetails?: DecisionOption[];
+  context?: string | null;
+  askedByTaskId?: string | null;
   taskIds: string[];
   status: DecisionStatus;
   answer: string | null;
@@ -322,7 +331,10 @@ function toDecision(row: Record<string, unknown>): Decision {
     orchestratorThreadId: typeof row.orchestrator_thread_id === "string" ? row.orchestrator_thread_id : null,
     question: String(row.question),
     recommendation: String(row.recommendation),
-    options: stringList(row.options),
+    options: normalizeDecisionOptions(row.options).map((option) => option.label),
+    optionDetails: normalizeDecisionOptions(row.options),
+    context: typeof row.context === "string" ? row.context : null,
+    askedByTaskId: typeof row.asked_by_task_id === "string" ? row.asked_by_task_id : null,
     taskIds: stringList(row.task_ids),
     status: (DECISION_STATUSES as readonly string[]).includes(String(row.status)) ? (row.status as DecisionStatus) : "open",
     answer: typeof row.answer === "string" ? row.answer : null,
@@ -636,6 +648,7 @@ export class TaskStore {
   }
 
   addOrchestrator(threadId: string, project: { id: string; name: string } | null = null): void {
+    const existing = this.db().prepare(`SELECT retired_at FROM orchestrators WHERE thread_id = ?`).get(threadId) as Row | undefined;
     this.db()
       .prepare(
         `INSERT INTO orchestrators (thread_id, created_at, project_id, project_name) VALUES (?, ?, ?, ?)
@@ -643,6 +656,7 @@ export class TaskStore {
            project_name = COALESCE(excluded.project_name, orchestrators.project_name), retired_at = NULL`,
       )
       .run(threadId, new Date().toISOString(), project?.id ?? null, project?.name ?? null);
+    if (!existing || existing.retired_at !== null) this.addEvent("", "orchestrator-started", `${project?.name ?? "Orchestrator"} started`, { source: "user", orchestratorThreadId: threadId, to: "working" });
   }
 
   /** The chat stops being an orchestrator (it stays known as a former one). */
@@ -703,10 +717,44 @@ export class TaskStore {
     ).map((row) => String(row.id));
   }
 
-  addEvent(taskId: string, kind: string, text: string): void {
-    this.db()
-      .prepare(`INSERT INTO task_events (task_id, at, kind, text) VALUES (?, ?, ?, ?)`)
-      .run(taskId, new Date().toISOString(), kind, text.slice(0, 4000));
+  addEvent(taskId: string, kind: string, text: string, metadata: EventMetadata = {}): void {
+    const clean = eventMetadata(metadata);
+    const reviewId = kind === "review" ? text.match(/^Review (t_[\w]+)(?: started\b|:)/)?.[1] : null;
+    if (reviewId) {
+      const review = this.get(reviewId);
+      if (review) clean.review = {
+        reviewTaskId: review.id, round: Math.max(1, this.list({ parentTaskId: taskId, limit: 1000 }).filter((entry) => entry.role === "review" && entry.createdAt <= review.createdAt).length),
+        provider: review.provider, model: review.model, freshContext: review.turns <= 1,
+        verdict: text.match(/: ([a-z-]+)$/)?.[1] ?? null, findings: reviewFindings(review.result),
+      };
+    }
+    this.db().prepare(`INSERT INTO task_events (task_id, at, kind, text, metadata) VALUES (?, ?, ?, ?, ?)`)
+      .run(taskId, new Date().toISOString(), kind, text.slice(0, 4000), JSON.stringify(clean));
+  }
+
+  /** Newest first, stable seq cursor; scan bounds apply before presentation filtering. */
+  history(input: { taskId?: string; orchestratorThreadId?: string; beforeSeq?: number; since?: string; until?: string; limit?: number } = {}): { events: HistoryEventDto[]; nextBeforeSeq: number | null } {
+    const filter = historyInputSchema.parse(input);
+    const clauses: string[] = []; const params: (string | number)[] = [];
+    if (filter.taskId) { clauses.push("e.task_id = ?"); params.push(filter.taskId); }
+    if (filter.orchestratorThreadId) {
+      clauses.push("(t.orchestrator_thread_id = ? OR json_extract(CASE WHEN json_valid(e.metadata) THEN e.metadata ELSE '{}' END, '$.orchestratorThreadId') = ?)");
+      params.push(filter.orchestratorThreadId, filter.orchestratorThreadId);
+    }
+    if (filter.beforeSeq) { clauses.push("e.seq < ?"); params.push(filter.beforeSeq); }
+    if (filter.since) { clauses.push("julianday(e.at) >= julianday(?)"); params.push(filter.since); }
+    if (filter.until) { clauses.push("julianday(e.at) < julianday(?)"); params.push(filter.until); }
+    // Scan at most 2000 rows per page, even when raw logs vastly outnumber visible events.
+    const rows = this.db().prepare(`SELECT e.* FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY e.seq DESC LIMIT 2001`).all(...params) as Row[];
+    const events: HistoryEventDto[] = [];
+    let scanned = 0;
+    for (const row of rows.slice(0, 2000)) {
+      scanned++;
+      const projected = projectHistoryEvent(row, this.get(String(row.task_id)));
+      if (projected) events.push(projected);
+      if (events.length === filter.limit) break;
+    }
+    return { events, nextBeforeSeq: scanned < rows.length ? Number(rows[scanned - 1]!.seq) : null };
   }
 
   // ------------------------------------------------------------ previews
@@ -807,15 +855,18 @@ export class TaskStore {
 
   // ----------------------------------------------------------- decisions
 
-  addDecision(input: { orchestratorThreadId: string | null; question: string; recommendation: string; options: string[]; taskIds: string[] }): Decision {
+  addDecision(input: { orchestratorThreadId: string | null; question: string; recommendation: string; options: DecisionOptionInput[]; taskIds: string[]; context?: string | null; askedByTaskId?: string | null }): Decision {
     const id = `d_${randomBytes(4).toString("hex")}`;
+    const taskIds = [...new Set([...input.taskIds, ...(input.askedByTaskId ? [input.askedByTaskId] : [])])];
     this.db()
       .prepare(
-        `INSERT INTO decisions (id, orchestrator_thread_id, question, recommendation, options, task_ids, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
+        `INSERT INTO decisions (id, orchestrator_thread_id, question, recommendation, options, task_ids, status, created_at, context, asked_by_task_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
       )
-      .run(id, input.orchestratorThreadId, input.question, input.recommendation, JSON.stringify(input.options), JSON.stringify(input.taskIds), new Date().toISOString());
-    return this.decision(id)!;
+      .run(id, input.orchestratorThreadId, input.question, input.recommendation, JSON.stringify(normalizeDecisionOptions(input.options)), JSON.stringify(taskIds), new Date().toISOString(), input.context?.slice(0, 1000) ?? null, input.askedByTaskId ?? taskIds[0] ?? null);
+    const decision = this.decision(id)!;
+    this.addEvent(input.askedByTaskId ?? input.taskIds[0] ?? "", "needs-you", input.question, { source: "agent", decisionId: id, orchestratorThreadId: input.orchestratorThreadId ?? undefined });
+    return decision;
   }
 
   decision(id: string): Decision | null {
@@ -844,7 +895,10 @@ export class TaskStore {
     const result = this.db()
       .prepare(`UPDATE decisions SET status = ?, answer = ?, resolved_at = ? WHERE id = ? AND status = 'open'`)
       .run(status, answer, new Date().toISOString(), id) as { changes: number | bigint };
-    return Number(result.changes) > 0 ? this.decision(id) : null;
+    if (Number(result.changes) === 0) return null;
+    const decision = this.decision(id)!;
+    this.addEvent(decision.askedByTaskId ?? decision.taskIds[0] ?? "", status === "answered" ? "decision-answered" : "decision-withdrawn", decision.question, { source: "user", decisionId: id, orchestratorThreadId: decision.orchestratorThreadId ?? undefined });
+    return decision;
   }
 
   /** Decisions move with their orchestrator's tasks on a take-over. */

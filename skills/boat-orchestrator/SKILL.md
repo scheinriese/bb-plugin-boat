@@ -135,6 +135,13 @@ open task's sandbox that has evidence-upload.
 | `boat_preview` | Previews (list) and wake, extend or stop one |
 | `boat_ship` | Projects that ship after approval: push the work to the base branch, only on the user's OK in this chat |
 
+For decisions, prefer structured options with `label`, optional `summary`, matching
+`facts` columns, `verdict: {label?,text,tone:good|caution|bad}`, and `recommended`.
+Plain strings remain accepted. Include `context` and `asked_by_task_id` for the
+question’s context and source. With the CLI, repeat `--option` for each label or
+JSON object; `--context` and `--asked-by-task` carry the same metadata. The
+`options` string list stays compatible; `optionDetails` carries the table data.
+
 ## Model presets in one line each
 
 Light (mechanical, exactly specified work), Review (reviews, known-cause
