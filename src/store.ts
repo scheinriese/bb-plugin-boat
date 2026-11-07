@@ -35,6 +35,7 @@ export type Runner = (typeof RUNNERS)[number];
 export interface Task {
   id: string;
   title: string;
+  compactTitle?: string | null;
   role: TaskRole;
   status: TaskStatus;
   orchestratorThreadId: string | null;
@@ -251,6 +252,7 @@ const MIGRATIONS = [
   `ALTER TABLE task_events ADD COLUMN metadata TEXT`,
   `CREATE INDEX IF NOT EXISTS task_events_time ON task_events(at, seq)`,
   `ALTER TABLE decisions ADD COLUMN short_label TEXT`,
+  `ALTER TABLE tasks ADD COLUMN compact_title TEXT`,
 ];
 
 export const DECISION_STATUSES = ["open", "answered", "withdrawn"] as const;
@@ -351,6 +353,7 @@ type Row = Record<string, unknown>;
 const COLUMN_BY_FIELD: Record<keyof Task, string> = {
   id: "id",
   title: "title",
+  compactTitle: "compact_title",
   role: "role",
   status: "status",
   orchestratorThreadId: "orchestrator_thread_id",
@@ -401,6 +404,7 @@ function toTask(row: Row): Task {
   return {
     id: String(row.id),
     title: String(row.title),
+    compactTitle: nullableString(row.compact_title)?.trim().slice(0, 120) || null,
     role: row.role as TaskRole,
     status: row.status as TaskStatus,
     orchestratorThreadId: nullableString(row.orchestrator_thread_id),

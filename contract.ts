@@ -8,7 +8,7 @@ export * from "./contract-sidebar.ts";
 // is an identity function.
 import type { defineRpcContract as DefineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { decisionOptionSchema, fidelityRpcMethods } from "./contract-fidelity.ts";
+import { compactTitleSchema, decisionOptionSchema, fidelityRpcMethods } from "./contract-fidelity.ts";
 export * from "./contract-fidelity.ts";
 import { sizeRpcMethods, taskMemorySchema } from "./contract-size.ts";
 
@@ -265,6 +265,7 @@ export type TaskPublicStatusDto = z.infer<typeof taskPublicStatusSchema>;
 export const taskSchema = z.object({
   id: z.string(),
   title: z.string(),
+  compactTitle: compactTitleSchema.nullable().optional(),
   role: roleSchema,
   status: statusSchema,
   orchestratorThreadId: z.string().nullable(),

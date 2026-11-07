@@ -91,6 +91,7 @@ export function toTaskDto(
     movingToChat: extras.movingToChat ?? false,
     id: task.id,
     title: task.title,
+    compactTitle: task.compactTitle ?? null,
     role: task.role,
     status: task.status,
     orchestratorThreadId: task.orchestratorThreadId,

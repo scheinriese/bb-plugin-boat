@@ -1,6 +1,8 @@
 // Additive data contracts. Safe to import in the app: no server dependencies.
 import { z } from "zod";
 
+export const compactTitleSchema = z.string().trim().min(1).max(120);
+
 export const decisionOptionSchema = z.object({
   label: z.string().trim().min(1).max(200),
   summary: z.string().trim().max(500).optional(),

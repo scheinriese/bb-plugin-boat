@@ -135,6 +135,10 @@ open task's sandbox that has evidence-upload.
 | `boat_preview` | Previews (list) and wake, extend or stop one |
 | `boat_ship` | Projects that ship after approval: push the work to the base branch, only on the user's OK in this chat |
 
+For task dispatch, optionally provide `compact_title` (CLI `--compact-title`):
+an authored short subject for mobile chips, at most 120 characters. Without it,
+the full title remains visible.
+
 For decisions, prefer structured options with `label`, optional `summary`, matching
 `facts` columns, `verdict: {label?,text,tone:good|caution|bad}`, and `recommended`.
 Plain strings remain accepted. Include `context` and `asked_by_task_id` for the

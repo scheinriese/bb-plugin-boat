@@ -1,4 +1,4 @@
-import { decisionOptionInputSchema } from "../contract-fidelity.ts";
+import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidelity.ts";
 // Native agent tools for orchestrator threads. Same operations as the CLI,
 // with schemas (no shell quoting for long briefs) and timeline labels.
 import type { PluginAgentToolResult } from "@get-bb/plugin-sdk";
@@ -137,6 +137,7 @@ export function registerTools(runtime: Runtime): void {
     presentation: { label: { pending: "Dispatching a cloud agent", completed: "Dispatched a cloud agent" }, icon: { glyph: "ComputerCloud" } },
     parameters: z.object({
       title: z.string().min(1).max(200).describe("Short task title"),
+      compact_title: compactTitleSchema.optional().describe("Authored short subject for mobile task chips, e.g. Cart drawer"),
       brief: z.string().min(1).describe("Self-contained task brief in Markdown"),
       role: z.enum(TASK_ROLES).optional().describe("implement (default), review, or custom"),
       project: z.string().optional().describe("Project id (default: this chat's project)"),
@@ -169,6 +170,7 @@ export function registerTools(runtime: Runtime): void {
         const { task, pending } = await service.launchTask(
           {
             title: params.title,
+            compactTitle: params.compact_title,
             brief: `${params.brief}${context}`,
             role: params.role ?? "implement",
             project,

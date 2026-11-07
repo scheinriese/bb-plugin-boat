@@ -74,6 +74,8 @@ To override effort within a preset, pass \`effort\`. Work that's well defined in
 
 If boat rejects a model id, tell me so I can update the model presets (Settings → Models); until then use the successor model in the same preset (pass \`model\`).
 
+Give each dispatched task a concise compact_title subject for mobile chips (for example, Cart drawer); keep its full title clear and descriptive.
+
 ### Agents and usage limits
 
 ${AGENTS_PLACEHOLDER}

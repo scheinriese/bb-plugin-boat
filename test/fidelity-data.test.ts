@@ -177,3 +177,16 @@ test("sidebar rollups keep paid recovery in the stopped category and deduplicate
   env.store.addDecision({ orchestratorThreadId: "thr_plain", question: "Continue on Large?", recommendation: "Large", options: ["Large"], taskIds: [task.id] });
   assert.equal(sidebarState(env.service).threads.find((row) => row.threadId === "thr_plain")!.rollup!.needsYou, 1);
 });
+
+test("authored compact titles round-trip through launch, store and task DTO with a full-title fallback", async () => {
+  const { toTaskDto } = await import("../src/rpc.ts");
+  const { compactTitleSchema } = await import("../contract-fidelity.ts");
+  const env = makeService();
+  const task = (await env.service.launchTask({ title: "Redesign the cart drawer", compactTitle: " Cart drawer ", role: "implement", brief: "Improve it.", repo: "acme/web" }, 5000)).task;
+  assert.equal(env.store.get(task.id)!.compactTitle, "Cart drawer");
+  assert.equal(toTaskDto(env.store.get(task.id)!).compactTitle, "Cart drawer");
+  env.store.update(task.id, { compactTitle: null });
+  const older = toTaskDto(env.store.get(task.id)!); assert.equal(older.compactTitle, null); assert.equal(older.title, "Redesign the cart drawer");
+  assert.equal(compactTitleSchema.safeParse("x".repeat(121)).success, false);
+  assert.equal(compactTitleSchema.safeParse(" ").success, false);
+});

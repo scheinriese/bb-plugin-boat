@@ -237,6 +237,7 @@ export interface ServiceHooks {
 
 export interface StartTaskInput {
   title: string;
+  compactTitle?: string | null;
   role: TaskRole;
   brief: string;
   repo?: string | null;
@@ -1226,6 +1227,7 @@ export class BoatService {
     const task: Task = this.store.insert({
       id,
       title: clip(title, 200),
+      compactTitle: input.compactTitle?.trim().slice(0, 120) || null,
       role: input.role,
       status: "starting",
       orchestratorThreadId: input.orchestratorThreadId ?? null,
