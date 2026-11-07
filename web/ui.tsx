@@ -14,6 +14,7 @@ import { Button, type ButtonProps } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { CARD_TONES, type CardStatus } from "./cards-logic";
 import { richText, taskPhaseLabel } from "./logic";
 import {
   BB_PROVIDER_ID,
@@ -90,19 +91,20 @@ export function PhasePill({
   task,
   className,
 }: {
-  task: Pick<TaskDto, "phase" | "orchestratorThreadId" | "source">;
+  task: Pick<TaskDto, "phase" | "orchestratorThreadId" | "source"> & { publicStatus?: CardStatus };
   className?: string;
 }) {
+  const live = task.publicStatus;
   return (
     <span
       className={cn(
         "inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border px-2 text-xs",
-        phaseText(task),
+        live ? CARD_TONES[live.tone] : phaseText(task),
         className,
       )}
     >
-      <StatusDot className={phaseDot(task)} />
-      {taskPhaseLabel(task)}
+      <StatusDot className={live ? cn("bg-current", live.moving && "motion-safe:animate-pulse") : phaseDot(task)} />
+      {live?.label ?? taskPhaseLabel(task)}
     </span>
   );
 }

@@ -2,23 +2,20 @@
 // done, one compact row each. One orchestrator's (or chat's) work on its page
 // and side-panel tab (Board), or everything as separate sections on the
 // Cloud agents page (BoardSection).
-import { useId, useMemo, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { toast } from "sonner";
+import { useEffect, useRef, useId, useMemo, useState, type ReactNode } from "react";
 import { experimental_useRpcMutation, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { rpcContract, type DecisionDto, type TaskDto } from "../contract";
+import { DecisionCard } from "./cards";
+import { shipRpcContract } from "../contract-ship";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { ConfirmDialog, submitOnModEnter } from "./dialogs";
-import { relativeTime, reviewLabel } from "./format";
+import { reviewLabel } from "./format";
 import { useBoard, useCloudAgentsNavigation, useNow } from "./hooks";
-import { shipOutcome } from "./logic";
 import {
   CountPill,
   EmptyBox,
   InlineAlert,
-  Kbd,
   ListPanel,
   ModelChip,
   OpenChatButton,
@@ -247,68 +244,29 @@ function BoardTaskRow({ task, showOrchestrator }: { task: TaskDto; showOrchestra
  * closes the task. Your click is the approval.
  */
 export function ShipButton({ task, className }: { task: TaskDto; className?: string }) {
-  const [confirming, setConfirming] = useState(false);
-  const base = task.baseBranch ?? "the base branch";
-  return (
-    <>
-      <Button
-        variant="outline"
-        size="sm"
-        className={cn("relative z-10 -my-1 h-7", className)}
-        onClick={() => setConfirming(true)}
-        aria-label={`Ship ${task.title} to ${base}`}
-      >
-        <Icon name="Rocket" fallback="ArrowUpRight" /> Ship
-      </Button>
-      <ShipDialog task={task} open={confirming} onOpenChange={setConfirming} />
-    </>
-  );
+  const request = experimental_useRpcMutation({ contract: shipRpcContract, method: "requestShip" });
+  const navigate = useBbNavigate();
+  const run = async () => {
+    try { const result = await request.mutate({ id: task.id, from: "page" }); navigate.toThread(result.threadId); }
+    catch (error) { showError(error); }
+  };
+  return <Button variant="outline" size="sm" className={cn("relative z-10 h-7", className)} disabled={request.isPending} onClick={() => void run()}>
+    {request.isPending ? "Opening…" : `Ship to ${task.baseBranch ?? "main"}`}
+  </Button>;
 }
 
-/**
- * Ship's confirm, also opened by Ship in a task chat's header (`from: "chat"`,
- * for the task history). Confirming is the user's approval.
- */
-export function ShipDialog({
-  task,
-  open,
-  onOpenChange,
-  from = "page",
-}: {
-  task: TaskDto;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  from?: "page" | "chat";
-}) {
-  const ship = experimental_useRpcMutation({ contract: rpcContract, method: "shipTask" });
-  const base = task.baseBranch ?? "the base branch";
-  const run = async () => {
-    try {
-      const result = await ship.mutate({ id: task.id, from });
-      const where = result.shipped.map((entry) => `${entry.baseBranch} (${entry.sha.slice(0, 7)})`).join(", ");
-      toast.success(`Shipped ${task.title} to ${where}`, { description: shipOutcome({ status: result.task.status, sandbox: result.sandbox, keptBecause: result.keptBecause }) });
-      onOpenChange(false);
-    } catch (error) {
-      showError(error);
-    }
-  };
-  return (
-    <ConfirmDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title={`Ship to ${base}?`}
-      description={
-        <>
-          The task's commits for <span className="font-medium text-foreground">{task.title}</span> are pushed onto{" "}
-          <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]">{base}</code>, after updating them to its
-          latest version (nothing is forced). Then the task closes, and its sandbox is deleted unless another open task still uses it.
-        </>
-      }
-      confirmLabel={`Ship to ${base}`}
-      pending={ship.isPending}
-      onConfirm={() => void run()}
-    />
-  );
+/** Compatibility for older entry points: opens the same in-thread approval. */
+export function ShipDialog({ task, open, onOpenChange, from = "page" }: { task: TaskDto; open: boolean; onOpenChange: (open: boolean) => void; from?: "page" | "chat" }) {
+  const request = experimental_useRpcMutation({ contract: shipRpcContract, method: "requestShip" });
+  const navigate = useBbNavigate();
+  const started = useRef(false);
+  useEffect(() => {
+    if (!open) { started.current = false; return; }
+    if (started.current) return;
+    started.current = true;
+    void request.mutate({ id: task.id, from }).then(result => { onOpenChange(false); navigate.toThread(result.threadId); }).catch(error => { onOpenChange(false); showError(error); });
+  }, [open, task.id, from, request.mutate, navigate, onOpenChange]);
+  return null;
 }
 
 /**
@@ -354,15 +312,6 @@ function OrchestratorLink({ threadId }: { threadId: string }) {
 
 // ----------------------------------------------------------------- decisions
 
-/** What became of a decision on this row; shown until the board refresh drops it. */
-type Outcome = "sent" | "saved" | "dismissed";
-
-const OUTCOME_NOTE: Record<Outcome, string> = {
-  sent: "Sent to the orchestrator.",
-  saved: "Saved your answer, but its orchestrator chat is gone.",
-  dismissed: "Dismissed.",
-};
-
 function DecisionRow({
   decision,
   tasksById,
@@ -374,180 +323,6 @@ function DecisionRow({
   showOrchestrator: boolean;
   now: number;
 }) {
-  const answerDecision = experimental_useRpcMutation({ contract: rpcContract, method: "answerDecision" });
-  const dismissDecision = experimental_useRpcMutation({ contract: rpcContract, method: "dismissDecision" });
-  const [answering, setAnswering] = useState(false);
-  const [answer, setAnswer] = useState("");
-  // Hides the actions until the next board refresh drops the closed decision.
-  const [outcome, setOutcome] = useState<Outcome | null>(null);
-  const formId = useId();
-  const busy = answerDecision.isPending || dismissDecision.isPending;
-  const accepting = answerDecision.pendingInputs.some((input) => input.accept);
-  const sending = answerDecision.isPending && !accepting;
-  const canSend = answer.trim() !== "" && !busy;
-
-  const send = async (accept: boolean) => {
-    try {
-      const { delivered } = await answerDecision.mutate({
-        id: decision.id,
-        accept,
-        answer: accept ? null : answer.trim(),
-      });
-      // Not delivered: the orchestrator chat is gone, so the answer is only recorded.
-      setOutcome(delivered ? "sent" : "saved");
-      if (delivered) toast.success("Sent to the orchestrator");
-      else toast.warning("Saved your answer, but its orchestrator chat is gone");
-    } catch (error) {
-      showError(error);
-    }
-  };
-
-  const dismiss = async () => {
-    try {
-      await dismissDecision.mutate({ id: decision.id });
-      setOutcome("dismissed");
-      toast.success("Dismissed the decision");
-    } catch (error) {
-      showError(error);
-    }
-  };
-
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (canSend) void send(false);
-  };
-
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Escape" && !busy) {
-      event.preventDefault();
-      setAnswering(false);
-      return;
-    }
-    submitOnModEnter(event);
-  };
-
-  const linked = decision.taskIds;
-  return (
-    <li className="flex items-start gap-2.5 px-3 py-3 @2xl:px-4">
-      <StatusDot className="mt-1.5 bg-warning" />
-      <div className="min-w-0 flex-1 space-y-1.5">
-        <p className="break-words text-sm font-medium text-pretty text-foreground">{decision.question}</p>
-        <p className="break-words text-xs text-pretty text-muted-foreground">
-          <span className="font-medium text-foreground">Recommended:</span> {decision.recommendation}
-        </p>
-        {decision.options.length > 0 ? (
-          <ul aria-label="Options" className="flex flex-wrap gap-1">
-            {decision.options.map((option, index) => (
-              <li
-                key={index}
-                className="max-w-full break-words rounded-md border border-border bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground"
-              >
-                {option}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          {linked.length > 0 ? (
-            <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5">
-              <span>{linked.length === 1 ? "Task:" : "Tasks:"}</span>
-              {linked.map((taskId, index) => (
-                <span key={taskId} className="inline-flex min-w-0 max-w-full items-center">
-                  <LinkedTask taskId={taskId} task={tasksById.get(taskId)} />
-                  {index < linked.length - 1 ? <span aria-hidden>,</span> : null}
-                </span>
-              ))}
-            </span>
-          ) : null}
-          {showOrchestrator && decision.orchestratorThreadId ? (
-            <OrchestratorLink threadId={decision.orchestratorThreadId} />
-          ) : null}
-          <span className="tabular-nums">asked {relativeTime(decision.createdAt, now)}</span>
-        </div>
-        {outcome ? (
-          <p
-            role="status"
-            className={cn("pt-0.5 text-xs", outcome === "saved" ? "text-warning-text" : "text-muted-foreground")}
-          >
-            {OUTCOME_NOTE[outcome]}
-          </p>
-        ) : (
-          <>
-            <div className="flex flex-wrap items-center gap-2 pt-0.5">
-              <Button size="sm" className="h-7" disabled={busy} onClick={() => void send(true)}>
-                {accepting ? <Icon name="Loading" className="animate-spin" /> : null}
-                Accept recommendation
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7"
-                aria-expanded={answering}
-                aria-controls={formId}
-                disabled={busy && !answering}
-                onClick={() => setAnswering((value) => !value)}
-              >
-                Answer…
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-muted-foreground hover:text-foreground"
-                disabled={busy}
-                onClick={() => void dismiss()}
-              >
-                {dismissDecision.isPending ? <Icon name="Loading" className="animate-spin" /> : null}
-                Dismiss
-              </Button>
-            </div>
-            {answering ? (
-              <form id={formId} onSubmit={submit} className="space-y-2 pt-1">
-                <Textarea
-                  aria-label={`Your answer: ${decision.question}`}
-                  value={answer}
-                  onChange={(event) => setAnswer(event.target.value)}
-                  onKeyDown={onKeyDown}
-                  rows={2}
-                  maxLength={2000}
-                  autoFocus
-                  placeholder="Tell the orchestrator what to do…"
-                  className="max-h-48 min-h-16 resize-y text-sm"
-                />
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="mr-auto text-xs text-muted-foreground">
-                    <Kbd>⌘</Kbd> <Kbd>Enter</Kbd> to send
-                  </p>
-                  <Button type="button" variant="ghost" size="sm" className="h-7" onClick={() => setAnswering(false)}>
-                    Cancel
-                  </Button>
-                  <Button type="submit" size="sm" className="h-7" disabled={!canSend}>
-                    <Icon name={sending ? "Loading" : "Sent"} className={cn(sending && "animate-spin")} />
-                    Send
-                  </Button>
-                </div>
-              </form>
-            ) : null}
-          </>
-        )}
-      </div>
-    </li>
-  );
+  return <li className="px-3"><DecisionCard decision={decision} threadId={decision.orchestratorThreadId ?? ""} /></li>;
 }
 
-/** A task a decision is about: its title when the board has it, else its id. */
-function LinkedTask({ taskId, task }: { taskId: string; task: TaskDto | undefined }) {
-  const { openTask } = useCloudAgentsNavigation();
-  return (
-    <button
-      type="button"
-      onClick={() => openTask(taskId)}
-      className={cn(
-        "min-w-0 max-w-64 truncate rounded-sm text-left hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        task === undefined && "font-mono",
-      )}
-      aria-label={`Open task ${task?.title ?? taskId}`}
-    >
-      {task?.title ?? taskId}
-    </button>
-  );
-}
