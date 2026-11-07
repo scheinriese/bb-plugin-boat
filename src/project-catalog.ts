@@ -7,8 +7,8 @@ import type { BoatApi } from "./boat-api.ts";
 import { normalizeRepo } from "./boat-api.ts";
 
 interface NativeProject { id: string; name: string; gitRemoteUrl?: string | null; sources?: { hostId: string; path: string; isDefault?: boolean; type?: string }[] }
-export async function nativeProjectRows(bb: Pick<BbPluginApi, "sdk">): Promise<NativeProject[]> {
-  const raw: unknown = await bb.sdk.projects.list();
+export async function nativeProjectRows(bb: Pick<BbPluginApi, "sdk">, signal = AbortSignal.timeout(4000)): Promise<NativeProject[]> {
+  const raw: unknown = await bb.sdk.projects.list({ signal });
   const rows = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? (raw as { projects?: unknown }).projects : []);
   return (Array.isArray(rows) ? rows : []).filter((row): row is NativeProject => !!row && typeof row === "object" && typeof row.id === "string" && typeof row.name === "string").slice(0, 200);
 }
@@ -29,7 +29,7 @@ export async function repoMetadata(repo: string, signal: AbortSignal): Promise<{
 }
 export async function readProjectCatalog(bb: Pick<BbPluginApi, "sdk">, boat: Pick<BoatApi, "defaultEnvironment" | "environments" | "environmentInfo">, metadata = repoMetadata): Promise<ProjectCatalogDto> {
   const signal = AbortSignal.timeout(15_000);
-  const [rows, config, names, defaultName] = await Promise.all([nativeProjectRows(bb).catch(() => []), bb.sdk.system.config().catch(() => null), boat.environments(signal).catch((): string[] => []), boat.defaultEnvironment(signal).catch(() => null)]);
+  const [rows, config, names, defaultName] = await Promise.all([nativeProjectRows(bb, signal).catch(() => []), bb.sdk.system.config({ signal }).catch(() => null), boat.environments(signal).catch((): string[] => []), boat.defaultEnvironment(signal).catch(() => null)]);
   const ordered = defaultName && names.includes(defaultName) ? [defaultName, ...names.filter(name => name !== defaultName)] : names;
   const repos = new Map<string, ProjectCatalogDto["repos"][number]>(); let cursor = 0; let failed = false;
   const environments: (Awaited<ReturnType<BoatApi["environmentInfo"]>> | null)[] = Array(Math.min(ordered.length, 8)).fill(null);
