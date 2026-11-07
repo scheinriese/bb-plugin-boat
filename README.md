@@ -184,7 +184,7 @@ and what it stores.
 - [**Native starting flow**](docs/features.md#new-task) with starters:
   check a repo runs in a sandbox, fix a bug, explore and plan.
 - [**Projects**](docs/features.md#projects): repos with their base branches,
-  boat environment, snapshot, sandbox size and instructions, set once.
+  boat environment, snapshot, sandbox size, reviewer and instructions, set once.
 - [**Task chats**](docs/features.md#how-tasks-run-in-boat-or-as-task-chats):
   open a task as a bb chat and type into it: native starts, per project,
   `--chat`, or a headless task later (**Continue as a
@@ -193,7 +193,8 @@ and what it stores.
   approval**](docs/features.md#how-work-lands-pull-requests-or-ship-after-approval),
   per project.
 - [**Reviews**](docs/features.md#reviews) in a fresh context, by the other
-  agent when you have both.
+  agent when you have both. Native tasks use the reviewer selected in the
+  size drawer, then the project's preference, then the global default.
 - [**Protected branches**](docs/features.md#protected-branches) enforced in
   plugin-prepared delegated checkouts.
 - [**Previews**](docs/features.md#previews): private links to the app
@@ -210,8 +211,9 @@ and what it stores.
   recordings**](docs/features.md#screenshots-and-recordings) uploaded to
   your own bucket before the sandbox goes away.
 - [**Usage limits**](docs/features.md#coding-agents-and-usage-limits):
-  Claude and Codex hand work to each other near a limit, and nothing starts
-  on paid extra usage.
+  Claude and Codex hand work to each other near a limit. Delegated work waits
+  durably when subscription room is exhausted; starting it early requires an
+  in-chat confirmation for that request.
 - [**Model presets**](docs/features.md#model-presets) from Light to
   Frontier.
 - [**Commands**](docs/features.md#commands): everything as `bb boat …`, for
@@ -227,6 +229,16 @@ them into the grouped section.
 `bb boat config get | set | reset` reaches every setting, and
 `bb boat config export | import` backs them up. All of them, with keys and
 defaults: [docs/settings.md](docs/settings.md).
+
+## Optional companion: Workbench sidebar
+
+Boat works with bb's regular sidebar. **Workbench sidebar** is a separate
+plugin for provider rings, task/review nesting, quiet unread signals,
+collapsible work groups and pinned parent rows. It also works with ordinary
+bb chats when Boat is absent. Neither plugin requires the other.
+
+The companion is prepared separately for publication. Install and test each
+plugin independently; disabling Workbench restores bb's regular list.
 
 ## Go further: orchestrators
 
@@ -299,9 +311,9 @@ the Boat sandbox machine provider. `app.tsx` and `web/` are the UI
 uploader.
 
 Automated tests use a fake boat CLI. They do not verify a real paid sandbox
-run. The v1 UI also has limits: **Open PR** opens GitHub rather than merging;
-project-specific reviewer selection and automatic last-seen digests are not
-implemented. See [current limits](docs/features.md#current-limits).
+run. Merge and Ship use explicit in-thread confirmations with fresh source
+checks. Some host-owned layout and headless-chat integration limits remain;
+see [current limits](docs/features.md#current-limits).
 
 ## License
 

@@ -44,14 +44,14 @@ warns when a worker environment passes boat credentials into sandboxes.
 
 **Agents** holds agent detection and the task/review agent defaults.
 **Sandboxes & cost** holds the default size, capacity and idle-stop choices.
-**Orchestrators** holds coordination defaults. **Notifications** holds the
-device-notification switch. Everything else is under **Advanced**, including
+**Orchestrators** holds coordination defaults. **Notifications** holds Needs
+you, Ready and the off-by-default Progress option. Everything else is under **Advanced**, including
 How tasks run, environment, instructions, evidence uploads and usage limits.
 Rows requiring both agents are unavailable when only one is configured.
 
-The Projects page contains repo, environment, snapshot, size and delivery
-settings, with secrets shown by name only. A per-project reviewer selector
-is not available; the global review setting still applies.
+The Projects page contains repos, environment, snapshot, size, reviewer and
+delivery settings, with secrets shown by name only. An unset project reviewer
+inherits the global setting; an explicit native task drawer choice wins.
 
 | Section | Setting | Key | Default |
 | --- | --- | --- | --- |

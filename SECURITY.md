@@ -139,10 +139,18 @@ rights of the user who runs bb. In particular, it uses:
   status, when installed.
 - **Messages in bb**, through bb's message hook: bb asks the plugin about
   each message before an agent gets it. The plugin handles its explicit
-  native-start intent and a task chat whose sandbox stopped under background
+  native-start intent, subscription admission for a cold Boat start, and a task chat whose sandbox stopped under background
   work. For the latter it holds one message
   to that chat once, for 10 seconds, and puts a note for the agent in
   front of it in bb's queue. It keeps no message text.
+
+Delegated new-work requests waiting for subscription room are stored in the
+plugin database with their original brief and non-secret launch settings.
+Cancellation, source generation and an atomic task receipt prevent stale or
+duplicate starts. A paid-start approval is bound to one request, selected
+provider, settings and fresh usage; failed confirmations do not send an
+agent message. Native **Send now** is a core override of dispatch hooks and
+may use paid extra usage; it is not covered by that delegated confirmation.
 
 ## What it stores
 

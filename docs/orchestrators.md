@@ -78,8 +78,9 @@ together, with live cards in the chats where work happens:
 - **Needs you:** decisions only you can make, each with the orchestrator's
   recommendation. **Go with …** queues the answer with a short Undo window;
   **Answer in your own words** fills the composer instead.
-- **Ready:** finished work with its note, pull request and preview. **Open
-  PR** opens GitHub; it does not merge the pull request.
+- **Ready:** finished work with its note, pull request and preview. **Merge
+  PR** opens an in-thread confirmation and checks the exact PR HEAD again
+  before merging. Direct shipping uses its own confirmation.
 - Source chats have a **Cloud agents** side-panel tab. A task's own chat
   has a **Task** tab: Overview, Reviews, Transcript and Sandbox.
 - With task chats, they sit in the sidebar under their orchestrator

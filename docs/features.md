@@ -51,7 +51,8 @@ sandboxes** opens the Sandboxes tab. Agent usage stays in bb's usage widget.
   sandbox, with a size chip next to it. Sizes your plan can't use are
   greyed out with boat's reason.
 - **A task chat's header/context card:** an action suited to its state,
-  such as Ship, Resume or Open PR. Open PR opens GitHub; it does not merge.
+  such as Ship, Resume or Merge PR. Merge and Ship open an in-thread form;
+  submitting the approval triggers fresh source checks before the action.
 - **A chat's menu:** **Coordinate from this chat…** makes it the
   orchestrator for a project.
 - **bb's home screen and + menu:** starters for checking a repo, fixing a
@@ -104,8 +105,10 @@ one. New installs start with none.
   [sandbox size](#sandbox-sizes-and-memory) its tasks use, how work lands,
   **Run tasks as chats**, protected branches, instructions added to each
   task's brief, and an orchestrator rules file in its main repo.
-- A project-specific reviewer selector is not implemented. Reviews use the
-  global agent settings and the existing independent-review rules.
+- Choose Codex, Claude or No review for a project. A native task's explicit
+  drawer choice overrides that preference; an unset project uses the global
+  review default. Automatic native reviews wait for a reported PR and verify
+  its branch and HEAD before dispatch and before publishing a verdict.
 - From the command line:
   ```sh
   bb boat project set web-app --protected-branches "release, develop" --instructions-file house-rules.md
@@ -330,8 +333,9 @@ in-thread confirmation because it changes the base branch irreversibly.
 
 Status words are **Working**, **Review**, **Ready** and **Shipped**, with
 **Needs you** and **Broken** for interruptions. An idle stop and waiting for
-a usage reset are neutral. With **Notify my devices** enabled, push is
-limited to needs-you and ready work. Tapping the notification opens the chat;
+a usage reset are neutral. With **Notify my devices** enabled, push defaults
+to needs-you and ready work. Progress is a separate working opt-in, off by
+default. Tapping the notification opens the chat;
 it does not approve shipping or answer a decision.
 
 ## Current limits
@@ -343,12 +347,16 @@ it does not approve shipping or answer a decision.
 - Headless execution remains a fallback. There is no passive chat
   create/append integration that guarantees every headless task has a
   populated native chat transcript.
-- A per-project reviewer selector is missing; global review defaults apply.
-- **Open PR** opens the pull request. Merging still happens on GitHub.
+- The Task panel's width, icon-only native tab strip, header button styling
+  and additive Parent context item are controlled by bb.
 - Digest and handoff renderers are not an automatic last-seen digest or a
   guaranteed handoff summary for every switch.
-- Missing cost, weekly-hours, git and memory-history data stay unavailable.
-  The automated test suite uses a fake CLI, not a real paid sandbox run.
+- Usage comes from bounded Boat readings; task costs on shared sandboxes
+  cannot be attributed perfectly. Memory charts show measured samples only.
+- Native cold starts wait when usage is exhausted or cannot be verified.
+  bb's explicit **Send now** overrides dispatch hooks and may use paid extra
+  usage; it is separate from Boat's guarded delegated paid-start confirmation.
+- The automated test suite uses a fake CLI, not a real paid sandbox run.
 
 ## Protected branches
 
@@ -608,10 +616,19 @@ still run, in a fresh context), and switching agents is off. Pick by hand
 task chats in instead. When your choice disagrees with boat.dev, the setup
 checklist warns and offers **Use Auto-detect**.
 
-- **Don't start work on paid extra usage** (on by default): when every
-  agent you have is near its usage limit, new tasks wait for a reset
-  instead. The start fails with `agents_at_limit`, and you're told. Chats
-  already running carry on.
+- **Don't start work on paid extra usage** (on by default): delegated new
+  work is persisted when the current usage reading shows its selected agent
+  at the configured limit. No task or sandbox is allocated
+  while waiting. The queue survives reloads, and cancelled or stale source
+  requests cannot start later. Chats already running carry on.
+- **Start now on paid usage…** opens an in-thread confirmation for one
+  queued request. It defaults to Wait and rechecks the request, project,
+  settings, provider and usage before insertion. It does not enable a
+  global billing setting or approve other queued requests.
+- Native cold starts use bb's own waiting message queue. Its explicit
+  **Send now** action bypasses dispatch hooks by core design and may use
+  paid extra usage. This native override is separate from the delegated
+  paid-start form.
 
 With both agents:
 
