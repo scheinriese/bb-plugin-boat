@@ -547,10 +547,13 @@ export default async function plugin(bb: BbPluginApi) {
   // Monitor: check running tasks, collect results, notify, stop idle sandboxes.
   bb.background.service("monitor", {
     async start(signal) {
-      await watchdog.load().catch((error: unknown) => bb.log.warn(`watchdog notes: ${error instanceof Error ? error.message : String(error)}`));
       // bb stops services (with a short grace) before dispose hooks run, so
       // abort in-flight boat calls as soon as the service is stopped.
-      signal.addEventListener("abort", () => { lifecycle.abort(); runtime.startQueue.dispose(); }, { once: true });
+      const abortMonitor = () => { lifecycle.abort(); runtime.startQueue.dispose(); };
+      signal.addEventListener("abort", abortMonitor, { once: true });
+      if (signal.aborted) { abortMonitor(); return; }
+      await watchdog.load().catch((error: unknown) => bb.log.warn(`watchdog notes: ${error instanceof Error ? error.message : String(error)}`));
+      if (signal.aborted) return;
       let lastRelayAt = 0;
       while (!signal.aborted) {
         try {

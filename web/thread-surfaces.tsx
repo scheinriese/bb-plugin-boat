@@ -108,8 +108,7 @@ export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentP
   const currentAgent=relay?.orchestrators.find(row=>row.threadId===threadId)?.provider;
   const usage=relay?.agents.find(agent=>agent.provider===currentAgent);
   if(queued.length){
-    const reset=queued.flatMap(item=>item.resetsAt?[item.resetsAt]:[]).sort()[0];
-    return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{reset?`Waits for reset · ${new Date(reset).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}`:'Waits for subscription room'} · running work continues</span>;
+    return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{relay?.agents.filter(agent=>agent.usedPercent!==null).map(agent=>`${agent.provider==='claude'?'Claude':'Codex'} ${Math.round(agent.usedPercent!)}%`).join(' · ')||'Running work continues'}</span>;
   }
   if(!own&&relay?.enabled&&currentAgent){
     const preferredUsage=relay.agents.find(agent=>agent.provider===relay.preferred);
