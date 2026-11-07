@@ -316,7 +316,7 @@ test("the [boat] notice keeps its structure whatever the repo holds", () => {
   // One header, one task heading, one fenced block that holds all the comparison.
   assert.equal(lines[0]!.line, `[boat] Task ${task.id} finished a turn.`);
   const outsideFences = lines.filter((entry) => !entry.fenced && !entry.fence);
-  assert.deepEqual(outsideFences.filter((entry) => /^\s{0,3}#/.test(entry.line)).map((entry) => entry.line), [`### ${task.id} · implement · ready for you — ${task.title}`]);
+  assert.deepEqual(outsideFences.filter((entry) => /^\s{0,3}#/.test(entry.line)).map((entry) => entry.line), [`### ${task.id} · implement · ready — ${task.title}`]);
   assert.equal(lines.filter((entry) => entry.fence).length, 2);
   assert.deepEqual(
     lines.filter((entry) => entry.fenced).map((entry) => entry.line),

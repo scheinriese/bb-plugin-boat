@@ -184,8 +184,8 @@ test("notifications summarize each finished task and suggest next steps", () => 
     { ...base, id: "t_2", status: "failed", prUrl: null, result: null, error: "boom" },
   ]);
   assert.match(text, /^\[boat\] 2 tasks finished a turn\./);
-  assert.match(text, /t_1 · implement · ready for you/);
-  assert.match(text, /t_2 · implement · FAILED/);
+  assert.match(text, /t_1 · implement · ready/);
+  assert.match(text, /t_2 · implement · broken/);
   assert.match(text, /Error: boom/);
   assert.match(text, /bb boat task review/);
   // The tier is in every block, and the orchestrator is told to reconcile first.
