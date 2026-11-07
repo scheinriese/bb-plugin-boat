@@ -6,6 +6,7 @@ import {
   contextCounts,
   markerId,
   queueDelivery,
+  recommendedOption,
   type CardStatus,
 } from "../web/cards-logic.ts";
 
@@ -80,4 +81,16 @@ test("delivery waits for undo window and becomes irrevocable once sending starts
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal(sent, 1);
   assert.equal(cancel(), false);
+});
+
+test("a prose recommendation selects the named option without inventing a recommendation", () => {
+  assert.equal(
+    recommendedOption(["A", "B"], "B: calmer, matches the grid"),
+    "B",
+  );
+  assert.equal(
+    recommendedOption(["Strict", "Generous"], "Generous"),
+    "Generous",
+  );
+  assert.equal(recommendedOption(["A", "B"], "Ask the team first"), null);
 });

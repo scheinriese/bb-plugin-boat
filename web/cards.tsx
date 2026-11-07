@@ -35,6 +35,7 @@ import {
   contextCounts,
   markerId,
   queueDelivery,
+  recommendedOption,
 } from "./cards-logic";
 
 function Frame({
@@ -455,12 +456,9 @@ export function DecisionCard({
       decision.options.length ? decision.options : [decision.recommendation],
     ),
   ].filter(Boolean);
+  const recommended = recommendedOption(options, decision.recommendation);
   const choice =
-    selected ??
-    (options.includes(decision.recommendation)
-      ? decision.recommendation
-      : options[0]) ??
-    decision.recommendation;
+    selected ?? recommended ?? options[0] ?? decision.recommendation;
   const busy = queued !== null || send.isPending;
   const choose = (answer: string) => {
     if (busy) return;
@@ -469,8 +467,8 @@ export function DecisionCard({
       try {
         const result = await send.mutate({
           id: decision.id,
-          accept: answer === decision.recommendation,
-          answer: answer === decision.recommendation ? null : answer,
+          accept: answer === recommended,
+          answer: answer === recommended ? null : answer,
         });
         setOutcome(
           result.delivered
@@ -541,7 +539,7 @@ export function DecisionCard({
                 className="mt-1 accent-current"
               />
               <span className="min-w-0 flex-1 break-words">{option}</span>
-              {option === decision.recommendation && (
+              {option === recommended && (
                 <span className="shrink-0 text-[11px] text-[#7AA7FF]">
                   Recommended
                 </span>
