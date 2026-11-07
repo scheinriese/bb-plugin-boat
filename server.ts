@@ -29,6 +29,7 @@ import { createEvidenceSource, parseEvidenceSource } from "./src/evidence.ts";
 import { CLI_MISSING_STATUS, createSetup, effectiveAgents, parseAgentsSetting, type SetupSettings } from "./src/setup.ts";
 import { runnersFor } from "./src/settings.ts";
 import { createMigratingSettingsStore } from "./src/settings-store.ts";
+import { createAttentionNotifications, type AttentionNotifications } from "./src/attention-notifications.ts";
 import { MODEL_TIERS_KEY } from "./src/runtime.ts";
 import { parseTierMap } from "./src/tiers.ts";
 import { registerRpc } from "./src/rpc.ts";
@@ -169,10 +170,12 @@ export default async function plugin(bb: BbPluginApi) {
   bb.onDispose(() => lifecycle.abort());
 
   let wakeMonitor: () => void = () => undefined;
+  let attentionNotifications: AttentionNotifications | null = null;
 
   function changed(): void {
     bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings]);
     bb.realtime.publish(REALTIME_CHANNEL, null);
+    void attentionNotifications?.flush();
   }
   // A settings change (here, from bb's settings page or the CLI) refreshes open UIs.
   settings.onChange(() => changed());
@@ -243,19 +246,7 @@ export default async function plugin(bb: BbPluginApi) {
         },
       ],
     });
-    // Turn reports still reach the dispatching chat, but device notifications
-    // are reserved for work ready to inspect and actual owner decisions.
-    const attention = tasks.filter((task) => {
-      const status = service.publicStatus(task);
-      return status.status === "ready" || status.needsYou;
-    });
-    if (attention.length === 0) return;
-    const first = attention[0];
-    await pushNotice(
-      attention.length === 1 && first ? `${service.publicStatus(first).label}: ${first.title}` : `${attention.length} cloud tasks need a look`,
-      first?.prUrl ?? "",
-      { threadId },
-    );
+    await attentionNotifications?.flush();
   }
 
   const service = new BoatService(boat, store, {
@@ -341,6 +332,24 @@ export default async function plugin(bb: BbPluginApi) {
     wake: () => wakeMonitor(),
   });
   runtimeRef = runtime;
+  attentionNotifications = createAttentionNotifications({
+    kv: bb.storage.kv,
+    enabled: async () => (await settings.get()).pushNotifications,
+    decisions: () => store.decisions({ statuses: ["open"], limit: 1000 }),
+    tasks: () => store.list({ statuses: ["idle", "failed"], limit: 1000 }),
+    status: (task) => service.publicStatus(task),
+    stopped: () => lifecycle.signal.aborted,
+    failed: (error) => bb.log.warn(`attention notification: ${String(error)}`),
+    async send(notice) {
+      const result = await bb.sdk.plugins.callRpc({
+        pluginId: "push-notifications",
+        method: "notifications.send",
+        input: notice,
+        outputSchema: z.object({ ok: z.literal(true), channels: z.array(z.enum(["web", "desktop", "mobile"])) }).passthrough(),
+      });
+      if (result.channels.length === 0) throw new Error("No notification channel accepted the notice.");
+    },
+  });
 
   bb.cli.register(buildCli(runtime));
   registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect });
@@ -534,6 +543,7 @@ export default async function plugin(bb: BbPluginApi) {
           // Also delivers notices a restart or a failed send left pending.
           if (service.hasOpenWork()) await service.sweep();
           else await service.deliverPending();
+          await attentionNotifications?.flush();
         } catch (error) {
           bb.log.warn(`monitor sweep failed: ${error instanceof Error ? error.message : String(error)}`);
         }
