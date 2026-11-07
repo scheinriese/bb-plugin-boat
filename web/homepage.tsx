@@ -36,7 +36,7 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
   const linked = new Set(decisions.flatMap(item => item.taskIds));
   const problems = tasks.filter(task => cardStatus(task).needsYou && !linked.has(task.id));
   const firstRun = board !== undefined && orchestratorData !== undefined && !orchestrators.length && !decisions.length && !tasks.length && !board.done.length;
-  const projectName = (task?: TaskDto) => task ? projects.find(project => project.repos.some(repo => repo.repo === task.repo))?.name ?? "" : "";
+  const projectName = (task?: TaskDto) => task ? (projects.find(project => project.id === task.projectId) ?? projects.find(project => project.repos[0]?.repo === task.repo) ?? projects.find(project => project.repos.some(repo => repo.repo === task.repo)))?.name ?? "" : "";
   const fill = (text: string) => { composer.insert(text, {at:"end", block:true}); composer.focus(); };
   const meta = [
     overview?.cap != null ? `${overview.activeSandboxes} of ${overview.cap} sandboxes` : null,

@@ -142,7 +142,7 @@ export function Today() {
   const projectName = (task: TaskDto | undefined) =>
     task
       ? ((
-          projects.data?.projects.find(
+          projects.data?.projects.find(project => project.id === task.projectId) ?? projects.data?.projects.find(
             (project) => project.repos[0]?.repo === task.repo,
           ) ??
           projects.data?.projects.find((project) =>
