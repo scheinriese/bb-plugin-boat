@@ -550,7 +550,7 @@ export default async function plugin(bb: BbPluginApi) {
       await watchdog.load().catch((error: unknown) => bb.log.warn(`watchdog notes: ${error instanceof Error ? error.message : String(error)}`));
       // bb stops services (with a short grace) before dispose hooks run, so
       // abort in-flight boat calls as soon as the service is stopped.
-      signal.addEventListener("abort", () => lifecycle.abort(), { once: true });
+      signal.addEventListener("abort", () => { lifecycle.abort(); runtime.startQueue.dispose(); }, { once: true });
       let lastRelayAt = 0;
       while (!signal.aborted) {
         try {

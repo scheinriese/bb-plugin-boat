@@ -15,7 +15,7 @@ import { useBoard, useCloudAgentsNavigation, useOrchestrators, useOverview, useP
 import { NewProjectDialog } from "./projects-settings";
 import { ResizeDialog } from "./sandbox-size";
 import { AgentLogo } from "./ui";
-import { useQueuedStarts } from "./start-queue";
+import { CancelQueuedStartButton, useQueuedStarts } from "./start-queue";
 
 const ROW = "flex min-h-11 items-center gap-2.5 border-b border-[color:var(--boat-divider)] px-[14px] py-2 last:border-b-0 sm:h-11 sm:py-0";
 const ACTION = "h-[26px] shrink-0 rounded-md px-2.5 text-xs font-normal leading-4";
@@ -58,7 +58,7 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
         return <HomeDecision key={decision.id} decision={decision} subline={[task?.title, projectName(task)].filter(Boolean).join(" · ")}/>;
       })}
       {problems.map(task=><HomeProblem key={task.id} task={task} project={projectName(task)}/>)}
-      {queued.map(request=><div key={request.id} className={ROW}><span className="size-1.5 shrink-0 rounded-full bg-muted-foreground"/><span className="min-w-0 flex-1 text-[13px] leading-4">{request.title}</span><span className="text-xs text-muted-foreground">{request.state==='dispatching'?'Starting':'Waiting for reset'}</span>{request.threadId&&<Button size="sm" variant="outline" className={ACTION} onClick={()=>navigate.toThread(request.threadId!)}>Open</Button>}</div>)}
+      {queued.map(request=><div key={request.id} className={ROW}><span className="size-1.5 shrink-0 rounded-full bg-muted-foreground"/><span className="min-w-0 flex-1 text-[13px] leading-4">{request.title}</span><span className="text-xs text-muted-foreground">{request.state==='dispatching'?'Starting':'Waiting for reset'}</span>{request.threadId?<Button size="sm" variant="outline" className={ACTION} onClick={()=>navigate.toThread(request.threadId!)}>Open</Button>:<CancelQueuedStartButton request={request} className={ACTION}/>}</div>)}
       {orchestrators.map(entry => {
         const owned = tasks.filter(task => task.orchestratorThreadId === entry.threadId && task.role !== "review");
         const ready = owned.filter(task => cardStatus(task).status === "ready").length;

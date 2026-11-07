@@ -3,6 +3,7 @@ import { experimental_useQuestionFormHost, experimental_useRpcMutation, experime
 import { PAID_START_RENDERER_ID, paidStartFormSchema, startQueueRpcContract, type PaidStartForm, type QueuedStartDto } from "../contract-start-queue";
 import { Button } from "../components/ui/button";
 import { AgentLogo } from "./ui";
+import { toast } from "sonner";
 import { useCloudAgentsNavigation, useInterval, useRelay } from "./hooks";
 import "./ship-interaction.css";
 
@@ -15,6 +16,11 @@ export function useQueuedStarts(threadId?:string) {
   const query=experimental_useRpcQuery({contract:startQueueRpcContract,method:"queuedStarts",input:threadId?{threadId}:{}});
   useInterval(()=>{if(document.visibilityState==="visible"&&!query.isFetching)void query.refetch();},query.data?.requests.some(item=>item.state==="waiting"||item.state==="dispatching")?5000:null);
   return query;
+}
+
+export function CancelQueuedStartButton({request,className}:{request:QueuedStartDto;className?:string}) {
+  const cancel=experimental_useRpcMutation({contract:startQueueRpcContract,method:"cancelQueuedStart"});
+  return <Button size="sm" variant="outline" className={className} disabled={cancel.pendingInputs.length>0} onClick={()=>void cancel.mutate({id:request.id,revision:request.revision}).catch(reason=>toast.error(reason instanceof Error?reason.message:"Couldn't cancel this request."))}>Cancel request</Button>;
 }
 
 export function PaidStartInteraction({interaction, submit, cancel}: PluginPendingInteractionProps) {
