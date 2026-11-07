@@ -26,7 +26,7 @@ without one.
 ## When a single task is better
 
 - **One fix that fits in one task.** Ask any chat to use a cloud agent, or
-  click **New task**.
+  use **Start** on bb's New thread screen with **Boat sandbox** selected.
 - **A quick look.** A single task with the "Explore and plan, no changes"
   starter.
 - **A tight budget.** An orchestrator uses agent usage and sandbox hours
@@ -36,16 +36,18 @@ without one.
 
 ## Starting one
 
-1. **Add a project** (Settings → Plugins → Boat Cloud Agents → Projects, or
-   `bb boat project add`). An orchestrator always works on one project.
-   The New orchestrator dialog can add one too, and it also lists your local
-   bb projects, resolved to their GitHub remote and the branch you have
-   checked out. A branch with unpushed commits must be pushed first; the
-   dialog has a button for it.
-2. **Start the orchestrator**, one of three ways:
-   - On the Cloud agents page: ⋯ → **New orchestrator…** (or **Set up an
-     orchestrator** on the "Coordinate a project with an orchestrator"
-     card). Pick the project and say what to get done.
+1. **Choose a project** on bb's New thread screen. Add its Boat settings on
+   **Cloud agents → Projects** or with `bb boat project add` when needed.
+   An orchestrator works on one project.
+2. **Write the goal** in bb's composer and choose **Start as orchestrator**
+   in the send menu. Choose **Boat sandbox** for a cloud chat, or use an
+   existing bb environment. bb keeps the environment, provider, model and
+   effort you selected; Boat marks that chat as an orchestrator before its
+   first turn.
+3. **Other entry points** remain available:
+   - **New orchestrator…** in the command palette opens the native starting
+     flow. The existing project-based dialog/CLI flow also remains for
+     explicit placement and take-over options.
    - From a chat you already have: the chat's menu → **Coordinate from this
      chat…**, then pick the project. The orchestrator's tools and
      instructions reach the chat's agent at its next session; the chat
@@ -56,41 +58,44 @@ without one.
      ```sh
      bb boat orchestrator new --project web-app --prompt "Fix the three open checkout bugs: one pull request each"
      ```
-3. **Pick where it runs:** **This computer** (`--local`), another bb machine
-   (`--machine <host id>`), or **In the cloud** (a Boat sandbox; `--cloud`,
-   needs bb Connect). Without a choice, it runs in the cloud when bb Connect
-   is set up, and on this computer otherwise.
-4. **Check what it runs as.** Under Where, one line says it, for example
-   "Claude Code · Opus 5.5 · High effort". Click it to pick another agent
-   or effort for this orchestrator; an agent it can't start on is greyed
-   out with the reason. See [Agent, model and effort](#agent-model-and-effort).
+
+For the existing dialog or CLI flow, pick where it runs: **This computer**
+(`--local`), another bb machine (`--machine <host id>`), or **In the cloud**
+(a Boat sandbox; `--cloud`, needs bb Connect). Without a choice, it runs in
+the cloud when bb Connect is set up, and on this computer otherwise.
+
+Check what it runs as. In the dialog, one line under Where says it, for
+example "Claude Code · Opus 5.5 · High effort". Select it to pick another
+agent or effort; an unavailable agent has its reason beside it. See
+[Agent, model and effort](#agent-model-and-effort).
 
 "Take over from" in the dialog, or `--take-over <thread>`, moves a previous
 orchestrator's open tasks to the new one, with its last message.
 
-Once you have an orchestrator, the Cloud agents page puts **Needs you** and
-**Orchestrators** at the top:
+The Cloud agents **Today** tab brings needs-you work and orchestrators
+together, with live cards in the chats where work happens:
 
 - **Needs you:** decisions only you can make, each with the orchestrator's
-  recommendation. Accept it with one click or type an answer.
-- **Ready to review:** work the review approved, with its note, pull
-  request and preview.
-- Each orchestrator has its own page with the same board (**Open board** in
-  its chat's header, or the Cloud agents tab next to its chat).
+  recommendation. **Go with …** queues the answer with a short Undo window;
+  **Answer in your own words** fills the composer instead.
+- **Ready:** finished work with its note, pull request and preview. **Open
+  PR** opens GitHub; it does not merge the pull request.
+- Source chats have a **Cloud agents** side-panel tab. A task's own chat
+  has a **Task** tab: Overview, Reviews, Transcript and Sandbox.
 - With task chats, they sit in the sidebar under their orchestrator
   (**Orchestrators in the sidebar**: sections by project, pinned, or no
   grouping).
 
 ## Agent, model and effort
 
-Every orchestrator you start (from the dialog, the command line or a
-take-over) gets them explicitly:
+Native starts use bb's composer selections. The existing dialog, command
+line and take-over flows resolve explicit defaults:
 
 - **Agent:** **Agent for orchestrators** (Claude Code by default), or the
   other one while boat.dev reports it as not connected. With one agent
   (**Coding agents**), always that one.
 - **Model:** the agent's Build preset model, the one Build tasks use
-  (Settings → Models). Changing it there changes it for Build tasks too;
+  (Settings → Advanced → Model presets). Changing it there changes it for Build tasks too;
   for orchestrators alone, use `--model`.
 - **Effort:** **Effort for orchestrators**: Low, Medium, High (the default)
   or Extra high. An orchestrator mostly reads reports, plans and starts
@@ -98,7 +103,7 @@ take-over) gets them explicitly:
   your limits faster, since an orchestrator stays open and wakes after
   every task turn.
 
-Change the defaults in Settings → Orchestrators (optional), or:
+Change the defaults in Settings → Orchestrators, or:
 
 ```sh
 bb boat config set relayPreferred codex       # Agent for orchestrators
@@ -146,7 +151,7 @@ mode for new chats, where Claude Code's sandbox can block the `bb` command.
 - This applies to new cloud orchestrators, and to Claude ↔ Codex switching
   that lands in a Boat sandbox.
 - Orchestrators on your own machines always keep your default mode.
-- Change it in Settings → Orchestrators (optional) → **Full access for cloud
+- Change it in Settings → Orchestrators → **Full access for cloud
   orchestrators**, or:
   ```sh
   bb boat config set cloudOrchestratorFullAccess false
@@ -182,7 +187,7 @@ approve again: your earlier OK doesn't cover the new commits. See
 
 ## Claude ↔ Codex switching
 
-Off by default. Turn it on in Settings → Usage limits → **Claude ↔ Codex
+Off by default. Turn it on in Settings → Advanced → **Claude ↔ Codex
 switching for orchestrators** (`relayEnabled`). It needs both Claude and
 Codex.
 
@@ -205,6 +210,12 @@ Codex.
   agents it routes, else the Claude Code and Codex providers). The check
   runs in bb's background service every minute, so bb must be running.
 
+This still creates a successor orchestrator chat; provider switching in
+place is not implemented. The relay can request a handoff note, but the v1
+handoff-note card is not an automatic, verified summary of every switch.
+Waiting for a usage reset is neutral, rather than needs you. With device
+notifications enabled, push is limited to needs-you and ready work.
+
 ```sh
 bb boat relay status                                  # each agent's usage, and which agent each orchestrator runs on
 bb boat relay check                                   # run the check once now
@@ -220,7 +231,7 @@ mid-task, follow-ups to the agent with room): see
 Every orchestrator follows one shared protocol: how to delegate, pick model
 presets, run reviews, act on reports and report back.
 
-- Edit it in Settings → Orchestrators (optional) → Protocol.
+- Edit it in Settings → Advanced → Protocol.
   It's a Markdown file next to the plugin's database
   (`bb boat protocol path`), so you can also edit it in any editor. Until
   you save one, the built-in protocol applies and follows plugin updates.
@@ -245,7 +256,7 @@ current settings. The editor highlights them and warns about unknown ones.
 | `{{agents}}` | Your agents, usage limits and Claude ↔ Codex switching |
 | `{{evidence}}` | What to do with screenshots and recordings (uploads on or off) |
 | `{{tasks-at-once}}` | When to ask you before running more tasks at once, from **Tasks at once before asking** |
-| `{{model-tiers}}` | The model presets table (Settings → Models). A protocol without it gets the table at the end |
+| `{{model-tiers}}` | The model presets table (Settings → Advanced). A protocol without it gets the table at the end |
 
 The orchestrator picks a [model preset](features.md#model-presets) for each
 task, with a one-line reason. The plugin then picks the model and effort for

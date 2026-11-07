@@ -1,71 +1,70 @@
 # Settings
 
-Settings → Plugins → Boat Cloud Agents. bb's settings list there has the
-everyday choices; the plugin's own sections below it have the rest.
+Settings → Plugins → Boat Cloud Agents. The plugin's setup checklist comes
+first, followed by **Agents**, **Sandboxes & cost**, **Orchestrators** and
+**Notifications**. **Advanced** is collapsed and holds the remaining choices,
+model presets, protocol, and backup and restore. Projects has a link to the
+Cloud agents **Projects** page. Mobile settings show setup status, needs-you
+and ready counts, notifications and the paid-usage guard.
 `bb boat config get` lists every setting with its value, and
 `bb boat config set <key> <value>` / `bb boat config reset <key>` change
-any of them. (`bb plugin config boat set` only reaches bb's list.)
+any of them. Use these commands rather than `bb plugin config boat set`:
+after migration, Boat's values live in the plugin's own storage.
 
-## bb's settings list
+On the first update, legacy fields can still appear above the grouped
+section. Their effective values are copied safely before those fields are
+hidden. Reload the plugin once more to finish the transition; see
+[Moving from an older version](#moving-from-an-older-version).
+
+## Common settings
 
 | Setting | Key | Default | What it does |
 | --- | --- | --- | --- |
 | Coding agents | `agents` | `auto` | Auto-detect (`auto`) from boat.dev, or Claude and Codex (`both`), Only Claude (`claude`), Only Codex (`codex`). With one agent, every task and review runs on it |
-| How tasks run | `workers` | `boat` | In boat (`boat`), As chats for projects (`projects`) or As chats everywhere (`all`). Chats need bb Connect |
+| How tasks run | `workers` | `boat` | Delegated work: In boat (`boat`), As chats for projects (`projects`) or As chats everywhere (`all`). Native starts keep the environment selected in bb. Chats need bb Connect |
 | Boat environment | `environment` | empty | The boat environment new sandboxes start from; empty is your boat default. A project can pick its own |
 | Default sandbox size | `machineType` | `default` | For new task sandboxes: `small`, `default`, `large` or `xlarge` ([sizes](features.md#sandbox-sizes-and-memory)). A project or a task can pick another |
 | Sandboxes at once | `maxActiveSandboxes` | `3` | The most sandboxes running at the same time; 0 is your plan's limit |
 | Agent for tasks | `implementProvider` | `claude` | For tasks that don't name an agent. With one agent connected, it runs everything |
 | Agent for reviews | `reviewProvider` | `codex` | When a task already ran on this agent, its review uses the other one. With one agent connected, it reviews too |
 | Stop idle sandboxes after (min) | `stopIdleAfterMinutes` | `60` | A sandbox whose agent has finished and is waiting for you stops after this long, to save sandbox hours. Work still running, background jobs included, keeps it on (up to 12 hours). Your next message starts it again; anything the agent kept in memory or `/tmp` is lost. 0 is never |
-| Notify my devices | `pushNotifications` | off | A notice when a task finishes a turn. Notices about agent switches and usage limits always go out |
+| Notify my devices | `pushNotifications` | off | Push only when work needs you or is ready; routine working, review and idle-stop updates stay in bb |
 | Instructions for every task | `workerInstructions` | empty | Added to every task's brief: house rules, test commands, commit style. Don't put credentials here |
 
 **Stop idle sandboxes after** is in minutes: 15, 30, 60 (an hour, the
 default), 120 or 240, any other number, or 0 for never
-(`bb plugin config boat set stopIdleAfterMinutes 120`). A value you set
+(`bb boat config set stopIdleAfterMinutes 120`). A value you set
 stays when the default changes.
 
-## The plugin's own sections
+## Grouped settings
 
-In this order:
+The checklist shows the current setup step and a fix when one fails, then
+offers a test task. After setup it becomes a compact status line. It also
+warns when a worker environment passes boat credentials into sandboxes.
 
-1. **Setup:** the same checklist as on the Cloud agents page, plus
-   **Screenshots and recordings**, and **boat CLI location** when the boat
-   CLI isn't found. It warns when an environment your workers use passes
-   boat credentials into sandboxes.
-2. **Projects:** your projects, with their repos, environment, sandbox
-   size, protected branches, instructions and GitHub access. A project's
-   access line warns when its environment passes boat credentials, and
-   notes when real AI keys go in: the AI proxy (`boat ai proxy on`, a paid
-   boat add-on: `boat ai proxy` shows the price) passes placeholders
-   instead.
-3. **Usage limits:** what happens near a usage limit. The rows that need
-   both agents are greyed out with one.
-4. **Models:** the model presets, and models for tasks without one.
-5. **Orchestrators (optional):** the agent and effort new orchestrators
-   start with, how many tasks they run at once before asking you, the
-   sidebar, the size of chats on a Boat sandbox, full access for cloud
-   orchestrators, and the orchestrator protocol. With one
-   agent, **Agent for orchestrators** is greyed out: that agent runs them.
-   While you've hidden the orchestrator card on the Cloud agents page,
-   **Show the orchestrator card again** brings it back (the page shows it
-   while you have no orchestrator).
-6. **Advanced** (collapsed).
-7. **Back up and restore.**
+**Agents** holds agent detection and the task/review agent defaults.
+**Sandboxes & cost** holds the default size, capacity and idle-stop choices.
+**Orchestrators** holds coordination defaults. **Notifications** holds the
+device-notification switch. Everything else is under **Advanced**, including
+How tasks run, environment, instructions, evidence uploads and usage limits.
+Rows requiring both agents are unavailable when only one is configured.
+
+The Projects page contains repo, environment, snapshot, size and delivery
+settings, with secrets shown by name only. A per-project reviewer selector
+is not available; the global review setting still applies.
 
 | Section | Setting | Key | Default |
 | --- | --- | --- | --- |
-| Setup | Screenshots and recordings | `evidenceUploader` | empty (off) |
-| Usage limits | When an agent hits its limit mid-task, continue with the other one | `autoFailover` | on |
-| Usage limits | Don't start work on paid extra usage | `avoidExtraUsage` | on |
-| Usage limits | Claude ↔ Codex switching for orchestrators | `relayEnabled` | off |
-| Usage limits | Switch at (% of a usage limit) | `relaySwitchAt` | `90` |
-| Usage limits | Switch back below (%) | `relaySwitchBackBelow` | `50` (at least 5 below Switch at) |
-| Usage limits | Wait before switching back (min) | `relayQuietMinutes` | `10` |
-| Models | Model for tasks | `implementModel` | empty (the Build preset's model) |
-| Models | Model for reviews | `reviewModel` | empty (the Review preset's model) |
-| Models | Effort | `reasoningEffort` | `default` (boat's) |
+| Advanced | Screenshots and recordings | `evidenceUploader` | empty (off) |
+| Advanced | When an agent hits its limit mid-task, continue with the other one | `autoFailover` | on |
+| Advanced | Don't start work on paid extra usage | `avoidExtraUsage` | on |
+| Advanced | Claude ↔ Codex switching for orchestrators | `relayEnabled` | off |
+| Advanced | Switch at (% of a usage limit) | `relaySwitchAt` | `90` |
+| Advanced | Switch back below (%) | `relaySwitchBackBelow` | `50` (at least 5 below Switch at) |
+| Advanced | Wait before switching back (min) | `relayQuietMinutes` | `10` |
+| Advanced | Model for tasks | `implementModel` | empty (the Build preset's model) |
+| Advanced | Model for reviews | `reviewModel` | empty (the Review preset's model) |
+| Advanced | Effort | `reasoningEffort` | `default` (boat's) |
 | Orchestrators | Agent for orchestrators | `relayPreferred` | `claude` (Claude Code); `codex` |
 | Orchestrators | Effort for orchestrators | `orchestratorEffort` | `high`; `low`, `medium`, `xhigh` |
 | Orchestrators | Tasks at once before asking | `tasksBeforeAsking` | `5`; 0 never asks |
@@ -105,7 +104,7 @@ bb boat config import boat-config.json
 
 ![Back up and restore: an import shows what it would change before anything is written](screenshots/backup.png)
 
-- The file holds every setting (bb's list and the plugin's own), your
+- The file holds every setting, your
   projects, your model presets and your custom orchestrator protocol. It
   holds no tasks, sandboxes, chats or secrets, and no page state such as a
   hidden orchestrator card.
@@ -118,23 +117,27 @@ bb boat config import boat-config.json
   the file (a backup from before projects had one) keeps the size it has.
 - `--replace-projects` also removes projects that aren't in the file. It
   refuses to remove a project with open tasks or a running orchestrator.
-- Settings → **Back up and restore** does the same: Export downloads the
+- Settings → **Advanced → Back up and restore** does the same: Export downloads the
   file; Import shows the changes, then Apply.
 - Your instructions and project names are in the file, so keep it private
   if they are.
 
 ### Moving from an older version
 
-Older versions kept every setting in bb's settings list. This version keeps
-only the everyday ones there, and the rest (usage limits, models, the
-orchestrator settings, screenshots and recordings, Advanced) in the plugin's
-own storage. The moved values don't carry over on their own, so take a
-backup first:
+The grouped layout migrates the effective legacy settings automatically.
+The first load keeps the old descriptors readable and copies their values
+to plugin storage. One additional plugin reload hides the legacy fields and
+uses the saved values in the grouped section. An unreadable migration record
+blocks loading rather than silently replacing your choices with defaults.
+
+Keep a backup before updating:
 
 1. On the old version: `bb boat config export --output boat-config.json`.
 2. Update the plugin.
-3. `bb boat config import boat-config.json --dry-run`, check the summary,
-   then run it without `--dry-run`.
+3. Reload the plugin once more to finish the grouped-settings migration.
+4. Check the values. If restoring a backup, first use
+   `bb boat config import boat-config.json --dry-run`, then import it after
+   checking the summary.
 
 Import reads backups from older versions (format version 1) and maps them:
 
@@ -152,5 +155,6 @@ Import reads backups from older versions (format version 1) and maps them:
   dry-run summary; `bb boat config reset agents` and
   `bb boat config reset maxActiveSandboxes` give you the new defaults.
 
-Already updated without a backup? Set the moved values again in the
-plugin's settings sections or with `bb boat config set`.
+If values were already lost by an older update before this migration was
+available, restore a backup or set them with `bb boat config set`; the
+migration cannot reconstruct values that are no longer stored.

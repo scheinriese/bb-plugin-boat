@@ -13,6 +13,9 @@ A short demo with demo data (the chat replies are scripted):
 
 https://github.com/user-attachments/assets/769a7fcc-e995-48c4-b4fa-097ea47a7b97
 
+The video and screenshots illustrate 0.1.2, not the v1 UI. The current
+starting flow and remaining v1 limits are described below.
+
 ![The Cloud agents page: decisions with recommendations, one orchestrator per project on Claude or Codex, and work ready to review](docs/screenshots/overview.png)
 
 ![An orchestrator chat: it starts a task, and each task gets its own chat nested under it in the sidebar](docs/screenshots/orchestrator-chat.png)
@@ -68,30 +71,33 @@ ChatGPT subscription. The steps below set up the rest.
    agent reports the sandbox's OS, Node and git versions and whether GitHub
    access works. That proves your sign-in, plan and agent login, for one
    sandbox start and a minute or two of a Small sandbox.
-7. **Real work.** Ask any chat, for example: "Use a cloud agent to fix the
-   flaky login test in acme/web." Or click **New task**, pick the repo and
-   say what to do. The agent works on its own branch and opens a draft pull
-   request, and the chat that started it hears back when it's done.
+7. **Real work.** Open bb's **New thread** screen, choose the project and
+   **Boat sandbox** environment, write the brief, and choose **Start** in
+   the send menu. The + menu has starters for checking a repo, fixing a bug,
+   and exploring a plan. Or ask any chat: "Use a cloud agent to fix the
+   flaky login test in acme/web."
 
-There's nothing to set first: **Coding agents** follows what's connected in
-boat.dev, and tasks run headless in boat. Once you work on the same repos
+**Coding agents** follows what's connected in boat.dev. Native starts keep
+bb's selected project, environment and agent; the plugin tracks the chat
+once bb provisions it. Delegated tasks still use the **How tasks run**
+setting, whose default is headless in boat. Once you work on the same repos
 often, add them as [projects](docs/features.md#projects).
 
 ## Three ways to use it
 
-| | Task from a chat | Cloud agents page | Boat sandbox chat |
+| | Task from a chat | Cloud agents page | Native Boat sandbox chat |
 | --- | --- | --- | --- |
-| How you start it | Ask any chat to use a cloud agent, or **Send to a cloud agent** in the send menu | **New task** (also **Start a cloud task** on bb's New thread screen) | Pick **Boat sandbox** in a new chat's environment menu |
+| How you start it | Ask any chat to use a cloud agent, or **Send to a cloud agent** in the send menu | **Start** opens bb's New thread screen | Pick **Boat sandbox** in a new chat's environment menu, then **Start** |
 | Where the agent runs | In its own boat sandbox | In its own boat sandbox | The whole chat runs in a boat sandbox |
-| Where you follow it | The chat hears back when a turn ends; the details are on the Cloud agents page | On the Cloud agents page: transcript, report, pull request, preview | In the chat, like any other |
+| Where you follow it | The source chat hears back; chat-backed tasks nest under it | Today, Sandboxes and Projects; task chats have a Task tab | In the chat and its Task tab |
 | Can you type into it | Through the chat that started it, or the task's reply box | The task's reply box | Yes, it's a regular chat |
 | Needs bb Connect | No (only for task chats) | No (only for task chats) | Yes |
 | Best for | Handing off a piece of work without leaving your conversation | Starting work directly, checking a repo, a test task | Long hands-on sessions that keep going while this computer sleeps |
 
-A **task chat** is a task you can open as a bb chat and type into: set
-**How tasks run** to one of the "As chats" options (needs bb Connect), tick
-**Run as a chat** in New task, or use **Continue as a chat** on a headless
-task's page. See
+A **task chat** is a task you can open as a bb chat and type into. Native
+starts use one directly. For delegated work, set **How tasks run** to an
+"As chats" option (needs bb Connect), use `--chat`, or choose **Continue as
+a chat** on a headless task's page. See
 [How tasks run](docs/features.md#how-tasks-run-in-boat-or-as-task-chats). Turn on bb Connect
 with `bb account login` (then `bb connect on` if it's off); the setup
 checklist shows its state.
@@ -129,7 +135,8 @@ What the plugin does to keep that down:
 - A sandbox stops once its agent has finished and waited an hour (**Stop
   idle sandboxes after**). Work still running there, background jobs
   included, keeps it on. The task picks up again on your next message.
-  Closing a task deletes its sandbox.
+  Closing a plugin-created task deletes an unused sandbox; native chats
+  retain bb's machine lifecycle.
 - When your agents are near their usage limits, new tasks wait for a reset
   instead of starting on paid extra usage (**Don't start work on paid extra
   usage**).
@@ -147,7 +154,7 @@ Claude or ChatGPT login, its variables and secret files. A hostile README or
 issue could try to talk it into sending those somewhere, so keep secrets out
 of environments you use for repos you don't trust.
 
-- Tasks never push to protected branches (`main`, `master`, base branches
+- Delegated tasks never push to protected branches (`main`, `master`, base branches
   and the ones you add). A git hook enforces it, but it's a guard for
   well-behaved agents, not a security boundary: protect your base branches
   on GitHub too.
@@ -155,8 +162,10 @@ of environments you use for repos you don't trust.
   bb machine's credentials, connected through bb Connect. Use them only for
   repos you trust. **How tasks run** → "As chats for projects" allows task
   chats only in projects that have **Run tasks as chats** on. **Run as a
-  chat** and **Continue as a chat** warn you before they make a chat for
-  any other repo.
+  chat** remains a legacy option; **Continue as a chat** warns before
+  converting a repo those rules would keep headless. Choosing **Boat
+  sandbox** in the native composer is a separate opt-in; bb keeps control
+  of its checkout and machine lifecycle.
 - boat's AI credentials proxy (`boat ai proxy on`, a paid boat add-on:
   `boat ai proxy` shows the price) gives sandboxes placeholder keys, so your
   real Claude and ChatGPT credentials never enter them.
@@ -166,28 +175,27 @@ and what it stores.
 
 ## Features at a glance
 
-- [**The Cloud agents page**](docs/features.md#the-cloud-agents-page): a
-  setup checklist until everything works, then work ready to review, running
-  tasks, previews and sandboxes. Each task has a page with its report,
-  review, transcript and a reply box.
+- [**The Cloud agents page**](docs/features.md#the-cloud-agents-page): Today,
+  Sandboxes and Projects, with needs-you work first and links back to chats.
+  Task chats have Overview, Reviews, Transcript and Sandbox sub-tabs.
 - [**Start from anywhere**](docs/features.md#start-from-anywhere-in-bb): any
   chat, the send menu, bb's New thread screen, or a whole chat on a Boat
   sandbox.
-- [**New task**](docs/features.md#new-task) with starters: check a repo runs
-  in a sandbox, fix a bug, explore and plan.
+- [**Native starting flow**](docs/features.md#new-task) with starters:
+  check a repo runs in a sandbox, fix a bug, explore and plan.
 - [**Projects**](docs/features.md#projects): repos with their base branches,
   boat environment, snapshot, sandbox size and instructions, set once.
 - [**Task chats**](docs/features.md#how-tasks-run-in-boat-or-as-task-chats):
-  open a task as a bb chat and type into it: per project, one task at a
-  time (**Run as a chat**), or a headless task later (**Continue as a
+  open a task as a bb chat and type into it: native starts, per project,
+  `--chat`, or a headless task later (**Continue as a
   chat**). Needs bb Connect.
 - [**Pull requests or ship after
   approval**](docs/features.md#how-work-lands-pull-requests-or-ship-after-approval),
   per project.
 - [**Reviews**](docs/features.md#reviews) in a fresh context, by the other
   agent when you have both.
-- [**Protected branches**](docs/features.md#protected-branches) that tasks
-  never push to.
+- [**Protected branches**](docs/features.md#protected-branches) enforced in
+  plugin-prepared delegated checkouts.
 - [**Previews**](docs/features.md#previews): private links to the app
   running in the sandbox, with Wake, Extend and Stop.
 - [**Sandbox sizes and memory**](docs/features.md#sandbox-sizes-and-memory):
@@ -211,9 +219,11 @@ and what it stores.
 
 ## Settings
 
-Settings → Plugins → Boat Cloud Agents. bb's list there has the everyday
-choices (coding agents, how tasks run, boat environment, sandbox size,
-sandboxes at once, …); the plugin's own sections below it have the rest.
+Settings → Plugins → Boat Cloud Agents. The setup checklist leads into
+Agents, Sandboxes & cost, Orchestrators and Notifications, with Advanced
+collapsed. On the first update, legacy fields remain visible while their
+values are copied safely; reload the plugin once more to finish moving
+them into the grouped section.
 `bb boat config get | set | reset` reaches every setting, and
 `bb boat config export | import` backs them up. All of them, with keys and
 defaults: [docs/settings.md](docs/settings.md).
@@ -287,6 +297,11 @@ the Boat sandbox machine provider. `app.tsx` and `web/` are the UI
 (`web/entry-points.tsx` adds the send menu, side panel and header actions).
 `skills/` teach agents, and `assets/evidence-upload.mjs` is the built-in
 uploader.
+
+Automated tests use a fake boat CLI. They do not verify a real paid sandbox
+run. The v1 UI also has limits: **Open PR** opens GitHub rather than merging;
+project-specific reviewer selection and automatic last-seen digests are not
+implemented. See [current limits](docs/features.md#current-limits).
 
 ## License
 

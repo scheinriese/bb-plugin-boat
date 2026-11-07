@@ -8,98 +8,79 @@ for orchestrators, [orchestrators.md](orchestrators.md).
 
 ![The Cloud agents page, lower part: ready to review, running tasks, previews and the sandboxes they run in](screenshots/sandboxes.png)
 
-The page in bb's sidebar changes with what you have:
+The page has three tabs:
 
-- **Until the setup is complete:** the "Set up cloud agents" checklist (if
-  you already have tasks, it sits above them). Each row says what's missing
-  and how to fix it: a command to copy or **Run in terminal**, a button
-  that opens boat.dev, or **Sign in…**. Rows that can wait (boat login in
-  sandboxes, bb Connect, GitHub, the GitHub CLI, a first project) sit under
-  "Later, if you need them".
-- **Before your first task:** "Start your first task", with the
-  [three ways to use it](../README.md#three-ways-to-use-it) and **Run a test
-  task**.
-- **Every day:** a status line (your boat plan, sandboxes against your limit, sandbox
-  hours left, each agent's usage), then **Ready to review** (finished work
-  with its note, pull request and preview link), **Running**, **Previews**
-  (live and sleeping ones), **Sandboxes** (each says what uses it) and
-  **Recently done**.
-- **With an orchestrator:** **Needs you** (decisions only you can make) and
-  **Orchestrators** move to the top.
+- **Today:** counts, work that needs you, starting points, running work and
+  a timeline. Task links lead back to their chats when available.
+- **Sandboxes:** the chats using each sandbox, its measured size where
+  available, state, and confirmed Resume, Stop and Delete actions. Weekly
+  hours and cost remain unavailable when the plugin has no figures.
+- **Projects:** project cards with add and edit sheets for repos, base
+  branches, how work lands, sandbox size and the other project settings.
 
-Until you have an orchestrator, a "Coordinate a project with an
-orchestrator" card says what one does (**How it works** unfolds the steps)
-and has **Set up an orchestrator**. Its × hides it for your account, on
-every device; Settings → Plugins → Boat Cloud Agents → Orchestrators →
-**Show the orchestrator card again** brings it back.
+The header's **Start** opens bb's New thread screen. New users get starters;
+the setup checklist is also available in the plugin's settings. The sidebar
+badge counts work that needs you.
 
-The header has **New task**, and a ⋯ menu with **New sandbox**, **New chat
-in a Boat sandbox** and **New orchestrator…**. Each task opens a page with
-its report, review, transcript, previews, history and a reply box, plus
-**Request review** and, where it applies, **Open chat** (a task chat),
-**Continue as a chat** (a headless task, see [How tasks
-run](#how-tasks-run-in-boat-or-as-task-chats)), **Ship** or **Save as
-snapshot** (a finished test task offers **New task** instead). In the reply
-box, **Agent with room** (the default with both agents) continues on the
-task's agent, or on the other one when it's near its limit; **Keep Claude**
-(or Codex) never switches.
-A task started from a chat shows "From" and the chat's name; one started by
-an orchestrator links to it. A finished turn of a task you started (from a chat
-or the page) lands in **Ready to review**; an orchestrator's tasks wait for
-the orchestrator first.
+Task chats have a **Task** side-panel tab with **Overview**, **Reviews**,
+**Transcript** and **Sandbox**. It shows the brief, report, branch and links,
+recorded reviews, searchable transcript, measured memory and sandbox actions.
+Chat transcripts use bb's own read-only log; the headless transcript contains
+the messages and tool names Boat reports. The plugin does not invent test
+results, git totals, memory samples or costs when they are unavailable.
+
+Source chats keep a **Cloud agents** tab for the work they started. A task
+that still runs headless has its existing detail page and reply box, with
+**Continue as a chat** when supported. See [How tasks
+run](#how-tasks-run-in-boat-or-as-task-chats).
+
+The sidebar footer's Boat icon opens sandbox meters: sandboxes on, plan
+hours remaining when reported; today's cost is currently unavailable. Only failures
+are listed below the meters; an idle stopped sandbox is neutral. **All
+sandboxes** opens the Sandboxes tab. Agent usage stays in bb's usage widget.
 
 ## Start from anywhere in bb
 
 - **Any chat:** ask it to use a cloud agent. The `boat` skill teaches it
   `bb boat task start`. The chat gets a `[boat]` message when the task's
   turn ends, so you don't need to watch it.
-- **The send menu:** **Send to a cloud agent** in a chat sends your message
-  with a request to use one. On bb's New thread screen, **Start as a cloud
-  task** turns your draft into a task (the repo comes from the chat's
-  project).
-- **The New thread screen's side panel:** **Start a cloud task** opens the
-  New task form.
+- **The send menu:** **Send to a cloud agent** in an existing chat sends
+  your message with a request to use one. On bb's New thread screen,
+  **Start** and **Start as orchestrator** submit the native composer.
 - **The environment menu:** **Boat sandbox** runs a whole chat in a
   sandbox, with a size chip next to it. Sizes your plan can't use are
   greyed out with boat's reason.
-- **A task chat's header:** **Ship** and **Request review**. An
-  orchestrator's header has **Open board**.
+- **A task chat's header/context card:** an action suited to its state,
+  such as Ship, Resume or Open PR. Open PR opens GitHub; it does not merge.
 - **A chat's menu:** **Coordinate from this chat…** makes it the
   orchestrator for a project.
-- **bb's home screen:** "Hand a task to a cloud agent", with **New task**.
+- **bb's home screen and + menu:** starters for checking a repo, fixing a
+  bug, and exploring a plan. The old **Start a cloud task** panel is no
+  longer a primary entry point.
 
 ## New task
 
-![New task: a starter, the repo, Run as a chat, what to do and the agent](screenshots/new-task.png)
+Start on bb's **New thread** screen. Pick the project and **Boat sandbox**
+environment, then write the brief. The Boat chip exposes the available
+sandbox sizes and snapshots. In the send menu, choose **Start** for one task
+or **Start as orchestrator** to coordinate the project. The + menu inserts
+a brief starter: **Check the repo runs**, **Fix a bug**, or **Explore and
+plan**. A starter fills the draft; it does not launch work until you submit.
 
-New task asks for the repo, what to do and the agent; branch, base branch,
-role, model, sandbox and size are under **More options**. Starters fill in
-the brief:
+bb keeps control of the selected project, environment, provider, model,
+effort, draft and provisioning. Boat registers the resulting chat as a task;
+it does not launch a second worker or replace bb's sandbox ownership.
+Registering an existing chat does not establish its checkout branch, so
+direct shipping is not offered for that adopted record.
 
-- **Check this repo runs in a sandbox:** installs, tests and starts the
-  app without changing code, and reports what the boat environment is
-  missing. It runs on the Light model preset, and the plugin measures the
-  sandbox's peak memory to [recommend a size](#sandbox-sizes-and-memory).
-  When it's done, **Save as snapshot** keeps that sandbox's setup, and the
-  project's tasks can start from it.
-- **Fix a bug:** what's wrong, where, the error output, what you expected
-  and how to check.
-- **Explore and plan, no changes** (on the Review model preset).
-- **Test task (no repo).**
-
-**Run as a chat**, under Repository, makes the task a bb chat you can open
-and type into instead of a headless one. It's ticked where How tasks run
-and the repo's project would make the task a chat, and follows the repo
-until you tick or clear it. It needs bb Connect: without it, the box is
-greyed out and the line under it says how to turn it on. With an existing
-sandbox picked under More options, the sandbox decides. Ticked for a repo
-How tasks run and your projects would run headless, it shows a warning: a
-task chat's sandbox can reach your bb, so run chats only for repos you
-trust. Starting the task then is your OK for those repos.
+Delegated work still uses `bb boat task start` and **How tasks run**. The
+default is headless in boat; `--chat` requests a task chat for trusted repos,
+and `--headless` requests the fallback explicitly. **Run a test task** remains
+in setup for the repo-free setup check.
 
 A good brief has the goal, the context (files, issues, earlier decisions),
 the constraints, how to check the result, and anything special about the
-pull request. The agent can't ask questions mid-task. The plugin adds the
+pull request. The plugin adds the
 checkout, the push rules and a report block at the end of the agent's
 answer, and tells the agent to treat what it reads as data, not
 instructions.
@@ -113,7 +94,7 @@ one. New installs start with none.
 
 ![Settings: projects with their repos, environment, secrets by name and GitHub access, then usage limits](screenshots/projects.png)
 
-- Add one in Settings → Plugins → Boat Cloud Agents → Projects, or:
+- Add one on **Cloud agents → Projects** (also linked from settings), or:
   ```sh
   bb boat project add --name "Web app" --repo acme/web@main --environment web
   ```
@@ -123,6 +104,8 @@ one. New installs start with none.
   [sandbox size](#sandbox-sizes-and-memory) its tasks use, how work lands,
   **Run tasks as chats**, protected branches, instructions added to each
   task's brief, and an orchestrator rules file in its main repo.
+- A project-specific reviewer selector is not implemented. Reviews use the
+  global agent settings and the existing independent-review rules.
 - From the command line:
   ```sh
   bb boat project set web-app --protected-branches "release, develop" --instructions-file house-rules.md
@@ -145,7 +128,7 @@ one. New installs start with none.
 
 A task becomes a chat only if every repo it clones may: a project's other
 repo that's also in a project with **Run tasks as chats** off makes its
-tasks headless (New task and the task's history say so). A review runs the
+tasks headless (the task's history says so). A review runs the
 way its task does, except that a task you made a chat against these rules
 gets headless reviews. A sandbox that runs bb, or had it installed, takes
 no repo these rules would run headless, not even for a headless task.
@@ -183,7 +166,9 @@ From the command line, `bb boat task start` takes `--chat` or `--headless`
 task. `--headless` always works, apart from the sandbox rule above. `--chat`
 and `continue-as-chat` need bb Connect and work only where these rules would
 make the task a chat anyway: agents run the CLI, so for any other repo
-they're refused and you decide, in New task or on the task's page.
+they're refused and you decide on the task's page. Native starts are a
+separate bb-owned chat flow, not a request to bypass those delegated-task
+rules.
 Orchestrators' `boat_dispatch` can ask for headless, never for a chat. The
 confirm in the dialogs is a step in the UI, not a security boundary: an
 agent that already has bb access could send it too (see
@@ -193,7 +178,8 @@ Idle sandboxes stop on their own: once a task's agent has finished and
 waited **Stop idle sandboxes after** (an hour by default), its sandbox
 stops. Their files and agent conversations survive and resume on the next
 follow-up; anything the agent kept in memory or `/tmp` doesn't. Closing a
-task deletes its sandbox, unless another open task uses it.
+plugin-created task deletes its sandbox, unless another open task uses it.
+Tracking a native chat does not transfer its machine lifecycle from bb.
 
 Work still running counts, background jobs included. A chat whose turn has
 ended while work it started still runs (a background command, a bb
@@ -323,15 +309,55 @@ default), or the other agent when the task already ran on that one. With one
 agent, the same agent reviews. The review reports a verdict and its
 findings; send them back with a follow-up.
 
+A running chat-backed review nests under the task it reviews. After a
+verdict lands, that review chat is archived and its result stays in the
+task's live review card and Reviews tab. Headless reviews remain available
+through the recorded report.
+
 ![A Codex review of a task Claude built: the verdict and its notes](screenshots/review.png)
+
+## Live cards and notifications
+
+Assistant messages can include Boat's directive markers to show live task
+lists, task chips, review verdicts, ready results, decisions and problems.
+The plugin reads their current data; the marker does not turn an assistant's
+claim into approval or a verified check.
+
+Decision cards keep the message box free. **Go with …** queues the selected
+answer with a short **Undo** window before dispatch. **Answer in your own
+words** fills the composer so you can add context. Shipping uses its separate
+in-thread confirmation because it changes the base branch irreversibly.
+
+Status words are **Working**, **Review**, **Ready** and **Shipped**, with
+**Needs you** and **Broken** for interruptions. An idle stop and waiting for
+a usage reset are neutral. With **Notify my devices** enabled, push is
+limited to needs-you and ready work. Tapping the notification opens the chat;
+it does not approve shipping or answer a decision.
+
+## Current limits
+
+- Native starting tracks the chat bb already provisions, preserving its
+  selected provider and core-owned machine lifecycle. It does not create a
+  second worker. Checkout branch facts may be unknown, so adopted native
+  records do not offer direct shipping.
+- Headless execution remains a fallback. There is no passive chat
+  create/append integration that guarantees every headless task has a
+  populated native chat transcript.
+- A per-project reviewer selector is missing; global review defaults apply.
+- **Open PR** opens the pull request. Merging still happens on GitHub.
+- Digest and handoff renderers are not an automatic last-seen digest or a
+  guaranteed handoff summary for every switch.
+- Missing cost, weekly-hours, git and memory-history data stay unavailable.
+  The automated test suite uses a fake CLI, not a real paid sandbox run.
 
 ## Protected branches
 
-Tasks never push to `main`, `master`, the task's base branch, the base
+Delegated tasks never push to `main`, `master`, the task's base branch, the base
 branch any of your projects uses for that repo, a project's protected
 branches, or the branches in **Extra protected branches** (Advanced). The
-plugin refuses tasks that point at one, and a git pre-push hook in every
-task checkout enforces it. Pushes to a folder inside the sandbox (say, a
+plugin refuses delegated tasks that point at one, and a git pre-push hook
+in plugin-prepared task checkouts enforces it. Native chats retain bb's own
+checkout behavior; registering one does not retrofit that hook. Pushes to a folder inside the sandbox (say, a
 temporary remote your repo's own tests create) are let through: they can't
 reach GitHub.
 
@@ -367,8 +393,7 @@ Large (8 vCPU, 16 GB) and XLarge (16 vCPU, 32 GB). What each costs, and
 which the trial allows, is under [Costs](../README.md#costs). Size pickers
 grey out the sizes your boat plan doesn't include, with boat's reason.
 
-- **Which size a new sandbox gets:** the size picked for the task (New task
-  → More options → Size, or `--type`), else its project's **Sandbox size**,
+- **Which size a delegated task's sandbox gets:** its `--type`, else its project's **Sandbox size**,
   else the **Default sandbox size** setting. The project is the task's own,
   or the one whose main repo the task works on. Reviews in a new sandbox
   use the project's size too, and at least the size of the task they
@@ -376,8 +401,8 @@ grey out the sizes your boat plan doesn't include, with boat's reason.
   - A size picked for a task that your plan doesn't include is refused
     before anything starts. A project size it doesn't include falls back to
     the setting (or a smaller size the plan has), the task's history says
-    so, and New task shows the size the task will really get.
-  - Set a project's size in Settings → Projects → **Sandbox size** ("Same
+    so. Native starts instead use the Boat size chip in bb's composer.
+  - Set a project's size in Cloud agents → Projects → **Sandbox size** ("Same
     as the setting" is the default), or:
     ```sh
     bb boat project set web-app --size large     # none: back to the setting
@@ -457,7 +482,7 @@ grey out the sizes your boat plan doesn't include, with boat's reason.
   memory or something was stopped for memory, else the same size (on
   XLarge: run fewer tests at once). A size your plan doesn't include says
   so. For a project's repo, **Use Large for Web app** sets the project's
-  size; without a project, the page says to pick Large in New task next
+  size; without a project, pick a size in the Boat chip for the next native
   time. When other tasks used the sandbox meanwhile, the page says part of
   the peak is theirs.
 
@@ -522,7 +547,7 @@ own.
 
 A task's sandbox is deleted when the task closes, so agents upload their
 screenshots and recordings before they finish. This is off by default. Turn
-it on in Settings → Setup → **Screenshots and recordings**
+it on in Settings → Advanced → **Screenshots and recordings**
 (`evidenceUploader`):
 
 - **Off** (empty, the default).
@@ -590,7 +615,7 @@ checklist warns and offers **Use Auto-detect**.
 
 With both agents:
 
-- New tasks start on **Agent for tasks** (Claude Code by default), and
+- Delegated tasks start on **Agent for tasks** (Claude Code by default), and
   reviews run on **Agent for reviews** (Codex), so each change gets a
   second opinion from the other model.
 - **When an agent hits its limit mid-task, continue with the other one** (on
@@ -617,7 +642,10 @@ A task can run with a model preset: Light, Review, Build, Deep or Frontier
 (`--tier` on the command line). The preset picks the model and effort for
 the task's agent, and the plugin records preset, model, effort and the
 reason on the task. Orchestrators always pick one. Edit the table in
-Settings → Models when model ids change:
+Settings → Advanced → Model presets when model ids change.
+
+Native starts keep the model and effort selected in bb's composer; they do
+not replace that selection with a task preset.
 
 | Preset | Claude | Codex | Use for |
 | --- | --- | --- | --- |
@@ -628,7 +656,7 @@ Settings → Models when model ids change:
 | Frontier | claude-fable-5-1 · xhigh | gpt-6-astra · xhigh | Only after Deep fell short |
 
 - Without a preset, tasks use **Model for tasks** and reviews **Model for
-  reviews** (Settings → Models); empty means the Build and Review presets.
+  reviews** (Settings → Advanced); empty means the Build and Review presets.
 - Tasks in boat can't use Ultracode or Ultra, so there Deep runs at max and
   the brief asks Claude to use helper agents.
 - Model ids are bb's (`claude-opus-5-5`); tasks in boat get boat's

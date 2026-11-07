@@ -83,10 +83,12 @@ rights of the user who runs bb. In particular, it uses:
 - **A terminal in bb**, only when you click **Sign in…** or **Run in
   terminal** on the setup checklist: it opens a shell on the bb machine and
   types that fix's command (`boat onboard`, for example), and nothing else.
-- **Your chat drafts**, only when you pick **Send to a cloud agent** in the
-  send menu: it puts one line in front of the draft (asking the chat to use
-  a cloud agent) and sends it. **Start as a cloud task** turns the draft
-  into a task's brief.
+- **Your chat drafts**, when you pick **Send to a cloud agent** in an
+  existing chat: it prefixes the draft with a request to use a cloud agent.
+  Native **Start** and **Start as orchestrator** use bb's composer submission
+  with its project, environment, provider, model and attachments. The plugin
+  tracks the chat bb provisions; it does not dispatch a second worker or
+  take ownership of that existing machine's lifecycle.
 - **Cloud sandboxes.** The plugin runs the agents, git, your project's setup
   and, if you turn it on, the evidence uploader there. It also checks the
   sandbox's size and memory: it reads `/proc` and the kernel log's
@@ -96,20 +98,28 @@ rights of the user who runs bb. In particular, it uses:
   environment you pick (and boat credentials, if it passes them), and their
   agents can read them. Tasks push branches
   and open pull requests, and **Ship** pushes approved commits to the base
-  branch, only on your click or your message in the orchestrator's chat. A
-  git hook stops pushes to protected branches (pushes to a folder inside
+  branch, only after an explicit in-thread confirmation or the existing
+  approval checks for the CLI/tool path in the orchestrator's chat. Opening
+  the form and writing an optional note do not approve shipping. The UI
+  confirmation captures clean-checkout commit facts and checks for changed
+  work again before shipping; a new turn or changed commits require a fresh
+  confirmation. These checks are not independent proof that tests passed,
+  and a malicious process inside the sandbox can still tamper with git. A
+  git hook in plugin-prepared delegated checkouts stops pushes to protected branches (pushes to a folder inside
   the sandbox, like a test's temporary remote, pass), but it is a guard for
   well-behaved agents, not a security boundary. Protect your base branches
-  on GitHub.
+  on GitHub. Registering a native chat does not prepare a new checkout or
+  retrofit that hook; it keeps bb's existing checkout behavior.
 - **bb machine credentials** in the sandboxes of task chats, chats on a
   Boat sandbox and cloud orchestrators. Those sandboxes run bb's daemon,
-  connected to your bb through bb Connect. Task chats are opt-in: How tasks
-  run and your projects' **Run tasks as chats** decide per repo. You can
-  also make a single task a chat: **Run as a chat** in New task, or
-  **Continue as a chat** on a headless task's page, which installs bb into
+  connected to your bb through bb Connect. Choosing **Boat sandbox** on the
+  native New thread screen opts that chat into this access, with bb keeping
+  its selected provider, permissions and machine lifecycle. For delegated
+  work, **How tasks run** and your projects' **Run tasks as chats** decide
+  per repo. **Continue as a chat** on a headless task's page installs bb into
   the task's existing sandbox (where other tasks may have run before) and
   writes its conversation to `~/.boat-tasks` there. For repos the rules
-  don't run as chats, both warn and need your confirm, and agents' `bb boat
+  don't run as chats, that conversion warns and needs your confirm, and agents' `bb boat
   task start --chat` and `bb boat task continue-as-chat` are refused. That
   confirm is a step in the UI, not a security boundary: any bb client can
   send it through the plugin's RPC, including an agent that already has bb
@@ -128,8 +138,9 @@ rights of the user who runs bb. In particular, it uses:
   Claude Code and Codex providers), Push notifications and bb Connect's
   status, when installed.
 - **Messages in bb**, through bb's message hook: bb asks the plugin about
-  each message before an agent gets it. The plugin only looks for a task
-  chat whose sandbox stopped under background work; it holds one message
+  each message before an agent gets it. The plugin handles its explicit
+  native-start intent and a task chat whose sandbox stopped under background
+  work. For the latter it holds one message
   to that chat once, for 10 seconds, and puts a note for the agent in
   front of it in bb's queue. It keeps no message text.
 
@@ -138,11 +149,15 @@ rights of the user who runs bb. In particular, it uses:
 - Tasks, reports, decisions, previews and projects in the plugin's SQLite
   database in bb's data folder (by default `~/.bb/plugins/boat/data.db`), plus
   the shared orchestrator protocol in `orchestrator-protocol.md` next to it.
-- The everyday settings in bb's settings list; the plugin's own settings,
-  your model presets, page state (a hidden orchestrator card) and the
+- Grouped settings in bb's plugin storage, following a migration that
+  snapshots effective legacy values before hiding bb's old fields on the
+  next plugin reload. Also your model presets, page state and the
   Claude ↔ Codex switching state (including orchestrators' handoff notes)
   in bb's plugin storage; each orchestrator's role and project on its
   thread. None of the settings are secret.
+- Shipping choices and optional notes in task history and the interaction's
+  transcript description. Pending confirmations expire or cancel on plugin
+  disposal; a note is not an approval token.
 - No passwords or API keys. Environment secrets show by name only; the
   plugin drops their values as soon as it reads them, so they never reach
   the UI, the logs or a chat (agents can read them in their sandbox).
