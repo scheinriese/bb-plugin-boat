@@ -24,7 +24,9 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { Board } from "./board";
-import { NewOrchestratorDialog } from "./dialogs";
+import { NewProjectDialog } from "./projects-settings";
+import { DecisionCard } from "./cards";
+import { useComposer } from "@get-bb/plugin-sdk/app";
 import {
   PHASE_DOT,
   ROLE_ICON,
@@ -273,67 +275,19 @@ export function ThreadAgentsTab({ threadId }: ExperimentalThreadTabProps) {
  * Once you have orchestrators, the ones that need you are listed with Open.
  */
 export function HomepageCard({ projectId }: PluginHomepageSectionProps) {
-  const navigate = useBbNavigate();
-  const [orchestrating, setOrchestrating] = useState(false);
+  const composer = useComposer();
+  const [adding, setAdding] = useState(false);
   const { openOverview, openOrchestrator } = useCloudAgentsNavigation();
-  const orchestrators = (useOrchestrators().data?.orchestrators ?? []).filter((entry) => !entry.archived);
-  const onlyAgent = useOverview().data?.defaults.onlyAgent ?? null;
+  const orchestrators = (useOrchestrators().data?.orchestrators ?? []).filter(entry => !entry.archived);
   const board = useBoard(null).data;
-  const needs = new Map<string, number>();
-  for (const decision of board?.needsYou ?? []) {
-    if (decision.orchestratorThreadId) needs.set(decision.orchestratorThreadId, (needs.get(decision.orchestratorThreadId) ?? 0) + 1);
-  }
-  const waiting = orchestrators.filter((entry) => (needs.get(entry.threadId) ?? 0) > 0).slice(0, 3);
-  return (
-    <div className="overflow-hidden rounded-lg border border-border bg-card">
-      <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-secondary text-secondary-foreground">
-          <Icon name="ComputerCloud" className="size-4" aria-hidden />
-        </div>
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <div className="text-sm font-medium text-foreground">Hand a task to a cloud agent</div>
-          <p className="text-xs text-pretty text-muted-foreground">
-            {agentWords(onlyAgent)} works in a boat.dev sandbox and comes back with a PR.{" "}
-            {orchestrators.length === 0 ? (
-              <button
-                type="button"
-                onClick={() => setOrchestrating(true)}
-                className="rounded-sm underline underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                Or coordinate this project with an orchestrator
-              </button>
-            ) : null}
-          </p>
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button variant="ghost" size="sm" onClick={openOverview}>
-            Open Cloud agents
-          </Button>
-          <Button size="sm" onClick={() => navigate.toCompose({ projectId: projectId ?? undefined, focusPrompt: true })}>
-            <Icon name="Plus" /> Start a task
-          </Button>
-        </div>
-      </div>
-      {waiting.length > 0 ? (
-        <ul aria-label="Orchestrators that need you" className="divide-y divide-border border-t border-border">
-          {waiting.map((entry) => {
-            const count = needs.get(entry.threadId) ?? 0;
-            return (
-              <li key={entry.threadId} className="flex items-center gap-3 px-4 py-2">
-                <Icon name="Workflow" className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                  <ThreadName threadId={entry.threadId} fallback={entry.title} />
-                  <span className="text-warning-text"> · {count} {count === 1 ? "needs" : "need"} you</span>
-                </span>
-                <Button variant="outline" size="sm" className="h-7 shrink-0" onClick={() => openOrchestrator(entry.threadId)}>
-                  Open
-                </Button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-      <NewOrchestratorDialog open={orchestrating} onOpenChange={setOrchestrating} projectId={projectId} />
-    </div>
-  );
+  const decisions = board?.needsYou ?? [];
+  const firstRun = orchestrators.length === 0 && decisions.length === 0 && (board?.ready.length ?? 0) + (board?.running.length ?? 0) + (board?.done.length ?? 0) === 0;
+  const fill = (text: string) => { composer.insert(text, { at: "end", block: true }); composer.focus(); };
+  return <section className="overflow-hidden rounded-lg border border-border bg-card">
+    <header className="flex items-center gap-2 px-4 py-3"><Icon name="ComputerCloud" className="size-4 text-muted-foreground" /><span className="flex-1 text-sm font-medium">Cloud agents</span><Button variant="ghost" size="sm" onClick={openOverview}>Open</Button></header>
+    {decisions.length > 0 && <div className="border-t border-border px-3"><p className="pt-3 text-xs font-medium text-[#F0B135]">Needs you</p>{decisions.map(decision => <DecisionCard key={decision.id} decision={decision} threadId={decision.orchestratorThreadId ?? ""} />)}</div>}
+    {orchestrators.length > 0 && <ul aria-label="Orchestrators" className="divide-y divide-border border-t border-border">{orchestrators.map(entry => <li key={entry.threadId} className="flex items-center gap-2 px-4 py-2.5"><Icon name="Workflow" className="size-3.5 text-muted-foreground" /><button className="min-w-0 flex-1 truncate rounded-sm text-left text-sm hover:underline focus-visible:ring-1 focus-visible:ring-ring" onClick={() => openOrchestrator(entry.threadId)}>{entry.projectName ?? entry.title ?? "Orchestrator"}</button><span className={cn("text-xs", entry.needsAttention ? "text-[#F0B135]" : "text-muted-foreground")}>{entry.needsAttention ? `${entry.needsAttention} need you` : entry.runningTasks ? `${entry.runningTasks} working` : `${entry.openTasks} open`}</span></li>)}</ul>}
+    {firstRun ? <div className="space-y-2 border-t border-border p-4"><p className="text-sm">Start with one task, or coordinate a project.</p><div className="flex flex-col gap-2 sm:flex-row"><Button size="sm" variant="outline" onClick={() => fill("Help me work on one task in this repository. ")}>Start a task</Button><Button size="sm" variant="outline" onClick={() => setAdding(true)}>Add a project</Button><Button size="sm" variant="outline" onClick={() => fill("Help me plan and coordinate work for this project. ")}>Start an orchestrator</Button></div><p className="text-xs text-muted-foreground">Choose your project and Boat sandbox below. Use Start as orchestrator in the send menu to coordinate.</p></div> : decisions.length === 0 && <p className="border-t border-border px-4 py-3 text-xs text-muted-foreground">Nothing needs you right now.</p>}
+    <NewProjectDialog open={adding} onOpenChange={setAdding} repo="" baseBranch="" />
+  </section>;
 }

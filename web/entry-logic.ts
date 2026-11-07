@@ -6,12 +6,18 @@
 import type { SandboxSizeDto, ThreadRoleDto } from "../contract";
 
 type MachineType = SandboxSizeDto["type"];
-const MACHINE_TYPES: readonly MachineType[] = ["small", "default", "large", "xlarge"];
+const MACHINE_TYPES: readonly MachineType[] = [
+  "small",
+  "default",
+  "large",
+  "xlarge",
+];
 
 // ------------------------------------------------------------------ composer
 
 /** What "Send to a cloud agent" puts before the draft; the boat skill does the rest. */
-export const CLOUD_AGENT_PREFIX = "Use a cloud agent for this (boat skill: `bb boat task start`).\n\n";
+export const CLOUD_AGENT_PREFIX =
+  "Use a cloud agent for this (boat skill: `bb boat task start`).\n\n";
 
 interface Ranged {
   from: number;
@@ -19,23 +25,37 @@ interface Ranged {
 }
 
 /** The draft with `prefix` in front; mention pills move along with their text. */
-export function prefixDraft<M extends Ranged>(draft: { text: string; mentions: readonly M[] }, prefix: string): { text: string; mentions: M[] } {
+export function prefixDraft<M extends Ranged>(
+  draft: { text: string; mentions: readonly M[] },
+  prefix: string,
+): { text: string; mentions: M[] } {
   const shift = prefix.length;
   return {
     text: `${prefix}${draft.text}`,
-    mentions: draft.mentions.map((mention) => ({ ...mention, from: mention.from + shift, to: mention.to + shift })),
+    mentions: draft.mentions.map((mention) => ({
+      ...mention,
+      from: mention.from + shift,
+      to: mention.to + shift,
+    })),
   };
 }
 
 /** Undo prefixDraft (the send didn't go out); null when the draft no longer starts with it. */
-export function unprefixDraft<M extends Ranged>(draft: { text: string; mentions: readonly M[] }, prefix: string): { text: string; mentions: M[] } | null {
+export function unprefixDraft<M extends Ranged>(
+  draft: { text: string; mentions: readonly M[] },
+  prefix: string,
+): { text: string; mentions: M[] } | null {
   if (!draft.text.startsWith(prefix)) return null;
   const shift = prefix.length;
   return {
     text: draft.text.slice(shift),
     mentions: draft.mentions
       .filter((mention) => mention.from >= shift)
-      .map((mention) => ({ ...mention, from: mention.from - shift, to: mention.to - shift })),
+      .map((mention) => ({
+        ...mention,
+        from: mention.from - shift,
+        to: mention.to - shift,
+      })),
   };
 }
 
@@ -53,8 +73,16 @@ export function shipFromChat(role: ThreadRoleDto | undefined) {
 export function reviewFromChat(role: ThreadRoleDto | undefined) {
   if (role?.kind !== "task") return null;
   const { task } = role;
-  if (task.role === "review" || task.status === "done" || task.status === "cancelled") return null;
-  return { task, disabled: task.status === "running" || task.status === "starting" };
+  if (
+    task.role === "review" ||
+    task.status === "done" ||
+    task.status === "cancelled"
+  )
+    return null;
+  return {
+    task,
+    disabled: task.status === "running" || task.status === "starting",
+  };
 }
 
 /**
@@ -62,7 +90,10 @@ export function reviewFromChat(role: ThreadRoleDto | undefined) {
  * orchestrators can stop. Task chats get neither, and nothing shows while the
  * role is still loading.
  */
-export function coordinateAction(role: ThreadRoleDto | undefined, archived: boolean): "coordinate" | "stop" | null {
+export function coordinateAction(
+  role: ThreadRoleDto | undefined,
+  archived: boolean,
+): "coordinate" | "stop" | null {
   if (role === undefined) return null;
   if (role.kind === "orchestrator") return "stop";
   if (role.kind === "chat" && !archived) return "coordinate";
@@ -71,7 +102,9 @@ export function coordinateAction(role: ThreadRoleDto | undefined, archived: bool
 
 // ------------------------------------------------------------ size chip
 
-export type MachineInputsChange = { status: "ready"; value: Record<string, string> } | { status: "blocked"; reason: string };
+export type MachineInputsChange =
+  | { status: "ready"; value: Record<string, string> }
+  | { status: "blocked"; reason: string };
 
 export interface SizeChipState {
   /** The size the chip shows: the picked one, else the default for chats. */
@@ -83,7 +116,8 @@ export interface SizeChipState {
   change: MachineInputsChange;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
  * What the Boat sandbox size chip reports for the machine's inputs (the
@@ -91,12 +125,21 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
  * `{}`, so the setting decides at creation. A size the plan can't use blocks
  * the send with boat's reason. `sizes` null: unknown, every size allowed.
  */
-export function sizeChipState(value: unknown, sizes: readonly SandboxSizeDto[] | null, chatDefault: MachineType): SizeChipState {
+export function sizeChipState(
+  value: unknown,
+  sizes: readonly SandboxSizeDto[] | null,
+  chatDefault: MachineType,
+): SizeChipState {
   const inputs = isRecord(value) ? value : {};
   if (typeof inputs.sandboxId === "string") {
     const kept: Record<string, string> = { sandboxId: inputs.sandboxId };
     if (typeof inputs.taskId === "string") kept.taskId = inputs.taskId;
-    return { type: chatDefault, picked: false, adopted: true, change: { status: "ready", value: kept } };
+    return {
+      type: chatDefault,
+      picked: false,
+      adopted: true,
+      change: { status: "ready", value: kept },
+    };
   }
   const picked = MACHINE_TYPES.find((type) => type === inputs.type) ?? null;
   const type = picked ?? chatDefault;
@@ -106,10 +149,20 @@ export function sizeChipState(value: unknown, sizes: readonly SandboxSizeDto[] |
       type,
       picked: picked !== null,
       adopted: false,
-      change: { status: "blocked", reason: size.reason ? `${size.label}: ${size.reason}` : `${size.label} isn't on your boat plan` },
+      change: {
+        status: "blocked",
+        reason: size.reason
+          ? `${size.label}: ${size.reason}`
+          : `${size.label} isn't on your boat plan`,
+      },
     };
   }
-  return { type, picked: picked !== null, adopted: false, change: { status: "ready", value: picked === null ? {} : { type: picked } } };
+  return {
+    type,
+    picked: picked !== null,
+    adopted: false,
+    change: { status: "ready", value: picked === null ? {} : { type: picked } },
+  };
 }
 
 // ------------------------------------------------------------ coordinate
@@ -130,4 +183,47 @@ export function coordinateProject(input: {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .find((entry) => entry.projectId !== null && known.has(entry.projectId));
   return newest?.projectId ?? null;
+}
+
+export const NATIVE_STARTERS = [
+  {
+    id: "check-repo",
+    label: "Check the repo runs",
+    icon: "Play",
+    prompt:
+      "Check this repository runs. Install dependencies, run its checks, and report any setup problems.",
+  },
+  {
+    id: "fix-bug",
+    label: "Fix a bug",
+    icon: "Bug",
+    prompt:
+      "Help me fix a bug in this repository. Ask me what happens and what I expected, then investigate.",
+  },
+  {
+    id: "explore-plan",
+    label: "Explore and plan",
+    icon: "Search",
+    prompt:
+      "Explore this repository and help me plan the next change. Explain the relevant code before making changes.",
+  },
+] as const;
+
+/** Let core submit its own complete draft and selection. Never copy text into startTask. */
+export async function submitNativeStart(
+  composer: {
+    readonly isSubmittingBlocked: boolean;
+    readonly submittingBlockedReason: string | null;
+    submit(options?: {
+      experimental_data?: { boatStart: "task" | "orchestrator" };
+    }): Promise<unknown>;
+  },
+  kind: "task" | "orchestrator",
+): Promise<void> {
+  if (composer.isSubmittingBlocked)
+    throw new Error(
+      composer.submittingBlockedReason ??
+        "Finish setting up this chat before starting.",
+    );
+  await composer.submit({ experimental_data: { boatStart: kind } });
 }
