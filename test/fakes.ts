@@ -794,6 +794,7 @@ export function makeService(
     connect?: ConnectStatus | (() => ConnectStatus);
     /** How the plugin's projects run this repo's tasks (default: no project has it). */
     repoWorkerMode?: (repo: string) => Runner | null;
+    projectReviewer?: ServiceHooks["projectReviewer"];
     /** The plan's sandbox sizes (default: unknown, boat decides). */
     plan?: MachineTypeFacts[] | null;
     /** Stored projects with sizes. */
@@ -849,6 +850,7 @@ export function makeService(
     ...(options.preflight ? { preflight: options.preflight } : {}),
     ...(options.connect ? { connect: async () => (typeof options.connect === "function" ? options.connect() : options.connect!) } : {}),
     ...(options.repoWorkerMode ? { repoWorkerMode: options.repoWorkerMode } : {}),
+    ...(options.projectReviewer ? { projectReviewer: options.projectReviewer } : {}),
     checkPreview: options.checkPreview ?? (async () => "up" as const),
   });
   if (chat && options.linkedMachines) chat.link(boat, (sandboxId) => service.bringUp(sandboxId));

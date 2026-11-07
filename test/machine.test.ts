@@ -131,3 +131,14 @@ test("native machine starts from the selected snapshot", async () => {
   assert.equal(boat.created.at(-1)!.from, "repo-base");
   assert.equal((result.resource as unknown as { snapshot: string }).snapshot, "repo-base");
 });
+
+for (const reviewer of ["codex", "claude", "none"]) test(`machine preserves the selected ${reviewer} reviewer in checkpoint and public resource`, async () => {
+  const { provider, args, boat } = setup(); const checkpoints: unknown[] = [];
+  const result = await provider().create({ ...args("native-policy", { type: "default", reviewer }), checkpoint: async (resource: unknown) => { checkpoints.push(resource); } });
+  assert.equal(result.status, "created"); assert.equal((result.resource as unknown as { reviewer: string }).reviewer, reviewer);
+  assert.equal((checkpoints[0] as { reviewer: string }).reviewer, reviewer); assert.equal(boat.created.length, 1);
+});
+test("invalid machine reviewer fails before any sandbox creation", async () => {
+  const { provider, args, boat } = setup(); const result = await provider().create(args("bad-policy", { reviewer: "invalid" }));
+  assert.equal(result.status, "failed"); assert.match(result.message!, /options are invalid/); assert.equal(boat.created.length, 0);
+});

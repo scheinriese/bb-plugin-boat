@@ -4,6 +4,7 @@
 import { spawn } from "node:child_process";
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { reviewerSchema } from "../contract-review.ts";
 import { ACTIVE_STATES, MACHINE_TYPES, type BoatApi, type MachineType } from "./boat-api.ts";
 import { BoatError, type BoatCli } from "./boat.ts";
 import type { BoatService, BoatSettings } from "./service.ts";
@@ -17,6 +18,8 @@ const inputsSchema = z
   .object({
     type: z.enum(MACHINE_TYPES).optional(),
     snapshot: z.string().trim().min(1).max(120).optional(),
+    /** Explicit native-task choice; absent inherits its project/global policy. */
+    reviewer: reviewerSchema.optional(),
     /** Adopt this prepared sandbox (a worker chat's) instead of creating one. */
     sandboxId: z.string().regex(/^bx_[A-Za-z0-9]+$/).optional(),
     /** The task whose worker chat runs on it. */
@@ -161,6 +164,7 @@ export function registerBoatMachine(
     async create({ inputs, key, checkpoint, report, signal }) {
       try {
         const parsed = inputsSchema.safeParse(inputs ?? {});
+        if (!parsed.success) throw new Error("Boat machine options are invalid. Choose a supported size, snapshot and reviewer.");
         const adopt = parsed.success ? (parsed.data.sandboxId ?? null) : null;
         let sandbox = adopt === null ? null : await boat.findInfo(adopt, signal);
         if (adopt !== null) {
@@ -190,7 +194,7 @@ export function registerBoatMachine(
           report.step("Resuming the boat sandbox");
           sandbox = await service.bringUp(sandbox.id, signal);
         }
-        await checkpoint({ sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}) });
+        await checkpoint({ sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) });
         report.log(`boat sandbox ${sandbox.id}`);
         report.step("Installing bb on the sandbox");
         const { hostId } = await bb.experimental_machines.bootstrap({
@@ -199,7 +203,7 @@ export function registerBoatMachine(
           report,
           signal,
         });
-        return { status: "created" as const, name: `Boat ${sandbox.id} (${hostId.slice(-6)})`, resource: { sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}) } };
+        return { status: "created" as const, name: `Boat ${sandbox.id} (${hostId.slice(-6)})`, resource: { sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) } };
       } catch (error) {
         signal.throwIfAborted();
         return { status: "failed" as const, message: message(error) };

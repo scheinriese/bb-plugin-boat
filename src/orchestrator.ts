@@ -1,6 +1,7 @@
 // Orchestrator threads: bb threads tagged (via plugin metadata) to coordinate
 // boat workers instead of writing code themselves. Each one works on a
 // project; dispatches default to its repos, base branches and environment.
+import { projectReviewInstructions } from "./review-policy.ts";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { parseOrchestratorProject, type OrchestratorProject } from "./projects.ts";
 
@@ -60,7 +61,7 @@ export function projectInstructions(project: OrchestratorProject | null): string
     project.delivery === "push"
       ? " It ships after the user approves: tasks only commit, and you ship (boat_ship) only on the user's OK in this chat."
       : " Tasks open draft pull requests.";
-  return `\n- Project: ${safe(project.name)}. Repos: ${repos}. boat_dispatch defaults to the first repo, its base branch${project.environment ? `, and the boat environment ${safe(project.environment)}` : ""}; pass repo to target another one.${delivery}${rules}`;
+  return `\n- Project: ${safe(project.name)}. Repos: ${repos}. boat_dispatch defaults to the first repo, its base branch${project.environment ? `, and the boat environment ${safe(project.environment)}` : ""}; pass repo to target another one.${delivery}${rules}${projectReviewInstructions(project) ? ` ${projectReviewInstructions(project)}` : ""}`;
 }
 
 async function readMetadata(bb: BbPluginApi, threadId: string): Promise<Record<string, unknown>> {

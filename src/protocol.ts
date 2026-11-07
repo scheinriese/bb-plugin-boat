@@ -2,6 +2,7 @@
 // folder (too long for agent instructions, which stop at 4096 characters).
 // Orchestrators load it with boat_protocol / `bb boat protocol show`,
 // followed by the project's own rules file from its main repo.
+import { projectReviewInstructions } from "./review-policy.ts";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
@@ -239,5 +240,7 @@ export function composeProtocol(shared: string, project: OrchestratorProject | n
       `Read it yourself before dispatching: \`gh api -H "Accept: application/vnd.github.raw" "repos/${rules.repo}/contents/${rules.path}?ref=${rules.ref}"\`, or ask the user.`,
     );
   }
+  const review = projectReviewInstructions(project);
+  if (review) parts.push("# Project review policy", review);
   return parts.join("\n\n");
 }

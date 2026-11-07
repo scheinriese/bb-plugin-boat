@@ -4,6 +4,7 @@ import type {
   MessageDispatchHookContext,
   MessageDispatchHookDecision,
 } from "@get-bb/plugin-sdk";
+import { reviewerSchema } from "../contract-review.ts";
 import { normalizeRepo } from "./boat-api.ts";
 import { newTaskId } from "./store.ts";
 import type { Runtime } from "./runtime.ts";
@@ -78,6 +79,7 @@ export async function adoptNativeChat(
   const resource = (await bb.experimental_machines.getResource(host.id)) as {
     sandboxId?: unknown;
     snapshot?: unknown;
+    reviewer?: unknown;
   } | null;
   if (
     typeof resource?.sandboxId !== "string" ||
@@ -147,6 +149,11 @@ export async function adoptNativeChat(
     "Registered this existing Boat chat; bb owns its sandbox lifecycle.",
   );
   service.store.addEvent(task.id, "chat", threadId);
+  const reviewer = reviewerSchema.safeParse(resource.reviewer);
+  service.store.addEvent(task.id, "native-review-policy", JSON.stringify({
+    version: 1, machineReviewer: reviewer.success ? reviewer.data : null,
+    valid: resource.reviewer == null || reviewer.success,
+  }));
   bb.rpc.experimental_invalidate(["boat:tasks", "boat:overview", "boat:sandboxes"]);
   return true;
 }

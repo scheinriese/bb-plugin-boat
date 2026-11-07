@@ -1,3 +1,6 @@
+import { reviewerSchema, type Reviewer } from "../contract-review.ts";
+import { resolveReviewer, reviewGeneration, nativeReviewSourceSchema, type NativeReviewSource } from "./review-policy.ts";
+import { getPullRequest, pullRequestNumber } from "./github.ts";
 // The plugin's core: sandboxes, tasks, dispatch, and the completion sweep.
 // CLI commands, agent tools, RPC (UI) and the background monitor are thin
 // layers over this class.
@@ -182,6 +185,8 @@ export interface ServiceHooks {
   chat?: ChatRunner;
   /** How the project that has this repo runs its workers (null: not in any project). */
   repoWorkerMode?(repo: string): Runner | null;
+  /** Selected project's review default; null inherits global, none disables automatic only. */
+  projectReviewer?(projectId: string | null, repo: string | null): Reviewer | null;
   /**
    * How work on this repo and base lands, from the current project settings:
    * push if any project ships it after approval (null: no project has it).
@@ -280,6 +285,8 @@ export interface StartTaskInput {
   evidence?: boolean;
   /** Measure the first turn's peak memory and recommend a size (the repo check, the test task). */
   measureMemory?: boolean;
+  /** Internal automatic native review binding; never accepted from RPC/tool input. */
+  nativeReview?: { source: NativeReviewSource; signal?: AbortSignal; beforeDispatch(reviewTaskId: string): Promise<void> };
   signal?: AbortSignal;
 }
 
@@ -649,13 +656,30 @@ export class BoatService {
     this.settlingReviews.add(task.id);
     try {
       const marker = taskMarker("review", task.id);
-      const publication = `${task.turns}:${verdict}`;
+      let publicationVerdict = verdict;
+      const bound = this.store.latestEvent(task.id, "native-review-source");
+      if (bound) {
+        const parsed = (() => { try { return nativeReviewSourceSchema.safeParse(JSON.parse(bound.text)); } catch { return null; } })();
+        if (!parsed?.success) publicationVerdict = "outdated";
+        else {
+          const source = parsed.data;
+          const current = this.store.get(source.taskId);
+          if (source.taskId !== task.parentTaskId || !current || reviewGeneration(current) !== source.generation) publicationVerdict = "outdated";
+          else {
+            const facts = await getPullRequest(source.repo, source.prUrl, this.hooks.lifecycle).catch(() => null);
+            if (this.hooks.lifecycle.aborted) return;
+            const after = this.store.get(source.taskId);
+            if (!facts || facts.head !== source.head || facts.base !== source.base || !after || reviewGeneration(after) !== source.generation) publicationVerdict = "outdated";
+          }
+        }
+      }
+      const publication = `${task.turns}:${publicationVerdict}`;
       let changed = false;
       if (this.store.latestEvent(task.id, "review-published")?.text !== publication) {
-        this.store.addEvent(task.parentTaskId, "review", `Review ${task.id}: ${verdict}`);
+        this.store.addEvent(task.parentTaskId, "review", `Review ${task.id}: ${publicationVerdict}`);
         // A passive timeline append is not available in this SDK. The Task tab
         // and notifications can render this marker without starting an agent.
-        this.store.addEvent(task.parentTaskId, "review-card", `${marker}\n${verdict}`);
+        this.store.addEvent(task.parentTaskId, "review-card", `${marker}\n${publicationVerdict}`);
         this.store.addEvent(task.id, "review-published", publication);
         changed = true;
       }
@@ -1182,6 +1206,13 @@ export class BoatService {
       settings,
       userApproved: input.userApproved === true,
     });
+    if (input.nativeReview) {
+      input.nativeReview.signal?.throwIfAborted();
+      this.assertNativeReviewSource(input.nativeReview.source);
+      if (input.role !== "review" || input.parentTaskId !== input.nativeReview.source.taskId || input.repo !== input.nativeReview.source.repo || input.pr !== input.nativeReview.source.prUrl || provider !== input.nativeReview.source.reviewer || input.sandbox !== "new") {
+        throw new TaskError("The selected native reviewer requires a separate review sandbox and its selected agent.", "review_source_changed");
+      }
+    }
     const id = newTaskId();
     const now = new Date().toISOString();
 
@@ -1269,6 +1300,7 @@ export class BoatService {
       unshipped: null,
       shipApproval: null,
     });
+    if (input.nativeReview) this.store.addEvent(id, "native-review-source", JSON.stringify(input.nativeReview.source));
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
     if (input.measureMemory) this.sizes.watch(id); // sizes
     if (agentNote !== null) this.store.addEvent(id, "agent", agentNote);
@@ -1575,6 +1607,7 @@ export class BoatService {
     // Stop as soon as the task is closed (or the plugin unloads).
     const stillWanted = () => {
       if (signal.aborted || this.store.get(id)?.status !== "starting") throw new DispatchCancelled();
+      if (input.nativeReview) { input.nativeReview.signal?.throwIfAborted(); this.assertNativeReviewSource(input.nativeReview.source); }
     };
     try {
       stillWanted();
@@ -1698,6 +1731,14 @@ export class BoatService {
       const sandboxLine = await this.sizes.atDispatch(task, sandbox, { created: createdSandbox !== null, requested: sizing.type, signal });
       stillWanted();
 
+      // Automatic native review never starts against a stale completed turn/PR.
+      if (input.nativeReview) {
+        await input.nativeReview.beforeDispatch(id); stillWanted();
+        // Verify only the new review sandbox; never probe or reprepare core's checkout.
+        const head = await this.boat.exec(sandbox.id, `GIT_OPTIONAL_LOCKS=0 git -C ${shellQuote(task.repoPath!)} rev-parse --verify HEAD | sed 's/^/BOAT_NATIVE_REVIEW_HEAD /'`, { timeoutMs: 10_000, signal });
+        if (head.exitCode !== 0 || head.stdout.trim() !== `BOAT_NATIVE_REVIEW_HEAD ${input.nativeReview.source.head}`) throw new TaskError("The review checkout does not match the recorded pull request HEAD.", "review_source_changed");
+        stillWanted();
+      }
       // 3. Dispatch the agent.
       const prompt = composeInitialPrompt({
         runner: task.runner,
@@ -2857,6 +2898,31 @@ export class BoatService {
     return task;
   }
 
+  /** Effective automatic policy; manual review requests remain possible for none. */
+  async reviewPolicy(task: Task, machine: Reviewer | null = null): Promise<ReturnType<typeof resolveReviewer>> {
+    const project = reviewerSchema.safeParse(this.hooks.projectReviewer?.(task.projectId, task.repo));
+    return resolveReviewer(machine, project.success ? project.data : null, (await this.settings()).reviewProvider);
+  }
+
+  /** Read core's actual idle/queue/background state; never alter its lifecycle. */
+  async nativeReviewIdle(task: Task): Promise<boolean> {
+    if (!this.isNativeChat(task) || !task.threadId || !this.hooks.chat || (task.sandboxId !== null && this.holdsSandbox(task.sandboxId))) return false;
+    const state = await this.hooks.chat.state(task.threadId);
+    return state !== null && state.status === "idle" && !state.archived && state.queued === 0 && state.backgroundAgents === 0 && (state.workflows ?? 0) === 0 &&
+      (state.environmentId === null || task.environmentId === null || state.environmentId === task.environmentId);
+  }
+
+  private assertNativeReviewSource(source: NativeReviewSource): Task {
+    const task = this.mustGet(source.taskId);
+    if (!this.isNativeChat(task) || task.role !== "implement" || task.delivery !== "pr" || task.status !== "idle" || reviewGeneration(task) !== source.generation || task.repo !== source.repo || task.prUrl !== source.prUrl) {
+      throw new TaskError("The implementation changed before its automatic review could start.", "review_source_changed");
+    }
+    this.assertNotMoving(task.id);
+    this.sizes.assertSandboxNotResizing(task.sandboxId, "Review once the sandbox move finishes.");
+    if (task.sandboxId !== null && this.holdsSandbox(task.sandboxId)) throw new TaskError("The task sandbox is in use; automatic review is waiting.", "sandbox_busy");
+    return task;
+  }
+
   /** Build the input for a review of an implementation task (launch it with launchTask). */
   async reviewInput(
     implementationId: string,
@@ -2871,6 +2937,7 @@ export class BoatService {
       sandbox?: string | null;
       orchestratorThreadId?: string | null;
       projectId?: string | null;
+      automatic?: boolean;
       signal?: AbortSignal;
     } = {},
   ): Promise<StartTaskInput> {
@@ -2881,10 +2948,16 @@ export class BoatService {
     if (parent.status === "running" || parent.status === "starting") {
       throw new TaskError(`Task ${parent.id} is still running.`, "task_running", "Review it after its turn finishes.");
     }
-    // Cross-model review by default: if the implementer used the configured
-    // review provider, switch to the other one.
+    if (this.isNativeChat(parent)) {
+      if (!parent.repo || !parent.prUrl) throw new TaskError("Waiting for the implementation to report its pull request before reviewing.", "review_source_unknown");
+      pullRequestNumber(parent.repo, parent.prUrl);
+    }
+    const configured = reviewerSchema.safeParse(this.hooks.projectReviewer?.(options.projectId ?? parent.projectId, parent.repo));
+    const projectReviewer = configured.success ? configured.data : null;
+    if (options.automatic && projectReviewer === "none" && options.provider == null) throw new TaskError("Automatic reviews are off for this project.", "review_disabled");
+    // Explicit project choices win; legacy manual defaults retain cross-model review.
     const provider =
-      options.provider ??
+      options.provider ?? (projectReviewer !== "none" ? projectReviewer : null) ??
       (parent.provider === settings.reviewProvider
         ? parent.provider === "claude"
           ? "codex"
@@ -2902,7 +2975,7 @@ export class BoatService {
       baseBranch: parent.baseBranch,
       pr: parent.prUrl,
       provider,
-      flexibleAgent: options.provider == null,
+      flexibleAgent: options.provider == null && (projectReviewer === null || projectReviewer === "none"),
       model: options.model ?? null,
       tier: options.tier ?? null,
       reasoningEffort: options.effort ?? null,
