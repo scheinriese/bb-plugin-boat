@@ -22,3 +22,7 @@ coverage/
 *.db
 *.db-shm
 *.db-wal
+
+# Private local fidelity tooling and disposable demo instances
+fidelity-work/
+build-shots/
