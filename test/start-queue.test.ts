@@ -68,6 +68,10 @@ test("disabled relay preserves the preferred agent: other-agent room keeps waiti
 test("known reset time never substitutes for actual fresh room; unknown usage keeps work waiting",async t=>{
  const e=setup();t.after(()=>e.dispose());await e.queued();e.advance(8*24*3600_000);e.setUsage(new Map());await e.queue.tick();assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);
 });
+test("waiting receipts follow newly observed reset windows without inventing room or allocating",async t=>{
+ const e=setup();t.after(()=>e.dispose());const q=await e.queued();const next=quotas();for(const reading of next.values())reading.resetsAt="2026-11-15T00:00:00Z";e.setUsage(next);await e.queue.tick();const updated=e.queue.get(q.id)!;
+ assert.equal(updated.resetsAt,"2026-11-15T00:00:00Z");assert.equal(updated.state,"waiting");assert.ok(updated.revision>q.revision);assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);
+});
 test("a repeated tool request joins its pending receipt even after subscription room returns",async t=>{
  const e=setup();t.after(()=>e.dispose());const first=await e.queued();e.setUsage(quotas(10,20));const second=await e.queued();assert.equal(second.id,first.id);assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);await e.queue.tick();await e.settle();assert.equal(e.registry.list().length,1);
 });

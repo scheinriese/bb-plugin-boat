@@ -196,6 +196,11 @@ export function createStartQueue(deps: StartQueueDeps) {
             if (entry.dto.state === "dispatching") {
               entry = store.transition(entry.dto.id, entry.dto.revision, ["dispatching"], "waiting", "Retrying the queued request after reload.", quotaReset(quotas)) ?? entry;
             }
+            const resetsAt = quotaReset(quotas);
+            if (quotas.size > 0 && entry.dto.resetsAt !== resetsAt) {
+              entry = store.transition(entry.dto.id, entry.dto.revision, ["waiting"], "waiting", entry.dto.message, resetsAt) ?? entry;
+              deps.changed();
+            }
             const preferred = entry.input.provider ?? (entry.input.role === "review" ? settings.reviewProvider : settings.implementProvider);
             const canSwitch = settings.relay.enabled || (entry.input.role === "review" && !!entry.input.parentTaskId && settings.autoFailover);
             const candidate = canSwitch ? agentWithRoom(preferred, quotas, settings.relay.switchAtPercent, settings.agents) : onlyAgent(settings.agents) ?? preferred;
