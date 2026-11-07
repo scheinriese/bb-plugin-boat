@@ -425,8 +425,16 @@ test("the plugin hands an orchestrator to Codex: note first, then a successor in
   assert.deepEqual(relay.agents.map((agent) => [agent.provider, agent.usedPercent]), [["claude", 93], ["codex", 12]]);
   assert.deepEqual(relay.orchestrators.map((row) => row.threadId), ["thr_new"]);
 
-  // The held-back notice goes to the successor.
-  await harness.runCli(["task", "show", task.id, "--refresh"]);
+  // Outcome delivery also waits for the asynchronous final memory sample.
+  // Keep refreshing the real task until its actual notice reaches the successor.
+  const deliveredToSuccessor = () => harness.inspection.sdk.callsTo("threads.send").some(
+    (call) => (call[0] as { threadId: string; input: { text: string }[] }).threadId === "thr_new" &&
+      (call[0] as { input: { text: string }[] }).input[0]!.text.startsWith(`[boat] Task ${task.id}`),
+  );
+  for (let attempt = 0; attempt < 20 && !deliveredToSuccessor(); attempt++) {
+    await harness.runCli(["task", "show", task.id, "--refresh"]);
+    if (!deliveredToSuccessor()) await new Promise(resolve => setTimeout(resolve, 10));
+  }
   assert.equal(noticesToOld().length, 0);
   assert.ok(
     harness.inspection.sdk
