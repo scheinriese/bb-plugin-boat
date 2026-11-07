@@ -778,7 +778,7 @@ export function registerRpc(runtime: Runtime): void {
       try {
         const result = await service.snapshots();
         return {
-          snapshots: result.snapshots.map(({ name, sizeBytes, createdAt, type }) => ({ name, sizeBytes, createdAt, type })),
+          snapshots: result.snapshots.map(({ name, sizeBytes, createdAt, type, status }) => ({ name, sizeBytes, createdAt, type, status })),
           included: result.included,
           used: result.used,
           error: null,

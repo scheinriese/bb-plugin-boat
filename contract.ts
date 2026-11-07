@@ -897,7 +897,7 @@ export const rpcContract = defineRpcContract({
   snapshots: {
     input: z.null(),
     output: z.object({
-      snapshots: z.array(z.object({ name: z.string(), sizeBytes: z.number().nullable(), createdAt: z.string().nullable(), type: z.string().nullable() })),
+      snapshots: z.array(z.object({ name: z.string(), sizeBytes: z.number().nullable(), createdAt: z.string().nullable(), type: z.string().nullable(), status: z.string().max(60).nullable().optional() })),
       included: z.number().nullable(),
       used: z.number().nullable(),
       error: z.string().nullable(),
