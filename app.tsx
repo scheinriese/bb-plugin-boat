@@ -113,7 +113,7 @@ export default definePluginApp((app) => {
 
   app.slots.homepageSection({
     id: "cloud-agents",
-    title: "",
+    title: "Cloud agents",
     component: HomepageCard,
   });
 

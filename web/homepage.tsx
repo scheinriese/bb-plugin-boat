@@ -42,11 +42,8 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
     overview?.cap != null ? `${overview.activeSandboxes} of ${overview.cap} sandboxes` : null,
     ...(relay?.agents ?? []).flatMap(agent => agent.usedPercent === null ? [] : [`${agent.provider === "codex" ? "Codex" : "Claude"} ${Math.round(agent.usedPercent)}%`]),
   ].filter(Boolean).join(" · ");
-  return <section className="boat-ui space-y-2.5" aria-label="Cloud agents">
-    <header className="flex items-baseline justify-between gap-4">
-      <h2 className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">Cloud agents</h2>
-      <span className="text-right text-xs leading-4 text-[color:var(--boat-faint)]">{meta}</span>
-    </header>
+  return <section className="boat-ui relative" aria-label="Cloud agents">
+    <span className="absolute -top-8 right-0 text-right text-xs leading-4 text-[color:var(--boat-faint)]">{meta}</span>
     {firstRun ? <div className="grid gap-2 sm:grid-cols-3">
       {[
         {icon:"ComputerCloud", title:"Start a task", detail:"One task in its own sandbox.", act:()=>fill("Help me work on one task in this repository. ")},
