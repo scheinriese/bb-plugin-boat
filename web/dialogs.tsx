@@ -15,7 +15,7 @@ import {
   type SetStateAction,
 } from "react";
 import { toast } from "sonner";
-import { experimental_useRpcMutation, useBbContext, useBbNavigate, useSettings } from "@get-bb/plugin-sdk/app";
+import { experimental_useRpcMutation, experimental_useRpcQuery, useBbContext, useBbNavigate, useSettings } from "@get-bb/plugin-sdk/app";
 import {
   MACHINE_TYPE_VALUES,
   ORCHESTRATOR_EFFORT_VALUES,
@@ -816,28 +816,88 @@ function NewSandboxForm({ onDone }: { onDone: () => void }) {
  * Save a checked sandbox as a snapshot ("Check this repo runs in a
  * sandbox"), and optionally start the project's tasks from it.
  */
-export function SaveSnapshotDialog({ task, open, onOpenChange }: DialogControl & { task: TaskDto }) {
+export function SaveSnapshotDialog({
+  task,
+  open,
+  onOpenChange,
+  onSaved,
+  boatProjectId,
+}: DialogControl & {
+  task: TaskDto;
+  boatProjectId?: string;
+  onSaved?(value: { name: string; projectId: string | null }): void;
+}) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">{open ? <SaveSnapshotForm task={task} onDone={() => onOpenChange(false)} /> : null}</DialogContent>
+      <DialogContent className="sm:max-w-md">
+        {open ? (
+          <SaveSnapshotForm
+            task={task}
+            onDone={() => onOpenChange(false)}
+            onSaved={onSaved}
+            boatProjectId={boatProjectId}
+          />
+        ) : null}
+      </DialogContent>
     </Dialog>
   );
 }
 
-function SaveSnapshotForm({ task, onDone }: { task: TaskDto; onDone: () => void }) {
-  const save = experimental_useRpcMutation({ contract: rpcContract, method: "saveSnapshot" });
-  const saveProject = experimental_useRpcMutation({ contract: rpcContract, method: "saveProject" });
+function SaveSnapshotForm({
+  task,
+  onDone,
+  onSaved,
+  boatProjectId,
+}: {
+  task: TaskDto;
+  onDone: () => void;
+  boatProjectId?: string;
+  onSaved?(value: { name: string; projectId: string | null }): void;
+}) {
+  const save = experimental_useRpcMutation({
+    contract: rpcContract,
+    method: "saveSnapshot",
+  });
+  const saveProject = experimental_useRpcMutation({
+    contract: rpcContract,
+    method: "saveProject",
+  });
   const projects = useProjects();
-  const project = projects.data?.projects.find((entry) => entry.id === task.projectId) ?? null;
-  const [name, setName] = useState(() => snapshotNameFor(task.repo));
+  const project =
+    projects.data?.projects.find(
+      (entry) =>
+        entry.id === (boatProjectId ?? task.projectId) &&
+        entry.repos[0]?.repo.toLowerCase() === task.repo?.toLowerCase(),
+    ) ?? null;
+  const [name, setName] = useState(
+    () => project?.snapshot ?? snapshotNameFor(task.repo),
+  );
+  const [nameEdited, setNameEdited] = useState(false);
+  useEffect(() => {
+    if (!nameEdited && project?.snapshot) setName(project.snapshot);
+  }, [nameEdited, project?.snapshot]);
+  const snapshots = experimental_useRpcQuery({
+    contract: rpcContract,
+    method: "snapshots",
+    input: null,
+  });
+  const [replacing, setReplacing] = useState(false);
   const [useForProject, setUseForProject] = useState(true);
   const valid = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(name.trim());
 
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!valid || task.sandboxId === null) return;
+  const runSave = async () => {
+    if (
+      !valid ||
+      task.sandboxId === null ||
+      save.isPending ||
+      saveProject.isPending
+    )
+      return;
     try {
-      const saved = await save.mutate({ sandboxId: task.sandboxId, name: name.trim() });
+      const saved = await save.mutate({
+        sandboxId: task.sandboxId,
+        name: name.trim(),
+      });
       if (project !== null && useForProject) {
         await saveProject.mutate({
           id: project.id,
@@ -849,42 +909,105 @@ function SaveSnapshotForm({ task, onDone }: { task: TaskDto; onDone: () => void 
           workerMode: project.workerMode,
           delivery: project.delivery,
         });
-        toast.success(`Saved ${saved.name}; ${project.name}'s tasks start from it`);
+        toast.success(
+          `Saved ${saved.name}; ${project.name}'s tasks start from it`,
+        );
       } else {
-        toast.success(`Saved ${saved.name}`, { description: "A project can start its tasks from it (Settings → Projects → Snapshot)." });
+        toast.success(`Saved ${saved.name}`, {
+          description:
+            "A project can start its tasks from it (Settings → Projects → Snapshot).",
+        });
       }
+      onSaved?.({
+        name: saved.name,
+        projectId: project !== null && useForProject ? project.id : null,
+      });
       onDone();
     } catch (error) {
       showError(error);
     }
   };
 
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!valid) return;
+    if (
+      !snapshots.data ||
+      name.trim() === project?.snapshot ||
+      snapshots.data.snapshots.some((item) => item.name === name.trim())
+    )
+      setReplacing(true);
+    else void runSave();
+  };
   return (
-    <form onSubmit={submit} className="grid gap-4">
-      <DialogHeader>
-        <DialogTitle>Save as snapshot</DialogTitle>
-        <DialogDescription>
-          Saves this sandbox as it is now, dependencies included. New tasks can start from it instead of installing everything again.
-        </DialogDescription>
-      </DialogHeader>
-      <Field label="Name" htmlFor="ca-snapshot-name" hint={valid ? "Saving under an existing name replaces it." : "Letters, digits, dots, dashes and underscores."}>
-        <Input id="ca-snapshot-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={80} autoFocus spellCheck={false} />
-      </Field>
-      {project !== null ? (
-        <label htmlFor="ca-snapshot-project" className="flex items-center gap-2 text-sm">
-          <Checkbox id="ca-snapshot-project" checked={useForProject} onCheckedChange={(checked) => setUseForProject(checked === true)} />
-          Start {project.name}'s tasks from it
-        </label>
-      ) : null}
-      <DialogFooter>
-        <Button type="button" variant="outline" onClick={onDone}>
-          Cancel
-        </Button>
-        <SubmitButton pending={save.isPending || saveProject.isPending} disabled={!valid} icon="Download">
-          Save snapshot
-        </SubmitButton>
-      </DialogFooter>
-    </form>
+    <>
+      <form onSubmit={submit} className="grid gap-4">
+        <DialogHeader>
+          <DialogTitle>Save as snapshot</DialogTitle>
+          <DialogDescription>
+            Saves this sandbox as it is now, dependencies included. New tasks
+            can start from it instead of installing everything again.
+          </DialogDescription>
+        </DialogHeader>
+        <Field
+          label="Name"
+          htmlFor="ca-snapshot-name"
+          hint={
+            valid
+              ? "Saving under an existing name replaces it."
+              : "Letters, digits, dots, dashes and underscores."
+          }
+        >
+          <Input
+            id="ca-snapshot-name"
+            value={name}
+            onChange={(event) => {
+              setNameEdited(true);
+              setName(event.target.value);
+            }}
+            maxLength={80}
+            autoFocus
+            spellCheck={false}
+          />
+        </Field>
+        {project !== null ? (
+          <label
+            htmlFor="ca-snapshot-project"
+            className="flex items-center gap-2 text-sm"
+          >
+            <Checkbox
+              id="ca-snapshot-project"
+              checked={useForProject}
+              onCheckedChange={(checked) => setUseForProject(checked === true)}
+            />
+            Start {project.name}'s tasks from it
+          </label>
+        ) : null}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onDone}>
+            Cancel
+          </Button>
+          <SubmitButton
+            pending={save.isPending || saveProject.isPending}
+            disabled={!valid}
+            icon="Download"
+          >
+            Save snapshot
+          </SubmitButton>
+        </DialogFooter>
+      </form>
+      <ConfirmDialog
+        open={replacing}
+        onOpenChange={setReplacing}
+        title={`${!snapshots.data ? "Save or replace" : "Replace"} snapshot ${name.trim()}?`}
+        description="If a snapshot with this name exists, it will be replaced. Existing sandboxes keep their current state."
+        confirmLabel="Replace snapshot"
+        destructive
+        pending={save.isPending || saveProject.isPending}
+        onConfirm={() => void runSave()}
+      />
+    </>
   );
 }
 
