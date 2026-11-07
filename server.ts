@@ -34,6 +34,7 @@ import { MODEL_TIERS_KEY } from "./src/runtime.ts";
 import { parseTierMap } from "./src/tiers.ts";
 import { registerRpc } from "./src/rpc.ts";
 import { registerMergeRpc } from "./src/merge.ts";
+import { registerStartQueueRpc } from "./src/start-queue-rpc.ts";
 import { registerNativeReviews } from "./src/native-review.ts";
 import { nativeStart, adoptNativeChat } from "./src/native-start.ts";
 import { createRuntime, type Runtime } from "./src/runtime.ts";
@@ -366,6 +367,7 @@ export default async function plugin(bb: BbPluginApi) {
   registerTools(runtime);
   registerRpc(runtime);
   registerMergeRpc(runtime);
+  registerStartQueueRpc(runtime);
 
   // Tasks at once before asking, for the instructions (bb asks for them synchronously).
   let tasksBeforeAsking = await settings
@@ -556,6 +558,7 @@ export default async function plugin(bb: BbPluginApi) {
           if (service.hasOpenWork()) await service.sweep();
           else await service.deliverPending();
           await nativeReviews.tick();
+          await runtime.startQueue.tick();
           await attentionNotifications?.flush();
         } catch (error) {
           bb.log.warn(`monitor sweep failed: ${error instanceof Error ? error.message : String(error)}`);

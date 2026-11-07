@@ -34,6 +34,7 @@ import { registerBoatFooter } from "./web/footer";
 import { registerTaskTab, useHasTask } from "./web/task-tab";
 import { registerRowSignals } from "./web/row-signals";
 import { registerShipInteraction } from "./web/ship-interaction";
+import { registerStartQueueUi } from "./web/start-queue";
 import { registerChatCards } from "./web/cards";
 import { registerEntryPoints } from "./web/entry-points";
 import { SailIcon } from "./web/ui";
@@ -111,6 +112,7 @@ export default definePluginApp((app) => {
   registerBoatFooter(app);
   registerShipInteraction(app);
   registerMergeInteraction(app);
+  registerStartQueueUi(app);
   registerOrchestratorWelcome(app);
 
   app.slots.homepageSection({

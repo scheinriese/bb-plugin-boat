@@ -40,6 +40,7 @@ import { useBoard, useCloudAgentsNavigation, useOverview, useTask, useThreadTask
 import { taskPhaseLabel } from "./logic";
 import { cardStatus, contextCounts } from "./cards-logic";
 import { CardTaskState, TaskContextAction, useNativePaused } from "./cards";
+import { useQueuedStarts } from "./start-queue";
 export { TaskDirective, registerChatCards } from "./cards";
 import {
   IconButton,
@@ -62,7 +63,8 @@ function useThreadHasBoard(threadId: string): boolean {
   const tasks = useThreadTasks(threadId);
   const { data } = useBoard(threadId);
   const own = useThreadTask(threadId);
-  return own !== null || tasks.length > 0 || (data?.needsYou.length ?? 0) > 0;
+  const queued=useQueuedStarts(threadId).data?.requests??[];
+  return own !== null || tasks.length > 0 || (data?.needsYou.length ?? 0) > 0 || queued.length>0;
 }
 
 /** Banner mode only (the context card shows the same tasks in card mode). */
@@ -80,11 +82,13 @@ export function ThreadSegmentSummary({ threadId, isExpanded, onToggle }: Experim
   const { data } = useBoard(threadId);
   const needsYou = (data?.needsYou.length ?? 0) > 0;
   const own = useThreadTask(threadId);
+  const queued=useQueuedStarts(threadId).data?.requests??[];
   const facts=experimental_useRpcQuery({contract:mergeRpcContract,method:"pullRequestFacts",input:{id:own?.id??""},enabled:Boolean(own?.prUrl)}).data;
   const preview=experimental_useRpcQuery({contract:rpcContract,method:'previews',input:{taskId:own?.id??null,threadId:null},enabled:Boolean(own?.previewUrl)}).data?.previews.find(preview=>preview.link===own?.previewUrl);
   const tasks = own ? [own] : data ? [...data.ready, ...data.running, ...data.done] : [];
   const anyRunning = tasks.some(task => cardStatus(task).moving);
-  const summary=data||own?contextCounts(tasks,data?.needsYou.length??0,data?.needsYou.flatMap(item=>item.taskIds)):'…';
+  const workSummary=tasks.length||(data?.needsYou.length??0)>0?contextCounts(tasks,data?.needsYou.length??0,data?.needsYou.flatMap(item=>item.taskIds)):null;
+  const summary=[workSummary,queued.length?`${queued.length} waiting for reset`:null].filter(Boolean).join(' · ')||(data||own?'No active tasks':'…');
   if (own?.prUrl) return <span className="boat-ui inline-flex items-center gap-2 px-1.5 text-[12px]">{facts?.draft&&<span className="text-muted-foreground">Draft</span>}<PrLink url={own.prUrl} prefixed/>{facts&&<DiffStats additions={facts.additions} deletions={facts.deletions}/>}{own.previewUrl&&<UrlLink href={own.previewUrl} className={cn('inline-flex items-center gap-1',preview&&preview.state!=='live'?'text-muted-foreground':'text-[#7AA7FF]')}><Icon name="Globe" className="hidden size-3 sm:inline"/>{preview?.state==='sleeping'?'Preview asleep':preview?.state==='expired'?'Preview expired':'Preview'}</UrlLink>}</span>;
   return <button type="button" onClick={onToggle} aria-expanded={isExpanded} className={cn("boat-ui inline-flex h-6 max-w-full items-center gap-1.5 rounded-md px-1.5 text-xs hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring",needsYou?'text-[#F0B135]':'text-muted-foreground')}>
     <Icon name="ComputerCloud" className="size-3.5 shrink-0 text-muted-foreground sm:hidden"/>
@@ -98,10 +102,15 @@ export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentP
   const paused=useNativePaused(threadId);
   const setup=useSetup().data;
   const relay=useRelay().data;
+  const queued=useQueuedStarts(threadId).data?.requests??[];
   const detail=useTask(own?.id??null).data?.task;
   const decisionTask=[...(data?.running??[]),...(data?.ready??[])].find(task=>data?.needsYou.some(item=>item.taskIds.includes(task.id)));
   const currentAgent=relay?.orchestrators.find(row=>row.threadId===threadId)?.provider;
   const usage=relay?.agents.find(agent=>agent.provider===currentAgent);
+  if(queued.length){
+    const reset=queued.flatMap(item=>item.resetsAt?[item.resetsAt]:[]).sort()[0];
+    return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{reset?`Waits for reset · ${new Date(reset).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}`:'Waits for subscription room'} · running work continues</span>;
+  }
   if(!own&&relay?.enabled&&currentAgent){
     const preferredUsage=relay.agents.find(agent=>agent.provider===relay.preferred);
     if(currentAgent!==relay.preferred&&preferredUsage?.usedPercent!==null&&preferredUsage?.usedPercent!==undefined&&preferredUsage.usedPercent>=relay.switchAtPercent)

@@ -15,6 +15,7 @@ import { useBoard, useCloudAgentsNavigation, useOrchestrators, useOverview, useP
 import { NewProjectDialog } from "./projects-settings";
 import { ResizeDialog } from "./sandbox-size";
 import { AgentLogo } from "./ui";
+import { useQueuedStarts } from "./start-queue";
 
 const ROW = "flex min-h-11 items-center gap-2.5 border-b border-[color:var(--boat-divider)] px-[14px] py-2 last:border-b-0 sm:h-11 sm:py-0";
 const ACTION = "h-[26px] shrink-0 rounded-md px-2.5 text-xs font-normal leading-4";
@@ -28,6 +29,7 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
   const orchestratorData = useOrchestrators().data;
   const projects = useProjects().data?.projects ?? [];
   const overview = useOverview().data;
+  const queued=useQueuedStarts().data?.requests??[];
   const relay = useRelay().data;
   const { threads } = experimental_useSidebarThreads();
   const orchestrators = (orchestratorData?.orchestrators ?? []).filter(entry => !entry.archived);
@@ -35,7 +37,7 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
   const decisions = board?.needsYou ?? [];
   const linked = new Set(decisions.flatMap(item => item.taskIds));
   const problems = tasks.filter(task => cardStatus(task).needsYou && !linked.has(task.id));
-  const firstRun = board !== undefined && orchestratorData !== undefined && !orchestrators.length && !decisions.length && !tasks.length && !board.done.length;
+  const firstRun = board !== undefined && orchestratorData !== undefined && !orchestrators.length && !decisions.length && !tasks.length && !board.done.length && !queued.length;
   const projectName = (task?: TaskDto) => task ? (projects.find(project => project.id === task.projectId) ?? projects.find(project => project.repos[0]?.repo === task.repo) ?? projects.find(project => project.repos.some(repo => repo.repo === task.repo)))?.name ?? "" : "";
   const fill = (text: string) => { composer.insert(text, {at:"end", block:true}); composer.focus(); };
   const meta = [
@@ -56,6 +58,7 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
         return <HomeDecision key={decision.id} decision={decision} subline={[task?.title, projectName(task)].filter(Boolean).join(" · ")}/>;
       })}
       {problems.map(task=><HomeProblem key={task.id} task={task} project={projectName(task)}/>)}
+      {queued.map(request=><div key={request.id} className={ROW}><span className="size-1.5 shrink-0 rounded-full bg-muted-foreground"/><span className="min-w-0 flex-1 text-[13px] leading-4">{request.title}</span><span className="text-xs text-muted-foreground">{request.state==='dispatching'?'Starting':'Waiting for reset'}</span>{request.threadId&&<Button size="sm" variant="outline" className={ACTION} onClick={()=>navigate.toThread(request.threadId!)}>Open</Button>}</div>)}
       {orchestrators.map(entry => {
         const owned = tasks.filter(task => task.orchestratorThreadId === entry.threadId && task.role !== "review");
         const ready = owned.filter(task => cardStatus(task).status === "ready").length;
@@ -74,7 +77,7 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
           </span>
         </div>;
       })}
-      {!decisions.length && !problems.length && !orchestrators.length && <p className="px-3.5 py-3 text-xs text-muted-foreground">{board ? "Nothing needs you right now." : "Loading cloud work…"}</p>}
+      {!decisions.length && !problems.length && !orchestrators.length && !queued.length && <p className="px-3.5 py-3 text-xs text-muted-foreground">{board ? "Nothing needs you right now." : "Loading cloud work…"}</p>}
     </div>}
     <NewProjectDialog open={adding} onOpenChange={setAdding} repo="" baseBranch=""/>
   </section>;
