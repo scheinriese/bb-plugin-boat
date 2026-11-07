@@ -17,6 +17,8 @@ import { ShipButton } from "./board";
 import { cardStatus } from "./cards-logic";
 import "./task-tab.css";
 import { DiffStats } from "./diff-stats";
+import { useNativeReviewPolicy, NativeReviewPolicyLine, nativeReviewPending } from "./native-review-policy";
+import type { NativeReviewState } from "../contract-review";
 import { usePreviews } from "./previews";
 import { ResizeDialog } from "./sandbox-size";
 import { AgentLogo, EmptyBox, InlineAlert, showError } from "./ui";
@@ -58,6 +60,7 @@ function TaskPanel({ task }: { task: TaskDetailDto }) {
   const { data: facts } = experimental_useRpcQuery({ contract: mergeRpcContract, method: "pullRequestFacts", input: { id: task.id }, enabled: !!task.prUrl });
   const { data: history } = experimental_useRpcQuery({ contract: rpcContract, method: "history", input: { taskId: task.id, limit: 200 } });
   const state = cardStatus(task);
+  const reviewPolicy = useNativeReviewPolicy(task.threadId, task.id, task.updatedAt);
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   function move(event: KeyboardEvent, index: number) {
     let next: number;
@@ -85,7 +88,8 @@ function TaskPanel({ task }: { task: TaskDetailDto }) {
       </button>)}
     </div>
     <div role="tabpanel" id={`${id}-panel-${tab}`} aria-labelledby={`${id}-tab-${tab}`} tabIndex={0} className="boat-task-content">
-      {tab === "Overview" ? <Overview task={task} facts={facts ?? null} history={[...(history?.events ?? [])].sort((a,b) => a.at.localeCompare(b.at) || a.seq-b.seq)} /> : tab === "Reviews" ? <Reviews task={task} history={[...(history?.events ?? [])].sort((a,b) => a.at.localeCompare(b.at) || a.seq-b.seq)} /> : tab === "Transcript" ? <Transcript task={task} /> : <Sandbox task={task} />}
+      {(tab === "Overview" || tab === "Reviews") && <NativeReviewPolicyLine policy={reviewPolicy} />}
+      {tab === "Overview" ? <Overview task={task} reviewPolicy={reviewPolicy} facts={facts ?? null} history={[...(history?.events ?? [])].sort((a,b) => a.at.localeCompare(b.at) || a.seq-b.seq)} /> : tab === "Reviews" ? <Reviews task={task} history={[...(history?.events ?? [])].sort((a,b) => a.at.localeCompare(b.at) || a.seq-b.seq)} /> : tab === "Transcript" ? <Transcript task={task} /> : <Sandbox task={task} />}
     </div>
   </div>;
 }
@@ -98,11 +102,11 @@ function MergeAction({ task }: { task: TaskDto }) {
   const action = experimental_useRpcMutation({ contract: mergeRpcContract, method: "requestMerge" });
   return <Button size="sm" disabled={action.isPending} onClick={() => void action.mutate({ id: task.id, from: "chat" }).catch(showError)}>Merge PR #{task.prUrl?.match(/\/pull\/(\d+)/)?.[1]}</Button>;
 }
-function Overview({ task, facts, history }: { task: TaskDetailDto; facts: PullRequestFacts | null; history: HistoryEventDto[] }) {
+function Overview({ task, facts, history, reviewPolicy }: { task: TaskDetailDto; facts: PullRequestFacts | null; history: HistoryEventDto[]; reviewPolicy: NativeReviewState | null }) {
   const state = cardStatus(task);
   const sdk = useSdk();
   const reviewer = history.filter((event) => event.review).at(-1)?.review;
-  const approved = state.status === "ready" && reviewer?.verdict === "approve" ? reviewer : null;
+  const approved = state.status === "ready" && !nativeReviewPending(reviewPolicy) && reviewer?.verdict === "approve" ? reviewer : null;
   return <>
     {task.error && <InlineAlert>{task.error}</InlineAlert>}
     <Section title="Status"><div className={cn(BOX, "boat-task-status-box")}>
