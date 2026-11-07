@@ -19,7 +19,7 @@
   },
   "bb": {
     "name": "Boat Cloud Agents",
-    "description": "Send coding tasks from any chat to Claude Code or Codex in boat.dev cloud sandboxes, then review the pull requests they open.",
+    "description": "Claude Code and Codex in boat.dev cloud sandboxes: one orchestrator per project, with task chats and reviews.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
