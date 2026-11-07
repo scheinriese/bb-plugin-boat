@@ -14,6 +14,7 @@ import {
   useBbNavigate,
   type ExperimentalBadge,
 } from "@get-bb/plugin-sdk/app";
+import { attentionCount } from "./cards-logic";
 import { rpcContract, type TaskDto } from "../contract";
 import { PANEL_PATH, orchestratorSubPath, plural, taskSubPath } from "./format";
 
@@ -130,9 +131,7 @@ export function useThreadTask(threadId: string): TaskDto | null {
 /** Nav badge counts only things that require an owner decision. */
 export function useAttentionBadge(): ExperimentalBadge | null {
   const { data } = useBoard(null);
-  const decisions = data?.needsYou.length ?? 0;
-  const broken = data?.running.filter(task => task.publicStatus?.needsYou === true && task.publicStatus.status === "broken").length ?? 0;
-  const count = decisions + broken;
+  const count = data ? attentionCount([...data.ready, ...data.running], data.needsYou) : 0;
   return count === 0 ? null : {count, tone:"warning", label:`Cloud agents: ${count} need you`};
 }
 

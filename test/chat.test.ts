@@ -389,6 +389,8 @@ test("a follow-up that fails to send leaves the task as it was", async () => {
 test("archiving a worker chat by hand cancels the task and removes its machine", async () => {
   const env = makeService({ chat: true });
   const task = await dispatch(env);
+  // The public archive event arrives after core has archived the thread.
+  await env.chat.archive(task.threadId!);
   await env.service.syncChatThread(task.threadId!, { kind: "archived" });
   assert.equal(env.store.get(task.id)!.status, "cancelled");
   assert.deepEqual(env.chat.removed, ["host_1"]);

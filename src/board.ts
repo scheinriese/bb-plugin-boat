@@ -36,6 +36,7 @@ export function resolveTaskStatus(
 ): TaskPublicStatus {
   const state = (status: PublicStatus, label: string, tone: TaskPublicStatus["tone"], reason: string | null = null, needsYou = false, moving = false): TaskPublicStatus =>
     ({ status, label, tone, reason, needsYou, moving });
+  if (task.status === "done" && task.role === "review") return state("review", "Review complete", "neutral", "The review is closed.");
   if (task.status === "done") return state("shipped", "Shipped", "positive");
   if (task.status === "cancelled") return state("stopped", "Stopped", "neutral");
   const error = task.error?.trim() || null;

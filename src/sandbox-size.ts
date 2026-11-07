@@ -417,6 +417,19 @@ export class SandboxSizes {
     return { at, data, moved: moved ?? null };
   }
 
+  /** Persisted current-turn evidence only; rendering status never probes or starts a sandbox. */
+  statusContext(task: Task): { outOfMemory: boolean; recoveryCostsMore: boolean } {
+    const inactive = task.status === "idle" || task.status === "failed";
+    const oom = inactive ? this.turnOom(task) : null;
+    const confirmed = oom !== null && oom.data.certain && oom.data.cause && oom.moved === null && oom.data.sandboxId === task.sandboxId;
+    if (!confirmed) return { outOfMemory: false, recoveryCostsMore: false };
+    const next = oom.data.machineType ? nextSize(oom.data.machineType) : oom.data.next;
+    const plan = this.planNow();
+    const allowed = next !== null && (plan === null ? oom.data.nextAllowed : planVerdict(next, plan).allowed);
+    const canResize = task.sandboxId !== null && this.deps.store.pluginOwnsSandbox(task.sandboxId) && !this.jobs.has(task.sandboxId) && (task.runner === "chat" ? task.threadId !== null : task.conversationId !== null);
+    return { outOfMemory: true, recoveryCostsMore: allowed && canResize };
+  }
+
   // ---------------------------------------------------------------- after a turn
 
   /** The task's failure notice waits for its memory check. */

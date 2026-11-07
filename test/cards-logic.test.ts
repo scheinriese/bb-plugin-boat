@@ -94,3 +94,10 @@ test("a prose recommendation selects the named option without inventing a recomm
   );
   assert.equal(recommendedOption(["A", "B"], "Ask the team first"), null);
 });
+
+test("attention counts a paid recovery only once when a decision links its task", async () => {
+  const { attentionCount } = await import("../web/cards-logic.ts");
+  const tasks = [task("t_paid", "broken", { needsYou: true }), task("t_other", "broken", { needsYou: true })];
+  assert.equal(attentionCount(tasks, [{ taskIds: ["t_paid"] }]), 2);
+  assert.equal(attentionCount(tasks, []), 2);
+});

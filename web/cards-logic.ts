@@ -134,3 +134,9 @@ export function recommendedOption(
     }) ?? null
   );
 }
+
+/** Decisions count once even when their linked task also needs paid recovery. */
+export function attentionCount(tasks: readonly TaskDto[], decisions: readonly { taskIds: readonly string[] }[]): number {
+  const linked = new Set(decisions.flatMap(decision => [...decision.taskIds]));
+  return decisions.length + tasks.filter(task => cardStatus(task).needsYou && !linked.has(task.id)).length;
+}

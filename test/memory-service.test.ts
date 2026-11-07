@@ -526,3 +526,26 @@ test("what a size costs, against the size it is now", () => {
   assert.equal(costSentence("xlarge", "large"), "XLarge costs more per hour than Large.");
   assert.equal(costSentence("default"), "");
 });
+
+test("public status uses confirmed current unmoved OOM evidence for paid recovery", async () => {
+  const env = makeService();
+  const task = await start(env);
+  env.boat.probe(task.sandboxId!).kernel = oomLines({ at: now() + 1, pid: 4242, comm: "claude", unit: "agent", rssKb: 2_000_000 });
+  env.boat.probe(task.sandboxId!).oomKills = 1;
+  env.boat.finish(task.conversationId!, "", "failed", "harness exited");
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  const failed = env.store.get(task.id)!;
+  const calls = env.boat.calls.length;
+  assert.deepEqual(env.service.sizes.statusContext(failed), { outOfMemory: true, recoveryCostsMore: true });
+  assert.equal(env.service.publicStatus(failed).needsYou, true);
+  assert.equal(env.boat.calls.length, calls, "status rendering makes no Boat calls");
+  assert.equal(env.service.publicStatus({ ...failed, error: "Usage limit reached" }).status, "waiting-reset");
+  assert.equal(env.service.publicStatus({ ...failed, error: "Usage limit reached" }).needsYou, false);
+  assert.deepEqual(env.service.sizes.statusContext({ ...failed, turns: failed.turns + 1 }), { outOfMemory: false, recoveryCostsMore: false });
+  assert.deepEqual(env.service.sizes.statusContext({ ...failed, status: "running" }), { outOfMemory: false, recoveryCostsMore: false });
+  env.setPlan([{ type: "large", available: false, reason: "Not on this plan" }]);
+  assert.deepEqual(env.service.sizes.statusContext(failed), { outOfMemory: true, recoveryCostsMore: false });
+  env.store.addEvent(task.id, "memory-data", JSON.stringify({ type: "resize", state: "done", from: "default", to: "large", at: now() + 2 }));
+  assert.deepEqual(env.service.sizes.statusContext(failed), { outOfMemory: false, recoveryCostsMore: false });
+});

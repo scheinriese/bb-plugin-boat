@@ -612,6 +612,9 @@ export class BoatService {
   private readonly settlingReviews = new Set<string>();
 
   publicStatus(task: Task, context: StatusContext = {}): TaskPublicStatus {
+    if (task.status === "done" && this.isNativeChat(task) && this.store.latestEvent(task.id, "shipped") === null) return {
+      status: "stopped", label: "Closed", tone: "neutral", reason: "Closed without shipping.", needsYou: false, moving: false,
+    };
     const decision = this.store.decisions({ statuses: ["open"] }).find((entry) => entry.taskIds.includes(task.id));
     const reviewOpen = this.store.list({ parentTaskId: task.id, statuses: ["starting", "running"], limit: 100 }).some((entry) => entry.role === "review");
     const orchestrators = this.store.orchestratorThreadIds().current;
@@ -619,6 +622,7 @@ export class BoatService {
       ready: isReady(task, this.store.list({ parentTaskId: task.id, limit: 100 }), (entry) => reviewState(this.store.latestEvent(entry.id, "review")?.text), (id) => orchestrators.has(id)),
       latestReview: reviewState(this.store.latestEvent(task.id, "review")?.text),
       reviewOpen,
+      ...this.sizes.statusContext(task),
       sandboxState: task.sandboxId === null ? null : this.observedSandboxStates.get(task.sandboxId),
       needsYou: decision !== undefined,
       reason: decision?.question,
@@ -2518,13 +2522,21 @@ export class BoatService {
     this.store.addEvent(task.id, "review", "Changed since the last review");
   }
 
+  /** Passive native registrations never transfer core's chat or machine ownership. */
+  private isNativeChat(task: Task): boolean {
+    return task.runner === "chat" && !task.ownsSandbox && this.store.latestEvent(task.id, "native-chat") !== null;
+  }
+
   /** Remove a task's machine (and so its sandbox) when no other open task uses it. */
   private async removeMachineIfUnused(task: Task): Promise<"deleted" | "kept" | "none"> {
     if (task.hostId === null || this.hooks.chat === undefined) return "none";
+    if (this.isNativeChat(task)) return "kept";
     const shared =
       this.store.list({ statuses: OPEN_STATUSES, limit: 1000 }).some((other) => other.id !== task.id && other.hostId === task.hostId) ||
       (task.sandboxId !== null && this.store.liveSandboxTasks(task.sandboxId).some((other) => other.id !== task.id));
     if (shared) return "kept";
+    // Core may have unrelated chats or background work outside this task registry.
+    if (await this.hooks.chat.machineBusy(task.hostId).catch(() => true)) return "kept";
     try {
       // A moved task's machine may still carry the keep flag (a restart between the switch and the settle).
       if (this.store.latestEvent(task.id, "moved-to-chat") !== null) {
@@ -3858,7 +3870,10 @@ export class BoatService {
     let sandbox: "deleted" | "kept" | "gone" | "none" = "none";
     const current = this.store.get(task.id) ?? task;
     const sandboxId = current.sandboxId;
-    if (current.runner === "chat" && this.hooks.chat) {
+    if (this.isNativeChat(current)) {
+      sandbox = sandboxId === null ? "none" : "kept";
+      this.store.addEvent(task.id, "sandbox", "Kept the native chat and its core-owned machine.");
+    } else if (current.runner === "chat" && this.hooks.chat) {
       // bb owns the machine: archiving the task's chats lets bb remove it
       // (and delete the sandbox) once no other chat needs it.
       const keep = options.keepSandbox ?? !settings.deleteSandboxOnClose;
