@@ -13,14 +13,18 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
 import { NewOrchestratorDialog, NewSandboxDialog, NewTaskDialog } from "./dialogs";
-import { parseSubPath } from "./format";
+import { PANEL_PATH, parseSubPath } from "./format";
 import { useCloudAgentsNavigation, useTask, useThreadDisplayTitle } from "./hooks";
-import { OrchestratorOverview, Overview, openBoatChat } from "./overview";
+import { OrchestratorOverview, Overview, SandboxesSection, openBoatChat } from "./overview";
+import { Today } from "./today";
+import { ProjectsSettings } from "./projects-settings";
 import { TaskDetail } from "./task-detail";
 import { EmptyBox, IconButton, showError } from "./ui";
 
 export function CloudAgentsPage({ subPath }: PluginNavPanelProps) {
   const route = parseSubPath(subPath);
+  const section = subPath.replace(/^\/+|\/+$/g, "");
+  if (["", "today", "sandboxes", "projects"].includes(section)) return <CloudPageTabs section={section || "today"} />;
   return (
     <div className="h-full min-h-0 flex-1 overflow-y-auto">
       {route.kind === "task" ? (
@@ -35,6 +39,15 @@ export function CloudAgentsPage({ subPath }: PluginNavPanelProps) {
       )}
     </div>
   );
+}
+
+
+function CloudPageTabs({section}:{section:string}) {
+  const navigate = useBbNavigate();
+  return <div className="h-full min-h-0 flex-1 overflow-y-auto"><div className="mx-auto w-full max-w-[1140px] px-4 pt-4 md:px-6">
+    <nav aria-label="Cloud agents pages" className="flex gap-7 border-b border-border">{["today","sandboxes","projects"].map(tab => <button key={tab} type="button" aria-current={section===tab?"page":undefined} onClick={()=>navigate.toPluginPanel(PANEL_PATH,{subPath:tab==="today"?"":tab})} className={"border-b-2 pb-2 text-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " + (section===tab?"border-foreground font-medium text-foreground":"border-transparent text-muted-foreground hover:text-foreground")}>{tab[0]!.toUpperCase()+tab.slice(1)}</button>)}</nav>
+    {section==="today"?<Today/>:section==="sandboxes"?<div className="py-6"><SandboxesSection/></div>:<div className="py-6"><ProjectsSettings/></div>}
+  </div></div>;
 }
 
 function UnknownRoute() {
@@ -73,9 +86,9 @@ export function CloudAgentsHeader(_props: PluginNavPanelProps) {
     <div className="flex items-center gap-1.5">
       <IconButton label="Refresh from boat.dev" icon="ArrowReloadHorizontal" busy={refresh.isPending} onClick={() => void runRefresh()} />
       {/* Icon only on phones, so the page title in bb's header isn't cut to one letter. */}
-      <Button size="sm" className="h-7 px-2 sm:px-2.5" aria-label="New task" onClick={() => setDialog("task")}>
+      <Button size="sm" className="h-7 px-2 sm:px-2.5" aria-label="Start" onClick={() => openBoatChat(navigate)}>
         <Icon name="Plus" />
-        <span className="hidden sm:inline">New task</span>
+        <span className="hidden sm:inline">Start</span>
       </Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -96,7 +109,6 @@ export function CloudAgentsHeader(_props: PluginNavPanelProps) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <NewTaskDialog {...control("task")} />
       <NewSandboxDialog {...control("sandbox")} />
       <NewOrchestratorDialog {...control("orchestrator")} />
     </div>
