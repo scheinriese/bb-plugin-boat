@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import { cn } from "@/lib/utils";
 import { PANEL_PATH, PROVIDER_LABEL } from "./format";
 import { useOrchestratorCardHidden, useOrchestrators, useSandboxSizes, useSettingRows, useProjects, useBoard, useSetup } from "./hooks";
@@ -530,6 +531,11 @@ export function AdvancedSettings() {
 
 /** One SDK settings section owns ordering; no host DOM or duplicate toggles. */
 export function BoatSettings() {
+  const compact = useIsCompactViewport();
+  return compact ? <MobileBoatSettings /> : <DesktopBoatSettings />;
+}
+
+function DesktopBoatSettings() {
   const query = useSettingRows();
   const saver = useSaveSetting();
   const sizes = useSandboxSizes().data?.sizes;
