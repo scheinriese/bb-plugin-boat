@@ -433,7 +433,10 @@ function Segments<T extends string>({
           className={cn(
             "relative flex min-w-0 flex-1 flex-col gap-px rounded-md px-2.5 py-1.5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
             roomy && "py-[7px]",
-            value === option.value && "bg-[color:var(--project-selected)]",
+            value === option.value &&
+              (roomy && name === "project-delivery"
+                ? "bg-[color:var(--project-delivery-selected)]"
+                : "bg-[color:var(--project-selected)]"),
             option.disabled && "opacity-50",
           )}
           title={option.reason ?? undefined}
@@ -727,10 +730,29 @@ export function ProjectEditor({
           <>
             <FieldGroup label="Repo">
               <div className="relative">
-                <Icon
-                  name="Search"
-                  className="pointer-events-none absolute left-2.5 top-3 size-[13px] text-muted-foreground"
-                />
+                <svg
+                  aria-hidden
+                  width="13"
+                  height="13"
+                  viewBox="0 0 16 16"
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+                >
+                  <circle
+                    cx="7"
+                    cy="7"
+                    r="4.5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                  />
+                  <path
+                    d="M10.5 10.5L14 14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                  />
+                </svg>
                 <Input
                   aria-label="Search your GitHub repos"
                   placeholder="Search your GitHub repos"
@@ -773,10 +795,22 @@ export function ProjectEditor({
                         )}
                       >
                         {repo.repo === selectedRepo && (
-                          <Icon
-                            name="Check"
-                            className="size-2.5 text-[color:var(--project-check-text)]"
-                          />
+                          <svg
+                            aria-hidden
+                            width="10"
+                            height="10"
+                            viewBox="0 0 10 10"
+                            className="text-[color:var(--project-check-text)]"
+                          >
+                            <path
+                              d="M2 5.2l2 2 4-4.4"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
                         )}
                       </span>
                       <span className="flex flex-col gap-px">
@@ -856,10 +890,12 @@ export function ProjectEditor({
                   onChange={(event) => setBase(event.target.value)}
                   list="boat-project-base-options"
                 />
-                <Icon
-                  name="ChevronDown"
-                  className="pointer-events-none absolute right-3 top-3 size-3 text-muted-foreground"
-                />
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs leading-4 text-muted-foreground"
+                >
+                  ⌄
+                </span>
                 <datalist id="boat-project-base-options">
                   {[
                     ...new Set(
