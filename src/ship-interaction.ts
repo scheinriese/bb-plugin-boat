@@ -85,12 +85,14 @@ export function createShipInteractions(deps: ShipInteractionDeps) {
     if (commits === 0) throw new TaskError("There are no commits to ship. Ask the task to commit its changes first.", "nothing_to_ship");
     const review = deps.latestReview(task.id);
     const verdict = reviewState(review);
+    const reviewText = verdict === "approve" ? "Review approved" : verdict === "changes-requested" ? "Changes requested in review"
+      : verdict === "reviewing" ? "Review in progress" : verdict === "outdated" ? "Work changed since review" : "No recorded review approval";
     const changes = currentChanges(task);
     const payload: ShipForm = {
       requestId, taskId: task.id, title: task.title, baseBranch: task.baseBranch!, keepOpen,
       commits, repositories: targets.length,
       checks: [
-        { text: verdict === "approve" ? `Review approved · ${review}` : verdict ? `Review: ${verdict}` : "No recorded review approval", tone: verdict === "approve" ? "ready" : "caution" },
+        { text: reviewText, tone: verdict === "approve" ? "ready" : "caution" },
         { text: "Working tree clean", tone: "ready" },
         { text: "Tests not independently checked", tone: "neutral" },
         { text: "Rebase and push checks run when shipping", tone: "neutral" },

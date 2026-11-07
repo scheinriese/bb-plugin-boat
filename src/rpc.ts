@@ -218,7 +218,7 @@ export function registerShipRpc(runtime: Runtime): void {
       const result = await service.shipTask(id, options);
       const outcome = await describeClose(service, result);
       const where = result.shipped.map((entry) => `${entry.baseBranch} (${entry.sha.slice(0, 7)}, ${entry.commits} commit${entry.commits === 1 ? "" : "s"})`).join(", ");
-      const text = `[boat] Shipped task ${result.task.id} "${result.task.title}" to ${where}, approved in the task chat. ${outcome.text}`;
+      const text = `[boat] Shipped task ${result.task.id} "${result.task.title}" to ${where}, approved in the in-thread confirmation. ${outcome.text}`;
       const threadIds = new Set([result.task.threadId, result.task.orchestratorThreadId].filter((id): id is string => id !== null));
       for (const threadId of threadIds) await runtime.tellOrchestrator(threadId, text).catch(() => undefined);
     },
