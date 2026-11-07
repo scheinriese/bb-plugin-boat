@@ -3680,7 +3680,7 @@ export class BoatService {
    * it (the caller checks that): the worker itself can't push in these
    * projects.
    */
-  async shipTask(idOrPrefix: string, options: { keepOpen?: boolean; approval: string; signal?: AbortSignal }): Promise<{ task: Task; shipped: ShipResult["shipped"]; sandbox: "deleted" | "kept" | "gone" | "none" }> {
+  async shipTask(idOrPrefix: string, options: { keepOpen?: boolean; approval: string; signal?: AbortSignal; beforeShip?: (task: Task, targets: { path: string; baseBranch: string }[]) => Promise<void> }): Promise<{ task: Task; shipped: ShipResult["shipped"]; sandbox: "deleted" | "kept" | "gone" | "none" }> {
     const task = await this.refreshChatTask(idOrPrefix);
     this.assertNotMoving(task.id);
     if (task.delivery !== "push") {
@@ -3708,6 +3708,9 @@ export class BoatService {
         }
       }
       await this.assertGithubLogin(task, { signal: options.signal, forShip: true });
+      // Recheck a concrete approval while this sandbox is claimed, immediately
+      // before any irreversible push. A rejected guard leaves the work intact.
+      await options.beforeShip?.(this.store.get(task.id) ?? task, this.shipTargets(task));
       try {
         // Base commits another task of this plugin shipped are named with it.
         result = await this.boat.ship(task.sandboxId, this.shipTargets(task), options.signal, (sha) => this.store.shippedBy(sha, task.id));
