@@ -344,7 +344,7 @@ export default async function plugin(bb: BbPluginApi) {
       const result = await bb.sdk.plugins.callRpc({
         pluginId: "push-notifications",
         method: "notifications.send",
-        input: notice,
+        input: { title: notice.title, body: notice.body, threadId: notice.threadId },
         outputSchema: z.object({ ok: z.literal(true), channels: z.array(z.enum(["web", "desktop", "mobile"])) }).passthrough(),
       });
       if (result.channels.length === 0) throw new Error("No notification channel accepted the notice.");
