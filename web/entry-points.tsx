@@ -140,6 +140,7 @@ export function registerEntryPoints(app: PluginAppBuilder): void {
         {
           id: "start",
           label: "Start",
+          description: "A cloud task in its own sandbox; you follow it in its chat.",
           icon: "Play",
           run: ({ composer }) =>
             submitNativeStart(composer, "task").catch(showError),
@@ -147,6 +148,7 @@ export function registerEntryPoints(app: PluginAppBuilder): void {
         {
           id: "start-orchestrator",
           label: "Start as orchestrator",
+          description: "Plans the work, starts tasks and gets each change reviewed.",
           icon: "Workflow",
           run: ({ composer }) =>
             submitNativeStart(composer, "orchestrator").catch(showError),
@@ -155,6 +157,7 @@ export function registerEntryPoints(app: PluginAppBuilder): void {
       plusMenu: NATIVE_STARTERS.map((starter) => ({
         id: starter.id,
         label: starter.label,
+        description: starter.description,
         icon: starter.icon,
         run: ({ composer }) => {
           composer.insert(starter.prompt, { at: "end", block: true });

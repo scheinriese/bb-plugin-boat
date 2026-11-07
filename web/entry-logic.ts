@@ -200,7 +200,8 @@ export function coordinateProject(input: {
 export const NATIVE_STARTERS = [
   {
     id: "check-repo",
-    label: "Check the repo runs",
+    label: "Check that the repo runs",
+    description: "Installs, builds and runs the tests; changes nothing.",
     icon: "Play",
     prompt:
       "Check this repository runs. Install dependencies, run its checks, and report any setup problems.",
@@ -208,16 +209,18 @@ export const NATIVE_STARTERS = [
   {
     id: "fix-bug",
     label: "Fix a bug",
+    description: "Find the cause, fix it, add a test.",
     icon: "Bug",
     prompt:
       "Help me fix a bug in this repository. Ask me what happens and what I expected, then investigate.",
   },
   {
     id: "explore-plan",
-    label: "Explore and plan",
+    label: "Explore and plan, no changes",
+    description: "Reads the code and writes a plan.",
     icon: "Search",
     prompt:
-      "Explore this repository and help me plan the next change. Explain the relevant code before making changes.",
+      "Explore this repository and write a plan for the next change. Read the relevant code; make no changes.",
   },
 ] as const;
 
