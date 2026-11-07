@@ -165,3 +165,14 @@ test("ready changes survive a neutral idle stop while errors and explicit interr
   assert.equal(resolveTaskStatus({ ...task, error: "Out of memory" }, { sandboxState: "stopped" }).status, "broken");
   assert.equal(resolveTaskStatus({ ...task, error: "The turn was interrupted." }, { sandboxState: "stopped" }).status, "stopped");
 });
+
+
+test("sidebar counts a paid recovery once and deduplicates its explicit decision", async () => {
+  const env = makeService({ chat: true });
+  const task = (await env.service.launchTask({ title: "Add Apple Pay", role: "implement", brief: "Add it.", repo: "acme/web", orchestratorThreadId: "thr_plain" }, 5000)).task;
+  const actual = env.service.publicStatus.bind(env.service);
+  env.service.publicStatus = (entry, context) => entry.id === task.id ? { status: "broken", label: "Stopped", tone: "danger", reason: "Out of memory", needsYou: true, moving: false } : actual(entry, context);
+  assert.equal(sidebarState(env.service).threads.find((row) => row.threadId === "thr_plain")!.rollup!.needsYou, 1);
+  env.store.addDecision({ orchestratorThreadId: "thr_plain", question: "Continue on Large?", recommendation: "Large", options: ["Large"], taskIds: [task.id] });
+  assert.equal(sidebarState(env.service).threads.find((row) => row.threadId === "thr_plain")!.rollup!.needsYou, 1);
+});
