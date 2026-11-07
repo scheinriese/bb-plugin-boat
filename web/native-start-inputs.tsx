@@ -46,7 +46,7 @@ export function BoatSizeChip({value,onChange}:PluginMachineProviderInputsProps) 
   },[report,overview,match,projects,projectId]);
   if(state.adopted)return null;
   const update=(patch:Record<string,string|boolean|undefined>)=>{
-    const change:Record<string,string|boolean>={...(next??{}),type:state.type,reviewer};
+    const change:Record<string,string|boolean>={...(next??{}),...(snapshot?{snapshot}:{}),type:state.type,reviewer};
     for(const [key,value] of Object.entries(patch)){if(value===undefined)delete change[key];else change[key]=value;}
     onChange({status:"ready",value:change});
   };
