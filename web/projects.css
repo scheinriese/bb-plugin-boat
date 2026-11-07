@@ -1,0 +1,59 @@
+.boat-projects {
+  --project-editor: var(--card);
+  --project-input: var(--background);
+  --project-input-border: var(--border);
+  --project-selected: var(--muted);
+  --project-secondary: var(--muted-foreground);
+  --project-text: var(--foreground);
+  --project-selected-border: var(--border);
+  --project-local-border: var(--border);
+  --project-local-bg: var(--muted);
+  --project-local-text: var(--foreground);
+  --project-choice-bg: var(--muted);
+  --project-choice-border: var(--ring);
+  --project-radio-border: var(--border);
+  --project-cost: var(--muted-foreground);
+  --project-link: var(--primary);
+  --project-success: var(--diff-added, var(--foreground));
+  --project-danger: var(--destructive);
+  --project-check-bg: var(--primary);
+  --project-check-text: var(--primary-foreground);
+}
+.dark .boat-projects {
+  --project-editor: #1a1a1a;
+  --project-input: #151515;
+  --project-input-border: #2e2e2e;
+  --project-selected: #2b2b2b;
+  --project-secondary: #a8a8a8;
+  --project-text: #c1c1c1;
+  --project-selected-border: #3a4a66;
+  --project-local-border: #23362a;
+  --project-local-bg: #16201a;
+  --project-local-text: #bfefd0;
+  --project-choice-bg: #22324d;
+  --project-choice-border: #3a5a8c;
+  --project-radio-border: #3a3a3a;
+  --project-cost: #fc8c45;
+  --project-link: #7aa7ff;
+  --project-success: #5bd08a;
+  --project-danger: #e06c6c;
+  --project-check-bg: #7aa7ff;
+  --project-check-text: #141414;
+}
+.docked-project-form[data-docked="true"] {
+  height: 100%;
+  max-height: none;
+}
+/* Add-project field labels use the denser 12/16 treatment from1W84. */
+.docked-project-form[data-new="true"] fieldset > legend {
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--project-secondary);
+}
+.docked-project-form[data-new="true"] fieldset > :not(legend) {
+  margin-block: 0;
+}
+.docked-project-form[data-new="true"] fieldset > :not(legend) + :not(legend) {
+  margin-top: 8px;
+}

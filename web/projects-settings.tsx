@@ -1,3 +1,8 @@
+import {
+  ProjectsSurface,
+  NewProjectSurfaceDialog,
+  type ProjectSurfaceProps,
+} from "./project-page";
 // Settings → Plugins → Boat Cloud Agents → Projects: repos you trust, with
 // the environment their tasks start in, how work lands, protected branches
 // and instructions; orchestrators work on one project each.
@@ -76,7 +81,22 @@ interface ProjectDraft {
   baseBranch: string;
 }
 
-export function ProjectsSettings({ page = false }: { page?: boolean } = {}) {
+export function ProjectsSettings({
+  page = false,
+  ...surface
+}: { page?: boolean } & Partial<ProjectSurfaceProps> = {}) {
+  if (page && surface.onEditingChange)
+    return (
+      <ProjectsSurface
+        editing={surface.editing ?? null}
+        onEditingChange={surface.onEditingChange}
+        editorTarget={surface.editorTarget ?? null}
+        docked={surface.docked ?? false}
+      />
+    );
+  return <LegacyProjectsSettings page={page} />;
+}
+function LegacyProjectsSettings({ page }: { page: boolean }) {
   const { data, error } = useProjects();
   const [editing, setEditing] = useState<Editing>(null);
   const projects = data?.projects ?? [];
@@ -364,18 +384,12 @@ export function NewProjectDialog({
   onSaved?: (project: ProjectDto) => void;
 }) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
-        {open ? (
-          <ProjectForm
-            project={null}
-            draft={draft}
-            onSaved={onSaved}
-            onDone={() => onOpenChange(false)}
-          />
-        ) : null}
-      </DialogContent>
-    </Dialog>
+    <NewProjectSurfaceDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      draft={draft}
+      onSaved={onSaved}
+    />
   );
 }
 

@@ -1,7 +1,8 @@
 import "./boat-ui.css";
 // The Cloud agents nav panel: router over `subPath`, header actions (New
 // task, and a ⋯ menu with the rest) and the page title.
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { readProjectEditorSession, setProjectEditorSession, type ProjectEditing } from "./project-editor-session";
 import {
   experimental_usePluginId,
   experimental_useRpcMutation,
@@ -65,52 +66,89 @@ export function CloudAgentsPage({ subPath }: PluginNavPanelProps) {
 
 function CloudPageTabs({ section }: { section: string }) {
   const navigate = useBbNavigate();
+  const [editing, setEditingState] = useState<ProjectEditing>(() => section === "projects" ? readProjectEditorSession().editing : null);
+  const setEditing = (value: ProjectEditing) => { setProjectEditorSession(value); setEditingState(value); };
+  const [editorTarget, setEditorTarget] = useState<HTMLElement | null>(null);
+  const [wide, setWide] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const node = root.current;
+    if (!node) return;
+    setWide(node.clientWidth >= 1040);
+    const observer = new ResizeObserver((entries) =>
+      setWide((entries[0]?.contentRect.width ?? 0) >= 1040),
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => { if (section !== "projects") setEditing(null); }, [section]);
+  const docked = section === "projects" && editing !== null && wide;
   return (
-    <div className="boat-ui h-full min-h-0 flex-1 overflow-y-auto">
-      <div
-        className={
-          section === "sandboxes"
-            ? "mx-auto w-full max-w-[1020px] px-4 pt-3 md:px-[30px]"
-            : "mx-auto w-full max-w-[1140px] px-4 pt-4 md:pl-[30px] md:pr-[50px]"
-        }
-      >
-        <nav
-          aria-label="Cloud agents pages"
-          className="flex gap-[22px] border-b border-border sm:gap-7"
+    <div
+      ref={root}
+      className="boat-ui flex h-full min-h-0 flex-1 overflow-hidden"
+    >
+      <div className="min-w-0 flex-1 overflow-y-auto">
+        <div
+          className={
+            docked
+              ? "mx-auto w-full max-w-[840px] pl-[80px] pr-[40px] pt-3"
+              : section === "sandboxes"
+                ? "mx-auto w-full max-w-[1020px] px-4 pt-3 md:px-[30px]"
+                : "mx-auto w-full max-w-[1140px] px-4 pt-4 md:pl-[30px] md:pr-[50px]"
+          }
         >
-          {["today", "sandboxes", "projects"].map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              aria-current={section === tab ? "page" : undefined}
-              onClick={() =>
-                navigate.toPluginPanel(PANEL_PATH, {
-                  subPath: tab === "today" ? "" : tab,
-                })
-              }
-              className={
-                "border-b-2 pb-2 text-[18px] leading-6 sm:text-[20px] sm:leading-[26px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
-                (section === tab
-                  ? "border-[color:var(--boat-heading)] font-semibold text-[color:var(--boat-heading)]"
-                  : "border-transparent text-[color:var(--boat-faint)] hover:text-foreground")
-              }
-            >
-              {tab[0]!.toUpperCase() + tab.slice(1)}
-            </button>
-          ))}
-        </nav>
-        {section === "today" ? (
-          <Today />
-        ) : section === "sandboxes" ? (
-          <div className="py-6">
-            <SandboxTable />
-          </div>
-        ) : (
-          <div className="py-6">
-            <ProjectsSettings page />
-          </div>
-        )}
+          <nav
+            aria-label="Cloud agents pages"
+            className="flex gap-[22px] border-b border-border sm:gap-7"
+          >
+            {["today", "sandboxes", "projects"].map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                aria-current={section === tab ? "page" : undefined}
+                onClick={() =>
+                  navigate.toPluginPanel(PANEL_PATH, {
+                    subPath: tab === "today" ? "" : tab,
+                  })
+                }
+                className={
+                  "border-b-2 pb-2 text-[18px] leading-6 sm:text-[20px] sm:leading-[26px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
+                  (section === tab
+                    ? "border-[color:var(--boat-heading)] font-semibold text-[color:var(--boat-heading)]"
+                    : "border-transparent text-[color:var(--boat-faint)] hover:text-foreground")
+                }
+              >
+                {tab[0]!.toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
+          </nav>
+          {section === "today" ? (
+            <Today />
+          ) : section === "sandboxes" ? (
+            <div className="py-6">
+              <SandboxTable />
+            </div>
+          ) : (
+            <div className="py-[19px]">
+              <ProjectsSettings
+                page
+                editing={editing}
+                onEditingChange={setEditing}
+                editorTarget={editorTarget}
+                docked={docked}
+              />
+            </div>
+          )}
+        </div>
       </div>
+      {docked && (
+        <aside
+          ref={setEditorTarget}
+          aria-label="Project editor"
+          className="w-[440px] shrink-0 border-l border-border"
+        />
+      )}
     </div>
   );
 }
