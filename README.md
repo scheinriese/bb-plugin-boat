@@ -9,18 +9,19 @@ tasks and get each change reviewed.
 This is a community plugin. It is not made by or affiliated with boat.dev or
 bb. The workflow is inspired by Conductor's cloud workflow.
 
-A short demo with demo data (the chat replies are scripted):
+The v1 preview has a redesigned Today page, live decision and review cards,
+Task panels, project rules and explicit shipping confirmations. The screenshots
+below use demo data and the optional Workbench sidebar.
 
-https://github.com/user-attachments/assets/769a7fcc-e995-48c4-b4fa-097ea47a7b97
+![Today: decisions, active projects, usage and event history](docs/screenshots/v1/today.png)
 
-The video and screenshots illustrate 0.1.2, not the v1 UI. The current
-starting flow and remaining v1 limits are described below.
+![Projects with a docked editor for delivery, sizes, reviewers and rules](docs/screenshots/v1/projects.png)
 
-![The Cloud agents page: decisions with recommendations, one orchestrator per project on Claude or Codex, and work ready to review](docs/screenshots/overview.png)
+![A task with its reviews, pull request, change summary and sandbox facts](docs/screenshots/v1/task.png)
 
-![An orchestrator chat: it starts a task, and each task gets its own chat nested under it in the sidebar](docs/screenshots/orchestrator-chat.png)
-
-![One task: its pull request, sandbox, preview link and the agent's report](docs/screenshots/task.png)
+A new framed demo recording is being prepared for this preview. The previous
+[0.1.2 recording](https://github.com/user-attachments/assets/769a7fcc-e995-48c4-b4fa-097ea47a7b97)
+shows the earlier UI.
 
 ## Getting started
 
