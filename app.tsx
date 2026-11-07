@@ -15,15 +15,7 @@ import {
   CloudAgentsPage,
   useCloudAgentsPageTitle,
 } from "./web/page";
-import { BackupSettings } from "./web/backup-settings";
-import {
-  AdvancedSettings,
-  ModelsSettings,
-  OrchestratorsSettings,
-  SetupSettings,
-  UsageLimitsSettings,
-} from "./web/plugin-settings";
-import { ProjectsSettings } from "./web/projects-settings";
+import { BoatSettings, MobileBoatSettings } from "./web/plugin-settings";
 import {
   HomepageCard,
   ThreadAgentsTab,
@@ -118,55 +110,8 @@ export default definePluginApp((app) => {
     component: HomepageCard,
   });
 
-  // Settings → Plugins → Boat Cloud Agents, below bb's list, in this order.
-  app.slots.settingsSection({
-    id: "setup",
-    title: "Setup",
-    description:
-      "What cloud agents need on boat.dev, checked without starting anything.",
-    component: SetupSettings,
-  });
-  app.slots.settingsSection({
-    id: "projects",
-    title: "Projects",
-    description:
-      "Repos you trust. Each project sets the environment its tasks start in and how their work lands; orchestrators work on one project each.",
-    component: ProjectsSettings,
-  });
-  app.slots.settingsSection({
-    id: "usage-limits",
-    title: "Usage limits",
-    description: "What happens when Claude or Codex nears its usage limit.",
-    component: UsageLimitsSettings,
-  });
-  app.slots.settingsSection({
-    id: "models",
-    title: "Models",
-    description: "Which model and effort tasks run with.",
-    component: ModelsSettings,
-  });
-  app.slots.settingsSection({
-    id: "orchestrators",
-    title: "Orchestrators (optional)",
-    description:
-      "An orchestrator is a chat that plans and coordinates tasks for one project. Skip this if you start tasks yourself.",
-    component: OrchestratorsSettings,
-  });
-  app.slots.settingsSection({
-    id: "advanced",
-    title: "Advanced",
-    description:
-      "Sandbox lifetimes, reviews, protected branches and the boat CLI location.",
-    component: AdvancedSettings,
-  });
-  // …and a backup of all of it (`bb boat config export|import`).
-  app.slots.settingsSection({
-    id: "backup",
-    title: "Back up and restore",
-    description:
-      "Save your settings, projects, model presets and protocol to a file, or restore them from one.",
-    component: BackupSettings,
-  });
+  app.slots.settingsSection({ id: "cloud-agents", component: BoatSettings });
+  app.slots.settingsSection({ id: "cloud-agents-mobile", title: "Cloud agents", experimental_page: "mobile", component: MobileBoatSettings });
 
   // Ways in from bb itself: composer send menu, New thread panel, Boat
   // sandbox size chip, thread header and menu (each skipped if this bb lacks it).
