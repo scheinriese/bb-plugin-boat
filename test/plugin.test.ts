@@ -93,7 +93,7 @@ test("help, status and an end-to-end task through the CLI", async (t) => {
   finishAll("Done.\n=== REPORT ===\nSTATUS: done\nPR: https://github.com/acme/web/pull/9\n=== END REPORT ===");
   const show = await harness.runCli(["task", "show", task.id, "--refresh"]);
   assert.equal(show.exitCode, 0, show.stderr);
-  assert.match(show.stdout, /waiting for you/);
+  assert.match(show.stdout, /Status: working/);
   assert.match(show.stdout, /pull\/9/);
 
   const sends = harness.inspection.sdk.callsTo("threads.send");
