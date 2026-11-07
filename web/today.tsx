@@ -1,11 +1,18 @@
-// Cloud agents Today: live work first, with a bounded, honest recent timeline.
+// Live events and measured usage; the demo seeds only the backend data.
 import { useMemo, useState } from "react";
 import {
   experimental_useRpcQuery,
   experimental_useRpcMutation,
+  experimental_useSidebarThreads,
   useBbNavigate,
 } from "@get-bb/plugin-sdk/app";
-import { rpcContract, type DecisionDto, type TaskDto } from "../contract";
+import {
+  rpcContract,
+  normalizeDecisionOptions,
+  type DecisionDto,
+  type TaskDto,
+  type HistoryEventDto,
+} from "../contract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
@@ -18,7 +25,7 @@ import {
   queueDelivery,
 } from "./cards-logic";
 import { NewOrchestratorDialog } from "./dialogs";
-import { PANEL_PATH, PROVIDER_SHORT, relativeTime } from "./format";
+import { PANEL_PATH, PROVIDER_SHORT } from "./format";
 import {
   useBoard,
   useCloudAgentsNavigation,
@@ -28,74 +35,129 @@ import {
   useProjects,
   useRelay,
   useSetup,
+  useTask,
 } from "./hooks";
 import { openBoatChat } from "./overview";
-import { SetupCard, SetupWarnings } from "./setup";
-import { EmptyBox, InlineAlert, ThreadName } from "./ui";
+import { SetupCard } from "./setup";
+import { AgentLogo, EmptyBox, InlineAlert, ThreadName } from "./ui";
+import { ResizeDialog } from "./sandbox-size";
 
-const HISTORY = { statuses: null, threadId: null, limit: 500 } as const;
 const weekStart = (now: number) => {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-  return d.getTime();
+  const date = new Date(now);
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+  return date.getTime();
 };
-
+const HEADING =
+  "text-[14px] font-semibold leading-5 text-[color:var(--boat-heading)]";
+const SURFACE = "overflow-hidden rounded-[10px] border border-border bg-card";
+const countNumber = (n: number) =>
+  n.toLocaleString(undefined, { maximumFractionDigits: 1 });
 export function Today() {
   const board = useBoard(null);
   const overview = useOverview();
   const setup = useSetup();
-  const history = experimental_useRpcQuery({
+  const records = experimental_useRpcQuery({
     contract: rpcContract,
     method: "tasks",
-    input: HISTORY,
+    input: { statuses: null, threadId: null, limit: 500 },
+  });
+  const events = experimental_useRpcQuery({
+    contract: rpcContract,
+    method: "history",
+    input: { limit: 200 },
+  });
+  const usage = experimental_useRpcQuery({
+    contract: rpcContract,
+    method: "fidelityUsage",
+    input: { timezoneOffsetMinutes: new Date().getTimezoneOffset() },
   });
   const orchestrators = useOrchestrators();
   const projects = useProjects();
   const relay = useRelay();
+  const { threads } = experimental_useSidebarThreads();
   const navigate = useBbNavigate();
   const { openTask } = useCloudAgentsNavigation();
   const now = useNow();
   const [newOrchestrator, setNewOrchestrator] = useState(false);
-  const [filter, setFilter] = useState<"all" | "ready" | "working">("all");
   const data = board.data;
+  const recent = (records.data?.tasks ?? []).filter(
+    (task) => !(task.role === "custom" && task.title === "Test task"),
+  );
+  const byId = new Map(recent.map((task) => [task.id, task]));
+  const isProductEvent = (event: HistoryEventDto) =>
+    !event.taskId || byId.has(event.taskId);
+  const weekEvents = (events.data?.events ?? []).filter(
+    (event) =>
+      Date.parse(event.at) >= weekStart(now) &&
+      Date.parse(event.at) <= now &&
+      isProductEvent(event),
+  );
+  const shippedEvents = weekEvents.filter(
+    (event) => event.kind === "shipped" || event.kind === "merged",
+  );
+  const shipped = [
+    ...new Map(
+      shippedEvents.map((event) => [event.taskId ?? event.seq, event]),
+    ).values(),
+  ];
+  const today = new Date(now).toDateString();
+  const shippedToday = shipped.filter(
+    (event) => new Date(event.at).toDateString() === today,
+  ).length;
+  const reviews = weekEvents.filter((event) => event.kind === "review-verdict");
+  const changesRequested = reviews.filter(
+    (event) => event.review?.verdict === "changes-requested",
+  ).length;
   const open = data
-    ? [...data.ready, ...data.running].filter((t) => t.role !== "review")
+    ? [...data.ready, ...data.running].filter(
+        (task) =>
+          task.role !== "review" &&
+          !(task.role === "custom" && task.title === "Test task"),
+      )
     : [];
   const grouped = useMemo(() => {
     const groups = new Map<string, TaskDto[]>();
     for (const task of open) {
-      if (filter === "ready" && !data?.ready.some((t) => t.id === task.id))
-        continue;
-      if (
-        filter === "working" &&
-        !["running", "starting"].includes(task.status)
-      )
-        continue;
       const key = task.orchestratorThreadId ?? "one-off";
       groups.set(key, [...(groups.get(key) ?? []), task]);
     }
-    return [...groups];
-  }, [data, filter]);
-  const recent = history.data?.tasks ?? [];
-  const shipped = recent.filter(
-    (t) =>
-      t.role === "implement" &&
-      cardStatus(t).status === "shipped" &&
-      Date.parse(t.finishedAt ?? t.updatedAt) >= weekStart(now),
-  );
-  const broken =
-    data?.running.filter((t) => cardStatus(t).status === "broken") ?? [];
-  const needsCount = attentionCount(data ? [...data.ready,...data.running] : [],data?.needsYou ?? []);
-  const timeline = [...recent]
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .slice(0, 16);
-  const hasWork = recent.length > 0 || open.length > 0;
-  const projectName = (id: string | null) =>
-    projects.data?.projects.find((p) => p.id === id)?.name;
+    const ordered = [...groups];
+    ordered.sort(
+      (a, b) =>
+        b[1].length - a[1].length ||
+        Number(b[1].some((task) => cardStatus(task).status === "needs-you")) -
+          Number(a[1].some((task) => cardStatus(task).status === "needs-you")),
+    );
+    return ordered;
+  }, [data]);
+  const broken = open.filter((task) => cardStatus(task).status === "broken");
+  const needsCount = attentionCount(open, data?.needsYou ?? []);
+  const progress = open.filter(
+    (task) =>
+      ["working", "review"].includes(cardStatus(task).status) &&
+      (cardStatus(task).moving || task.status === "idle"),
+  ).length;
+  const projectName = (task: TaskDto | undefined) =>
+    task
+      ? ((
+          projects.data?.projects.find(
+            (project) => project.repos[0]?.repo === task.repo,
+          ) ??
+          projects.data?.projects.find((project) =>
+            project.repos.some((repo) => repo.repo === task.repo),
+          )
+        )?.name ??
+        task.source.title ??
+        task.repo ??
+        "")
+      : "";
   const openChat = (task: TaskDto) =>
     task.threadId ? navigate.toThread(task.threadId) : openTask(task.id);
-
+  const timeline = [...weekEvents]
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || b.seq - a.seq)
+    .slice(0, 7);
+  const hasWork = recent.length > 0 || open.length > 0;
   if (!data)
     return (
       <div className="py-6">
@@ -113,30 +175,25 @@ export function Today() {
       </div>
     );
   return (
-    <div className="space-y-7 pb-10 pt-4">
+    <div className="pb-10 pt-[14px]">
       <div
-        className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground"
+        className="mb-[30px] flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] leading-[18px] text-muted-foreground"
         aria-label="Work counts"
       >
-        <span className="text-[#F0B135]">● {needsCount} need you</span>
-        <span className="text-[#5BD08A]">● {data.ready.length} ready</span>
-        <span>
-          {
-            data.running.filter((t) =>
-              ["running", "starting"].includes(t.status),
-            ).length
-          }{" "}
-          in progress
+        <span className="inline-flex items-center gap-1.5 text-foreground">
+          <Dot tone="attention" />
+          {needsCount} need you
         </span>
-        <span>
-          {shipped.length}
-          {recent.length === 500 ? "+" : ""} shipped this week
+        <span className="inline-flex items-center gap-1.5 text-foreground">
+          <Dot tone="positive" />
+          {data.ready.filter((task) => task.role !== "review").length} ready
         </span>
+        <span>{progress} in progress</span>
+        <span>{shipped.length} shipped this week</span>
       </div>
-      <SetupWarnings />
       {!hasWork ? (
         <section className="space-y-3">
-          <h2 className="text-sm font-medium">Start here</h2>
+          <h2 className={HEADING}>Start here</h2>
           <p className="text-sm text-muted-foreground">
             Give a cloud agent one task, or let an orchestrator coordinate a
             project.
@@ -165,255 +222,368 @@ export function Today() {
           </div>
         </section>
       ) : (
-        <div className="grid items-start gap-9 xl:grid-cols-[minmax(0,1fr)_280px]">
-          <div className="min-w-0 space-y-7">
-            {needsCount > 0 || broken.length > 0 ? (
-              <section className="space-y-3">
-                <h2 className="text-sm font-medium">Start here</h2>
-                <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+        <div className="grid items-start gap-10 min-[1100px]:grid-cols-[minmax(0,1fr)_330px]">
+          <div className="min-w-0 space-y-[30px]">
+            {needsCount > 0 && (
+              <section className="space-y-[10px]">
+                <h2 className={HEADING}>Start here</h2>
+                <div className={cn(SURFACE, "divide-y divide-border/60")}>
                   {data.needsYou.map((decision) => (
-                    <StartDecision key={decision.id} decision={decision} />
+                    <StartDecision
+                      key={decision.id}
+                      decision={decision}
+                      subline={`${byId.get(decision.askedByTaskId ?? decision.taskIds[0] ?? "")?.title ?? ""}${projectName(byId.get(decision.askedByTaskId ?? decision.taskIds[0] ?? "")) ? ` · ${projectName(byId.get(decision.askedByTaskId ?? decision.taskIds[0] ?? ""))}` : ""}`}
+                    />
                   ))}
+                  {broken
+                    .filter(
+                      (task) =>
+                        !data.needsYou.some((decision) =>
+                          decision.taskIds.includes(task.id),
+                        ),
+                    )
+                    .map((task) => (
+                      <StoppedStart
+                        key={task.id}
+                        task={task}
+                        project={projectName(task)}
+                        onOpen={() => openChat(task)}
+                      />
+                    ))}
                 </div>
-                {broken.map((task) => (
-                  <button
-                    key={task.id}
-                    type="button"
-                    onClick={() => openChat(task)}
-                    className="flex w-full items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-left hover:bg-state-hover"
-                  >
-                    <span className="text-[#E06C6C]" aria-hidden>
-                      ●
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm">{task.title}</span>
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        {task.error ||
-                          "The task stopped. Open the chat to continue."}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-xs text-[#7AA7FF]">
-                      Open chat
-                    </span>
-                  </button>
-                ))}
               </section>
-            ) : null}
-            <section className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-sm font-medium">Running now</h2>
-                <span className="text-xs text-muted-foreground">
+            )}
+            <section className="space-y-[10px]">
+              <div className="flex h-6 items-center justify-between gap-2">
+                <h2 className={HEADING}>Running now</h2>
+                <span className="text-xs leading-5 text-muted-foreground">
                   {overview.data?.activeSandboxes ?? "…"}
                   {overview.data?.cap ? ` of ${overview.data.cap}` : ""}{" "}
                   sandboxes on
                 </span>
               </div>
-              <div className="flex gap-1" role="group" aria-label="Filter work">
-                {(
-                  [
-                    ["all", "All work"],
-                    ["ready", "Ready"],
-                    ["working", "Working"],
-                  ] as const
-                ).map(([value, label]) => (
-                  <Button
-                    key={value}
-                    size="sm"
-                    variant="ghost"
-                    aria-pressed={filter === value}
-                    className={cn(
-                      "h-7 text-xs",
-                      filter === value && "bg-secondary",
-                    )}
-                    onClick={() => setFilter(value)}
-                  >
-                    {label}
-                  </Button>
-                ))}
-              </div>
-              <div className="divide-y divide-border rounded-lg border border-border bg-card">
+              <div className={cn(SURFACE, "divide-y divide-border/60")}>
                 {grouped.map(([threadId, tasks]) => {
                   const entry = orchestrators.data?.orchestrators.find(
-                    (o) => o.threadId === threadId,
+                    (item) => item.threadId === threadId,
                   );
+                  const provider =
+                    threads.find((thread) => thread.id === threadId)
+                      ?.providerId === "codex"
+                      ? "codex"
+                      : "claude";
+                  const counts = {
+                    stopped: tasks.filter(
+                      (task) => cardStatus(task).status === "broken",
+                    ).length,
+                    ready: tasks.filter(
+                      (task) => cardStatus(task).status === "ready",
+                    ).length,
+                    needs: tasks.filter(
+                      (task) => cardStatus(task).status === "needs-you",
+                    ).length,
+                    working: tasks.filter(
+                      (task) =>
+                        cardStatus(task).status === "review" ||
+                        cardStatus(task).moving,
+                    ).length,
+                  };
+                  const sorted = [...tasks].sort((a, b) => {
+                    const order = (task: TaskDto) =>
+                      cardStatus(task).status === "review"
+                        ? 0
+                        : task.status === "idle" &&
+                            cardStatus(task).status === "working"
+                          ? 1
+                          : cardStatus(task).status === "broken"
+                            ? 2
+                            : 3;
+                    return order(a) - order(b);
+                  });
                   return (
-                    <div key={threadId} className="space-y-3 px-4 py-3">
-                      <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <div
+                      key={threadId}
+                      className="space-y-[10px] px-[14px] py-3"
+                    >
+                      <div className="flex flex-wrap items-center gap-2 text-[13px] leading-5">
+                        <AgentLogo provider={provider} className="size-3" />
                         {threadId === "one-off" ? (
                           <span>Tasks</span>
                         ) : (
-                          <ThreadName threadId={threadId} />
-                        )}
-                        {entry?.projectId ? (
-                          <span className="text-xs text-muted-foreground">
-                            {projectName(entry.projectId)}
+                          <span className="font-medium text-[color:var(--boat-heading)]">
+                            <ThreadName threadId={threadId} />
                           </span>
-                        ) : null}
-                        <span className="ml-auto text-xs text-muted-foreground">
-                          {tasks.length} open
+                        )}
+                        <span className="text-xs text-muted-foreground">
+                          {entry?.projectName ?? projectName(tasks[0])}
                         </span>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {tasks.map((task) => (
-                          <button
-                            key={task.id}
-                            type="button"
-                            onClick={() => openChat(task)}
-                            className="inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-background/40 px-2 py-1 text-xs hover:bg-state-hover"
-                          >
-                            <Icon
-                              name={task.role === "review" ? "Eye" : "Code"}
-                              className="size-3 shrink-0 text-muted-foreground"
-                            />
-                            <span className="truncate">{task.title}</span>
-                            <span
-                              className={cn(
-                                "shrink-0",
-                                CARD_TONES[cardStatus(task).tone],
-                              )}
-                            >
-                              {cardStatus(task).label.toLowerCase()}
+                        <div className="ml-auto flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                          {counts.stopped > 0 && (
+                            <span>
+                              <span className="text-[#E06C6C]">•</span>{" "}
+                              {counts.stopped} stopped
                             </span>
-                          </button>
-                        ))}
+                          )}
+                          {counts.needs > 0 && (
+                            <span>
+                              <span className="text-[#F0B135]">•</span>{" "}
+                              {counts.needs} needs you
+                            </span>
+                          )}
+                          {counts.ready > 0 && (
+                            <span>
+                              <span className="text-[#5BD08A]">•</span>{" "}
+                              {counts.ready} ready
+                            </span>
+                          )}
+                          {counts.working > 0 && (
+                            <span>• {counts.working} working</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 pl-5">
+                        {sorted.map((task) => {
+                          const state = cardStatus(task);
+                          const activeReview = recent.find(
+                            (review) =>
+                              review.parentTaskId === task.id &&
+                              review.role === "review" &&
+                              ["starting", "running"].includes(review.status),
+                          );
+                          const label =
+                            state.status === "review"
+                              ? `${PROVIDER_SHORT[activeReview?.provider ?? "codex"]} reviewing`
+                              : state.status === "needs-you"
+                                ? "waiting on you"
+                                : state.status === "broken"
+                                  ? "stopped"
+                                  : state.status === "working" &&
+                                      task.status === "idle"
+                                    ? "just finished"
+                                    : state.label.toLowerCase();
+                          return (
+                            <button
+                              key={task.id}
+                              type="button"
+                              onClick={() => openChat(task)}
+                              className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-border/70 bg-[color:var(--boat-chip)] py-[5px] pl-[7px] pr-[10px] text-xs leading-4 hover:bg-state-hover"
+                            >
+                              <AgentActivity
+                                provider={task.provider}
+                                moving={state.moving}
+                              />
+                              <span className="truncate text-[color:var(--boat-content)]">
+                                {task.title.replace(/ to checkout$/, "")}
+                              </span>
+                              <span
+                                className={cn(
+                                  "shrink-0",
+                                  CARD_TONES[state.tone],
+                                )}
+                              >
+                                {label}
+                              </span>
+                              {label === "just finished" && (
+                                <span
+                                  aria-hidden
+                                  className="size-1.5 rounded-full bg-foreground"
+                                />
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   );
                 })}
-                {grouped.length === 0 ? (
-                  <p className="px-4 py-5 text-sm text-muted-foreground">
-                    No {filter === "all" ? "open" : filter} work. Start a task
-                    from New thread.
-                  </p>
-                ) : null}
               </div>
             </section>
-            <section className="space-y-3">
-              <h2 className="text-sm font-medium">Timeline</h2>
-              <p className="text-xs text-muted-foreground">
-                Latest update from each recent task
-              </p>
-              <ol className="space-y-4">
-                {timeline.map((task) => (
-                  <li key={task.id} className="flex items-start gap-3 text-sm">
-                    <span className="w-16 shrink-0 pt-0.5 text-right text-xs text-muted-foreground">
-                      {relativeTime(task.updatedAt, now)}
-                    </span>
-                    <span
-                      className={cn(
-                        "pt-0.5",
-                        task.status === "done"
-                          ? "text-[#5BD08A]"
-                          : task.status === "failed"
-                            ? "text-[#E06C6C]"
-                            : "text-muted-foreground",
+            <section className="space-y-[10px]">
+              <h2 className={HEADING}>Timeline</h2>
+              <ol>
+                {timeline.map((event, index) => {
+                  const task = event.taskId
+                    ? byId.get(event.taskId)
+                    : undefined;
+                  const text =
+                    event.kind === "review-started" && event.review
+                      ? `${PROVIDER_SHORT[event.review.provider]} started ${event.review.round === 2 ? "a second look" : "a review"} at ${task?.title ?? event.taskTitle ?? "the change"}`
+                      : event.kind === "review-verdict" && event.review
+                        ? `${PROVIDER_SHORT[event.review.provider]} ${event.review.verdict === "approve" ? "approved" : "asked for changes to"} ${task?.title ?? event.taskTitle ?? "the change"}`
+                        : event.text;
+                  const eventThreadProvider = threads.find(
+                    (thread) => thread.id === event.threadId,
+                  )?.providerId;
+                  const eventProvider =
+                    event.provider ??
+                    (eventThreadProvider === "claude-code"
+                      ? "claude"
+                      : eventThreadProvider === "codex"
+                        ? "codex"
+                        : null);
+                  const tone =
+                    event.kind === "stopped"
+                      ? "danger"
+                      : event.kind === "needs-you"
+                        ? "attention"
+                        : ["ready", "shipped", "merged"].includes(event.kind)
+                          ? "positive"
+                          : "neutral";
+                  return (
+                    <li
+                      key={event.seq}
+                      className="relative flex items-start gap-3 pb-4 text-[13px] leading-5"
+                    >
+                      <time
+                        dateTime={event.at}
+                        className="w-16 shrink-0 text-right text-xs leading-5 text-muted-foreground text-[color:var(--boat-faint)]"
+                      >
+                        {new Date(event.at)
+                          .toLocaleTimeString("en-US", {
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })
+                          .toLowerCase()}
+                      </time>
+                      {index < timeline.length - 1 && (
+                        <span
+                          aria-hidden
+                          className="absolute bottom-[-8px] left-[83px] top-5 w-px bg-border"
+                        />
                       )}
-                      aria-hidden
-                    >
-                      ●
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => openChat(task)}
-                      className="min-w-0 text-left hover:underline"
-                    >
-                      <span>
-                        {task.status === "done"
-                          ? task.role === "review"
-                            ? "Review finished: "
-                            : task.role === "implement" && cardStatus(task).status === "shipped" ? "Shipped: " : "Finished: "
-                          : task.status === "failed"
-                            ? "Broken: "
-                            : ""}
-                        {task.title}
+                      <span className="relative flex h-5 w-4 shrink-0 items-center justify-center">
+                        {event.kind === "review-started" && event.provider ? (
+                          <AgentLogo
+                            provider={event.provider}
+                            className="size-3.5"
+                          />
+                        ) : ["shipped", "merged"].includes(event.kind) ? (
+                          <Icon
+                            name="Check"
+                            className="size-3.5 text-[#5BD08A]"
+                          />
+                        ) : event.kind === "started" && eventProvider ? (
+                          <AgentLogo
+                            provider={eventProvider}
+                            className="size-3"
+                          />
+                        ) : (
+                          <Dot tone={tone} />
+                        )}
                       </span>
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        {projectName(task.projectId) ??
-                          task.repo ??
-                          "One-off task"}{" "}
-                        · {PROVIDER_SHORT[task.provider]}
-                      </span>
-                    </button>
-                  </li>
-                ))}
+                      <button
+                        type="button"
+                        className="min-w-0 text-left hover:underline"
+                        onClick={() =>
+                          task
+                            ? openChat(task)
+                            : event.threadId &&
+                              navigate.toThread(event.threadId)
+                        }
+                      >
+                        <span className="text-foreground/90">{text}</span>
+                        <span className="block text-xs leading-4 text-muted-foreground text-[color:var(--boat-faint)]">
+                          {event.detail ??
+                            `${projectName(task) || (orchestrators.data?.orchestrators.find((item) => item.threadId === event.orchestratorThreadId)?.projectName ?? "")}${event.kind === "stopped" ? " · sandbox stopped, work saved" : event.kind === "review-started" && event.review ? ` · Review ${event.review.round}` : event.kind === "needs-you" && task ? ` · ${task.title}` : event.kind === "ready" && task?.prUrl ? ` · PR #${task.prUrl.match(/\/pull\/(\d+)/)?.[1]}` : ""}`}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
               </ol>
             </section>
           </div>
           <aside className="space-y-3">
-            <h2 className="text-sm font-medium">This week</h2>
-            <div className="space-y-5 rounded-lg border border-border bg-card p-4">
-              <div>
-                <span className="text-3xl font-medium text-[#5BD08A]">
+            <h2 className={HEADING}>This week</h2>
+            <div className={cn(SURFACE, "space-y-[14px] p-4")}>
+              <div className="flex items-baseline gap-2">
+                <span className="text-[26px] font-semibold leading-[30px] text-[#5BD08A]">
                   {shipped.length}
-                  {recent.length === 500 ? "+" : ""}
                 </span>
-                <span className="ml-2 text-xs text-muted-foreground">
-                  shipped
+                <span className="text-xs text-muted-foreground">
+                  shipped, {shippedToday} today
                 </span>
               </div>
-              <div
-                className="flex h-16 items-end gap-2"
-                aria-label="Shipped tasks per day"
-              >
-                {Array.from({ length: 7 }, (_, i) => {
-                  const start = weekStart(now) + i * 86400000;
-                  const count = shipped.filter((t) => {
-                    const at = Date.parse(t.finishedAt ?? t.updatedAt);
-                    return at >= start && at < start + 86400000;
-                  }).length;
-                  return (
-                    <div
-                      key={i}
-                      className="flex h-full flex-1 flex-col justify-end gap-2 text-center"
-                    >
+              <div className="flex gap-1" aria-label="Shipped tasks per day">
+                {Array.from(
+                  { length: ((new Date(now).getDay() + 6) % 7) + 1 },
+                  (_, i) => {
+                    const start = weekStart(now) + i * 86400000;
+                    const count = shipped.filter(
+                      (event) =>
+                        Date.parse(event.at) >= start &&
+                        Date.parse(event.at) < start + 86400000,
+                    ).length;
+                    const isToday = new Date(start).toDateString() === today;
+                    return (
                       <div
-                        className="min-h-1 rounded-sm bg-[#5BD08A]/50"
-                        style={{
-                          height: `${Math.max(3, (count / Math.max(1, shipped.length)) * 48)}px`,
-                        }}
-                        title={`${count} shipped`}
-                      />
-                      <span className="text-[11px] text-muted-foreground">
-                        {["M", "T", "W", "T", "F", "S", "S"][i]}
-                      </span>
-                    </div>
-                  );
-                })}
+                        key={i}
+                        className="flex flex-1 flex-col items-center gap-1.5"
+                      >
+                        <div className="flex h-16 w-full items-end justify-center">
+                          <div
+                            className={cn(
+                              "w-[22px] rounded-[5px]",
+                              isToday ? "bg-[#5BD08A]" : "bg-[#2F4A3A]",
+                            )}
+                            style={{
+                              height: `${Math.max(2, Math.min(count * 26, 64))}px`,
+                            }}
+                            title={`${count} shipped`}
+                          />
+                        </div>
+                        <span
+                          className={cn(
+                            "text-[11px] leading-[14px]",
+                            isToday
+                              ? "text-foreground"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i]}
+                        </span>
+                      </div>
+                    );
+                  },
+                )}
               </div>
-              <dl className="space-y-2 border-t border-border pt-3 text-xs text-muted-foreground">
-                {relay.data?.agents.map((q) =>
-                  q.usedPercent !== null ? (
+              <dl className="space-y-1.5 border-t border-border/60 pt-1.5 text-xs leading-4 text-muted-foreground">
+                {usage.data?.week.hours != null &&
+                  usage.data.week.dollars != null && (
                     <div
-                      key={q.provider}
                       className="flex justify-between gap-2"
+                      title="Size-weighted machine time and list-price cost of listed sandboxes"
                     >
-                      <dt>{PROVIDER_SHORT[q.provider]}</dt>
-                      <dd>
-                        {Math.round(q.usedPercent)}% ·{" "}
-                        {q.window || "usage limit"}
+                      <dt>Sandbox time</dt>
+                      <dd className="text-foreground/80">
+                        {countNumber(usage.data.week.hours)} h · about $
+                        {usage.data.week.dollars.toFixed(2)}
                       </dd>
                     </div>
-                  ) : null,
-                )}
-                <div className="flex justify-between">
+                  )}
+                {relay.data?.agents
+                  .filter((agent) => agent.usedPercent !== null)
+                  .map((agent) => (
+                    <div
+                      key={agent.provider}
+                      className="flex justify-between gap-2"
+                    >
+                      <dt>{PROVIDER_SHORT[agent.provider]}</dt>
+                      <dd className="text-foreground/80">
+                        {Math.round(agent.usedPercent!)}% of{" "}
+                        {agent.window?.toLowerCase().includes("week")
+                          ? "weekly limit"
+                          : (agent.window ?? "usage limit")}
+                      </dd>
+                    </div>
+                  ))}
+                <div className="flex justify-between gap-2">
                   <dt>Reviews</dt>
-                  <dd>
-                    {
-                      recent.filter(
-                        (t) =>
-                          t.role === "review" &&
-                          Date.parse(t.updatedAt) >= weekStart(now),
-                      ).length
-                    }{" "}
-                    recent
+                  <dd className="text-foreground/80">
+                    {reviews.length} · {changesRequested} asked for changes
                   </dd>
                 </div>
               </dl>
-              {recent.length === 500 ? (
-                <p className="text-xs text-muted-foreground">
-                  Counts cover the latest 500 tasks.
-                </p>
-              ) : null}
             </div>
           </aside>
         </div>
@@ -423,6 +593,26 @@ export function Today() {
         onOpenChange={setNewOrchestrator}
       />
     </div>
+  );
+}
+function Dot({
+  tone,
+}: {
+  tone: "attention" | "positive" | "danger" | "neutral";
+}) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "inline-block size-1.5 shrink-0 rounded-full",
+        {
+          attention: "bg-[#F0B135]",
+          positive: "bg-[#5BD08A]",
+          danger: "bg-[#E06C6C]",
+          neutral: "bg-foreground/75",
+        }[tone],
+      )}
+    />
   );
 }
 function Starter({
@@ -440,7 +630,7 @@ function Starter({
     <button
       type="button"
       onClick={onClick}
-      className="space-y-2 rounded-lg border border-border bg-card p-4 text-left hover:bg-state-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="space-y-2 rounded-lg border border-border bg-card p-4 text-left hover:bg-state-hover"
     >
       <Icon name={icon} className="size-4 text-muted-foreground" />
       <span className="block text-sm font-medium">{title}</span>
@@ -448,21 +638,34 @@ function Starter({
     </button>
   );
 }
-
-function StartDecision({ decision }: { decision: DecisionDto }) {
+function StartDecision({
+  decision,
+  subline,
+}: {
+  decision: DecisionDto;
+  subline: string;
+}) {
   const send = experimental_useRpcMutation({
     contract: rpcContract,
     method: "answerDecision",
   });
   const navigate = useBbNavigate();
   const [pending, setPending] = useState(false);
-  const option = recommendedOption(decision.options, decision.recommendation);
+  const details =
+    decision.optionDetails ?? normalizeDecisionOptions(decision.options);
+  const option =
+    details.find((entry) => entry.recommended)?.label ??
+    recommendedOption(decision.options, decision.recommendation);
   const choose = () => {
     if (pending) return;
     setPending(true);
     const cancel = queueDelivery(async () => {
       try {
-        await send.mutate({ id: decision.id, accept: true, answer: null });
+        await send.mutate({
+          id: decision.id,
+          accept: !option,
+          answer: option ?? null,
+        });
       } catch (error) {
         toast.error(error instanceof Error ? error.message : String(error));
       } finally {
@@ -480,11 +683,8 @@ function StartDecision({ decision }: { decision: DecisionDto }) {
     });
   };
   return (
-    <div className="flex flex-col gap-2 px-3.5 py-3 sm:flex-row sm:items-center">
-      <span
-        className="hidden size-1.5 shrink-0 rounded-full bg-[#F0B135] sm:inline"
-        aria-hidden
-      />
+    <div className="flex flex-wrap items-center gap-3 px-[14px] py-[11px]">
+      <Dot tone="attention" />
       <button
         type="button"
         className="min-w-0 flex-1 text-left hover:underline"
@@ -493,15 +693,17 @@ function StartDecision({ decision }: { decision: DecisionDto }) {
           navigate.toThread(decision.orchestratorThreadId)
         }
       >
-        <span className="block text-[13px]">{decision.question}</span>
-        <span className="mt-1 block text-xs text-muted-foreground">
-          {option ? `Recommended: ${option}` : decision.recommendation}
+        <span className="block text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">
+          {decision.question}
+        </span>
+        <span className="mt-0.5 block text-xs leading-4 text-muted-foreground text-[color:var(--boat-description)]">
+          {subline}
         </span>
       </button>
       <Button
         type="button"
         size="sm"
-        className="h-auto min-h-7 max-w-full shrink-0 self-start whitespace-normal text-left text-xs sm:max-w-56"
+        className="h-[26px] shrink-0 rounded-md bg-primary px-3 text-xs text-primary-foreground hover:bg-primary/90"
         disabled={pending}
         onClick={choose}
       >
@@ -512,5 +714,85 @@ function StartDecision({ decision }: { decision: DecisionDto }) {
             : "Go with recommendation"}
       </Button>
     </div>
+  );
+}
+function StoppedStart({
+  task,
+  project,
+  onOpen,
+}: {
+  task: TaskDto;
+  project: string;
+  onOpen: () => void;
+}) {
+  const detail = useTask(task.id);
+  const [resize, setResize] = useState(false);
+  const oom = /out.of.memory|oom/i.test(task.error ?? "");
+  const canResize = detail.data?.task?.memory?.canResize;
+  return (
+    <div className="flex flex-wrap items-center gap-3 px-[14px] py-[11px]">
+      <Dot tone="danger" />
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">
+          {oom
+            ? `${task.title.replace(/^Add /, "").replace(/ to checkout$/, "")} ran out of memory. Continue on Large?`
+            : (task.error ?? `${task.title} stopped`)}
+        </p>
+        <p className="mt-0.5 text-xs leading-4 text-muted-foreground text-[color:var(--boat-description)]">
+          {task.title.replace(/ to checkout$/, "")} · {project} · work is saved
+        </p>
+      </div>
+      <Button
+        size="sm"
+        className="h-[26px] shrink-0 rounded-md bg-primary px-3 text-xs text-primary-foreground hover:bg-primary/90"
+        onClick={() => (canResize ? setResize(true) : onOpen())}
+      >
+        {canResize ? "Continue on Large" : "Continue in chat"}
+      </Button>
+      {detail.data?.task && (
+        <ResizeDialog
+          task={detail.data.task}
+          mode={oom ? "oom" : "general"}
+          open={resize}
+          onOpenChange={setResize}
+        />
+      )}
+    </div>
+  );
+}
+
+function AgentActivity({
+  provider,
+  moving,
+}: {
+  provider: TaskDto["provider"];
+  moving: boolean;
+}) {
+  if (!moving) return <AgentLogo provider={provider} className="size-3" />;
+  return (
+    <span className="relative flex size-[18px] shrink-0 items-center justify-center">
+      <svg
+        aria-hidden
+        viewBox="0 0 18 18"
+        className="absolute size-[18px] motion-safe:animate-spin"
+      >
+        <circle
+          cx="9"
+          cy="9"
+          r="8"
+          fill="none"
+          stroke="#2C2C2C"
+          strokeWidth="1.5"
+        />
+        <path
+          d="M9 1a8 8 0 0 1 8 8"
+          fill="none"
+          stroke={provider === "claude" ? "#D97757" : "#BDBDBD"}
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+      </svg>
+      <AgentLogo provider={provider} className="size-[10px]" />
+    </span>
   );
 }

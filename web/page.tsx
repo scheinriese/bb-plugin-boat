@@ -1,3 +1,4 @@
+import "./boat-ui.css";
 // The Cloud agents nav panel: router over `subPath`, header actions (New
 // task, and a ⋯ menu with the rest) and the page title.
 import { useState } from "react";
@@ -47,7 +48,7 @@ export function CloudAgentsPage({ subPath }: PluginNavPanelProps) {
   if (["", "today", "sandboxes", "projects"].includes(section))
     return <CloudPageTabs section={section || "today"} />;
   return (
-    <div className="h-full min-h-0 flex-1 overflow-y-auto">
+    <div className="boat-ui h-full min-h-0 flex-1 overflow-y-auto">
       {route.kind === "task" ? (
         <TaskDetail key={route.id} id={route.id} />
       ) : route.kind === "orchestrator" ? (
@@ -65,8 +66,14 @@ export function CloudAgentsPage({ subPath }: PluginNavPanelProps) {
 function CloudPageTabs({ section }: { section: string }) {
   const navigate = useBbNavigate();
   return (
-    <div className="h-full min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-[1140px] px-4 pt-4 md:px-6">
+    <div className="boat-ui h-full min-h-0 flex-1 overflow-y-auto">
+      <div
+        className={
+          section === "sandboxes"
+            ? "mx-auto w-full max-w-[1020px] px-4 pt-3 md:px-[30px]"
+            : "mx-auto w-full max-w-[1140px] px-4 pt-4 md:pl-[30px] md:pr-[50px]"
+        }
+      >
         <nav
           aria-label="Cloud agents pages"
           className="flex gap-7 border-b border-border"
@@ -82,10 +89,10 @@ function CloudPageTabs({ section }: { section: string }) {
                 })
               }
               className={
-                "border-b-2 pb-2 text-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
+                "border-b-2 pb-2 text-[20px] leading-[26px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
                 (section === tab
-                  ? "border-foreground font-medium text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground")
+                  ? "border-[color:var(--boat-heading)] font-semibold text-[color:var(--boat-heading)]"
+                  : "border-transparent text-[color:var(--boat-faint)] hover:text-foreground")
               }
             >
               {tab[0]!.toUpperCase() + tab.slice(1)}
@@ -151,22 +158,6 @@ export function CloudAgentsHeader(_props: PluginNavPanelProps) {
 
   return (
     <div className="flex items-center gap-1.5">
-      <IconButton
-        label="Refresh from boat.dev"
-        icon="ArrowReloadHorizontal"
-        busy={refresh.isPending}
-        onClick={() => void runRefresh()}
-      />
-      {/* Icon only on phones, so the page title in bb's header isn't cut to one letter. */}
-      <Button
-        size="sm"
-        className="h-7 px-2 sm:px-2.5"
-        aria-label="Start"
-        onClick={() => openBoatChat(navigate)}
-      >
-        <Icon name="Plus" />
-        <span className="hidden sm:inline">Start</span>
-      </Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
@@ -179,6 +170,9 @@ export function CloudAgentsHeader(_props: PluginNavPanelProps) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" mobileTitle="Cloud agents">
+          <DropdownMenuItem onSelect={() => void runRefresh()}>
+            <Icon name="ArrowReloadHorizontal" /> Refresh from boat.dev
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setDialog("sandbox")}>
             <Icon name="Plus" /> New sandbox
           </DropdownMenuItem>
