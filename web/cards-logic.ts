@@ -115,3 +115,22 @@ export function queueDelivery(send: () => Promise<void>, delay = 4000) {
     return true;
   };
 }
+
+/** Existing decisions store prose recommendations alongside plain option strings. */
+export function recommendedOption(
+  options: readonly string[],
+  recommendation: string,
+): string | null {
+  const text = recommendation.trim().toLowerCase();
+  return (
+    options.find((option) => {
+      const label = option.trim().toLowerCase();
+      return (
+        text === label ||
+        [":", " —", " –", " -", "."].some((separator) =>
+          text.startsWith(label + separator),
+        )
+      );
+    }) ?? null
+  );
+}

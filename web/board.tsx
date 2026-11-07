@@ -325,4 +325,3 @@ function DecisionRow({
 }) {
   return <li className="px-3"><DecisionCard decision={decision} threadId={decision.orchestratorThreadId ?? ""} /></li>;
 }
-
