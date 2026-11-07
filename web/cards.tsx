@@ -57,7 +57,7 @@ function Frame({
   return (
     <section
       className={cn(
-        "boat-ui my-3 -ml-2 w-[calc(100%+16px)] sm:ml-0 sm:w-[calc(100%+8px)] max-w-[720px] overflow-hidden rounded-[12px] sm:rounded-[10px] border border-border bg-card text-[13px] leading-5",
+        "boat-ui my-3 -ml-2 w-[calc(100%+16px)] sm:ml-0 sm:w-[calc(100%+8px)] max-w-[720px] overflow-hidden rounded-[12px] sm:rounded-[10px] border border-border bg-card text-[13px] leading-5 text-foreground dark:text-[#C1C1C1]",
         className,
       )}
     >
@@ -104,7 +104,7 @@ export function LiveTaskRow({ task,waiting=false,reviewer,reviewRound }: { task:
       <span className="relative flex size-5 sm:size-4 shrink-0 items-center justify-center">{state.moving&&<span aria-hidden className="absolute inset-0 rounded-full border border-[#2C2C2C] border-t-muted-foreground motion-safe:animate-spin"/>}<AgentLogo provider={task.provider} className={cn("size-[13px]",state.moving?"sm:size-[9px]":"sm:size-3")}/></span>
       <span className="min-w-0 flex-1">
         <button
-          className="block w-full truncate rounded-sm text-left text-[14px] leading-5 hover:underline sm:text-[13px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="block w-full truncate rounded-sm text-left text-[14px] leading-5 dark:text-[#E2E2E2] hover:underline sm:text-[13px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           onClick={() => openTask(task.id)}
         >
           {task.title}
@@ -123,9 +123,9 @@ export function TasksDirective(props: PluginMessageDirectiveProps) {
   const events=experimental_useRpcQuery({contract:rpcContract,method:'history',input:{orchestratorThreadId:id,limit:100}}).data?.events??[];
   return (
     <Frame className="border-[#2A2A2A] bg-[#181818]">
-      <header className="px-[12px] py-[10px] text-[14px] font-medium leading-5 sm:px-[14px] sm:text-[13px]">
+      <header className="px-[12px] py-[10px] text-[14px] font-medium leading-5 dark:text-[#EDEDED] sm:px-[14px] sm:text-[13px]">
         {tasks.length} {tasks.length === 1 ? "task" : "tasks"}
-        <span className="ml-2 text-[13px] font-normal text-muted-foreground sm:text-[12px]">
+        <span className="ml-2 text-[13px] font-normal text-muted-foreground sm:text-[12px] sm:dark:text-[#6E6E6E]">
           {project?.name}{tasks.length>0&&tasks.every(task=>task.ownsSandbox&&task.sandboxId)&&new Set(tasks.map(task=>task.sandboxId)).size===tasks.length&&<span className="hidden sm:inline"> · each in its own sandbox</span>}
         </span>
       </header>
@@ -211,11 +211,11 @@ function ReviewCard({ task, round }: { task: TaskDetailDto; round?: number }) {
   const heading=approved?`${name} approved`:changes?`${name} asked for ${findings.length || 'some'} changes`:cardStatus(task).moving?`${name} reviewing…`:round&&!entry?`Review ${round} is no longer available`:task.error?'The review couldn’t run':'Review details are unavailable';
   return <Frame className={approved?'border-[#23362A] bg-[#16201A]':'border-[#2A2A2A] bg-[#181818]'}>
     <div className="flex flex-wrap items-center gap-x-[8px] gap-y-[4px] px-[14px] py-[12px] sm:py-[10px]">
-      <AgentLogo provider={provider}/><span className={cn('order-1 text-[15px] leading-5 sm:text-[13px]',approved?'font-medium text-[#BFEFD0]':'font-medium text-foreground')}>{heading}</span>
-      <span className={cn("order-3 basis-full pl-[22px] text-[13px] leading-[18px] sm:order-2 sm:basis-auto sm:pl-0 sm:text-[12px] sm:leading-[16px]",approved?"text-[#7FA88C]":"text-muted-foreground")}>{detail??(review?`Review ${review.round}${review.model?' · '+review.model:''}${review.freshContext?' · fresh context':''}`:task.model)}</span>
+      <AgentLogo provider={provider}/><span className={cn('order-1 text-[15px] leading-5 sm:text-[13px]',approved?'font-medium text-[#BFEFD0]':'font-medium text-foreground dark:text-[#EDEDED]')}>{heading}</span>
+      <span className={cn("order-3 basis-full pl-[22px] text-[13px] leading-[18px] sm:order-2 sm:basis-auto sm:pl-0 sm:text-[12px] sm:leading-[16px]",approved?"text-[#7FA88C]":"text-muted-foreground dark:text-[#6E6E6E]")}>{detail??(review?`Review ${review.round}${review.model?' · '+review.model:''}${review.freshContext?' · fresh context':''}`:task.model)}</span>
       <button className={cn("order-2 ml-auto text-[13px] leading-[18px] hover:underline sm:order-3 sm:text-[12px] sm:leading-4",approved?"text-[#7FA88C]":"text-muted-foreground")} onClick={()=>{if(!task.threadId||!openSection(task.threadId,"Reviews"))openTask(task.id)}}>Full review</button>
     </div>
-    {!approved && findings.length>0 && <ul className="space-y-[6px] pl-[36px] pr-[14px] pb-3">{findings.map((finding,index)=><li key={index} className="flex gap-[8px] text-[13px] leading-5"><span className={cn('w-[52px] shrink-0 whitespace-nowrap text-[12px]',finding.severity==='must-fix'?'text-[#FC8C45]':'text-muted-foreground')}>{finding.label??(finding.severity==='must-fix'?'Must fix':'Should')}</span><span className="text-muted-foreground">{finding.text}</span></li>)}</ul>}
+    {!approved && findings.length>0 && <ul className="space-y-[6px] pl-[36px] pr-[14px] pb-3">{findings.map((finding,index)=><li key={index} className="flex gap-[8px] text-[13px] leading-5"><span className={cn('w-[52px] shrink-0 whitespace-nowrap text-[12px]',finding.severity==='must-fix'?'text-[#FC8C45]':'text-muted-foreground')}>{finding.label??(finding.severity==='must-fix'?'Must fix':'Should')}</span><span className="text-foreground dark:text-[#C1C1C1]">{finding.text}</span></li>)}</ul>}
     {!approved && !findings.length && task.error && <p className="px-3.5 pb-3 text-[12px] text-muted-foreground">{task.error}</p>}
   </Frame>;
 }
@@ -302,7 +302,7 @@ export function ProblemCard({ task,stage }: { task: TaskDetailDto;stage?:string 
     }
   };
   return <><Frame className={cn('space-y-[10px] px-[14px] py-[12px]',broken&&'border-[#3D3420] bg-[#181818]')}>
-    <header className="flex flex-wrap items-center gap-2"><Icon name={oom?'Cpu':'Pause'} className="size-3.5 text-[#FC8C45]"/><span>{oom?'Out of memory':waiting?'Waiting for a reset':stopped?'Sandbox stopped':state.label}</span>{task.memory?.size&&<span className="text-[12px] text-muted-foreground">{task.memory.size.label} sandbox{task.memory.peak?' · '+task.memory.peak.totalGb+' GB':''}{stage?' · '+stage:''}{stop?' · '+new Date(stop.at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}).toLowerCase():''}</span>}</header>
+    <header className="flex flex-wrap items-center gap-2"><Icon name={oom?'Cpu':'Pause'} className="size-3.5 text-[#FC8C45]"/><span className="font-medium dark:text-[#EDEDED]">{oom?'Out of memory':waiting?'Waiting for a reset':stopped?'Sandbox stopped':state.label}</span>{task.memory?.size&&<span className="text-[12px] text-muted-foreground dark:text-[#6E6E6E]">{task.memory.size.label} sandbox{task.memory.peak?' · '+task.memory.peak.totalGb+' GB':''}{stage?' · '+stage:''}{stop?' · '+new Date(stop.at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}).toLowerCase():''}</span>}</header>
     <div className="space-y-[10px] pl-[22px]"><p className="text-[13px] leading-5 text-[#C1C1C1]">{stop?.detail??(oom?'The sandbox ran out of memory. Continue on a larger sandbox to pick up where it stopped.':state.reason??task.error??'Your next message resumes the sandbox.')}</p>
     {task.memory?.peak&&<div className="flex flex-wrap items-center gap-[10px]"><div className="h-1.5 w-[260px] max-w-full rounded-full bg-secondary"><div className="h-full rounded-full bg-[#E06C6C]" style={{width:Math.min(100,task.memory.peak.percent)+'%'}}/></div><span className="text-[12px] leading-4 text-muted-foreground">Peak {task.memory.peak.usedGb.toFixed(1)} of {task.memory.peak.totalGb} GB{task.memory.next?' · '+task.memory.next.label+(nextMemory?' has '+nextMemory+' GB':''):''}</span></div>}
     <div className="flex flex-wrap items-center gap-2 pt-[2px]">{oom&&task.memory?.canResize?<Button size="sm" className="h-[26px] px-3 text-[12px] leading-4" onClick={()=>setResizing(true)}>Continue on a larger sandbox</Button>:stopped&&task.sandboxId?<Button size="sm" variant="outline" disabled={resume.isPending} onClick={()=>void run()}>Resume</Button>:null}<Button size="sm" variant="outline" className="h-7 px-3 text-[12px] font-normal leading-4" onClick={()=>{if(!task.threadId||!openSection(task.threadId,"Transcript"))openTask(task.id)}}>Open transcript</Button>{oom&&nextCost&&<span className="text-[12px] text-muted-foreground">{nextCost}</span>}</div></div>
@@ -374,10 +374,10 @@ export function DecisionCard({
     });
   };
   const closed = decision.status !== "open" || outcome !== null;
-  if(compact)return <section className="border-t border-border bg-[#F0B135]/[0.03] px-3.5 py-3">
-    <div className="mb-2 flex flex-wrap items-center gap-2 text-[12px] leading-4"><span className="inline-flex items-center gap-1.5 text-[#F0B135]"><span className="size-1.5 rounded-full bg-current"/>Needs you</span><span className="text-muted-foreground">{asked?.title??''} · asked {clockTime(decision.createdAt).replace(/^0/,'').toLowerCase()}</span></div>
-    <p className="ml-3.5 text-[13px] leading-5">{decision.question}{decision.context?' '+decision.context:''}</p>
-    <div className="ml-3.5 mt-2 flex flex-wrap items-center gap-2">{closed?<span className="text-[12px] text-muted-foreground">{outcome??decision.answer}</span>:queued?<><span className="text-[12px]">Queued: {queued.answer}</span><Button size="sm" variant="outline" onClick={()=>{if(queued.cancel())setQueued(null)}}>Undo</Button></>:options.map(option=><Button key={option} size="sm" variant={option===recommended?'default':'outline'} disabled={busy} className={cn("h-7 px-3 text-[12px] leading-4",option===recommended?"font-medium":"font-normal")} onClick={()=>choose(option)}>Go with {option}</Button>)}{recommended&&!closed&&<span className="text-[12px] text-muted-foreground">Recommended: {recommended}</span>}</div>
+  if(compact)return <section className="border-t border-border bg-[#F0B135]/[0.03] px-3.5 py-3 dark:bg-[#1C1813]">
+    <div className="mb-2 flex flex-wrap items-center gap-2 text-[12px] leading-4"><span className="inline-flex items-center gap-1.5 font-medium text-[#F0B135]"><span className="size-1.5 rounded-full bg-current"/>Needs you</span><span className="text-muted-foreground dark:text-[#6E6E6E]">{asked?.title??''} · asked {clockTime(decision.createdAt).replace(/^0/,'').toLowerCase()}</span></div>
+    <p className="ml-3.5 text-[13px] leading-5 dark:text-[#EDEDED]">{decision.question}{decision.context?' '+decision.context:''}</p>
+    <div className="ml-3.5 mt-2 flex flex-wrap items-center gap-2">{closed?<span className="text-[12px] text-muted-foreground">{outcome??decision.answer}</span>:queued?<><span className="text-[12px]">Queued: {queued.answer}</span><Button size="sm" variant="outline" onClick={()=>{if(queued.cancel())setQueued(null)}}>Undo</Button></>:options.map(option=><Button key={option} size="sm" variant={option===recommended?'default':'outline'} disabled={busy} className={cn("h-7 px-3 text-[12px] leading-4",option===recommended?"h-[26px] font-medium":"font-normal dark:text-[#D0D0D0]")} onClick={()=>choose(option)}>Go with {option}</Button>)}{recommended&&!closed&&<span className="text-[12px] text-muted-foreground">Recommended: {recommended}</span>}</div>
   </section>;
   if (closed && !expanded)
     return (
@@ -402,23 +402,23 @@ export function DecisionCard({
   return (
     <Frame className="border-[#3D3420] bg-[#181818] p-[12px] sm:p-0">
       <header className="flex flex-wrap items-center gap-x-[7px] gap-y-1 border-[#242424] text-[13px] leading-[18px] sm:border-b sm:px-3.5 sm:py-[10px] sm:text-[12px] sm:leading-[16px]">
-        <span className="inline-flex items-center gap-1.5 text-[#F0B135]"><span className="size-1.5 rounded-full bg-current" />{closed ? "Decision answered" : "Needs you"}</span>
+        <span className="inline-flex items-center gap-1.5 font-medium text-[#F0B135]"><span className="size-1.5 rounded-full bg-current" />{closed ? "Decision answered" : "Needs you"}</span>
         <span className="text-muted-foreground"><span className="hidden sm:inline">{asked ? `asked by ${asked.title} · ` : ""}</span><span className="sm:hidden">{asked ? `${asked.compactTitle??asked.title} · ` : ""}</span>{ageMinutes < 1 ? "just now" : `${ageMinutes} min ago`}</span>
       </header>
-      <div className="space-y-[10px] pt-[10px] sm:space-y-3 sm:p-3.5">
-        <div>
-          <p className="text-[16px] font-medium leading-[22px] sm:font-normal sm:leading-6">{decision.question}</p>
-          {richer.context && <p className="mt-1 text-[13px] leading-5 text-muted-foreground">{richer.context}</p>}
+      <div className="space-y-[10px] pt-[10px] sm:space-y-0 sm:p-3.5">
+        <div className="sm:pb-[10px]">
+          <p className="text-[16px] font-medium leading-[22px] dark:text-[#EDEDED] sm:text-[15px]">{decision.question}</p>
+          {richer.context && <p className="mt-1 text-[13px] leading-5 text-muted-foreground dark:text-[#A8A8A8]">{richer.context}</p>}
         </div>
         <div className="hidden sm:block">
           <table className="w-full table-fixed text-left text-[13px] leading-5">
-            <thead className="text-[12px] font-normal text-muted-foreground"><tr className="h-7 border-b border-[#262626]"><th className="font-normal">Option</th>{columns.map(column=><th key={column} className="w-[110px] font-normal">{column}</th>)}{details.some(option=>option.verdict) && <th className="w-[190px] font-normal">{details.find(option=>option.verdict?.label)?.verdict?.label ?? "Fit"}</th>}</tr></thead>
-            <tbody>{details.map(option=><tr key={option.label} className="h-[38px] border-b border-[#262626] last:border-0"><td><span>{option.label}</span>{option.label===recommended && <span className="ml-2 rounded-sm bg-[#20314E] px-1.5 py-0.5 text-[10px] text-[#7AA7FF]">Recommended</span>}{option.summary && <span className="block text-[12px] text-muted-foreground">{option.summary}</span>}</td>{columns.map(column=><td key={column} className="text-muted-foreground">{String(option.facts?.[column] ?? "—")}</td>)}{details.some(item=>item.verdict) && <td className={option.verdict?.tone==='good'?'text-[#5BD08A]':option.verdict?.tone==='caution'?'text-[#FC8C45]':'text-[#E06C6C]'}>{option.verdict?.text}</td>}</tr>)}</tbody>
+            <thead className="text-[12px] font-normal text-muted-foreground dark:text-[#6E6E6E]"><tr className="h-[30px] border-b border-[#262626]"><th className="font-normal">Option</th>{columns.map(column=><th key={column} className="w-[110px] font-normal">{column}</th>)}{details.some(option=>option.verdict) && <th className="w-[190px] font-normal">{details.find(option=>option.verdict?.label)?.verdict?.label ?? "Fit"}</th>}</tr></thead>
+            <tbody>{details.map(option=><tr key={option.label} className="h-[38px] border-b border-[#262626] last:border-0"><td><span className={option.label===recommended?"font-medium dark:text-[#EDEDED]":"dark:text-[#D0D0D0]"}>{option.label}</span>{option.label===recommended && <span className="ml-2 rounded-[4px] bg-[#1E2A3D] px-1.5 py-px text-[11px] leading-[14px] text-[#7AA7FF]">Recommended</span>}{option.summary && <span className="block text-[12px] text-muted-foreground">{option.summary}</span>}</td>{columns.map(column=><td key={column} className="text-foreground dark:text-[#C1C1C1]">{String(option.facts?.[column] ?? "—")}</td>)}{details.some(item=>item.verdict) && <td className={option.verdict?.tone==='good'?'text-[#5BD08A]':option.verdict?.tone==='caution'?'text-[#FC8C45]':'text-[#E06C6C]'}>{option.verdict?.text}</td>}</tr>)}</tbody>
           </table>
         </div>
-        <div className="space-y-[10px] sm:hidden">{details.map(option=><div key={option.label} className={cn("flex flex-col gap-[8px] rounded-[10px] border p-[12px]",option.label===recommended?"border-[#2A3A55] bg-[#1A2230]":"border-[#262626]")}><p className="flex flex-wrap items-center gap-[8px] text-[15px] font-medium leading-5">{option.label}{option.label===recommended && <span className="rounded-[4px] bg-[#1E2A3D] px-[6px] py-px text-[12px] font-normal leading-4 text-[#7AA7FF]">Recommended</span>}</p>{option.summary&&<p className="text-[14px] leading-5 text-[#A8A8A8]">{option.summary}</p>}{columns.map(column=><p key={column} className="text-[13px] leading-5 text-muted-foreground">{column}: {String(option.facts?.[column]??"—")}</p>)}{option.verdict && <p className={option.verdict.tone==='good'?'text-[#5BD08A]':option.verdict.tone==='caution'?'text-[#FC8C45]':'text-[#E06C6C]'}>{option.verdict.text}</p>}<Button size="sm" variant={option.label===recommended?'default':'outline'} className={cn("h-[40px] w-full rounded-[8px] text-[14px] leading-5",option.label===recommended?"bg-[#E6E6E6] font-medium text-[#141414]":"border-[#333333] font-normal text-[#D0D0D0]")} disabled={busy||closed} onClick={()=>choose(option.label)}>Go with {option.label}</Button></div>)}</div>
+        <div className="space-y-[10px] sm:hidden">{details.map(option=><div key={option.label} className={cn("flex flex-col gap-[8px] rounded-[10px] border p-[12px]",option.label===recommended?"border-[#2A3A55] bg-[#1A2230]":"border-[#262626]")}><p className="flex flex-wrap items-center gap-[8px] text-[15px] font-medium leading-5 dark:text-[#EDEDED]">{option.label}{option.label===recommended && <span className="rounded-[4px] bg-[#1E2A3D] px-[6px] py-px text-[12px] font-normal leading-4 text-[#7AA7FF]">Recommended</span>}</p>{option.summary&&<p className="text-[14px] leading-5 text-[#A8A8A8]">{option.summary}</p>}{columns.map(column=><p key={column} className="text-[13px] leading-5 text-muted-foreground">{column}: {String(option.facts?.[column]??"—")}</p>)}{option.verdict && <p className={option.verdict.tone==='good'?'text-[#5BD08A]':option.verdict.tone==='caution'?'text-[#FC8C45]':'text-[#E06C6C]'}>{option.verdict.text}</p>}<Button size="sm" variant={option.label===recommended?'default':'outline'} className={cn("h-[40px] w-full rounded-[8px] text-[14px] leading-5",option.label===recommended?"bg-[#E6E6E6] font-medium text-[#141414]":"border-[#333333] font-normal text-[#D0D0D0]")} disabled={busy||closed} onClick={()=>choose(option.label)}>Go with {option.label}</Button></div>)}</div>
         {queued ? (
-          <div role="status" className="flex items-center gap-3 text-[12px]">
+          <div role="status" className="flex items-center gap-3 text-[12px] sm:pt-[14px]">
             <span className="min-w-0 flex-1">Queued: {queued.answer}</span>
             <Button
               size="sm"
@@ -432,8 +432,8 @@ export function DecisionCard({
           </div>
         ) : (
           !closed && (
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="hidden flex-wrap gap-2 sm:flex">{options.map(option=><Button key={option} size="sm" variant={option===recommended?'default':'outline'} disabled={busy} onClick={()=>choose(option)} className={cn("h-[30px] px-3 text-[12px] font-normal",option===recommended&&"bg-[#E6E6E6] text-[#181818]")}>Go with {option}</Button>)}</div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:pt-[14px]">
+              <div className="hidden flex-wrap items-center gap-2 sm:flex">{options.map(option=><Button key={option} size="sm" variant={option===recommended?'default':'outline'} disabled={busy} onClick={()=>choose(option)} className={cn("h-[30px] px-3 text-[12px] font-normal leading-4",option===recommended?"h-7 bg-[#E6E6E6] font-medium text-[#141414]":"dark:text-[#D0D0D0]")}>Go with {option}</Button>)}</div>
               {fill && (
                 <button
                   className="w-full pt-[2px] text-center text-[14px] leading-5 text-muted-foreground hover:text-foreground sm:ml-auto sm:w-auto sm:py-1 sm:text-left sm:text-[12px]"
@@ -483,7 +483,7 @@ function SuggestedFollowups({threadId,attributes}:{threadId:string;attributes:Pl
     const value=attributes[key];return typeof value==='string'&&value.trim()&&value.length<=200?[value.trim()]:[];
   });
   if(!fill||!suggestions.length)return null;
-  return <div className="boat-ui my-4 w-full max-w-[720px] sm:w-[calc(100%+8px)]" aria-label="Suggested follow-ups">{suggestions.map(text=><button key={text} type="button" onClick={()=>fill(text)} className="flex w-full items-center justify-between gap-3 border-b border-border py-[10px] text-left text-[13px] leading-5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><span>{text}</span><Icon name="ArrowRight" className="size-3.5 shrink-0"/></button>)}</div>;
+  return <div className="boat-ui my-4 w-full max-w-[720px] sm:w-[calc(100%+8px)]" aria-label="Suggested follow-ups">{suggestions.map(text=><button key={text} type="button" onClick={()=>fill(text)} className="flex w-full items-center justify-between gap-3 h-[38px] border-b border-[#232323] py-0 text-left text-[13px] leading-5 text-foreground dark:text-[#C1C1C1] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><span>{text}</span><Icon name="ArrowRight" className="size-3.5 shrink-0 dark:text-[#6E6E6E]"/></button>)}</div>;
 }
 export function DigestDirective(props: PluginMessageDirectiveProps) {
   const threadId=markerId(props.attributes.thread)??props.message.threadId;
@@ -497,9 +497,9 @@ export function DigestDirective(props: PluginMessageDirectiveProps) {
   const linked=new Set(decisions.flatMap(decision=>decision.taskIds));
   const active=board.running.filter(task=>task.role!=='review'&&!linked.has(task.id)&&cardStatus(task).moving);
   return <Frame className="border-[#2A2A2A] bg-[#181818]">
-    <header className="flex flex-wrap items-center gap-2 px-3.5 py-3 text-[13px] font-medium">While you were away{since&&<span className="text-[12px] text-muted-foreground">since {clockTime(since).replace(/^0/,'').toLowerCase()} · {Math.floor((Date.now()-Date.parse(since))/3600000)} h</span>}<span className="ml-auto text-[12px] text-[#5BD08A]">{ready.length} ready</span>{decisions.length>0&&<span className="text-[12px] text-[#F0B135]">{decisions.length} needs you</span>}</header>
+    <header className="flex flex-wrap items-center gap-2 px-3.5 py-3 text-[13px] font-medium dark:text-[#EDEDED]">While you were away{since&&<span className="text-[12px] font-normal text-muted-foreground dark:text-[#6E6E6E]">since {clockTime(since).replace(/^0/,'').toLowerCase()} · {Math.floor((Date.now()-Date.parse(since))/3600000)} h</span>}<span className="ml-auto text-[12px] font-normal text-[#5BD08A]">{ready.length} ready</span>{decisions.length>0&&<span className="text-[12px] font-normal text-[#F0B135]">{decisions.length} needs you</span>}</header>
     {decisions.map(decision=><DecisionCard key={decision.id} decision={decision} threadId={threadId} compact/>)}
-    <ul className="border-y border-[#242424] px-3.5 py-1">{ready.map(task=><li key={task.id} className="flex min-h-11 flex-wrap items-center gap-[10px] border-b border-[#222222] last:border-0"><span className="size-1.5 rounded-full bg-[#5BD08A]"/><div className="min-w-0 flex-1"><p className="text-[13px] leading-[18px]">{task.title}</p><p className="text-[12px] leading-4 text-muted-foreground">{task.prUrl?`PR ${prLabel(task.prUrl)}${task.readyNote?' · '+task.readyNote:''}`:task.readyNote}</p></div>{task.previewUrl&&<UrlLink href={task.previewUrl} className="rounded-md border border-border px-2.5 py-1 text-[12px] text-muted-foreground">Preview</UrlLink>}<TaskContextAction task={task} compact className="h-6 px-[10px] text-[12px] leading-4"/></li>)}</ul>
+    <ul className="border-y border-[#242424] px-3.5 py-1">{ready.map(task=><li key={task.id} className="flex min-h-11 flex-wrap items-center gap-[10px] border-b border-[#222222] last:border-0"><span className="size-1.5 rounded-full bg-[#5BD08A]"/><div className="min-w-0 flex-1"><p className="text-[13px] leading-[18px] dark:text-[#E2E2E2]">{task.title}</p><p className="text-[12px] leading-4 text-muted-foreground dark:text-[#6E6E6E]">{task.prUrl?`PR ${prLabel(task.prUrl)}${task.readyNote?' · '+task.readyNote:''}`:task.readyNote}</p></div>{task.previewUrl&&<UrlLink href={task.previewUrl} className="rounded-md border border-border px-2.5 py-1 text-[12px] text-muted-foreground">Preview</UrlLink>}<TaskContextAction task={task} compact className="h-6 px-[10px] text-[12px] leading-4"/></li>)}</ul>
     {(terminal.length>0||active.length>0)&&<ul className="space-y-[6px] px-3.5 pb-3 pt-[10px] text-[12px] leading-4 text-muted-foreground">{terminal.map(event=><li key={event.seq} className="flex gap-2"><Icon name="Check" className="size-3.5"/>{event.text}{event.detail?' · '+event.detail:''}</li>)}{active.map(task=><li key={task.id} className="flex items-center gap-2"><AgentLogo provider={task.provider}/>{task.title} · {cardStatus(task).status==='review'?(history.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.provider==='claude'?'Claude is reviewing it now':history.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.provider==='codex'?'Codex is reviewing it now':'reviewing now'):'working'}</li>)}</ul>}
   </Frame>;
 }
