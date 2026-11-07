@@ -4,7 +4,7 @@ import { rpcContract, type SandboxDto, type TaskDto } from "../contract";
 import { Button } from "../components/ui/button";
 import { Icon } from "../components/ui/icon";
 import { cn } from "../lib/utils";
-import { cardStatus } from "./cards-logic";
+import { cardStatus, CARD_TONES } from "./cards-logic";
 import { ConfirmDialog } from "./dialogs";
 import { canResumeSandbox, canStopSandbox, isSandboxActive, PANEL_PATH, stopsIn } from "./format";
 import { useCloudAgentsNavigation, useNow, useOverview, useSandboxes, useSetup, useTask } from "./hooks";
@@ -95,8 +95,8 @@ function SandboxTableRow({ sandbox, tasks, now }: { sandbox: SandboxDto; tasks: 
   const failure = sandboxFailure(sandbox, tasks);
   const stopped = canResumeSandbox(sandbox.state);
   const countdown = isSandboxActive(sandbox.state) ? stopsIn(sandbox.archiveAfter, now) : null;
-  const label = failure ? "Broken" : stopped ? "Stopped" : state?.status === "working" ? "Working" : state?.status === "review" ? "Reviewing" : state?.status === "needs-you" ? "Waiting for you" : sandbox.state === "idle" || sandbox.state === "ready" ? "Idle" : sandbox.state;
-  const tone = failure ? "text-[#E06C6C]" : stopped ? "text-muted-foreground" : state?.needsYou ? "text-[#F0B135]" : "text-foreground";
+  const label = failure ? "Broken" : stopped ? "Stopped" : state?.label ?? (sandbox.state === "idle" || sandbox.state === "ready" ? "Idle" : sandbox.state);
+  const tone = failure ? "text-[#E06C6C]" : stopped ? "text-muted-foreground" : state ? CARD_TONES[state.tone] : "text-muted-foreground";
   const memory = detail.data?.task?.memory;
   return <tr className="group hover:bg-state-hover">
     <th scope="row" className="px-3 py-3 text-left font-normal">
