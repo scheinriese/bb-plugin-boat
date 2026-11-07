@@ -498,6 +498,17 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       // The old chat stays readable in the archive (the successor links to it).
       await bb.sdk.threads.archive({ threadId: oldThreadId }).catch(() => undefined);
       await deps.notifyUser?.(`${baseTitle} moved to ${AGENT_NAME[to]}`, reason).catch(() => undefined);
+      // Historical presentation only, after the existing handover succeeds.
+      // A history write must never make a completed switch retry its lifecycle.
+      try {
+        service.store.addEvent("", "provider-changed", `Continued on ${AGENT_NAME[to]}`, {
+          source: "system", orchestratorThreadId: threadId,
+          ...(PROVIDER_FROM_ID[old.providerId ?? ""] ? { from: PROVIDER_FROM_ID[old.providerId!] } : {}),
+          to, cause: reason.slice(0, 1_000), ...(note ? { detail: note.slice(0, 500) } : {}),
+        });
+      } catch (error) {
+        bb.log.warn(`relay history ${threadId}: ${message(error)}`);
+      }
       deps.changed();
       return threadId;
     } finally {

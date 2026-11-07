@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { fileURLToPath } from "node:url";
 import plugin from "../server.ts";
 import { DEFAULT_LIMIT_MS, createLimitTracker, limitFromErrorText, limitFromTurnFailure } from "../src/limits.ts";
@@ -424,6 +425,9 @@ test("the plugin hands an orchestrator to Codex: note first, then a successor in
   const relay = (await harness.callRpc("relay", null)) as { agents: { provider: string; usedPercent: number }[]; orchestrators: { threadId: string; note: string | null }[] };
   assert.deepEqual(relay.agents.map((agent) => [agent.provider, agent.usedPercent]), [["claude", 93], ["codex", 12]]);
   assert.deepEqual(relay.orchestrators.map((row) => row.threadId), ["thr_new"]);
+  const history = await harness.callRpc("history", { orchestratorThreadId: "thr_new" }) as { events: { kind: string; taskId: string | null; orchestratorThreadId: string; source: string; from: string; to: string; detail: string | null }[] };
+  const switchedEvent = history.events.find(event => event.kind === "provider-changed");
+  assert.deepEqual(switchedEvent && [switchedEvent.taskId, switchedEvent.orchestratorThreadId, switchedEvent.source, switchedEvent.from, switchedEvent.to, switchedEvent.detail], [null, "thr_new", "system", "claude", "codex", null], "unrequested old output is not invented as a saved handoff note");
 
   // Outcome delivery also waits for the asynchronous final memory sample.
   // Keep refreshing the real task until its actual notice reaches the successor.
@@ -499,6 +503,22 @@ test("the relay is off unless turned on", async (t) => {
   await harness.callRpc("startOrchestrator", { project: { kind: "boat", id: "storefront" }, prompt: "Ship it", title: null, hostId: null, cloud: false });
   assert.deepEqual((JSON.parse((await harness.runCli(["relay", "check", "--json"])).stdout) as { actions: unknown[] }).actions, []);
   assert.match((await harness.runCli(["relay", "status"])).stdout, /Claude ↔ Codex switching off: orchestrators stay on their agent\./);
+});
+
+test("a successful successor history keeps only the bounded actual saved handoff note", async (t) => {
+  const { harness, threads } = await relayHost(t, { claude: 93, codex: 12 });
+  await harness.callRpc("startOrchestrator", { project: { kind: "boat", id: "storefront" }, prompt: "Ship it", title: null, hostId: null, cloud: false });
+  await harness.runCli(["relay", "check", "--json"]);
+  const at=Date.now()+1_000;
+  const note="Actual handoff note: "+"x".repeat(700);
+  threads.get("thr_old")!.updatedAt=at;
+  await harness.emitThreadEvent("thread.idle", {thread:makeThreadResponse({id:"thr_old",updatedAt:at}),lastAssistantText:note});
+  const result=await harness.runCli(["relay","check","--json"]);
+  assert.equal(result.exitCode,0,result.stderr);
+  const history=await harness.callRpc("history",{orchestratorThreadId:"thr_new"}) as {events:{kind:string;detail:string|null}[]};
+  const event=history.events.find(event=>event.kind==="provider-changed");
+  assert.equal(event?.detail,note.slice(0,500));
+  assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,2);
 });
 
 test("a hand-over to an agent the user no longer has is dropped", async (t) => {
