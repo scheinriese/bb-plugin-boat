@@ -4,6 +4,11 @@ export function setupTestPassed(task: Pick<TaskDto, "status" | "error" | "report
   return task !== undefined && (task.status === "idle" || task.status === "done") && task.error === null && task.reportStatus === "done";
 }
 
+/** Setup's permissive launch policy also allows unknown API facts; the checklist keeps checking those. */
+export function setupNeedsWork(status: SetupStatusDto): boolean {
+  return status.checks.some((check) => check.required && check.state !== "ok" && check.state !== "optional" || check.state === "warning");
+}
+
 export const SETTINGS_GROUPS = [
   { title: "Agents", keys: ["agents", "relayPreferred"] },
   { title: "Sandboxes & cost", keys: ["machineType", "maxActiveSandboxes", "stopIdleAfterMinutes", "avoidExtraUsage"] },

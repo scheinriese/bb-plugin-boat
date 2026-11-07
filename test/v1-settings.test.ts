@@ -4,7 +4,7 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { DECLARED_SETTINGS_KEY, PLUGIN_SETTINGS_KEY, createMigratingSettingsStore, settingRows, type SettingsStore } from "../src/settings-store.ts";
 import { SETTINGS } from "../src/settings.ts";
 import type { SetupStatusDto } from "../contract.ts";
-import { checkedAgo, groupedSettings, notificationSettingPatch, setupProgress, setupTestPassed } from "../web/v1-settings-logic.ts";
+import { checkedAgo, groupedSettings, notificationSettingPatch, setupNeedsWork, setupProgress, setupTestPassed } from "../web/v1-settings-logic.ts";
 import { makeService } from "./fakes.ts";
 import { testTaskInput } from "../src/setup.ts";
 
@@ -74,6 +74,8 @@ test("setup progression never treats warnings or unknown checks as passed", () =
   const progress = setupProgress(status);
   assert.deepEqual(progress.complete.map((check) => check.id), ["cli", "signed-in", "github"]);
   assert.equal(progress.current!.id, "plan");
+  status.ok = true;
+  assert.equal(setupNeedsWork(status), true, "a permissive launch policy does not claim unknown setup checks passed");
   status.checks[2]!.state = "ok";
   status.checks[3]!.state = "ok";
   assert.equal(setupProgress(status).current!.id, "environment", "a required extra check still has a single visible fix");

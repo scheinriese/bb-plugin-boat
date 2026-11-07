@@ -19,7 +19,7 @@ import { EVIDENCE_VARIABLES, ORCHESTRATOR_CARD_RULE, cardShownToast, evidenceMod
 import { ModelPresetsEditor, ProtocolEditor } from "./protocol-settings";
 import { SetupChecklist } from "./setup";
 import { BackupSettings } from "./backup-settings";
-import { EVERYDAY_SETTING_COPY, groupedSettings, notificationSettingPatch, setupTestPassed } from "./v1-settings-logic";
+import { EVERYDAY_SETTING_COPY, groupedSettings, notificationSettingPatch, setupNeedsWork, setupTestPassed } from "./v1-settings-logic";
 import { useSettingsFrameTweak } from "./workarounds/settings-frame";
 import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, focusNeighbour, showError } from "./ui";
 
@@ -543,7 +543,7 @@ function DesktopBoatSettings() {
   const query = useSettingRows();
   const setup = useSetup().data;
   const savedTest = experimental_useRpcQuery({contract:rpcContract,method:"setupTestTask",input:null}).data?.task;
-  const dimmed = setup?.ok === false && !setupTestPassed(savedTest ?? undefined);
+  const dimmed = setup !== undefined && setupNeedsWork(setup) && !setupTestPassed(savedTest ?? undefined);
   const saver = useSaveSetting();
   const sizes = useSandboxSizes().data?.sizes;
   const projects = useProjects().data?.projects ?? [];
