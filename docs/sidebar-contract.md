@@ -82,3 +82,51 @@ The line uses #7A7A7A and the normal second-line geometry; the idle ring is
 suppressed. `Continued on Codex` remains omitted.
 
 Producer reads cache15 seconds, inspect at most1000 queue rows and50 matching candidates with4 concurrent native thread reads and a4-second abort signal. Failures quietly retain ordinary rows. Core owns due retry dispatch: disabling provider-retry does not cancel already queued work. Any demo queue fixtures must remain behind a verified reject-all message.dispatch admission hook until their rows are removed at rest.
+
+## Additive delegated-start requests
+
+`sidebarState` may additionally return `queuedStarts` (up to200 entries). Older
+v1 producers can omit it; consumers treat absence as an empty list. The producer
+always emits the field and includes its ordered contents in `revision`.
+
+| Field | Meaning |
+| --- | --- |
+| id | Actual durable queued-start request id, max100 characters |
+| revision | Current nonnegative request revision for existing queue actions |
+| title | Authored request title, max200 characters |
+| sourceThreadId | Actual requesting chat, or null |
+| provider | Explicit requested agent, actual started task agent, or null when unknown |
+| resetsAt | Recorded usage reset timestamp, or null |
+| createdAt | Actual request creation time; entries preserve createdAt/id order |
+| state | waiting, dispatching, or started |
+| taskId | Actual started task registry id, otherwise null |
+| taskThreadId | Verified open BB chat for that task, otherwise null |
+
+This separate collection never manufactures a BB thread. Waiting/dispatching
+requests retain capacity before started receipts, independently of the most
+recent finished receipts. The bounded started projection joins actual open
+tasks, so closed/missing tasks, failed requests and cancelled requests disappear.
+Native target validation uses at most4 concurrent public `threads.get` calls
+under a shared4-second abort signal. An unverified/archived/deleted target stays
+null. Headless tasks retain their actual taskId and null taskThreadId: the
+consumer must offer actual Task detail/source navigation and must not call this
+a BB task chat. A passive BB chat mirror for headless work remains a separate
+SDK capability gap.
+
+Show waiting requests after actual L2 task rows in request order, with a provider
+mark when known, no activity ring/dot/New, and a neutral local reset line.
+Once `taskThreadId` identifies an actual listed task chat, associate that normal
+row with the queued position and mark it already listed/seen; do not duplicate it
+or invent a transition chat. A source click navigates to the actual requesting
+chat/card. The consumer can invoke the existing actions, never an ad hoc start:
+
+- `queuedStart({id})` refreshes the current receipt and revision.
+- `requestPaidStart({id, revision, provider})` opens the existing native
+  per-request confirmation; the caller never submits approval automatically.
+- `cancelQueuedStart({id, revision})` cancels only that queued request.
+
+These actions are declared in `contract-start-queue.ts`; this sidebar RPC adds
+no mutation method. Queue projection reads never transition a request, provision
+a sandbox, start a provider, send a message, or change a task. Internal input
+briefs, project settings, digests and errors are excluded from the DTO. A queue
+read failure preserves the ordinary sidebar and marks its response truncated.
