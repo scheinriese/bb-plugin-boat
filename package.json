@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-boat",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "license": "MIT",
   "author": {
@@ -14,7 +14,7 @@
   "homepage": "https://github.com/scheinriese/bb-plugin-boat#readme",
   "type": "module",
   "engines": {
-    "bb": ">=0.48.1 <0.49",
+    "bb": ">=0.48.1",
     "bbPluginSdk": ">=0.6.104 <0.7"
   },
   "bb": {

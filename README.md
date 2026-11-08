@@ -29,10 +29,10 @@ data, captions and occasional focus outlines; no real cloud work is started.
 
 ## Getting started
 
-Tested with bb 0.48.1 and Plugin SDK 0.6.104. You need a boat.dev account
-with a plan and a connected Claude or ChatGPT subscription (or an agent API
-key). The plugin currently supports bb 0.48.x; its experimental SDK surfaces
-are checked before support for a new bb minor version is added.
+Requires bb 0.48.1 or newer and Plugin SDK >=0.6.104 <0.7. Tested with
+bb 0.48.1 / SDK 0.6.104 and bb 0.49.0 / SDK 0.6.132. You need a boat.dev
+account with a plan and a connected Claude or ChatGPT subscription (or an
+agent API key).
 
 1. **Install boat** on the machine that runs bb:
    ```sh

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Allow installation on bb 0.49.0; remove the unnecessary bb minor-version ceiling while retaining the SDK compatibility range.
+- Check both bb 0.48.1 and 0.49.0 builds and their SDK versions in CI, plus a weekly check against the latest bb and SDK.
+
 ## 0.2.0
 
 - Today, Sandboxes and Projects with live decisions, event history and usage.
