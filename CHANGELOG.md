@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- Keep the Today, Sandboxes and Projects tabs aligned across page switches and while opening the project editor.
+- Use a shared page width and consistent tab label weight so selecting a tab does not move its neighbours.
+
 ## 0.2.1
 
 - Allow installation on bb 0.49.0; remove the unnecessary bb minor-version ceiling while retaining the SDK compatibility range.
