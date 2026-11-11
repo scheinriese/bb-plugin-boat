@@ -38,6 +38,8 @@ import {
 import { AgentLogo, AgentBadge, OpenChatButton, PrLink, showError } from "./ui";
 import { ShipButton } from "./board";
 import { ResizeDialog } from "./sandbox-size";
+import { useSandboxPower } from "./sandbox-state";
+import { taskRecovery, type SandboxPower } from "./recovery-logic";
 import {
   CARD_TONES,
   cardStatus,
@@ -503,39 +505,31 @@ export function DigestDirective(props: PluginMessageDirectiveProps) {
     {(terminal.length>0||active.length>0)&&<ul className="space-y-[6px] px-3.5 pb-3 pt-[10px] text-[12px] leading-4 text-muted-foreground">{terminal.map(event=><li key={event.seq} className="flex gap-2"><Icon name="Check" className="size-3.5"/>{event.text}{event.detail?' · '+event.detail:''}</li>)}{active.map(task=><li key={task.id} className="flex items-center gap-2"><AgentLogo provider={task.provider}/>{task.title} · {cardStatus(task).status==='review'?(history.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.provider==='claude'?'Claude is reviewing it now':history.find(event=>event.taskId===task.id&&event.kind==='review-started')?.review?.provider==='codex'?'Codex is reviewing it now':'reviewing now'):'working'}</li>)}</ul>}
   </Frame>;
 }
-export function useNativePaused(threadId:string){
-  const sdk=useSdk();const [paused,setPaused]=useState(false);
-  useEffect(()=>{let active=true;setPaused(false);if(!threadId)return()=>{active=false};
-    void sdk.threads.get({threadId}).then(thread=>thread.environmentId?sdk.environments.get({environmentId:thread.environmentId}):null).then(environment=>environment?sdk.hosts.get({hostId:environment.hostId}):null).then(host=>{if(active)setPaused(host?.lifecycle.phase==='suspended'||host?.lifecycle.phase==='suspending')}).catch(()=>{});
-    return()=>{active=false};
-  },[sdk,threadId]);return paused;
-}
 function StoppedComposerBanner() {
   const composer = useComposer();
   const threadId =
     composer.scope.kind === "thread" ? composer.scope.threadId : "";
   const task = useThreadTask(threadId);
-  const nativePaused=useNativePaused(threadId);
+  const power=useSandboxPower(task?.sandboxId && task.threadId === threadId ? threadId : "");
   const detail = useTask(task?.id ?? null).data?.task;
   if (
-    !task || nativePaused ||
+    !task || task.threadId !== threadId ||
     !["stopped", "broken", "waiting-reset"].includes(cardStatus(task).status)
   )
     return null;
-  if (!detail) return null;
-  return <StoppedBanner task={detail} />;
+  if (!detail || detail.threadId !== threadId) return null;
+  return <StoppedBanner task={detail} power={power} />;
 }
-function StoppedBanner({task}:{task:TaskDetailDto}) {
+function StoppedBanner({task,power}:{task:TaskDetailDto;power:SandboxPower}) {
+  const composer=useComposer();
   const [resizing,setResizing]=useState(false);
-  const resume=experimental_useRpcMutation({contract:rpcContract,method:"sandboxAction"});
-  const state=cardStatus(task);
-  const lastStop=experimental_useRpcQuery({contract:rpcContract,method:'history',input:{taskId:task.id,limit:50}}).data?.events.find(event=>event.kind==='stopped');
-  const idleStop=lastStop?.cause==='idle-timeout';
   const oom=Boolean(task.memory?.oom?.cause && !task.memory.oom.movedTo);
+  const recovery=taskRecovery(task,power,oom,Boolean(task.memory?.canResize && task.memory.next));
+  if(!recovery)return null;
   return <div className="boat-ui flex flex-wrap items-center gap-2 rounded-lg border border-border bg-secondary px-3 py-2 text-[12px] text-muted-foreground">
-    <Icon name="Pause" className="size-3.5" />
-    <span className="min-w-0 flex-1">{state.status==='waiting-reset'?'Waiting for a reset · work is saved':idleStop?'Sandbox stopped after 1 h idle · nothing is lost; your next message resumes it too':oom?'Sandbox stopped · out of memory · work is saved':'Sandbox stopped · nothing lost'}</span>
-    <Button size="sm" variant="outline" disabled={resume.isPending} onClick={()=>{if(oom&&!idleStop)setResizing(true);else if(task.sandboxId)void resume.mutate({id:task.sandboxId,action:'resume'}).catch(showError)}}>{oom&&!idleStop?'Continue on Large':'Resume'}</Button>
+    <Icon name={recovery.icon} className="size-3.5 shrink-0" />
+    <span className="min-w-0 flex-1">{recovery.message}</span>
+    <Button size="sm" variant="outline" onClick={()=>{if(recovery.action==='resize')setResizing(true);else composer.focus()}}>{recovery.action==='resize'?`Continue on ${task.memory?.next?.label}`:'Write a follow-up'}</Button>
     <ResizeDialog task={task} mode="oom" open={resizing} onOpenChange={setResizing}/>
   </div>;
 

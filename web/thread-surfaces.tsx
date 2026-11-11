@@ -39,7 +39,9 @@ import {
 import { useBoard, useCloudAgentsNavigation, useOverview, useTask, useThreadTask, useThreadTasks, useSetup, useRelay } from "./hooks";
 import { taskPhaseLabel } from "./logic";
 import { cardStatus, contextCounts } from "./cards-logic";
-import { CardTaskState, TaskContextAction, useNativePaused } from "./cards";
+import { CardTaskState, TaskContextAction } from "./cards";
+import { useSandboxPower } from "./sandbox-state";
+import { SANDBOX_POWER_LABEL, SANDBOX_POWER_SHORT } from "./recovery-logic";
 import { useQueuedStarts } from "./start-queue";
 export { TaskDirective, registerChatCards } from "./cards";
 import {
@@ -99,7 +101,7 @@ export function ThreadSegmentSummary({ threadId, isExpanded, onToggle }: Experim
 /** SDK action renders at the row end, after all native segments. */
 export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentProps){
   const {data}=useBoard(threadId);const own=useThreadTask(threadId);
-  const paused=useNativePaused(threadId);
+  const power=useSandboxPower(own?.sandboxId ? threadId : "");
   const setup=useSetup().data;
   const relay=useRelay().data;
   const queued=useQueuedStarts(threadId).data?.requests??[];
@@ -119,7 +121,7 @@ export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentP
   }
   if(!own&&(data?.ready.length??0)>0&&setup?.plan)return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{setup.plan.activeSandboxes}{setup.plan.maxActiveSandboxes!==null?' of '+setup.plan.maxActiveSandboxes:''} sandboxes{usage?.usedPercent!==null&&usage?.usedPercent!==undefined?` · ${usage.provider==='claude'?'Claude':'Codex'} ${Math.round(usage.usedPercent)}%`:''}</span>;
   if((data?.needsYou.length??0)>0)return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{decisionTask?.provider==='claude'?'Claude':decisionTask?.provider==='codex'?'Codex':'The agent'} waits in its sandbox; nothing is lost</span>;
-  if(own?.sandboxId)return <span className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground"><span className={cn("size-1.5 rounded-full",paused?'bg-muted-foreground':'bg-[#5BD08A]')}/><span className="sm:hidden">{paused?'stopped':'on'}</span><span className="hidden sm:inline">{paused?'Sandbox stopped':'Sandbox on'}{detail?.memory?.size?' · '+detail.memory.size.label:''}</span>{cardStatus(own).status==='ready'&&<span className="sm:hidden"><TaskContextAction task={own} compact/></span>}</span>;
+  if(own?.sandboxId)return <span className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title={SANDBOX_POWER_LABEL[power]}><span className={cn("size-1.5 rounded-full",power==='on'?'bg-[#5BD08A]':'bg-muted-foreground')}/><span className="sm:hidden">{SANDBOX_POWER_SHORT[power]}</span><span className="hidden sm:inline">{SANDBOX_POWER_LABEL[power]}{detail?.memory?.size?' · '+detail.memory.size.label:''}</span>{cardStatus(own).status==='ready'&&<span className="sm:hidden"><TaskContextAction task={own} compact/></span>}</span>;
   return null;
 }
 

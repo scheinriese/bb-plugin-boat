@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5
+
+- Distinguish an agent failure from a stopped sandbox in the composer banner and offer a follow-up instead of an unrelated VM resume.
+- Refresh sandbox power from bb’s host state; show unavailable or transitional states instead of assuming the sandbox is on.
+- Preserve guarded memory recovery and keep historical task chats from inheriting another chat’s recovery banner.
+
 ## 0.2.4
 
 - Keep task activity and status metadata on the current chat after a handover, so stopped or older chats do not inherit a newer chat’s spinner.
