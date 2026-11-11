@@ -39,7 +39,7 @@ function RowMetadata({
   data,
 }: ExperimentalThreadRowMetadataProps<Roles>) {
   const role = data?.[thread.id];
-  if (role?.kind !== "task") return null;
+  if (role?.kind !== "task" || role.task.threadId !== thread.id) return null;
   const state = cardStatus(role.task);
   if (!["ready", "broken", "needs-you", "stopped"].includes(state.status))
     return null;
@@ -69,8 +69,11 @@ function RowSignalSync() {
     if (!set || !data) return;
     const marked: string[] = [];
     for (const [id, role] of Object.entries(data)) {
-      if (role.kind !== "task") continue;
+      // Handover history still resolves to the task, but its live status belongs
+      // only to the task's current chat.
+      if (role.kind !== "task" || role.task.threadId !== id) continue;
       const state = cardStatus(role.task);
+      if (!state.moving && ["working", "review"].includes(state.status)) continue;
       const reason = role.task.publicStatus?.reason;
       set(id, {
         icon:
@@ -80,7 +83,7 @@ function RowSignalSync() {
               ? "Check"
               : state.status === "needs-you"
                 ? "MessageSquare"
-                : state.status === "stopped"
+                : state.status === "stopped" || state.status === "waiting-reset"
                   ? "Pause"
                   : state.status === "review"
                     ? "Eye"

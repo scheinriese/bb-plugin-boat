@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4
+
+- Keep task activity and status metadata on the current chat after a handover, so stopped or older chats do not inherit a newer chat’s spinner.
+- Keep idle task rows quiet and show a static pause icon while waiting for a usage reset.
+
 ## 0.2.3
 
 - Keep long Home questions, task names and action labels inside their rows, with an ellipsis and full details available on opening.
