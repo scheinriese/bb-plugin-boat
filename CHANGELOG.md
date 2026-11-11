@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3
+
+- Keep long Home questions, task names and action labels inside their rows, with an ellipsis and full details available on opening.
+- Prefer authored short decision labels and keep the usage summary clear of the heading on narrow screens.
+
 ## 0.2.2
 
 - Keep the Today, Sandboxes and Projects tabs aligned across page switches and while opening the project editor.

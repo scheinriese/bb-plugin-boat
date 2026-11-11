@@ -17,8 +17,8 @@ import { ResizeDialog } from "./sandbox-size";
 import { AgentLogo } from "./ui";
 import { CancelQueuedStartButton, useQueuedStarts } from "./start-queue";
 
-const ROW = "flex min-h-11 items-center gap-2.5 border-b border-[color:var(--boat-divider)] px-[14px] py-2 last:border-b-0 sm:h-11 sm:py-0";
-const ACTION = "h-[26px] shrink-0 rounded-md px-2.5 text-xs font-normal leading-4";
+const ROW = "flex min-h-11 items-center gap-2.5 border-b border-[color:var(--boat-divider)] px-[14px] py-2 last:border-b-0 sm:py-1.5";
+const ACTION = "h-[26px] max-w-[45%] shrink-0 rounded-md px-2.5 text-xs font-normal leading-4";
 
 /** A quiet live summary beside the native new-thread composer. */
 export function HomepageCard(_props: PluginHomepageSectionProps) {
@@ -45,7 +45,7 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
     ...(relay?.agents ?? []).flatMap(agent => agent.usedPercent === null ? [] : [`${agent.provider === "codex" ? "Codex" : "Claude"} ${Math.round(agent.usedPercent)}%`]),
   ].filter(Boolean).join(" · ");
   return <section className="boat-ui relative" aria-label="Cloud agents">
-    <span className="absolute -top-8 right-0 text-right text-xs leading-4 text-[color:var(--boat-faint)]">{firstRun ? "All set · nothing running" : meta}</span>
+    <span className="mb-2 block text-xs leading-4 text-[color:var(--boat-faint)] sm:absolute sm:-top-8 sm:right-0 sm:mb-0 sm:text-right">{firstRun ? "All set · nothing running" : meta}</span>
     {firstRun ? <div className="grid gap-[10px] sm:grid-cols-3">
       {[
         {icon:"Cloud", title:"Try a one-off task", detail:"Fills the box above with a small task; runs in its own sandbox.", action:"Try it", act:()=>fill("Check this repository runs: install dependencies, build it, and run the tests. Report what works and what needs fixing; don't change any code.")},
@@ -58,7 +58,7 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
         return <HomeDecision key={decision.id} decision={decision} subline={[task?.title, projectName(task)].filter(Boolean).join(" · ")}/>;
       })}
       {problems.map(task=><HomeProblem key={task.id} task={task} project={projectName(task)}/>)}
-      {queued.map(request=><div key={request.id} className={ROW}><span className="size-1.5 shrink-0 rounded-full bg-muted-foreground"/><span className="min-w-0 flex-1 text-[13px] leading-4">{request.title}</span><span className="text-xs text-muted-foreground">{request.state==='dispatching'?'Starting':'Waiting for reset'}</span>{request.threadId?<Button size="sm" variant="outline" className={ACTION} onClick={()=>navigate.toThread(request.threadId!)}>Open</Button>:<CancelQueuedStartButton request={request} className={ACTION}/>}</div>)}
+      {queued.map(request=><div key={request.id} className={ROW}><span className="size-1.5 shrink-0 rounded-full bg-muted-foreground"/><span title={request.title} className="min-w-0 flex-1 truncate text-[13px] leading-4">{request.title}</span><span className="shrink-0 text-xs text-muted-foreground">{request.state==='dispatching'?'Starting':'Waiting for reset'}</span>{request.threadId?<Button size="sm" variant="outline" className={ACTION} onClick={()=>navigate.toThread(request.threadId!)}>Open</Button>:<CancelQueuedStartButton request={request} className={ACTION}/>}</div>)}
       {orchestrators.map(entry => {
         const owned = tasks.filter(task => task.orchestratorThreadId === entry.threadId && task.role !== "review");
         const ready = owned.filter(task => cardStatus(task).status === "ready").length;
@@ -66,10 +66,10 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
         const working = owned.filter(task => ["working","review"].includes(cardStatus(task).status)).length;
         const needs = decisions.filter(decision=>decision.orchestratorThreadId===entry.threadId).length + owned.filter(task=>cardStatus(task).status==="needs-you"&&!linked.has(task.id)).length;
         const provider = relay?.orchestrators.find(item=>item.threadId===entry.threadId)?.provider ?? (threads.find(thread=>thread.id===entry.threadId)?.providerId === "codex" ? "codex" : "claude");
-        return <div key={entry.threadId} className={`${ROW} sm:h-10 sm:min-h-10`}>
+        return <div key={entry.threadId} className={`${ROW} sm:min-h-10`}>
           <AgentLogo provider={provider} className="size-3"/>
-          <button type="button" className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 text-left hover:underline focus-visible:ring-1 focus-visible:ring-ring" onClick={()=>navigate.toThread(entry.threadId)}><span className="truncate text-[13px] leading-4">{entry.title ?? entry.projectName ?? "Orchestrator"}</span><span className="text-xs leading-4 text-[color:var(--boat-faint)]">{entry.projectName}</span></button>
-          <span className="flex shrink-0 flex-wrap justify-end gap-x-3.5 gap-y-1 text-xs leading-4 text-muted-foreground">
+          <button type="button" title={[entry.title, entry.projectName].filter(Boolean).join(" · ")} className="flex min-w-0 flex-1 items-baseline gap-x-2 text-left hover:underline focus-visible:ring-1 focus-visible:ring-ring" onClick={()=>navigate.toThread(entry.threadId)}><span className="min-w-0 truncate text-[13px] leading-4">{entry.title ?? entry.projectName ?? "Orchestrator"}</span><span className="min-w-0 max-w-[40%] truncate text-xs leading-4 text-[color:var(--boat-faint)]">{entry.projectName}</span></button>
+          <span className="flex max-w-[45%] shrink-0 flex-wrap justify-end gap-x-3.5 gap-y-1 text-xs leading-4 text-muted-foreground">
             {needs>0 && <Count color="#F0B135">{needs} {needs===1?"needs":"need"} you</Count>}
             {stopped>0 && <Count color="#E06C6C">{stopped} stopped</Count>}
             {ready>0 && <Count color="#5BD08A">{ready} ready</Count>}
@@ -92,6 +92,7 @@ function HomeDecision({decision,subline}:{decision:DecisionDto;subline:string}) 
   const send = experimental_useRpcMutation({contract:rpcContract,method:"answerDecision"});
   const [pending,setPending] = useState(false);
   const option = decision.optionDetails?.find(option=>option.recommended)?.label ?? recommendedOption(decision.options,decision.recommendation);
+  const label = decision.shortLabel?.trim() || decision.question;
   const open=()=>decision.orchestratorThreadId && navigate.toThread(decision.orchestratorThreadId);
   const choose=()=>{
     if(!option){open();return;}
@@ -106,8 +107,11 @@ function HomeDecision({decision,subline}:{decision:DecisionDto;subline:string}) 
   };
   return <div className={ROW}>
     <span className="size-1.5 shrink-0 rounded-full bg-[#F0B135]"/>
-    <button type="button" onClick={open} className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 text-left hover:underline focus-visible:ring-1 focus-visible:ring-ring"><span className="text-[13px] leading-4 text-[color:var(--boat-label)]">{decision.question}</span><span className="text-xs leading-4 text-[color:var(--boat-faint)]">{subline}</span></button>
-    <Button size="sm" variant="outline" className={ACTION} disabled={pending} onClick={choose}>{pending?"Queued…":option?`Go with ${option}`:"Open"}</Button>
+    <button type="button" onClick={open} title={decision.question} aria-label={[decision.question, subline].filter(Boolean).join(" · ")} className="min-w-0 flex-1 text-left hover:underline focus-visible:ring-1 focus-visible:ring-ring">
+      <span className="block truncate text-[13px] leading-4 text-[color:var(--boat-label)]">{label}</span>
+      {subline && <span title={subline} className="block truncate text-xs leading-4 text-[color:var(--boat-faint)]">{subline}</span>}
+    </button>
+    <Button size="sm" variant="outline" className={ACTION} disabled={pending} onClick={choose}><span title={option ? `Go with ${option}` : undefined} className="truncate">{pending?"Queued…":option?`Go with ${option}`:"Open"}</span></Button>
   </div>;
 }
 
@@ -118,5 +122,6 @@ function HomeProblem({task,project}:{task:TaskDto;project:string}) {
   const {openTask}=useCloudAgentsNavigation();
   const next=detail?.memory?.canResize?detail.memory.next?.label:null;
   const action=()=>next?setOpen(true):task.threadId?navigate.toThread(task.threadId):openTask(task.id);
-  return <div className={ROW}><span className="size-1.5 shrink-0 rounded-full bg-[#E06C6C]"/><div className="min-w-0 flex-1 text-[13px] leading-4"><span>{task.title} stopped</span><span className="ml-2 text-xs text-[color:var(--boat-faint)]">{project} · work is saved</span></div><Button size="sm" variant="outline" className={ACTION} onClick={action}>{next?`Continue on ${next}`:"Open"}</Button>{detail&&<ResizeDialog task={detail} mode="oom" open={open} onOpenChange={setOpen}/>}</div>;
+  const context = [project, "work is saved"].filter(Boolean).join(" · ");
+  return <div className={ROW}><span className="size-1.5 shrink-0 rounded-full bg-[#E06C6C]"/><div className="min-w-0 flex-1 text-[13px] leading-4"><span title={`${task.title} stopped`} className="block truncate">{task.title} stopped</span><span title={context} className="block truncate text-xs text-[color:var(--boat-faint)]">{context}</span></div><Button size="sm" variant="outline" className={ACTION} onClick={action}><span className="truncate">{next?`Continue on ${next}`:"Open"}</span></Button>{detail&&<ResizeDialog task={detail} mode="oom" open={open} onOpenChange={setOpen}/>}</div>;
 }
