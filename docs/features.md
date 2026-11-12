@@ -147,20 +147,27 @@ it sends a follow-up into the chat that repeats the steer, and the task
 shows **Retrying** meanwhile. The orchestrator hears of the turn when the
 retry ends, and a retry that fails too is reported as failed, saying a retry
 was already tried. Only an HTTP 400 or a bare "Bad Request" counts. There's
-no retry when another message reached the chat or the chat was interrupted
-(before the retry goes out, too), when the sandbox isn't running, or for
-other errors (usage limits, sign-in, overloads, server or connection errors).
+no retry when another message reached the chat or the chat was interrupted,
+when the sandbox isn't running, or for other errors (usage limits, sign-in,
+overloads, server or connection errors). The retry goes out now or never: it
+starts a turn on the failed chat right away, and if bb would queue it instead
+(another turn or a hold got there first), the plugin takes it back out at
+once and skips it.
 
 Any other chat on this bb gets the same recovery, with **Recover any chat
 after a steer Bad Request** on (Settings → Advanced; on by default). This
 covers a local orchestrator steered by another agent's `bb thread tell`, for
 example. Its turn failed with a Bad Request right after one or more messages
-steered it, so the plugin sends it one new message (queued, never a steer).
-That message quotes those messages and, when the chat has an open goal, says
-the goal is still open. The same rules apply: once per failed turn (kept
-across reloads), no second try when the recovery's own turn fails, at most
-three an hour per chat, and nothing for archived, deleted or stopped chats.
-The plugin's log notes each recovery with the chat's id, and where its goal
+steered it, so the plugin sends it one new message: a turn that starts right
+away, never a steer, and never left waiting in bb's queue. That message
+quotes those messages and, when the chat has an open goal, says the goal is
+still open. On Codex, when the failed turn moved the goal from active to
+blocked, the plugin also sends `/goal resume` once the recovery turn has
+finished, unless the goal is going again, the chat was stopped, or a newer
+message came in. The same rules apply: once per failed turn (kept across
+reloads), no second try when the recovery's own turn fails, at most three an
+hour per chat, and nothing for archived, deleted or stopped chats. The
+plugin's log notes each recovery with the chat's id, and where its goal
 stands once the recovery turn ends.
 
 **Continue as a chat** on a headless task's page moves the task into a
