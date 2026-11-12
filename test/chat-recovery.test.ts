@@ -5,10 +5,10 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type Database from "better-sqlite3";
-import type { ChatState } from "../src/chat.ts";
+import type { ChatState, SendResult } from "../src/chat.ts";
 import { ChatRecoveryStore, createChatRecovery, type RecoveryThreads } from "../src/chat-recovery.ts";
 import { TaskStore } from "../src/store.ts";
-import { RECOVERY_PREFIX, isRecoveryText, readGoal, recoveryPrompt, type TurnEventRow } from "../src/steer-retry.ts";
+import { GOAL_RESUME_TEXT, RECOVERY_PREFIX, isRecoveryText, readGoal, recoveryPrompt, type TurnEventRow } from "../src/steer-retry.ts";
 import { STEER_RETRY_HEADING } from "../src/steer-retry.ts";
 
 const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/agent-steer-bad-request.json", import.meta.url), "utf8")) as { rows: TurnEventRow[]; goal: TurnEventRow[] };
@@ -30,8 +30,12 @@ class FakeThreads implements RecoveryThreads {
   onRead: ((threadId: string, read: number) => void) | null = null;
   onState: ((threadId: string, call: number) => void) | null = null;
 
-  failedThread(threadId = THREAD, rows = ROWS, goal: TurnEventRow[] = []) {
-    this.states.set(threadId, { status: "error", updatedAt: Date.now(), archived: false, environmentId: null, queued: 0, backgroundAgents: 0, workflows: 0 });
+  /** bb queues sends instead of starting them (a turn or a hold got there first). */
+  queueSends: { waitingOn: string } | null = null;
+  withdrawn: { threadId: string; queuedMessageId: string }[] = [];
+
+  failedThread(threadId = THREAD, rows = ROWS, goal: TurnEventRow[] = [], providerId = "codex") {
+    this.states.set(threadId, { status: "error", updatedAt: Date.now(), archived: false, environmentId: null, queued: 0, backgroundAgents: 0, workflows: 0, providerId });
     this.events.set(threadId, rows);
     this.goals.set(threadId, goal);
   }
@@ -49,11 +53,24 @@ class FakeThreads implements RecoveryThreads {
   async goalEvents(threadId: string) {
     return [...(this.goals.get(threadId) ?? [])];
   }
-  async send(threadId: string, text: string) {
+  async send(threadId: string, text: string): Promise<SendResult> {
     if (this.sendError) throw this.sendError;
     this.sends.push({ threadId, text });
+    if (this.queueSends) return { delivery: "queued", queuedMessageId: `qm_${this.sends.length}`, waitingOn: this.queueSends.waitingOn };
     const state = this.states.get(threadId);
     if (state) state.status = "active";
+    return { delivery: "sent" };
+  }
+  async withdraw(threadId: string, queuedMessageId: string) {
+    this.withdrawn.push({ threadId, queuedMessageId });
+  }
+  /** The recovery's turn ran and ended: the chat is idle again. */
+  recoveryTurnEnded(threadId = THREAD, status: "completed" | "interrupted" = "completed", extra: TurnEventRow[] = []) {
+    const rows = this.events.get(threadId) ?? [];
+    const recovery = this.sends.find((send) => send.threadId === threadId && isRecoveryText(send.text))!.text;
+    const turn = nextTurn(300, { status: "completed", opener: recovery }).map((row) => (row.type === "turn/completed" ? { ...row, data: { status } } : row));
+    this.events.set(threadId, [...rows, ...turn, ...extra]);
+    this.states.get(threadId)!.status = "idle";
   }
 }
 
@@ -118,7 +135,7 @@ test("a chat that isn't a Boat task recovers once after an agent's steers and a 
   assert.match(text, /Your goal is still open: “Migrate the API to v2”\. Keep working toward it\./);
   // The log names the thread and the reason, never the messages.
   const line = env.logs.find((entry) => entry.level === "info")!.line;
-  assert.match(line, /^chat recovery thr_local: sent one recovery message, the turn failed with a provider Bad Request right after 2 steers \(turn turn:turn_g\); goal blocked$/);
+  assert.match(line, /^chat recovery thr_local: sent one recovery message, the turn failed with a provider Bad Request right after 2 steers \(turn turn:turn_g\); goal blocked; \/goal resume follows the recovery turn$/);
   assert.ok(!env.logs.some((entry) => entry.line.includes("schema") || entry.line.includes("bump")));
 
   // Seen again later (the sweep of another event): claimed already.
@@ -131,12 +148,16 @@ test("a goal thread logs where the goal stands once the recovery turn ends", asy
   const env = setup();
   env.threads.failedThread(THREAD, ROWS, GOAL);
   assert.equal(await env.recovery.failed(THREAD), "recovered");
-  env.threads.goals.set(THREAD, [...GOAL, { id: "evt_240", seq: 240, type: "thread/goal/updated", data: { objective: "Migrate the API to v2", status: "active" } }]);
+  // The recovery turn got the goal going again by itself: no /goal resume needed.
+  env.threads.recoveryTurnEnded();
+  env.threads.goals.set(THREAD, [...GOAL, { id: "evt_340", seq: 340, type: "thread/goal/updated", data: { objective: "Migrate the API to v2", status: "active" } }]);
   await env.recovery.idle(THREAD);
-  assert.match(env.logs.at(-1)!.line, /^chat recovery thr_local: the recovery turn ended; goal active \(turn turn:turn_g\)$/);
+  assert.ok(env.logs.some((entry) => /^chat recovery thr_local: the recovery turn completed; goal active \(turn turn:turn_g\)$/.test(entry.line)));
+  assert.match(env.logs.at(-1)!.line, /no \/goal resume, the goal is active/);
+  assert.equal(env.threads.sends.length, 1);
   // Once per recovery.
   await env.recovery.idle(THREAD);
-  assert.equal(env.logs.filter((entry) => entry.line.includes("recovery turn ended")).length, 1);
+  assert.equal(env.logs.filter((entry) => entry.line.includes("the recovery turn completed")).length, 1);
 
   // Codex's own goal state counts too; a paused or finished goal isn't urged on.
   assert.deepEqual(readGoal([{ id: "e", seq: 1, type: "thread/extensionState/updated", data: { kind: "provider-codex/goal", payload: { objective: "Ship it", status: "blocked" } } }]), { objective: "Ship it", status: "blocked" });
@@ -261,27 +282,125 @@ test("a message or an interrupt that arrives during the check stops the recovery
   };
   assert.equal(await interrupted.recovery.failed(THREAD), "moved-on");
   assert.equal(env.threads.sends.length + interrupted.threads.sends.length, 0);
-  // Neither claimed the turn: nothing can fire later from them.
-  assert.equal(env.store.has(THREAD, "turn:turn_g"), false);
+  // Both are recorded as skipped: nothing can fire later from them.
+  assert.equal(env.store.latest(THREAD)?.state, "skipped");
+  assert.equal(interrupted.store.latest(THREAD)?.state, "skipped");
+  env.threads.onState = null;
+  env.threads.states.get(THREAD)!.status = "error";
+  assert.equal(await env.recovery.failed(THREAD), "claimed");
+  assert.equal(env.threads.sends.length, 0);
 });
 
-test("at dispatch, a recovery queued behind a newer turn is refused", async () => {
+test("another turn's idle event never settles the recovery or sends /goal resume (review 2, finding 1)", async () => {
+  const env = setup();
+  env.threads.failedThread(THREAD, ROWS, GOAL);
+  assert.equal(await env.recovery.failed(THREAD), "recovered");
+  // An unrelated turn ends (say the recovery lost a race we didn't see): its idle leaves the record alone.
+  env.threads.events.set(THREAD, [...ROWS, ...nextTurn(300, { status: "completed", opener: "Status?" })]);
+  env.threads.states.get(THREAD)!.status = "idle";
+  await env.recovery.idle(THREAD);
+  assert.equal(env.store.latest(THREAD)?.state, "sent");
+  assert.equal(env.threads.sends.length, 1, "no /goal resume");
+  assert.ok(!env.logs.some((entry) => /the recovery turn (completed|interrupted|failed)|\/goal resume,|sent \/goal resume/.test(entry.line)));
+});
+
+test("a recovery bb queues instead of starting is withdrawn at once, so it never joins newer input (review 2, finding 2)", async () => {
+  // A hold (another plugin's policy) or a turn that won the race: bb answers queued.
+  for (const waitingOn of ["plugin", "thread-busy"]) {
+    const env = setup();
+    env.threads.failedThread();
+    env.threads.queueSends = { waitingOn };
+    assert.equal(await env.recovery.failed(THREAD), "skipped", waitingOn);
+    assert.deepEqual(env.threads.withdrawn, [{ threadId: THREAD, queuedMessageId: "qm_1" }], waitingOn);
+    assert.equal(env.store.latest(THREAD)?.state, "skipped");
+    assert.match(env.logs.at(-1)!.line, new RegExp(`skipped the recovery message, bb queued it \\(${waitingOn}\\) and it was withdrawn`));
+    // Never again for that failed turn, and nothing of it waits in bb's queue to be grouped with a later message.
+    env.threads.queueSends = null;
+    env.threads.states.get(THREAD)!.status = "error";
+    assert.equal(await env.recovery.failed(THREAD), "claimed");
+    assert.equal(env.threads.sends.length, 1);
+  }
+});
+
+test("a chat busy at send time skips the recovery for good", async () => {
   const env = setup();
   env.threads.failedThread();
+  // The final look right before the send finds a turn running (another agent's message).
+  env.threads.onState = (threadId, call) => {
+    if (call === 2) {
+      env.threads.states.get(threadId)!.status = "active";
+      env.threads.states.get(threadId)!.queued = 1;
+    }
+  };
+  assert.equal(await env.recovery.failed(THREAD), "busy");
+  assert.equal(env.threads.sends.length, 0);
+  assert.equal(env.store.latest(THREAD)?.state, "skipped");
+  assert.match(env.logs.at(-1)!.line, /skipped, the chat moved on before the recovery could be sent/);
+});
+
+test("/goal resume follows a completed recovery turn once, on Codex, when the failure blocked the goal", async () => {
+  // The failed turn moved the goal from active to blocked (the fixture), and it's still blocked after the recovery turn.
+  const env = setup();
+  env.threads.failedThread(THREAD, ROWS, GOAL);
   assert.equal(await env.recovery.failed(THREAD), "recovered");
-  const text = env.threads.sends[0]!.text;
-  const dispatch = (overrides: Partial<{ text: string; fromPlugin: boolean; queuedRows: number }> = {}) =>
-    env.recovery.dispatch({ threadId: THREAD, text, fromPlugin: true, queuedRows: 1, ...overrides });
-  assert.equal(await dispatch({ queuedRows: 0 }), null);
-  // Another agent's message ran first.
-  env.threads.events.set(THREAD, [...ROWS, ...nextTurn(300, { status: "completed", opener: "Status?" })]);
-  assert.equal(await dispatch({ fromPlugin: false }), null);
-  assert.equal(await dispatch({ queuedRows: 2 }), null);
-  assert.equal(await dispatch({ text: "Something else" }), null);
-  const refused = await dispatch();
-  assert.equal(refused?.action, "reject");
-  assert.equal(env.store.latest(THREAD)?.state, "dropped");
-  assert.equal(await dispatch(), null, "refused once");
+  assert.match(env.logs.at(-1)!.line, /; \/goal resume follows the recovery turn$/);
+  env.threads.recoveryTurnEnded();
+  await env.recovery.idle(THREAD);
+  assert.equal(env.threads.sends.length, 2);
+  assert.equal(env.threads.sends[1]!.text, GOAL_RESUME_TEXT);
+  assert.equal(env.store.latest(THREAD)?.state, "resumed");
+  assert.match(env.logs.at(-1)!.line, /^chat recovery thr_local: sent \/goal resume, the failed turn had blocked the goal \(turn turn:turn_g\)$/);
+  // Once only.
+  env.threads.states.get(THREAD)!.status = "idle";
+  await env.recovery.idle(THREAD);
+  assert.equal(env.threads.sends.length, 2);
+  // The resume's own turn failing after a steer is part of the recovery: no second one.
+  env.threads.failedThread(THREAD, [...env.threads.events.get(THREAD)!, ...nextTurn(400, { status: "failed", opener: GOAL_RESUME_TEXT, steer: "One more." })], GOAL);
+  assert.equal(await env.recovery.failed(THREAD), "own-turn");
+
+  // Not on Codex: `/goal resume` would be a plain prompt there.
+  const claude = setup();
+  claude.threads.failedThread(THREAD, ROWS, GOAL, "claude-code");
+  assert.equal(await claude.recovery.failed(THREAD), "recovered");
+  claude.threads.recoveryTurnEnded();
+  await claude.recovery.idle(THREAD);
+  assert.equal(claude.threads.sends.length, 1);
+  // A goal that was already blocked before the failed turn: not this failure's doing.
+  const old = setup();
+  old.threads.failedThread(THREAD, ROWS, [{ id: "g1", seq: 100, type: "thread/goal/updated", data: { objective: "Ship", status: "blocked" } }]);
+  assert.equal(await old.recovery.failed(THREAD), "recovered");
+  old.threads.recoveryTurnEnded();
+  await old.recovery.idle(THREAD);
+  assert.equal(old.threads.sends.length, 1);
+  // The user stopped the recovery turn, or a message came in after it: no resume.
+  for (const [label, status, extra] of [
+    ["stopped", "interrupted", []],
+    ["newer message", "completed", [{ id: "evt_390", seq: 390, type: "client/turn/requested", data: { requestId: "req_user", target: { kind: "new-turn" }, input: [] } }]],
+  ] as const) {
+    const env2 = setup();
+    env2.threads.failedThread(THREAD, ROWS, GOAL);
+    assert.equal(await env2.recovery.failed(THREAD), "recovered");
+    env2.threads.recoveryTurnEnded(THREAD, status, [...extra]);
+    await env2.recovery.idle(THREAD);
+    assert.equal(env2.threads.sends.length, 1, label);
+    assert.match(env2.logs.at(-1)!.line, /no \/goal resume/, label);
+  }
+  // bb queues the resume: withdrawn, not left to run later.
+  const queued = setup();
+  queued.threads.failedThread(THREAD, ROWS, GOAL);
+  assert.equal(await queued.recovery.failed(THREAD), "recovered");
+  queued.threads.recoveryTurnEnded();
+  queued.threads.queueSends = { waitingOn: "plugin" };
+  await queued.recovery.idle(THREAD);
+  assert.deepEqual(queued.threads.withdrawn, [{ threadId: THREAD, queuedMessageId: "qm_2" }]);
+  // The setting off by then: no resume.
+  const off = setup();
+  off.threads.failedThread(THREAD, ROWS, GOAL);
+  assert.equal(await off.recovery.failed(THREAD), "recovered");
+  off.threads.recoveryTurnEnded();
+  off.setEnabled(false);
+  await off.recovery.idle(THREAD);
+  assert.equal(off.threads.sends.length, 1);
 });
 
 test("a send that fails is logged and not retried in a loop; an hourly cap backs it all up", async () => {
@@ -327,15 +446,21 @@ async function pluginHost(t: { after(fn: () => unknown): void }, settings: Recor
   harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "error", providerId: "codex" }));
   harness.sdk.stub("threads.list", async () => ({ threads: [] }));
   harness.sdk.stub("threads.events.list", async ({ types }: { types?: string[] }) => [...(types?.includes("turn/completed") ? rows : GOAL)].reverse());
+  let queue: { kind: string } | null = null;
+  const deleted: Record<string, unknown>[] = [];
   harness.sdk.stub("threads.send", async (args: Record<string, unknown>) => {
     sends.push(args);
-    return { ok: true, delivery: "sent" };
+    return queue === null ? { ok: true, delivery: "sent" } : { ok: true, delivery: "queued", queuedMessage: { id: `qm_${sends.length}`, waitingOn: queue } };
+  });
+  harness.sdk.stub("threads.queuedMessages.delete", async (args: Record<string, unknown>) => {
+    deleted.push(args);
+    return { ok: true };
   });
   await plugin(bb);
-  return { bb, harness, sends, makeThreadResponse, setRows: (next: TurnEventRow[]) => void (rows = next) };
+  return { bb, harness, sends, deleted, makeThreadResponse, setRows: (next: TurnEventRow[]) => void (rows = next), queueSends: (next: { kind: string } | null) => void (queue = next) };
 }
 
-test("the plugin recovers a chat from bb's thread.failed with a queued turn, never a steer, and refuses it at dispatch once the chat moved on", async (t) => {
+test("the plugin recovers a chat from bb's thread.failed with a new turn, never a steer, once", async (t) => {
   const host = await pluginHost(t);
   await host.harness.emitThreadEvent("thread.failed", { thread: host.makeThreadResponse({ id: THREAD, status: "error", providerId: "codex" }), error: '{"detail":"Bad Request"}' });
   await until(() => host.sends.length > 0);
@@ -343,22 +468,22 @@ test("the plugin recovers a chat from bb's thread.failed with a queued turn, nev
   assert.equal(send.threadId, THREAD);
   assert.equal(send.mode, "queue-if-active");
   assert.equal(send.originPluginId, "boat");
-  const text = (send.input as { text: string }[])[0]!.text;
-  assert.ok(isRecoveryText(text));
+  assert.ok(isRecoveryText((send.input as { text: string }[])[0]!.text));
+  assert.deepEqual(host.deleted, []);
   // turn.failed for the same failure: still one message.
-  const { makeTurnFailedEvent, makeMessageDispatchHookContext } = await import("@get-bb/plugin-sdk/testing");
+  const { makeTurnFailedEvent } = await import("@get-bb/plugin-sdk/testing");
   await host.harness.emitThreadEvent("turn.failed", makeTurnFailedEvent({ threadId: THREAD }));
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(host.sends.length, 1);
+});
 
-  // The message waited behind another agent's turn: bb's dispatch hook refuses it.
-  const dispatch = host.harness.inspection.registrations.hooks["message.dispatch"]!;
-  const context = makeMessageDispatchHookContext({ thread: { id: THREAD }, input: { text }, originPluginId: "boat", queuedMessages: [{ originPluginId: "boat" }] });
-  const before = await dispatch(context);
-  assert.notEqual((before as { action: string }).action, "reject");
-  host.setRows([...ROWS, ...nextTurn(300, { status: "completed", opener: "Status?" })]);
-  const after = await dispatch(context);
-  assert.equal((after as { action: string }).action, "reject");
+test("through the plugin, a recovery bb queues is deleted from bb's queue at once", async (t) => {
+  const host = await pluginHost(t);
+  host.queueSends({ kind: "plugin" });
+  await host.harness.emitThreadEvent("thread.failed", { thread: host.makeThreadResponse({ id: THREAD, status: "error", providerId: "codex" }), error: '{"detail":"Bad Request"}' });
+  await until(() => host.deleted.length > 0);
+  assert.deepEqual(host.deleted, [{ threadId: THREAD, queuedMessageId: "qm_1" }]);
+  assert.equal(host.sends.length, 1);
 });
 
 test("with the setting off, the plugin leaves other chats alone", async (t) => {

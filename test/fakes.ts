@@ -23,7 +23,7 @@ import type {
 import { BoatError } from "../src/boat.ts";
 import { SIZE_SPECS, isMachineType, type SizedProject } from "../src/memory.ts";
 import type { MachineTypeFacts } from "../src/setup.ts";
-import type { ChatRunner, ChatSpawn, ChatState, MachineState } from "../src/chat.ts";
+import type { ChatRunner, ChatSpawn, ChatState, MachineState, SendResult } from "../src/chat.ts";
 import type { TurnEventRow } from "../src/steer-retry.ts";
 import { NO_WORK, addWork, hasWork, messagesWaiting, rowWork, turnRuns, type MachineActivity, type ThreadRow } from "../src/activity.ts";
 import { BoatService, type BoatSettings, type Notification, type ServiceHooks } from "../src/service.ts";
@@ -717,10 +717,18 @@ export class FakeChat implements ChatRunner {
     // Like bb: the workspace id isn't known yet when the spawn returns.
     return { threadId, environmentId: args.where.kind === "environment" ? environmentId : null };
   }
-  async send(threadId: string, text: string, options: { steer: boolean; model?: string | null; effort?: string | null }) {
+  /** bb queues the next sends instead of running them (another turn or a hold got there first). */
+  queueSends: { waitingOn: string } | null = null;
+  withdrawn: { threadId: string; queuedMessageId: string }[] = [];
+  async send(threadId: string, text: string, options: { steer: boolean; model?: string | null; effort?: string | null }): Promise<SendResult> {
     this.sends.push({ threadId, text, ...options });
+    if (this.queueSends) return { delivery: "queued", queuedMessageId: `qm_${this.sends.length}`, waitingOn: this.queueSends.waitingOn };
     const state = this.states.get(threadId);
     if (state) state.status = "active";
+    return { delivery: "sent" };
+  }
+  async withdraw(threadId: string, queuedMessageId: string) {
+    this.withdrawn.push({ threadId, queuedMessageId });
   }
   async state(threadId: string) {
     return this.states.get(threadId) ?? null;
