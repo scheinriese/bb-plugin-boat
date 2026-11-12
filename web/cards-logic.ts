@@ -15,6 +15,8 @@ export type CardStatus = {
   reason: string | null;
   needsYou: boolean;
   moving: boolean;
+  /** The running turn is the plugin's automatic retry after a provider error. */
+  retrying?: boolean;
 };
 
 /** Consume the v1 model when present, while older servers still supply phase. */
