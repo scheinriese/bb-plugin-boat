@@ -49,6 +49,9 @@ const REALTIME_CHANNEL = "boat-changed";
 const BUSY_THREAD = new Set(["active", "starting", "pending", "stopping"]);
 /** How often the relay checks usage (the readings refresh about this often). */
 const RELAY_INTERVAL_MS = 60_000;
+/** Tries to remove a withdrawn row that bb grouped with newer input, and the wait between them after the first. */
+const RELEASE_ROUNDS = 10;
+const RELEASE_RETRY_MS = 30_000;
 /** How often running turns are checked (waiting tasks: once a minute; task chats also react to bb's events). */
 const POLL_INTERVAL_MS = 15_000;
 
@@ -566,12 +569,43 @@ export default async function plugin(bb: BbPluginApi) {
     if (entry !== undefined && typeof entry.id === "string") watchdog.dispatched(entry);
   });
   // The same note for a message that would go straight to the worker: held a moment, once, to add it.
+  // A withdrawn row bb grouped with newer input: remove it, then have bb dispatch the rest again.
+  const releasing = new Set<string>();
+  const releaseGroup = async (threadId: string, queuedMessageId: string) => {
+    if (releasing.has(queuedMessageId)) return;
+    releasing.add(queuedMessageId);
+    try {
+      for (let round = 0; round < RELEASE_ROUNDS && !lifecycle.signal.aborted; round++) {
+        // Let bb queue the group on the plugin's wait first.
+        await sleep(round === 0 ? 250 : RELEASE_RETRY_MS, lifecycle.signal);
+        if ((await chatRunner.withdraw(threadId, queuedMessageId).catch(() => "stuck" as const)) !== "removed") continue;
+        service.store.settleQueuedGuard(queuedMessageId, "removed");
+        bb.log.info(`removed withdrawn queued message ${queuedMessageId} from ${threadId}; bb dispatches the messages grouped with it again`);
+        // bb re-attempts every row queued on a plugin wait, through this hook again (SDK: experimental_hooks.recheck).
+        await bb.experimental_hooks.recheck("message.dispatch");
+        return;
+      }
+      if (!lifecycle.signal.aborted) {
+        bb.log.warn(`couldn't remove withdrawn queued message ${queuedMessageId} from ${threadId}; the messages grouped with it stay queued, waiting on Boat, until it's deleted`);
+      }
+    } finally {
+      releasing.delete(queuedMessageId);
+    }
+  };
   bb.experimental_hooks.on("message.dispatch", async (context) => {
     // A steer retry or chat recovery the plugin withdrew but bb's queue may still hold: never let it run.
-    const guarded = service.store.guardedQueuedMessage(context.queuedMessages.map((row) => row.id));
-    if (guarded !== null) {
+    const queuedIds = context.queuedMessages.map((row) => row.id);
+    const guarded = service.store.guardedQueuedMessage(queuedIds);
+    if (guarded !== null && queuedIds.length <= 1) {
       bb.log.warn(`refused queued message ${guarded} in ${context.thread.id}: the plugin withdrew it, the chat moved on before it could run`);
       return { action: "reject", message: "Boat withdrew this automatic message: the chat moved on before it could run." };
+    }
+    if (guarded !== null) {
+      // Grouped with newer input: refusing would refuse that too, and a hook can't take one row out of a group.
+      // Hold the group (nothing is refused or lost), delete only the withdrawn row, then bb dispatches the rest again.
+      bb.log.warn(`held a queued group in ${context.thread.id}: it carries withdrawn message ${guarded}, which the plugin removes before the rest goes out`);
+      void releaseGroup(context.thread.id, guarded);
+      return { action: "wait", reason: "Boat is removing an automatic message it withdrew; your messages go out right after." };
     }
     const start = await nativeStart(context, runtime, quotas);
     if (start?.action === "wait" || start?.action === "reject") return start;

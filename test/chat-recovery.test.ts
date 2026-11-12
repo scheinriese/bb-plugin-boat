@@ -511,7 +511,7 @@ async function pluginHost(t: { after(fn: () => unknown): void }, settings: Recor
     bb, harness, sends, deleted, makeThreadResponse,
     setRows: (next: TurnEventRow[]) => void (rows = next),
     queueSends: (next: { kind: string } | null) => void (queue = next),
-    failDeletes: () => void (deleteFails = true),
+    failDeletes: (fail = true) => void (deleteFails = fail),
     onDelete: (handler: (args: Record<string, unknown>) => Promise<void>) => void (onDelete = handler),
     queued: queuedIds,
   };
@@ -565,6 +565,38 @@ test("through the plugin, a queued recovery bb won't delete is refused at dispat
   assert.equal(refused.action, "reject");
   assert.match(refused.message!, /Boat withdrew this automatic message/);
   assert.notEqual((await drain("qm_someone_else")).action, "reject");
+});
+
+test("through the plugin, a withdrawn row grouped with newer input is taken out and the newer input goes out (review 4)", async (t) => {
+  const host = await pluginHost(t);
+  const { makeMessageDispatchHookContext } = await import("@get-bb/plugin-sdk/testing");
+  const dispatch = host.harness.inspection.registrations.hooks["message.dispatch"]!;
+  const drain = (ids: string[]) =>
+    dispatch(makeMessageDispatchHookContext({ thread: { id: THREAD }, input: { text: "x" }, originPluginId: ids.length > 1 ? "mixed" : null, queuedMessages: ids.map((id) => ({ id })) })) as Promise<{ action: string; reason?: string }>;
+  // The recovery got queued behind a hold and bb wouldn't let go of it: it's guarded.
+  host.failDeletes();
+  host.queueSends({ kind: "plugin" });
+  await host.harness.emitThreadEvent("thread.failed", { thread: host.makeThreadResponse({ id: THREAD, status: "error", providerId: "codex" }), error: '{"detail":"Bad Request"}' });
+  await until(() => host.deleted.length >= 3, 5_000);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(host.queued.has("qm_1"));
+  // A newer follow-up is queued, and bb drains it in one group with the withdrawn recovery.
+  host.queued.add("qm_user");
+  host.failDeletes(false);
+  const rechecks = host.harness.inspection.recheckCount;
+  const held = await drain(["qm_1", "qm_user"]);
+  // Not refused: the group waits (nothing lost) while only the recovery row is removed.
+  assert.equal(held.action, "wait");
+  assert.match(held.reason!, /your messages go out right after/);
+  await until(() => !host.queued.has("qm_1") && host.harness.inspection.recheckCount > rechecks, 5_000);
+  assert.ok(host.queued.has("qm_user"), "the follow-up is still queued, not deleted");
+  assert.deepEqual(host.deleted.at(-1), { threadId: THREAD, queuedMessageId: "qm_1" });
+  // bb's re-attempt after the recheck carries only the follow-up: it goes out.
+  const resent = await drain(["qm_user"]);
+  assert.notEqual(resent.action, "reject");
+  assert.notEqual(resent.action, "wait");
+  // The recovery row on its own would still be refused (it's gone now, so nothing guards it any more).
+  assert.equal(host.queued.has("qm_1"), false);
 });
 
 test("with the setting off, the plugin leaves other chats alone", async (t) => {
