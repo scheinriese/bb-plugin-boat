@@ -32,54 +32,34 @@ export interface ErrorFacts {
   texts: readonly (string | null | undefined)[];
 }
 
-/** The whole text is a 400: "Bad Request", "400 Bad Request", "HTTP 400: Bad Request". */
-const BAD_REQUEST = /^(?:(?:http\s*)?400\s*[:\-–]?\s*)?bad request\.?$/i;
-/** A status line in front of the response body: "unexpected status 400 Bad Request: {…}". */
-const STATUS_PREFIX = /^(?:unexpected status|http(?: status)?|status(?: code)?)?\s*400\s*(?:bad request)?\s*[:\-–]\s*/i;
+/** The whole text is the bare HTTP reason phrase. */
+const BARE_BAD_REQUEST = /^bad request$/i;
 /** Errors with their own paths (limits, auth, overloads, 5xx, tunnels, timeouts, context size). */
 const OTHER_FAILURE =
   /usage.?limit|rate.?limit|quota|billing|credits?\b|unauthori[sz]ed|forbidden|\bauth(?:entication|orization)?\b|credential|api.?key|overloaded|tunnel|gateway|unavailable|internal server error|timed? ?out|\b(?:401|402|403|404|408|409|413|422|429|5\d\d)\b|context.?(?:window|length)|too many|too large/i;
 
-/** `{"detail":"Bad Request"}` and its kin unwrap to their message; anything else stays as it is. */
-function unwrap(text: string): string {
-  let value = text.trim();
-  for (let depth = 0; depth < 3 && value.startsWith("{"); depth++) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      return value;
-    }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return value;
-    const body = parsed as { detail?: unknown; message?: unknown; error?: unknown };
-    const error = body.error;
-    const inner =
-      typeof body.detail === "string" ? body.detail
-      : typeof body.message === "string" ? body.message
-      : typeof error === "string" ? error
-      : error !== null && typeof error === "object" && typeof (error as { message?: unknown }).message === "string" ? (error as { message: string }).message
-      : null;
-    if (inner === null) return value;
-    value = inner.trim();
-  }
-  return value;
-}
-
-/** The text says exactly "Bad Request" (bare, with its 400, or as a JSON error body). */
+/** The text is exactly a bare Bad Request: `Bad Request`, or the body `{"detail":"Bad Request"}`. */
 export function isBadRequestText(text: string | null | undefined): boolean {
   if (typeof text !== "string") return false;
   const value = text.trim();
-  if (BAD_REQUEST.test(unwrap(value))) return true;
-  // The body after a 400 status line must say Bad Request too.
-  const prefix = STATUS_PREFIX.exec(value);
-  return prefix !== null && BAD_REQUEST.test(unwrap(value.slice(prefix[0].length)));
+  if (BARE_BAD_REQUEST.test(value)) return true;
+  if (!value.startsWith("{")) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return false;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const body = parsed as Record<string, unknown>;
+  return Object.keys(body).length === 1 && typeof body.detail === "string" && BARE_BAD_REQUEST.test(body.detail.trim());
 }
 
 /**
- * A provider 400 and nothing else: errorInfo says bad-request or HTTP 400, or
- * the provider classified nothing and the error text is exactly a Bad Request.
- * Other categories, other status codes, and texts that name a limit, auth,
- * an overload, a 5xx or a tunnel never match.
+ * A provider 400 and nothing else: an explicit HTTP 400, or error text that
+ * is exactly a bare Bad Request. A bad-request or unknown category alone is
+ * not enough; other categories, other status codes, and texts that name a
+ * limit, auth, an overload, a 5xx, a tunnel or context size never match.
  */
 export function isBadRequestFailure(facts: ErrorFacts): boolean {
   const category = facts.category ?? "unknown";
@@ -88,7 +68,7 @@ export function isBadRequestFailure(facts: ErrorFacts): boolean {
   if (status !== null && status !== 400) return false;
   const texts = facts.texts.filter((text): text is string => typeof text === "string" && text.trim() !== "");
   if (texts.some((text) => !isBadRequestText(text) && OTHER_FAILURE.test(text))) return false;
-  return category === "bad-request" || status === 400 || texts.some(isBadRequestText);
+  return status === 400 || texts.some(isBadRequestText);
 }
 
 /** The chat's latest turn, when it failed. */
@@ -101,7 +81,9 @@ export interface FailedTurn {
   badRequest: boolean;
   /** A message reached the chat after the failure (a new request or turn). */
   newerMessage: boolean;
-  /** The turn was interrupted. */
+  /** A turn started or took input after the failure. */
+  laterTurn: boolean;
+  /** The turn was interrupted, or the chat was after the failure. */
   interrupted: boolean;
 }
 
@@ -189,13 +171,26 @@ export function readFailedTurn(rows: readonly TurnEventRow[]): FailedTurn | null
   });
   const later = events.slice(end + 1);
   const turnId = completed.scope?.kind === "turn" && typeof completed.scope.turnId === "string" ? completed.scope.turnId : null;
+  const laterTurn = later.some((row) => row.type === "turn/started" || row.type === "turn/input/accepted");
   return {
     key: turnId !== null ? `turn:${turnId}` : `event:${completed.id ?? completed.seq}`,
     steers,
     badRequest,
-    newerMessage: later.some((row) => row.type === "client/turn/requested" || row.type === "turn/started"),
-    interrupted: turn.some((row) => row.type === "system/thread/interrupted"),
+    newerMessage: laterTurn || later.some((row) => row.type === "client/turn/requested"),
+    laterTurn,
+    // A stop after the failure (the user, the orchestrator, boat_interrupt) vetoes a retry too.
+    interrupted: [...turn, ...later].some((row) => row.type === "system/thread/interrupted"),
   };
+}
+
+/**
+ * The chat moved on from the failed turn `key`: it's no longer the latest
+ * completed turn, or a turn started, took input or was interrupted since.
+ * Only what can't be the retry's own dispatch counts (not its request).
+ */
+export function movedOnSince(rows: readonly TurnEventRow[], key: string): boolean {
+  const turn = readFailedTurn(rows);
+  return turn === null || turn.key !== key || turn.laterTurn || turn.interrupted;
 }
 
 /** The failed turn qualifies for the automatic retry (the service still checks the task and its sandbox). */
@@ -204,6 +199,13 @@ export function retriesAfterSteer(turn: FailedTurn | null): turn is FailedTurn {
 }
 
 const STEER_LIMIT = 4000;
+/** The retry follow-up's first line: how the dispatch hook knows it. */
+export const STEER_RETRY_HEADING = "# Automatic retry";
+
+/** The message is the plugin's automatic retry follow-up. */
+export function isSteerRetryText(text: string | null | undefined): boolean {
+  return typeof text === "string" && text.trimStart().startsWith(`${STEER_RETRY_HEADING}\n`);
+}
 
 /** The follow-up that retries the turn: it restates the steer, which the failed turn may not have kept. */
 export function steerRetryPrompt(steers: readonly string[]): string {
@@ -212,7 +214,7 @@ export function steerRetryPrompt(steers: readonly string[]): string {
     .map((steer) => (steer.length > STEER_LIMIT ? `${steer.slice(0, STEER_LIMIT)}…` : steer))
     .map((steer) => steer.split("\n").map((line) => `> ${line}`).join("\n"))
     .join("\n\n");
-  return `# Automatic retry
+  return `${STEER_RETRY_HEADING}
 
 Your last turn failed with a provider error (Bad Request) right after a steer, so the plugin retried it once. Continue where you left off, including what the steer asked for${said.length === 0 ? "." : `:\n\n${quoted}`}
 
@@ -226,18 +228,28 @@ export const AUTO_RETRY_RECORD = "auto-retry-turn";
 export const AUTO_RETRY_EVENT = "auto-retry";
 export const AUTO_RETRY_TEXT = "Retried automatically after a provider error following a steer";
 
+/** Visible task event: the retry was refused at dispatch, the chat had moved on. */
+export const AUTO_RETRY_SKIPPED_EVENT = "auto-retry-skipped";
+export const AUTO_RETRY_SKIPPED_TEXT = "Skipped the automatic retry: the chat moved on before it was sent";
+/** Visible task event: an interrupt the plugin sent (boat_interrupt, the page); it vetoes a retry. */
+export const INTERRUPT_REQUESTED_EVENT = "interrupt-requested";
+
 export interface AutoRetryRecord {
   /** The failed turn's key (FailedTurn.key). */
   failed: string;
   /** The retry turn's promptId marker. */
   promptId: string;
+  /** Refused at dispatch: the turn isn't a retry after all (the failed turn stays retried). */
+  dropped: boolean;
 }
 
 export function parseAutoRetryRecord(textValue: string | null | undefined): AutoRetryRecord | null {
   if (typeof textValue !== "string") return null;
   try {
-    const parsed = JSON.parse(textValue) as { failed?: unknown; promptId?: unknown };
-    return typeof parsed.failed === "string" && typeof parsed.promptId === "string" ? { failed: parsed.failed, promptId: parsed.promptId } : null;
+    const parsed = JSON.parse(textValue) as { failed?: unknown; promptId?: unknown; dropped?: unknown };
+    return typeof parsed.failed === "string" && typeof parsed.promptId === "string"
+      ? { failed: parsed.failed, promptId: parsed.promptId, dropped: parsed.dropped === true }
+      : null;
   } catch {
     return null;
   }
