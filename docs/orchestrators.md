@@ -75,6 +75,13 @@ orchestrator's open tasks to the new one, with its last message.
 The Cloud agents **Today** tab brings needs-you work and orchestrators
 together, with live cards in the chats where work happens:
 
+Manually created bb chats also appear in Today and the Home summary once they
+have visible, unarchived child chats. Nested delegations stay under their
+coordinating chat, with live native activity and links to each child. These
+rows are labelled **bb chats**: discovery does not change their instructions,
+register a Boat orchestrator or create a project or sandbox. Native idle chats
+remain **idle**, without implying a review approval or readiness to ship.
+
 - **Needs you:** decisions only you can make, each with the orchestrator's
   recommendation. **Go with …** queues the answer with a short Undo window;
   **Answer in your own words** fills the composer instead.

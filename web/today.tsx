@@ -41,6 +41,8 @@ import { openBoatChat } from "./overview";
 import { SetupCard } from "./setup";
 import { AgentLogo, EmptyBox, InlineAlert, ThreadName } from "./ui";
 import { ResizeDialog } from "./sandbox-size";
+import { nativeCoordinators } from "./coordinators-logic";
+import { NativeCoordinatorCard } from "./native-coordinators";
 
 const weekStart = (now: number) => {
   const date = new Date(now);
@@ -76,7 +78,7 @@ export function Today() {
   const orchestrators = useOrchestrators();
   const projects = useProjects();
   const relay = useRelay();
-  const { threads } = experimental_useSidebarThreads();
+  const { threads, projects: bbProjects } = experimental_useSidebarThreads();
   const navigate = useBbNavigate();
   const { openTask } = useCloudAgentsNavigation();
   const now = useNow();
@@ -132,6 +134,13 @@ export function Today() {
     );
     return ordered;
   }, [data]);
+  const native = nativeCoordinators(threads,
+    new Set([...recent, ...(data?.done ?? [])].flatMap(task => task.threadId ? [task.threadId] : [])),
+    new Set((orchestrators.data?.orchestrators ?? []).map(entry => entry.threadId)));
+  const nativeById = new Map(native.map(group => [group.thread.id, group]));
+  const otherCoordinators = native.filter(group => !grouped.some(([threadId]) => threadId === group.thread.id));
+  const nativeNeeds = native.reduce((sum, group) => sum + group.counts["needs-you"], 0);
+  const nativeWorking = native.reduce((sum, group) => sum + group.counts.working, 0);
   const broken = open.filter((task) => cardStatus(task).status === "broken");
   const needsCount = attentionCount(open, data?.needsYou ?? []);
   const progress = open.filter(
@@ -158,7 +167,7 @@ export function Today() {
   const timeline = [...weekEvents]
     .sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || b.seq - a.seq)
     .slice(0, 7);
-  const hasWork = recent.length > 0 || open.length > 0;
+  const hasWork = recent.length > 0 || open.length > 0 || native.length > 0;
   if (!data)
     return (
       <div className="py-6">
@@ -183,13 +192,13 @@ export function Today() {
       >
         <span className="inline-flex items-center gap-1.5 text-foreground">
           <Dot tone="attention" />
-          {needsCount} need you
+          {needsCount + nativeNeeds} {needsCount + nativeNeeds === 1 ? "needs" : "need"} you
         </span>
         <span className="inline-flex items-center gap-1.5 text-foreground">
           <Dot tone="positive" />
           {data.ready.filter((task) => task.role !== "review").length} ready
         </span>
-        <span>{progress} in progress</span>
+        <span>{progress + nativeWorking} in progress</span>
         <span>{shipped.length} shipped this week</span>
       </div>
       {!hasWork ? (
@@ -428,9 +437,11 @@ export function Today() {
                           );
                         })}
                       </div>
+                      {nativeById.has(threadId) && <NativeCoordinatorCard group={nativeById.get(threadId)!} childrenOnly />}
                     </div>
                   );
                 })}
+                {otherCoordinators.map(group => <NativeCoordinatorCard key={group.thread.id} group={group} projectName={bbProjects.find(project => project.id === group.thread.projectId)?.name} />)}
               </div>
             </section>
             <section className="space-y-2 sm:space-y-[10px]">

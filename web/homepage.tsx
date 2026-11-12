@@ -16,6 +16,8 @@ import { NewProjectDialog } from "./projects-settings";
 import { ResizeDialog } from "./sandbox-size";
 import { AgentLogo } from "./ui";
 import { CancelQueuedStartButton, useQueuedStarts } from "./start-queue";
+import { nativeCoordinators } from "./coordinators-logic";
+import { NativeCoordinatorRow, NativeCounts } from "./native-coordinators";
 
 const ROW = "flex min-h-11 items-center gap-2.5 border-b border-[color:var(--boat-divider)] px-[14px] py-2 last:border-b-0 sm:py-1.5";
 const ACTION = "h-[26px] max-w-[45%] shrink-0 rounded-md px-2.5 text-xs font-normal leading-4";
@@ -31,13 +33,18 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
   const overview = useOverview().data;
   const queued=useQueuedStarts().data?.requests??[];
   const relay = useRelay().data;
-  const { threads } = experimental_useSidebarThreads();
+  const { threads, projects: bbProjects } = experimental_useSidebarThreads();
   const orchestrators = (orchestratorData?.orchestrators ?? []).filter(entry => !entry.archived);
   const tasks = board ? [...board.running, ...board.ready] : [];
+  const native = nativeCoordinators(threads,
+    new Set([...tasks, ...(board?.done ?? [])].flatMap(task => task.threadId ? [task.threadId] : [])),
+    new Set(orchestrators.map(entry => entry.threadId)));
+  const nativeById = new Map(native.map(group => [group.thread.id, group]));
+  const otherCoordinators = native.filter(group => !orchestrators.some(entry => entry.threadId === group.thread.id));
   const decisions = board?.needsYou ?? [];
   const linked = new Set(decisions.flatMap(item => item.taskIds));
   const problems = tasks.filter(task => cardStatus(task).needsYou && !linked.has(task.id));
-  const firstRun = board !== undefined && orchestratorData !== undefined && !orchestrators.length && !decisions.length && !tasks.length && !board.done.length && !queued.length;
+  const firstRun = board !== undefined && orchestratorData !== undefined && !orchestrators.length && !native.length && !decisions.length && !tasks.length && !board.done.length && !queued.length;
   const projectName = (task?: TaskDto) => task ? (projects.find(project => project.id === task.projectId) ?? projects.find(project => project.repos[0]?.repo === task.repo) ?? projects.find(project => project.repos.some(repo => repo.repo === task.repo)))?.name ?? "" : "";
   const fill = (text: string) => { composer.insert(text, {at:"end", block:true}); composer.focus(); };
   const meta = [
@@ -74,10 +81,12 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
             {stopped>0 && <Count color="#E06C6C">{stopped} stopped</Count>}
             {ready>0 && <Count color="#5BD08A">{ready} ready</Count>}
             {working>0 && <Count color="#8A8A8A">{working} working</Count>}
+            {nativeById.has(entry.threadId) && <NativeCounts group={nativeById.get(entry.threadId)!}/>}
           </span>
         </div>;
       })}
-      {!decisions.length && !problems.length && !orchestrators.length && !queued.length && <p className="px-3.5 py-3 text-xs text-muted-foreground">{board ? "Nothing needs you right now." : "Loading cloud work…"}</p>}
+      {otherCoordinators.map(group => <NativeCoordinatorRow key={group.thread.id} group={group} projectName={bbProjects.find(project => project.id === group.thread.projectId)?.name}/>)}
+      {!decisions.length && !problems.length && !orchestrators.length && !native.length && !queued.length && <p className="px-3.5 py-3 text-xs text-muted-foreground">{board ? "Nothing needs you right now." : "Loading cloud work…"}</p>}
     </div>}
     <NewProjectDialog open={adding} onOpenChange={setAdding} repo="" baseBranch=""/>
   </section>;

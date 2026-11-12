@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6
+
+- Show manually created coordinating bb chats and their native child-thread activity in Today and the compact Home summary.
+- Keep nested delegations together and avoid repeating Boat-managed tasks; preserve the chats' existing instructions and execution setup.
+
 ## 0.2.5
 
 - Distinguish an agent failure from a stopped sandbox in the composer banner and offer a follow-up instead of an unrelated VM resume.
