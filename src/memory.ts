@@ -9,6 +9,7 @@
 // never moves a sandbox by itself.
 import type { MachineType } from "./boat-api.ts";
 import type { Runner, TaskEvent } from "./store.ts";
+import { AUTO_RETRY_RECORD } from "./steer-retry.ts";
 
 // ------------------------------------------------------------------ sizes
 
@@ -817,7 +818,7 @@ export function movedNote(from: MachineType | null, to: MachineType): string {
 // ------------------------------------------------------------------ records
 
 /** Task event kinds the history doesn't show (JSON for the plugin). */
-export const HIDDEN_EVENT_KINDS: ReadonlySet<string> = new Set(["chat-info", "memory-data"]);
+export const HIDDEN_EVENT_KINDS: ReadonlySet<string> = new Set(["chat-info", "memory-data", AUTO_RETRY_RECORD]);
 /** Visible kinds: the sandbox's size and moves, and memory findings. */
 export const SIZE_KIND = "sandbox-size";
 export const MEMORY_KIND = "memory";

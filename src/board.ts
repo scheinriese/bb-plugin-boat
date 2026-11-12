@@ -13,6 +13,8 @@ export interface TaskPublicStatus {
   reason: string | null;
   needsYou: boolean;
   moving: boolean;
+  /** The running turn is the plugin's automatic retry after a provider error. */
+  retrying?: boolean;
 }
 export interface StatusContext {
   ready?: boolean;
@@ -27,6 +29,8 @@ export interface StatusContext {
   outOfMemory?: boolean;
   /** The suggested recovery costs more, so a broken task also needs the owner. */
   recoveryCostsMore?: boolean;
+  /** The running turn is the plugin's automatic retry after a provider error (src/steer-retry.ts). */
+  retrying?: boolean;
 }
 
 /** The same resolver is usable by server DTOs, cards, pages and sidebar rows. */
@@ -50,6 +54,7 @@ export function resolveTaskStatus(
     return state("broken", "Broken", "danger", context.reason ?? error ?? "The task stopped with an error.", context.needsYou === true || context.recoveryCostsMore === true);
   }
   if (context.needsYou) return state("needs-you", "Needs you", "attention", context.reason ?? null, true);
+  if (busy && context.retrying) return { ...state("working", "Retrying", "neutral", context.reason ?? "Retrying after a provider error that followed a steer.", false, true), retrying: true };
   const reviewing = context.reviewOpen ?? context.latestReview === "reviewing";
   if (reviewing || (task.role === "review" && busy)) {
     return state("review", "Review", "neutral", context.reason ?? null, false, busy || reviewing);
