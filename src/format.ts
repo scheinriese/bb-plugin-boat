@@ -6,7 +6,7 @@ import type { Decision, Task, TaskEvent } from "./store.ts";
 import { tierSummary } from "./tiers.ts";
 import { HIDDEN_EVENT_KINDS, memoryNoticeLines } from "./memory.ts";
 import { sinceApprovalNotice } from "./ship-approval.ts";
-import { AUTO_RETRY_EVENT } from "./steer-retry.ts";
+import { AUTO_RETRY_EVENT, AUTO_RETRY_SKIPPED_EVENT } from "./steer-retry.ts";
 import { resolveTaskStatus, type StatusContext } from "./board.ts";
 
 /** One-line live-card markers; JSON quoting keeps marker attributes bounded. */
@@ -323,7 +323,10 @@ export function notificationText(
     const failover =
       lastStart?.kind === "failover" ? `\nHanded over on a usage limit: ${lastStart.text.split(" (")[0]}. Consider sending new dispatches to the other agent too.` : "";
     // The turn was the plugin's automatic retry after a provider error that followed a steer.
-    const retried = eventsFor(task.id).filter((event) => TURN_STARTS.has(event.kind) || event.kind === "turn" || event.kind === AUTO_RETRY_EVENT).at(-1)?.kind === AUTO_RETRY_EVENT;
+    const retried =
+      eventsFor(task.id)
+        .filter((event) => TURN_STARTS.has(event.kind) || event.kind === "turn" || event.kind === AUTO_RETRY_EVENT || event.kind === AUTO_RETRY_SKIPPED_EVENT)
+        .at(-1)?.kind === AUTO_RETRY_EVENT;
     const handover = `${moved}${failover}${retried ? "\nThis turn was an automatic retry: the previous one failed with a provider error (Bad Request) right after a steer." : ""}`;
     const evidence = evidenceLine(task.result, uploaderFor(task.id));
     const preview = previewFor(task.id);

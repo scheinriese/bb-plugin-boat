@@ -642,8 +642,11 @@ export class FakeChat implements ChatRunner {
   /** bb's view of each machine (default: active and connected). */
   machineStates = new Map<string, MachineState>();
   machineStateCalls = 0;
+  /** Runs while bb answers a machine-state call (something reaching the chat meanwhile). */
+  onMachineState: ((hostId: string) => void | Promise<void>) | null = null;
   async machineState(hostId: string): Promise<MachineState | null> {
     this.machineStateCalls += 1;
+    if (this.onMachineState) await this.onMachineState(hostId);
     const state = this.machineStates.get(hostId) ?? { phase: "active", connected: true, message: null };
     // After a resume, bb reconnects only after a few looks.
     if (state.phase === "active" && !state.connected && this.reconnectAfter !== null) {
@@ -730,8 +733,11 @@ export class FakeChat implements ChatRunner {
   /** bb can't list a chat's events. */
   eventsError: Error | null = null;
   eventReads = 0;
+  /** Runs before each read of a chat's events (with the read's number, from 1): the log can change between reads. */
+  onEventRead: ((threadId: string, read: number) => void) | null = null;
   async turnEvents(threadId: string) {
     this.eventReads += 1;
+    this.onEventRead?.(threadId, this.eventReads);
     if (this.eventsError) throw this.eventsError;
     return [...(this.events.get(threadId) ?? [])];
   }
@@ -858,6 +864,7 @@ export function makeService(
     processesStopped: (sandboxId) => void computingStopped.push(sandboxId),
     sandboxStopped: (sandboxId) => void plannedSandboxStops.push(sandboxId),
     sizeTiming: { checkMs: 200, pollMs: 1, stopMs: 200, startMs: 200, reconnectMs: 200, ...options.sizeTiming },
+    steerRetryTiming: { rereads: 2, rereadMs: 1 },
     ...(options.quotas ? { quotas: { read: async () => options.quotas! } } : {}),
     ...(options.evidence ? { evidence: options.evidence } : {}),
     ...(options.preflight ? { preflight: options.preflight } : {}),

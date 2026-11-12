@@ -535,6 +535,16 @@ export default async function plugin(bb: BbPluginApi) {
   bb.experimental_hooks.on("message.dispatch", async (context) => {
     const start = await nativeStart(context, runtime, quotas);
     if (start?.action === "wait" || start?.action === "reject") return start;
+    // The automatic retry after a steer goes out only if the chat hasn't moved on since its failure.
+    const retry = await service
+      .steerRetryDispatch({
+        threadId: context.thread.id,
+        text: context.input.text,
+        fromPlugin: context.originPluginId === bb.pluginId,
+        queuedRows: context.queuedMessages.length,
+      })
+      .catch(() => null);
+    if (retry !== null) return retry;
     return watchdog.dispatch({
       threadId: context.thread.id,
       attempt: context.attempt,
