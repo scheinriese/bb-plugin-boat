@@ -3,8 +3,8 @@ import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 export type CoordinationThread = Pick<PluginSidebarThread,
   "id" | "parentThreadId" | "displayTitle" | "projectId" | "providerId" |
   "status" | "runtimeStatus" | "queuedWork" | "hasPendingInteraction" |
-  "activity" | "isHidden" | "isArchived" | "createdAt"
->;
+  "isHidden" | "isArchived" | "createdAt"
+> & { activity: Pick<PluginSidebarThread["activity"], "workflows" | "backgroundAgents" | "backgroundCommands"> };
 
 export type NativeActivity = "needs-you" | "working" | "waiting" | "error" | "idle";
 export type NativeCoordinator = {

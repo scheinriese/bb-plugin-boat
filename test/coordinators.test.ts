@@ -4,7 +4,7 @@ import { nativeActivity, nativeCoordinators, type CoordinationThread } from "../
 
 function thread(id: string, parentThreadId: string | null = null, patch: Partial<CoordinationThread> = {}): CoordinationThread {
   return { id, parentThreadId, displayTitle: id, projectId: "project", providerId: "codex", status: "idle", runtimeStatus: "idle", queuedWork: "none", hasPendingInteraction: false,
-    activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, goals: 0, planMode: 0 }, isHidden: false, isArchived: false, createdAt: 1, ...patch };
+    activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0 }, isHidden: false, isArchived: false, createdAt: 1, ...patch };
 }
 const none = new Set<string>();
 
