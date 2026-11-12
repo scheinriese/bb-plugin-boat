@@ -80,7 +80,21 @@ import type { PlanSize, SizedProject } from "./memory.ts";
 import { SandboxSizes } from "./sandbox-size.ts";
 import { completedReview, isReady, resolveTaskStatus, reviewState, type StatusContext, type TaskPublicStatus } from "./board.ts";
 import { taskMarker } from "./format.ts";
-import { AUTO_RETRY_EVENT, AUTO_RETRY_RECORD, AUTO_RETRY_TEXT, parseAutoRetryRecord, readFailedTurn, retriesAfterSteer, steerRetryPrompt } from "./steer-retry.ts";
+import {
+  AUTO_RETRY_EVENT,
+  AUTO_RETRY_RECORD,
+  AUTO_RETRY_SKIPPED_EVENT,
+  AUTO_RETRY_SKIPPED_TEXT,
+  AUTO_RETRY_TEXT,
+  INTERRUPT_REQUESTED_EVENT,
+  isSteerRetryText,
+  movedOnSince,
+  parseAutoRetryRecord,
+  readFailedTurn,
+  retriesAfterSteer,
+  steerRetryPrompt,
+  type FailedTurn,
+} from "./steer-retry.ts";
 
 export interface BoatSettings {
   boatPath: string;
@@ -239,6 +253,8 @@ export interface ServiceHooks {
   sandboxStopped?(sandboxId: string): void;
   /** Tests: the memory check's cap and the move's poll interval and waits (ms). */
   sizeTiming?: { checkMs?: number; pollMs?: number; stopMs?: number; startMs?: number; reconnectMs?: number };
+  /** Tests: how often and how far apart a failed chat turn's event log is read again (ms). */
+  steerRetryTiming?: { rereads?: number; rereadMs?: number };
 }
 
 export interface StartTaskInput {
@@ -2481,7 +2497,37 @@ export class BoatService {
   /** The task's current turn is the plugin's automatic retry after a steer. */
   private isAutoRetryTurn(task: Task): boolean {
     if (task.status !== "running" || task.promptId === null) return false;
-    return parseAutoRetryRecord(this.store.latestEvent(task.id, AUTO_RETRY_RECORD)?.text)?.promptId === task.promptId;
+    const record = parseAutoRetryRecord(this.store.latestEvent(task.id, AUTO_RETRY_RECORD)?.text);
+    return record !== null && !record.dropped && record.promptId === task.promptId;
+  }
+
+  /** The plugin sent an interrupt (boat_interrupt, the page) since the task's current turn began. */
+  private interruptRequestedSince(task: Task): boolean {
+    const interrupt = this.store.latestEvent(task.id, INTERRUPT_REQUESTED_EVENT);
+    if (interrupt === null) return false;
+    return Date.parse(interrupt.at) >= (chatSentAt(task) ?? Date.parse(task.createdAt));
+  }
+
+  /**
+   * The chat's failed turn from bb's event log (undefined: unreadable). bb
+   * may report a failure before its turn/completed is in the log, so a log
+   * without the failure is read again, a few times a moment apart.
+   */
+  private async failedChatTurn(threadId: string): Promise<FailedTurn | null | undefined> {
+    const rereads = this.hooks.steerRetryTiming?.rereads ?? 2;
+    const rereadMs = this.hooks.steerRetryTiming?.rereadMs ?? 1_500;
+    for (let read = 0; ; read++) {
+      let turn: FailedTurn | null;
+      try {
+        turn = readFailedTurn(await this.hooks.chat!.turnEvents(threadId));
+      } catch (error) {
+        this.hooks.log.warn(`steer retry: events ${threadId}: ${errorText(error)}`);
+        return undefined;
+      }
+      // No failed turn, or one older than a turn the log already shows: the failure may not be logged yet.
+      if ((turn !== null && !turn.newerMessage) || read >= rereads || this.hooks.lifecycle.aborted) return turn;
+      await delay(rereadMs, this.hooks.lifecycle);
+    }
   }
 
   /**
@@ -2491,37 +2537,45 @@ export class BoatService {
    * orchestrator hears of the turn only when the retry ends.
    *
    * retried: sent, the task runs the retry. wait: the retry was just sent and
-   * the chat still shows the failure it retries (or the task changed under
-   * this check). tried: the failure is the retry's own, or its turn was
-   * retried before. unsent: the send failed. no: not this case.
+   * the chat still shows the failure it retries, the chat moved on to a new
+   * turn, or the task changed under this check. tried: the failure is the
+   * retry's own, or its turn was retried before. unsent: the send failed.
+   * no: not this case.
    */
   private async retryAfterSteer(task: Task, now: number): Promise<"retried" | "wait" | "tried" | "unsent" | "no"> {
     const chat = this.hooks.chat!;
     if (task.status !== "running" || task.threadId === null) return "no";
-    let turn;
-    try {
-      turn = readFailedTurn(await chat.turnEvents(task.threadId));
-    } catch (error) {
-      this.hooks.log.warn(`steer retry: events ${task.threadId}: ${errorText(error)}`);
-      return "no";
-    }
-    if (turn === null) return "no";
+    const turn = await this.failedChatTurn(task.threadId);
+    if (turn === undefined || turn === null) return "no";
     const record = parseAutoRetryRecord(this.store.latestEvent(task.id, AUTO_RETRY_RECORD)?.text);
-    if (record !== null && record.promptId === task.promptId) {
+    if (record !== null && !record.dropped && record.promptId === task.promptId) {
       // The retry's follow-up went out; the chat may still show the failure it retries.
       const sentAt = chatSentAt(task);
       if (record.failed === turn.key && sentAt !== null && now - sentAt < 60_000) return "wait";
       return "tried";
     }
     if (record !== null && record.failed === turn.key) return "tried";
-    if (!retriesAfterSteer(turn)) return "no";
+    if (!retriesAfterSteer(turn) || this.interruptRequestedSince(task)) return "no";
     // Only on a sandbox that's up: bb would otherwise resume it for the retry.
     if (task.hostId === null) return "no";
     const machine = await chat.machineState(task.hostId).catch(() => null);
     if (machine === null || machine.phase !== "active" || !machine.connected) return "no";
-    // Claimed in one step, before the send: a sweep and an event at once, or a reload, retry at most once.
+    // A message, an interrupt or a close may have come in while bb answered: look again right before the claim.
+    const state = await chat.state(task.threadId).catch(() => null);
+    if (state === null || state.archived) return "wait";
+    if ((state.status !== "idle" && state.status !== "error") || state.queued > 0 || state.backgroundAgents > 0 || (state.workflows ?? 0) > 0) return "wait";
+    let again: FailedTurn | null;
+    try {
+      again = readFailedTurn(await chat.turnEvents(task.threadId));
+    } catch (error) {
+      this.hooks.log.warn(`steer retry: events ${task.threadId}: ${errorText(error)}`);
+      return "no";
+    }
+    if (again === null || again.key !== turn.key || !retriesAfterSteer(again)) return "no";
+    // Claimed in one step with no await before the send: a sweep and an event at once, or a reload, retry at most once.
     const current = this.store.get(task.id);
     if (current === null || current.status !== "running" || current.promptId !== task.promptId || current.threadId !== task.threadId) return "wait";
+    if (this.interruptRequestedSince(current)) return "no";
     if (parseAutoRetryRecord(this.store.latestEvent(task.id, AUTO_RETRY_RECORD)?.text)?.failed === turn.key) return "tried";
     const marker = chatTurnMarker();
     const claimed = this.store.transition(task.id, ["running"], { promptId: marker, turns: task.turns + 1 }, { promptId: task.promptId });
@@ -2539,6 +2593,36 @@ export class BoatService {
     this.chatTurnSeen.delete(task.id);
     if (task.hostId !== null) this.suspendedHosts.delete(task.hostId);
     return "retried";
+  }
+
+  /**
+   * bb's message.dispatch for the automatic retry: core has no conditional
+   * send, so the retry is checked again when it actually dispatches. Queued
+   * behind a turn that started after the failure (someone's message, bb's own
+   * retry), or after an interrupt, it's refused: the chat moved on, and
+   * repeating the steer would duplicate that. Null: proceed.
+   */
+  async steerRetryDispatch(input: { threadId: string; text: string; fromPlugin: boolean; queuedRows: number }): Promise<{ action: "reject"; message: string } | null> {
+    // Only the retry on its own: never refuse a group that carries someone else's message.
+    if (!input.fromPlugin || input.queuedRows > 1 || !isSteerRetryText(input.text) || this.hooks.chat === undefined) return null;
+    const task = this.store.byThread(input.threadId);
+    if (task === null || task.threadId !== input.threadId || !this.isAutoRetryTurn(task)) return null;
+    const record = parseAutoRetryRecord(this.store.latestEvent(task.id, AUTO_RETRY_RECORD)?.text)!;
+    let movedOn = this.interruptRequestedSince(task);
+    if (!movedOn) {
+      try {
+        movedOn = movedOnSince(await this.hooks.chat.turnEvents(input.threadId), record.failed);
+      } catch (error) {
+        this.hooks.log.warn(`steer retry: dispatch events ${input.threadId}: ${errorText(error)}`);
+        return null;
+      }
+    }
+    if (!movedOn) return null;
+    // The task's turn is no longer a retry; the failed turn stays retried, so it never fires later.
+    this.store.addEvent(task.id, AUTO_RETRY_RECORD, JSON.stringify({ version: 1, failed: record.failed, promptId: record.promptId, dropped: true }));
+    this.store.addEvent(task.id, AUTO_RETRY_SKIPPED_EVENT, AUTO_RETRY_SKIPPED_TEXT);
+    this.hooks.changed([task.id]);
+    return { action: "reject", message: "Boat skipped its automatic retry: this chat moved on before it was sent." };
   }
 
   /**
@@ -2977,6 +3061,8 @@ export class BoatService {
       if (task.threadId === null || this.hooks.chat === undefined) {
         throw new TaskError(`Task ${task.id} has no running chat.`, "task_not_dispatched");
       }
+      // Before the stop: a failure the plugin hasn't settled yet must not be retried after it.
+      this.store.addEvent(task.id, INTERRUPT_REQUESTED_EVENT, "Interrupt requested");
       await this.hooks.chat.stop(task.threadId);
     } else {
       if (task.sandboxId === null || task.conversationId === null) {

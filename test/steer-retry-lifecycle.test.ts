@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { notificationText } from "../src/format.ts";
 import { projectHistoryEvent } from "../src/history.ts";
-import type { TurnEventRow } from "../src/steer-retry.ts";
+import { isSteerRetryText, type TurnEventRow } from "../src/steer-retry.ts";
 import { makeService } from "./fakes.ts";
 import { BAD_REQUEST, INCIDENT, STEER, laterTurn, without, withError } from "./steer-events.ts";
 
@@ -223,4 +223,149 @@ test("a retry that can't be sent leaves the failure to report", async () => {
   assert.match(failed.error!, /The automatic retry couldn't be sent\./);
   assert.equal(env.notifications.length, 1);
   assert.ok(!env.store.events(task.id, 50).some((event) => event.kind === "auto-retry"));
+});
+
+/** The plugin sent its automatic retry into a chat. */
+function retries(env: ReturnType<typeof makeService>): number {
+  return env.chat.sends.filter((send) => isSteerRetryText(send.text)).length;
+}
+
+const STOPPED: TurnEventRow = { id: "evt_122", seq: 122, type: "system/thread/interrupted", data: { reason: "manual-stop" } };
+
+test("a message that arrives while the plugin checks the sandbox stops the retry", async () => {
+  // The user writes to the worker while bb answers the machine-state call: a new turn starts.
+  const env = makeService({ chat: true });
+  const task = await chatTask(env);
+  env.chat.onMachineState = () => {
+    env.chat.events.set(task.threadId!, [...INCIDENT, ...laterTurn(140, { status: "completed" }).slice(0, 3)]);
+    env.chat.states.get(task.threadId!)!.status = "active";
+  };
+  await fail(env, task.threadId!, INCIDENT);
+  assert.equal(retries(env), 0);
+  // The task follows the user's turn instead: not failed, no notice yet.
+  assert.equal(env.store.get(task.id)!.status, "running");
+  assert.equal(env.notifications.length, 0);
+  env.chat.onMachineState = null;
+  await env.service.sweep(); // seen busy
+  env.chat.events.set(task.threadId!, [...INCIDENT, ...laterTurn(140, { status: "completed" })]);
+  env.chat.finish(task.threadId!, "Done.\n\n=== REPORT ===\nSTATUS: done\n=== END REPORT ===");
+  await env.service.sweep();
+  await env.service.sizes.settled();
+  await env.service.deliverPending();
+  assert.equal(retries(env), 0, "never fires later");
+  assert.equal(env.store.get(task.id)!.status, "idle");
+  assert.equal(env.notifications.length, 1);
+  assert.doesNotMatch(notificationText(env.notifications[0]!.tasks, (id) => env.store.events(id, 30)), /automatic retry/);
+
+  // A message bb queued meanwhile: the same.
+  const queued = makeService({ chat: true });
+  const waiting = await chatTask(queued);
+  queued.chat.onMachineState = () => {
+    queued.chat.events.set(waiting.threadId!, [...INCIDENT, { id: "evt_140", seq: 140, type: "client/turn/requested", data: { requestId: "req_user", target: { kind: "new-turn" }, input: [{ type: "text", text: "Try again" }] } }]);
+    queued.chat.states.get(waiting.threadId!)!.queued = 1;
+  };
+  await fail(queued, waiting.threadId!, INCIDENT);
+  assert.equal(retries(queued), 0);
+  assert.equal(queued.store.get(waiting.id)!.status, "running");
+
+  // An interrupt meanwhile: no retry, the failure is reported.
+  const stopped = makeService({ chat: true });
+  const halted = await chatTask(stopped);
+  stopped.chat.onMachineState = () => void stopped.chat.events.set(halted.threadId!, [...INCIDENT, STOPPED]);
+  await fail(stopped, halted.threadId!, INCIDENT);
+  assert.equal(retries(stopped), 0);
+  assert.equal(stopped.store.get(halted.id)!.status, "failed");
+  assert.doesNotMatch(stopped.store.get(halted.id)!.error!, /automatic retry/);
+
+  // The task closed meanwhile.
+  const closed = makeService({ chat: true });
+  const gone = await chatTask(closed);
+  closed.chat.onMachineState = async () => void (await closed.service.closeTask(gone.id, { status: "cancelled" }));
+  await fail(closed, gone.threadId!, INCIDENT);
+  assert.equal(retries(closed), 0);
+  assert.equal(closed.store.get(gone.id)!.status, "cancelled");
+});
+
+test("an interrupt after the failed completion vetoes the retry", async () => {
+  // bb logged a manual stop after the failed turn, before the plugin settled the failure.
+  const env = makeService({ chat: true });
+  const task = await chatTask(env);
+  await fail(env, task.threadId!, [...INCIDENT, STOPPED]);
+  assert.equal(retries(env), 0);
+  assert.equal(env.store.get(task.id)!.status, "failed");
+
+  // The orchestrator's boat_interrupt (or the page's Interrupt) in the same gap.
+  const other = makeService({ chat: true });
+  const second = await chatTask(other);
+  other.chat.events.set(second.threadId!, INCIDENT);
+  other.chat.finish(second.threadId!, "", "error");
+  await other.service.interruptTask(second.id);
+  other.chat.states.get(second.threadId!)!.status = "error"; // nothing ran, so the failure still shows
+  await other.service.syncChatThread(second.threadId!, { kind: "failed", error: BAD_REQUEST, at: Date.now() });
+  assert.equal(retries(other), 0);
+  assert.equal(other.store.get(second.id)!.status, "failed");
+  assert.ok(other.store.events(second.id, 50).some((event) => event.kind === "interrupt-requested"));
+});
+
+test("at dispatch, a retry queued behind a newer turn is refused and never fires later", async () => {
+  const env = makeService({ chat: true });
+  const task = await chatTask(env);
+  await fail(env, task.threadId!, INCIDENT);
+  assert.equal(retries(env), 1);
+  const text = env.chat.sends.at(-1)!.text;
+  const dispatch = (overrides: Partial<{ text: string; fromPlugin: boolean; queuedRows: number }> = {}) =>
+    env.service.steerRetryDispatch({ threadId: task.threadId!, text, fromPlugin: true, queuedRows: 1, ...overrides });
+
+  // Dispatched right away, or after a hold with nothing new in the chat: it goes out.
+  assert.equal(await dispatch({ queuedRows: 0 }), null);
+  env.chat.events.set(task.threadId!, [...INCIDENT, { id: "evt_130", seq: 130, type: "client/turn/requested", data: { requestId: "req_retry", target: { kind: "new-turn" }, input: [] } }]);
+  assert.equal(await dispatch(), null);
+
+  // The user's message ran first; the retry was queued behind it.
+  env.chat.events.set(task.threadId!, [...INCIDENT, ...laterTurn(140, { status: "completed" })]);
+  // Someone else's message, or a group with one, is never refused.
+  assert.equal(await dispatch({ fromPlugin: false }), null);
+  assert.equal(await dispatch({ text: "Your last turn ended with a provider error." }), null);
+  assert.equal(await dispatch({ queuedRows: 2 }), null);
+  const refused = await dispatch();
+  assert.equal(refused?.action, "reject");
+  assert.match(refused!.message, /skipped its automatic retry/);
+  // The turn isn't a retry any more, the history says why, and the failed turn stays retried.
+  const after = env.store.get(task.id)!;
+  assert.equal(env.service.publicStatus(after).retrying, undefined);
+  assert.ok(env.store.events(task.id, 50).some((event) => event.kind === "auto-retry-skipped"));
+  assert.equal(await dispatch(), null, "refused once");
+  env.chat.events.set(task.threadId!, INCIDENT);
+  env.chat.finish(task.threadId!, "", "error");
+  await env.service.syncChatThread(task.threadId!, { kind: "failed", error: BAD_REQUEST, at: Date.now() });
+  assert.equal(retries(env), 1);
+
+  // An interrupt sent after the retry: refused too.
+  const other = makeService({ chat: true });
+  const second = await chatTask(other);
+  await fail(other, second.threadId!, INCIDENT);
+  await other.service.interruptTask(second.id);
+  const stopped = await other.service.steerRetryDispatch({ threadId: second.threadId!, text: other.chat.sends.at(-1)!.text, fromPlugin: true, queuedRows: 1 });
+  assert.equal(stopped?.action, "reject");
+});
+
+test("a failure bb reports before it's in the event log is read again, a bounded number of times", async () => {
+  // turn/completed (and its provider error) land in the log a moment after thread.failed.
+  const unlogged = INCIDENT.filter((row) => row.type !== "turn/completed" && row.type !== "provider/error");
+  const env = makeService({ chat: true });
+  const task = await chatTask(env);
+  env.chat.onEventRead = (threadId, read) => {
+    if (read === 2) env.chat.events.set(threadId, INCIDENT);
+  };
+  await fail(env, task.threadId!, unlogged);
+  assert.equal(retries(env), 1);
+  assert.equal(env.chat.eventReads, 3, "two reads to find it, one more right before the send");
+
+  // Never logged: after the first read and two more, the failure is reported as before.
+  const other = makeService({ chat: true });
+  const second = await chatTask(other);
+  await fail(other, second.threadId!, unlogged);
+  assert.equal(other.chat.eventReads, 3);
+  assert.equal(retries(other), 0);
+  assert.equal(other.store.get(second.id)!.status, "failed");
 });

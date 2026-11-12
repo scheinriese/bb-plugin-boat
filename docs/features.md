@@ -146,9 +146,10 @@ after you or the orchestrator steered it, the plugin retries the turn once:
 it sends a follow-up into the chat that repeats the steer, and the task
 shows **Retrying** meanwhile. The orchestrator hears of the turn when the
 retry ends, and a retry that fails too is reported as failed, saying a retry
-was already tried. There's no retry when another message already reached
-the chat, when the sandbox isn't running, or for other errors (usage limits,
-sign-in, overloads, server or connection errors).
+was already tried. Only an HTTP 400 or a bare "Bad Request" counts. There's
+no retry when another message reached the chat or the chat was interrupted
+(before the retry goes out, too), when the sandbox isn't running, or for
+other errors (usage limits, sign-in, overloads, server or connection errors).
 
 **Continue as a chat** on a headless task's page moves the task into a
 task chat once its turn has ended. bb is installed on the task's sandbox
