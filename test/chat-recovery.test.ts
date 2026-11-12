@@ -639,8 +639,8 @@ test("through the plugin, a withdrawn row grouped with newer input is taken out 
   assert.equal(host.queued.has("qm_1"), false);
 });
 
-/** A guarded recovery (bb won't let go of it) grouped with a newer follow-up: the hook holds the group. */
-async function heldGroup(t: { after(fn: () => unknown): void }) {
+/** A guarded recovery (bb won't let go of it) grouped with a newer follow-up: the hook holds the group (drainNow). */
+async function heldGroup(t: { after(fn: () => unknown): void }, drainNow = true) {
   const host = await pluginHost(t);
   const { makeMessageDispatchHookContext } = await import("@get-bb/plugin-sdk/testing");
   const drain = (ids: string[]) =>
@@ -653,10 +653,116 @@ async function heldGroup(t: { after(fn: () => unknown): void }) {
   await until(() => host.deleted.length >= 3, 5_000);
   await new Promise((resolve) => setTimeout(resolve, 50));
   host.queued.add("qm_user");
-  const held = await drain(["qm_1", "qm_user"]);
+  const held = drainNow ? await drain(["qm_1", "qm_user"]) : null;
   const guards = () => new TaskStore(() => host.bb.storage.database());
-  return { host, drain, held, guards };
+  return { host, drain, held: held!, guards };
 }
+
+/** Let promise chains run under fake timers (setImmediate isn't faked). */
+async function flush(rounds = 40): Promise<void> {
+  for (let round = 0; round < rounds; round++) await new Promise((resolve) => setImmediate(resolve));
+}
+
+const HOLD_MS = 2 * 60_000;
+
+test("the plugin's own timer has bb re-attempt a held group at its two-minute expiry, without bb's sendAt (review 6)", async (t) => {
+  const { host, drain, guards } = await heldGroup(t, false);
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  try {
+    const before = host.harness.inspection.recheckCount;
+    assert.equal((await drain(["qm_1", "qm_user"])).action, "wait");
+    // Deletes keep failing and bb never runs its due sweep: only the plugin's timer can wake the group.
+    mock.timers.tick(HOLD_MS - 2_000);
+    await flush();
+    assert.equal(host.harness.inspection.recheckCount, before, "not before the expiry");
+    mock.timers.tick(3_000);
+    await flush();
+    assert.equal(host.harness.inspection.recheckCount, before + 1, "at the expiry");
+    // bb's re-attempt that recheck asks for: the guard has expired, so the group goes out.
+    const out = await drain(["qm_1", "qm_user"]);
+    assert.notEqual(out.action, "wait");
+    assert.notEqual(out.action, "reject");
+    assert.equal(guards().guardedQueuedMessage(["qm_1"]), null);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a group bb re-attempts twice before the expiry still gets one timer (review 6)", async (t) => {
+  const { host, drain } = await heldGroup(t, false);
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  try {
+    const before = host.harness.inspection.recheckCount;
+    assert.equal((await drain(["qm_1", "qm_user"])).action, "wait");
+    mock.timers.tick(30_000);
+    await flush();
+    assert.equal((await drain(["qm_1", "qm_user"])).action, "wait");
+    mock.timers.tick(HOLD_MS);
+    await flush();
+    assert.equal(host.harness.inspection.recheckCount, before + 1);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("disposing the plugin clears its group timers (review 6)", async (t) => {
+  const { host, drain } = await heldGroup(t, false);
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  // Watch which timers the plugin sets and clears: the group's timer is the one near the two-minute expiry.
+  const fakeSet = globalThis.setTimeout;
+  const longTimers: unknown[] = [];
+  const set = mock.method(globalThis, "setTimeout", ((callback: () => void, ms?: number) => {
+    const timer = fakeSet(callback, ms);
+    if ((ms ?? 0) > HOLD_MS / 2) longTimers.push(timer);
+    return timer;
+  }) as typeof setTimeout);
+  const cleared = mock.method(globalThis, "clearTimeout");
+  try {
+    assert.equal((await drain(["qm_1", "qm_user"])).action, "wait");
+    assert.equal(longTimers.length, 1, "one timer for the group");
+    const before = host.harness.inspection.recheckCount;
+    await host.harness.lifecycle.dispose();
+    assert.ok(cleared.mock.calls.some((call) => call.arguments[0] === longTimers[0]), "cleared on dispose");
+    mock.timers.tick(HOLD_MS * 2);
+    await flush();
+    assert.equal(host.harness.inspection.recheckCount, before);
+  } finally {
+    set.mock.restore();
+    cleared.mock.restore();
+    mock.timers.reset();
+  }
+});
+
+test("on start, a still-young guard gets its expiry timer back (review 6)", async (t) => {
+  const { host } = await heldGroup(t, false);
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  try {
+    const next = await host.reload();
+    await flush();
+    const atStart = next.harness.inspection.recheckCount;
+    assert.equal(atStart, 1, "the start-up recheck");
+    mock.timers.tick(HOLD_MS + 1_000);
+    await flush();
+    assert.equal(next.harness.inspection.recheckCount, atStart + 1, "and the re-armed timer at the expiry");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("on start, an expired guard gets one immediate recheck and no timer (review 6)", async (t) => {
+  const { host } = await heldGroup(t, false);
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() + HOLD_MS + 1_000 });
+  try {
+    const next = await host.reload();
+    await flush();
+    assert.equal(next.harness.inspection.recheckCount, 1);
+    mock.timers.tick(HOLD_MS * 5);
+    await flush();
+    assert.equal(next.harness.inspection.recheckCount, 1);
+  } finally {
+    mock.timers.reset();
+  }
+});
 
 test("a held group waits at most two minutes, with bb's own wake-up, then goes out even if the cleanup failed (review 5)", async (t) => {
   const { host, drain, held, guards } = await heldGroup(t);

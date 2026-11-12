@@ -571,6 +571,30 @@ export default async function plugin(bb: BbPluginApi) {
     if (entry !== undefined && typeof entry.id === "string") watchdog.dispatched(entry);
   });
   // The same note for a message that would go straight to the worker: held a moment, once, to add it.
+  // The plugin's own wake-up for a held group, in case bb doesn't honor the wait's sendAt: at the guard's
+  // expiry, have bb re-attempt held rows, and the hook lets the group through. One timer per guard.
+  const deadlines = new Map<string, ReturnType<typeof setTimeout>>();
+  const clearDeadline = (queuedMessageId: string) => {
+    const timer = deadlines.get(queuedMessageId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    deadlines.delete(queuedMessageId);
+  };
+  const armDeadline = (queuedMessageId: string, createdAt: number) => {
+    if (deadlines.has(queuedMessageId) || lifecycle.signal.aborted) return;
+    const timer = setTimeout(() => {
+      deadlines.delete(queuedMessageId);
+      if (lifecycle.signal.aborted) return;
+      void bb.experimental_hooks.recheck("message.dispatch").catch((error: unknown) => bb.log.warn(`queue guard ${queuedMessageId}: recheck at expiry failed: ${error instanceof Error ? error.message : String(error)}`));
+    }, Math.max(0, createdAt + GROUP_HOLD_MS - Date.now()) + 50);
+    (timer as { unref?: () => void }).unref?.();
+    deadlines.set(queuedMessageId, timer);
+  };
+  lifecycle.signal.addEventListener("abort", () => {
+    for (const timer of deadlines.values()) clearTimeout(timer);
+    deadlines.clear();
+  }, { once: true });
+
   // A withdrawn row bb grouped with newer input: remove it, then have bb dispatch the rest again.
   const releasing = new Set<string>();
   const releaseGroup = async (threadId: string, queuedMessageId: string) => {
@@ -582,6 +606,7 @@ export default async function plugin(bb: BbPluginApi) {
         await sleep(round === 0 ? 250 : RELEASE_RETRY_MS, lifecycle.signal);
         if ((await chatRunner.withdraw(threadId, queuedMessageId).catch(() => "stuck" as const)) !== "removed") continue;
         service.store.settleQueuedGuard(queuedMessageId, "removed");
+        clearDeadline(queuedMessageId);
         bb.log.info(`removed withdrawn queued message ${queuedMessageId} from ${threadId}; bb dispatches the messages grouped with it again`);
         // bb re-attempts every row queued on a plugin wait, through this hook again (SDK: experimental_hooks.recheck).
         await bb.experimental_hooks.recheck("message.dispatch");
@@ -607,14 +632,18 @@ export default async function plugin(bb: BbPluginApi) {
       // Grouped with newer input: refusing would refuse that too, and a hook can't take one row out of a group.
       // Hold the group (nothing is refused or lost), delete only the withdrawn row, then bb dispatches the rest again.
       // sendAt is bb's own wake-up for this wait: it comes even if the cleanup gives up or the plugin reloads.
+      // The plugin's timer is the second one, should bb not honor sendAt.
       bb.log.warn(`held a queued group in ${context.thread.id}: it carries withdrawn message ${guarded}, which the plugin removes before the rest goes out`);
+      armDeadline(guard.queuedMessageId, guard.createdAt);
       void releaseGroup(context.thread.id, guard.queuedMessageId);
       return { action: "wait", reason: "Boat is removing an automatic message it withdrew; your messages go out right after.", sendAt: guard.createdAt + GROUP_HOLD_MS };
     }
     if (guard !== null) {
-      // Fail open: real input is never held longer. The stale row goes out with it, and its guard goes.
+      // Fail open: real input is never held longer. The accepted exception: the withdrawn row goes out with it,
+      // so that stale retry or recovery runs once next to the newer input. Its guard and timer go.
       bb.log.warn(`let a queued group in ${context.thread.id} through with withdrawn message ${guarded}: it couldn't be removed within ${GROUP_HOLD_MS / 60_000} minutes`);
       service.store.dropQueuedGuard(guard.queuedMessageId);
+      clearDeadline(guard.queuedMessageId);
     }
     const start = await nativeStart(context, runtime, quotas);
     if (start?.action === "wait" || start?.action === "reject") return start;
@@ -628,11 +657,16 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // On start: drop guards whose queue row is gone, then have bb re-attempt rows held on plugin waits
-  // (a group held before a reload): expired guards let theirs through, young ones are cleaned up as before.
+  // (a group held before a reload): expired guards let theirs through at once, young ones are cleaned up
+  // as before, and each still-young guard gets its expiry timer back.
   void (async () => {
     for (const guard of service.store.queuedGuards()) {
       const listed = (await bb.sdk.threads.queuedMessages.list({ threadId: guard.threadId }).catch(() => null)) as unknown;
-      if (Array.isArray(listed) && !listed.some((row) => (row as { id?: unknown } | null)?.id === guard.queuedMessageId)) service.store.dropQueuedGuard(guard.queuedMessageId);
+      if (Array.isArray(listed) && !listed.some((row) => (row as { id?: unknown } | null)?.id === guard.queuedMessageId)) {
+        service.store.dropQueuedGuard(guard.queuedMessageId);
+        continue;
+      }
+      if (guard.createdAt + GROUP_HOLD_MS > Date.now()) armDeadline(guard.queuedMessageId, guard.createdAt);
     }
     await bb.experimental_hooks.recheck("message.dispatch");
   })().catch((error: unknown) => bb.log.warn(`queue guards on start: ${error instanceof Error ? error.message : String(error)}`));
