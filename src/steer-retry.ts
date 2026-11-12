@@ -75,6 +75,10 @@ export function isBadRequestFailure(facts: ErrorFacts): boolean {
 export interface FailedTurn {
   /** The failed turn, for the once-only record. */
   key: string;
+  /** How the turn ended (readLatestTurn; readFailedTurn only returns failed ones). */
+  status: string;
+  /** The seq the turn's events start after (the previous turn/completed, or 0). */
+  startSeq: number;
   /** Text of each steer the turn accepted, in order ("" for one without text). */
   steers: string[];
   /** Text of the input that started the turn (null: its request isn't in the turn). */
@@ -116,6 +120,12 @@ function inputText(input: unknown): string {
  * and bb's own system notices (`systemMessageKind`) don't count.
  */
 export function readFailedTurn(rows: readonly TurnEventRow[]): FailedTurn | null {
+  const turn = readLatestTurn(rows);
+  return turn !== null && turn.status === "failed" ? turn : null;
+}
+
+/** The chat's latest completed turn, however it ended (same reading as readFailedTurn). */
+export function readLatestTurn(rows: readonly TurnEventRow[]): FailedTurn | null {
   const known = new Set<string>(TURN_EVENT_TYPES);
   const events = rows.filter((row) => typeof row.seq === "number" && known.has(row.type)).sort((a, b) => a.seq - b.seq);
   let end = -1;
@@ -127,7 +137,7 @@ export function readFailedTurn(rows: readonly TurnEventRow[]): FailedTurn | null
   }
   if (end === -1) return null;
   const completed = events[end]!;
-  if (data(completed).status !== "failed") return null;
+  const status = text(data(completed).status) ?? "unknown";
   let start = -1;
   for (let index = end - 1; index >= 0; index--) {
     if (events[index]!.type === "turn/completed") {
@@ -178,6 +188,8 @@ export function readFailedTurn(rows: readonly TurnEventRow[]): FailedTurn | null
   const laterTurn = later.some((row) => row.type === "turn/started" || row.type === "turn/input/accepted");
   return {
     key: turnId !== null ? `turn:${turnId}` : `event:${completed.id ?? completed.seq}`,
+    status,
+    startSeq: start === -1 ? 0 : events[start]!.seq,
     steers,
     opener,
     badRequest,
@@ -213,15 +225,6 @@ export async function readFailedTurnSettled(
   }
 }
 
-/**
- * The chat moved on from the failed turn `key`: it's no longer the latest
- * completed turn, or a turn started, took input or was interrupted since.
- * Only what can't be the retry's own dispatch counts (not its request).
- */
-export function movedOnSince(rows: readonly TurnEventRow[], key: string): boolean {
-  const turn = readFailedTurn(rows);
-  return turn === null || turn.key !== key || turn.laterTurn || turn.interrupted;
-}
 
 /** The failed turn qualifies for the automatic retry (the service still checks the task and its sandbox). */
 export function retriesAfterSteer(turn: FailedTurn | null): turn is FailedTurn {
@@ -229,7 +232,7 @@ export function retriesAfterSteer(turn: FailedTurn | null): turn is FailedTurn {
 }
 
 const STEER_LIMIT = 4000;
-/** The retry follow-up's first line: how the dispatch hook knows it. */
+/** The retry follow-up's first line: how the loop guards know it. */
 export const STEER_RETRY_HEADING = "# Automatic retry";
 
 /** The message is the plugin's automatic retry follow-up. */
@@ -258,9 +261,9 @@ export const AUTO_RETRY_RECORD = "auto-retry-turn";
 export const AUTO_RETRY_EVENT = "auto-retry";
 export const AUTO_RETRY_TEXT = "Retried automatically after a provider error following a steer";
 
-/** Visible task event: the retry was refused at dispatch, the chat had moved on. */
+/** Visible task event: the retry was skipped, the chat moved on (a turn, a queued message, a hold) before it could be sent. */
 export const AUTO_RETRY_SKIPPED_EVENT = "auto-retry-skipped";
-export const AUTO_RETRY_SKIPPED_TEXT = "Skipped the automatic retry: the chat moved on before it was sent";
+export const AUTO_RETRY_SKIPPED_TEXT = "Skipped the automatic retry: the chat moved on before it could be sent";
 /** Visible task event: an interrupt the plugin sent (boat_interrupt, the page); it vetoes a retry. */
 export const INTERRUPT_REQUESTED_EVENT = "interrupt-requested";
 
@@ -269,7 +272,7 @@ export interface AutoRetryRecord {
   failed: string;
   /** The retry turn's promptId marker. */
   promptId: string;
-  /** Refused at dispatch: the turn isn't a retry after all (the failed turn stays retried). */
+  /** Skipped: the chat moved on before the retry could be sent (the failed turn is never retried). */
   dropped: boolean;
 }
 
@@ -287,7 +290,7 @@ export function parseAutoRetryRecord(textValue: string | null | undefined): Auto
 
 // ---------------------------------------------------------------- any chat on this bb
 
-/** The recovery message's first words: how the dispatch hook and the loop guard know it. */
+/** The recovery message's first words: how the loop guard knows it. */
 export const RECOVERY_PREFIX = "[boat] Your last turn failed with a provider error (Bad Request) right after";
 const RECOVERY_STEER_LIMIT = 2000;
 const RECOVERY_TOTAL_LIMIT = 6000;
@@ -322,6 +325,33 @@ export function readGoal(rows: readonly TurnEventRow[]): ThreadGoal | null {
   }
   return null;
 }
+
+/** The thread's goal statuses in order (a cleared goal reads "cleared"). */
+function goalHistory(rows: readonly TurnEventRow[]): { seq: number; status: string }[] {
+  const history: { seq: number; status: string }[] = [];
+  for (const row of [...rows].filter((entry) => typeof entry.seq === "number").sort((a, b) => a.seq - b.seq)) {
+    const values = data(row);
+    if (row.type === "thread/goal/cleared") history.push({ seq: row.seq, status: "cleared" });
+    else if (row.type === "thread/goal/updated" && typeof values.status === "string") history.push({ seq: row.seq, status: values.status });
+    else if (row.type === "thread/extensionState/updated" && values.kind === "provider-codex/goal") {
+      const goal = readGoal([row]);
+      history.push({ seq: row.seq, status: goal?.status ?? "cleared" });
+    }
+  }
+  return history;
+}
+
+/** The goal went from active to blocked during (or right after) the turn whose events start after `startSeq`. */
+export function goalBlockedSince(rows: readonly TurnEventRow[], startSeq: number): boolean {
+  const history = goalHistory(rows);
+  const last = history.at(-1);
+  if (last === undefined || last.status !== "blocked" || last.seq <= startSeq) return false;
+  const before = history.filter((entry) => entry.seq < last.seq && entry.status !== "blocked").at(-1);
+  return before?.status === "active";
+}
+
+/** Codex's command that makes a paused, blocked or usage-limited goal active again and starts a turn on it. */
+export const GOAL_RESUME_TEXT = "/goal resume";
 
 /** Goal statuses the recovery message asks the agent to keep working toward. */
 const OPEN_GOALS = new Set(["active", "blocked"]);

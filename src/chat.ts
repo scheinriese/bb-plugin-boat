@@ -57,7 +57,12 @@ export interface ChatState {
   backgroundAgents: number;
   /** bb workflows still running after the turn's reply (bb's thread list; the thread page doesn't say). */
   workflows?: number;
+  /** bb's agent provider for the chat (codex, claude-code, …), when bb says. */
+  providerId?: string | null;
 }
+
+/** What a send did: started (or joined) a turn now, or left a row in bb's queue. */
+export type SendResult = { delivery: "sent" } | { delivery: "queued"; queuedMessageId: string | null; waitingOn: string | null };
 
 /** A bb machine as bb sees it (hosts.get): its lifecycle phase and connection. */
 export interface MachineState {
@@ -118,7 +123,9 @@ export interface ChatRunner {
     threadId: string,
     text: string,
     options: { steer: boolean; model?: string | null; effort?: string | null },
-  ): Promise<void>;
+  ): Promise<SendResult>;
+  /** Take a message the plugin sent back out of bb's queue before it runs. */
+  withdraw(threadId: string, queuedMessageId: string): Promise<void>;
   /** null: the chat no longer exists. */
   state(threadId: string): Promise<ChatState | null>;
   output(threadId: string): Promise<string | null>;
@@ -301,14 +308,28 @@ export function createChatRunner(bb: BbPluginApi): ChatRunner {
     },
 
     async send(threadId, text, options) {
-      await bb.sdk.threads.send({
+      const result = (await bb.sdk.threads.send({
         threadId,
         mode: options.steer ? "steer-if-active" : "queue-if-active",
         originPluginId: bb.pluginId,
         input: [{ type: "text", text, mentions: [] }],
         ...(options.model ? { model: options.model } : {}),
         ...(options.effort ? { reasoningLevel: options.effort } : {}),
-      } as unknown as Parameters<BbPluginApi["sdk"]["threads"]["send"]>[0]);
+      } as unknown as Parameters<BbPluginApi["sdk"]["threads"]["send"]>[0])) as unknown as {
+        delivery?: string;
+        queuedMessage?: { id?: unknown; waitingOn?: { kind?: unknown } | null } | null;
+      } | null;
+      if (result?.delivery !== "queued") return { delivery: "sent" };
+      const row = result.queuedMessage ?? null;
+      return {
+        delivery: "queued",
+        queuedMessageId: typeof row?.id === "string" ? row.id : null,
+        waitingOn: typeof row?.waitingOn?.kind === "string" ? row.waitingOn.kind : null,
+      };
+    },
+
+    async withdraw(threadId, queuedMessageId) {
+      await bb.sdk.threads.queuedMessages.delete({ threadId, queuedMessageId });
     },
 
     async state(threadId) {
@@ -327,6 +348,7 @@ export function createChatRunner(bb: BbPluginApi): ChatRunner {
         environmentId?: string | null;
         queuedMessageCount?: number;
         activeBackgroundAgentCount?: number;
+        providerId?: string | null;
       };
       if (thread.deletedAt) return null;
       // The thread page has background agents only; bb's list row also counts its workflows.
@@ -342,6 +364,7 @@ export function createChatRunner(bb: BbPluginApi): ChatRunner {
         queued: typeof thread.queuedMessageCount === "number" ? thread.queuedMessageCount : 0,
         backgroundAgents: Math.max(agents, work?.agents ?? 0),
         workflows: work?.workflows ?? 0,
+        providerId: typeof thread.providerId === "string" ? thread.providerId : null,
       };
     },
 

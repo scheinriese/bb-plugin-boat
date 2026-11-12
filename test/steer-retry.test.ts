@@ -5,9 +5,10 @@ import { test } from "node:test";
 import {
   isBadRequestFailure,
   isBadRequestText,
+  goalBlockedSince,
   isSteerRetryText,
-  movedOnSince,
   readFailedTurn,
+  readLatestTurn,
   retriesAfterSteer,
   steerRetryPrompt,
 } from "../src/steer-retry.ts";
@@ -81,7 +82,7 @@ test("the Bad Request matcher takes an explicit 400 or a bare Bad Request, and n
 
 test("the incident reads as a failed turn with one accepted steer and a Bad Request", () => {
   const turn = readFailedTurn(INCIDENT)!;
-  assert.deepEqual(turn, { key: "turn:turn_a", steers: [STEER], opener: "Add a dark mode toggle.", badRequest: true, newerMessage: false, laterTurn: false, interrupted: false });
+  assert.deepEqual(turn, { key: "turn:turn_a", status: "failed", startSeq: 0, steers: [STEER], opener: "Add a dark mode toggle.", badRequest: true, newerMessage: false, laterTurn: false, interrupted: false });
   assert.equal(retriesAfterSteer(turn), true);
   // Order doesn't matter (bb lists newest first).
   assert.deepEqual(readFailedTurn([...INCIDENT].reverse()), turn);
@@ -134,21 +135,31 @@ test("an interrupt after the failed completion vetoes the retry", () => {
   assert.equal(turn.key, "turn:turn_a");
   assert.equal(turn.interrupted, true);
   assert.equal(retriesAfterSteer(turn), false);
-  assert.equal(movedOnSince(stopped, "turn:turn_a"), true);
   // An interrupt in an earlier turn doesn't.
   const earlier = [{ id: "evt_090", seq: 90, type: "system/thread/interrupted", data: {} }, { id: "evt_091", seq: 91, type: "turn/completed", data: { status: "interrupted" } }, ...INCIDENT];
   assert.equal(retriesAfterSteer(readFailedTurn(earlier)), true);
 });
 
-test("the dispatch check tells a chat that moved on from the retry's own request", () => {
-  assert.equal(movedOnSince(INCIDENT, "turn:turn_a"), false);
-  // The retry's own request may be logged before it dispatches: that's not moving on.
-  const ownRequest = [...INCIDENT, { id: "evt_130", seq: 130, type: "client/turn/requested", data: { requestId: "req_retry", target: { kind: "new-turn" }, input: [] } }];
-  assert.equal(movedOnSince(ownRequest, "turn:turn_a"), false);
-  // A turn that started, or a later finished turn, is.
-  assert.equal(movedOnSince([...ownRequest, { id: "evt_132", seq: 132, type: "turn/started", scope: { kind: "turn", turnId: "turn_b" }, data: {} }], "turn:turn_a"), true);
-  assert.equal(movedOnSince([...INCIDENT, ...laterTurn(200, { status: "completed" })], "turn:turn_a"), true);
-  assert.equal(movedOnSince(INCIDENT, "turn:other"), true);
+test("the latest turn reads however it ended, and its goal can be seen going blocked", () => {
+  // A finished turn after the failure: readFailedTurn has nothing, readLatestTurn has the finished one.
+  const later = [...INCIDENT, ...laterTurn(200, { status: "completed" })];
+  assert.equal(readFailedTurn(later), null);
+  const turn = readLatestTurn(later)!;
+  assert.equal(turn.key, "turn:turn_200");
+  assert.equal(turn.status, "completed");
+  assert.equal(turn.startSeq, 121);
+  assert.equal(turn.opener, "Retry");
+  // The goal went from active to blocked after the turn began.
+  const goal = (seq: number, status: string) => ({ id: `g_${seq}`, seq, type: "thread/goal/updated", data: { objective: "Ship v2", status } });
+  assert.equal(goalBlockedSince([goal(50, "active"), goal(130, "blocked")], 100), true);
+  // Blocked before the turn, never active, paused in between, or active again: no.
+  assert.equal(goalBlockedSince([goal(50, "active"), goal(90, "blocked")], 100), false);
+  assert.equal(goalBlockedSince([goal(130, "blocked")], 100), false);
+  assert.equal(goalBlockedSince([goal(50, "paused"), goal(130, "blocked")], 100), false);
+  assert.equal(goalBlockedSince([goal(50, "active"), goal(130, "blocked"), goal(140, "active")], 100), false);
+  // Codex's own goal state counts as well.
+  const codex = (seq: number, status: string) => ({ id: `c_${seq}`, seq, type: "thread/extensionState/updated", data: { kind: "provider-codex/goal", payload: { objective: "Ship v2", status } } });
+  assert.equal(goalBlockedSince([codex(50, "active"), codex(130, "blocked")], 100), true);
   // The retry message is known by its heading.
   assert.equal(isSteerRetryText(steerRetryPrompt([STEER])), true);
   assert.equal(isSteerRetryText("# Automatic retry is off"), false);

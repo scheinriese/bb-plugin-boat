@@ -486,7 +486,9 @@ export default async function plugin(bb: BbPluginApi) {
         const raw = (await bb.sdk.threads.events.list({ threadId, order: "desc", limit: "20", types: [...GOAL_EVENT_TYPES] } as never)) as unknown;
         return (Array.isArray(raw) ? raw : ((raw as { events?: unknown[] } | null)?.events ?? [])) as TurnEventRow[];
       },
+      // A new turn now, or bb's queue (which the recovery withdraws from at once); never a steer.
       send: (threadId, text) => chatRunner.send(threadId, text, { steer: false }),
+      withdraw: (threadId, queuedMessageId) => chatRunner.withdraw(threadId, queuedMessageId),
     },
     store: new ChatRecoveryStore(() => bb.storage.database()),
     log: { info: (line) => bb.log.info(line), warn: (line) => bb.log.warn(line) },
@@ -566,25 +568,6 @@ export default async function plugin(bb: BbPluginApi) {
   bb.experimental_hooks.on("message.dispatch", async (context) => {
     const start = await nativeStart(context, runtime, quotas);
     if (start?.action === "wait" || start?.action === "reject") return start;
-    // The automatic retry after a steer goes out only if the chat hasn't moved on since its failure.
-    const retry = await service
-      .steerRetryDispatch({
-        threadId: context.thread.id,
-        text: context.input.text,
-        fromPlugin: context.originPluginId === bb.pluginId,
-        queuedRows: context.queuedMessages.length,
-      })
-      .catch(() => null);
-    if (retry !== null) return retry;
-    const recovery = await chatRecovery
-      .dispatch({
-        threadId: context.thread.id,
-        text: context.input.text,
-        fromPlugin: context.originPluginId === bb.pluginId,
-        queuedRows: context.queuedMessages.length,
-      })
-      .catch(() => null);
-    if (recovery !== null) return recovery;
     return watchdog.dispatch({
       threadId: context.thread.id,
       attempt: context.attempt,
