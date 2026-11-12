@@ -19,6 +19,8 @@ import { DEFAULT_TASKS_BEFORE_ASKING, isOrchestratorMetadata, orchestratorInstru
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createChatRunner } from "./src/chat.ts";
+import { ChatRecoveryStore, createChatRecovery } from "./src/chat-recovery.ts";
+import { GOAL_EVENT_TYPES, type TurnEventRow } from "./src/steer-retry.ts";
 import { createConnectCheck } from "./src/connect.ts";
 import { createRepoFileReader, ghStatus } from "./src/github.ts";
 import { ProjectStore, parseOrchestratorProject } from "./src/projects.ts";
@@ -252,13 +254,14 @@ export default async function plugin(bb: BbPluginApi) {
     await attentionNotifications?.flush();
   }
 
+  const chatRunner = createChatRunner(bb);
   const service = new BoatService(boat, store, {
     settings: readSettings,
     lifecycle: lifecycle.signal,
     changed,
     notify,
     log: { info: (message) => bb.log.info(message), warn: (message) => bb.log.warn(message) },
-    chat: createChatRunner(bb),
+    chat: chatRunner,
     // Tests answer preview checks without the network.
     ...(process.env.BOAT_PLUGIN_PREVIEW_CHECK ? { checkPreview: async () => process.env.BOAT_PLUGIN_PREVIEW_CHECK as "up" | "down" | "unknown" } : {}),
     quotas,
@@ -471,6 +474,34 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.active", onThread("active"));
   bb.events.on("thread.archived", onThread("archived"));
 
+  // Any other chat on this bb: one recovery message after a steer-triggered provider Bad Request.
+  const chatRecovery = createChatRecovery({
+    enabled: async () => (await settings.get()).recoverChatsAfterSteer === true,
+    // Boat task chats have their own retry (with the orchestrator's notices).
+    isTaskThread: (threadId) => service.store.byThread(threadId) !== null,
+    threads: {
+      state: (threadId) => chatRunner.state(threadId),
+      turnEvents: (threadId) => chatRunner.turnEvents(threadId),
+      goalEvents: async (threadId) => {
+        const raw = (await bb.sdk.threads.events.list({ threadId, order: "desc", limit: "20", types: [...GOAL_EVENT_TYPES] } as never)) as unknown;
+        return (Array.isArray(raw) ? raw : ((raw as { events?: unknown[] } | null)?.events ?? [])) as TurnEventRow[];
+      },
+      send: (threadId, text) => chatRunner.send(threadId, text, { steer: false }),
+    },
+    store: new ChatRecoveryStore(() => bb.storage.database()),
+    log: { info: (line) => bb.log.info(line), warn: (line) => bb.log.warn(line) },
+    signal: lifecycle.signal,
+  });
+  const recoverChat = (threadId: unknown) => {
+    if (typeof threadId === "string") void chatRecovery.failed(threadId).catch((error: unknown) => bb.log.warn(`chat recovery ${threadId}: ${error instanceof Error ? error.message : String(error)}`));
+  };
+  bb.events.on("thread.failed", (payload: unknown) => recoverChat((payload as { thread?: { id?: unknown } }).thread?.id));
+  bb.events.on("turn.failed", (payload: unknown) => recoverChat((payload as { threadId?: unknown }).threadId));
+  bb.events.on("thread.idle", (payload: unknown) => {
+    const threadId = (payload as { thread?: { id?: unknown } }).thread?.id;
+    if (typeof threadId === "string") void chatRecovery.idle(threadId).catch(() => undefined);
+  });
+
   // boat's auto-stop doesn't see a bb chat working: keep its sandbox on while a turn runs.
   const keepSandboxesOn = createSandboxKeeper(bb, {
     boat,
@@ -545,6 +576,15 @@ export default async function plugin(bb: BbPluginApi) {
       })
       .catch(() => null);
     if (retry !== null) return retry;
+    const recovery = await chatRecovery
+      .dispatch({
+        threadId: context.thread.id,
+        text: context.input.text,
+        fromPlugin: context.originPluginId === bb.pluginId,
+        queuedRows: context.queuedMessages.length,
+      })
+      .catch(() => null);
+    if (recovery !== null) return recovery;
     return watchdog.dispatch({
       threadId: context.thread.id,
       attempt: context.attempt,

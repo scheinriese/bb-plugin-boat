@@ -341,6 +341,14 @@ export const PLUGIN_SETTINGS = {
     experimental_schema: range("sandboxTtlHours"),
     default: 2,
   },
+  recoverChatsAfterSteer: {
+    section: "advanced",
+    type: "boolean",
+    label: "Recover any chat after a steer Bad Request",
+    description:
+      "When a chat's turn fails with a provider Bad Request right after a message steered it (yours, or another agent's), send that chat one message that repeats it so the work goes on. Boat task chats are retried either way.",
+    default: true,
+  },
   freeSlotsWhenFull: {
     section: "advanced",
     type: "boolean",

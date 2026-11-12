@@ -91,6 +91,7 @@ import {
   movedOnSince,
   parseAutoRetryRecord,
   readFailedTurn,
+  readFailedTurnSettled,
   retriesAfterSteer,
   steerRetryPrompt,
   type FailedTurn,
@@ -2514,19 +2515,15 @@ export class BoatService {
    * without the failure is read again, a few times a moment apart.
    */
   private async failedChatTurn(threadId: string): Promise<FailedTurn | null | undefined> {
-    const rereads = this.hooks.steerRetryTiming?.rereads ?? 2;
-    const rereadMs = this.hooks.steerRetryTiming?.rereadMs ?? 1_500;
-    for (let read = 0; ; read++) {
-      let turn: FailedTurn | null;
-      try {
-        turn = readFailedTurn(await this.hooks.chat!.turnEvents(threadId));
-      } catch (error) {
-        this.hooks.log.warn(`steer retry: events ${threadId}: ${errorText(error)}`);
-        return undefined;
-      }
-      // No failed turn, or one older than a turn the log already shows: the failure may not be logged yet.
-      if ((turn !== null && !turn.newerMessage) || read >= rereads || this.hooks.lifecycle.aborted) return turn;
-      await delay(rereadMs, this.hooks.lifecycle);
+    try {
+      return await readFailedTurnSettled(() => this.hooks.chat!.turnEvents(threadId), {
+        rereads: this.hooks.steerRetryTiming?.rereads ?? 2,
+        rereadMs: this.hooks.steerRetryTiming?.rereadMs ?? 1_500,
+        signal: this.hooks.lifecycle,
+      });
+    } catch (error) {
+      this.hooks.log.warn(`steer retry: events ${threadId}: ${errorText(error)}`);
+      return undefined;
     }
   }
 

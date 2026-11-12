@@ -1,0 +1,33 @@
+{
+  "about": "A local chat that isn't a Boat task, working toward a goal: two messages from another agent thread (bb thread tell) steer its turn within 30 s, then the provider answers Bad Request and the turn fails. Shaped like bb's thread event log; ids and texts are fake.",
+  "rows": [
+    { "id": "evt_201", "seq": 201, "type": "client/turn/requested", "createdAt": 1700000200000, "scope": { "kind": "thread" },
+      "data": { "requestId": "req_goal", "target": { "kind": "new-turn" }, "source": "tell", "initiator": "user", "senderThreadId": null,
+        "input": [{ "type": "text", "text": "Work through the migration plan.", "mentions": [] }] } },
+    { "id": "evt_202", "seq": 202, "type": "turn/input/accepted", "createdAt": 1700000200400, "scope": { "kind": "turn", "turnId": "turn_g" },
+      "data": { "clientRequestId": "req_goal", "providerThreadId": "pth_g", "scope": { "kind": "turn", "turnId": "turn_g" } } },
+    { "id": "evt_203", "seq": 203, "type": "turn/started", "createdAt": 1700000200500, "scope": { "kind": "turn", "turnId": "turn_g" },
+      "data": { "providerThreadId": "pth_g" } },
+    { "id": "evt_210", "seq": 210, "type": "client/turn/requested", "createdAt": 1700000900000, "scope": { "kind": "thread" },
+      "data": { "requestId": "req_tell_1", "target": { "kind": "steer", "expectedTurnId": "turn_g" }, "source": "tell", "initiator": "agent", "senderThreadId": "thr_other",
+        "input": [{ "type": "text", "text": "[bb message from thread:thr_other] The schema change is merged.", "mentions": [] }] } },
+    { "id": "evt_211", "seq": 211, "type": "turn/input/accepted", "createdAt": 1700000900200, "scope": { "kind": "turn", "turnId": "turn_g" },
+      "data": { "clientRequestId": "req_tell_1", "providerThreadId": "pth_g", "scope": { "kind": "turn", "turnId": "turn_g" } } },
+    { "id": "evt_220", "seq": 220, "type": "client/turn/requested", "createdAt": 1700000928000, "scope": { "kind": "thread" },
+      "data": { "requestId": "req_tell_2", "target": { "kind": "steer", "expectedTurnId": "turn_g" }, "source": "tell", "initiator": "agent", "senderThreadId": "thr_other",
+        "input": [{ "type": "text", "text": "[bb message from thread:thr_other] Please bump the client to 2.0 too.", "mentions": [] }] } },
+    { "id": "evt_221", "seq": 221, "type": "turn/input/accepted", "createdAt": 1700000928300, "scope": { "kind": "turn", "turnId": "turn_g" },
+      "data": { "clientRequestId": "req_tell_2", "providerThreadId": "pth_g", "scope": { "kind": "turn", "turnId": "turn_g" } } },
+    { "id": "evt_222", "seq": 222, "type": "provider/error", "createdAt": 1700000929300, "scope": { "kind": "turn", "turnId": "turn_g" },
+      "data": { "providerThreadId": "pth_g", "message": "{\"detail\":\"Bad Request\"}", "detail": "{\"detail\":\"Bad Request\"}", "willRetry": false,
+        "errorInfo": { "category": "unknown", "providerCode": "other", "httpStatusCode": null } } },
+    { "id": "evt_223", "seq": 223, "type": "turn/completed", "createdAt": 1700000929400, "scope": { "kind": "turn", "turnId": "turn_g" },
+      "data": { "providerThreadId": "pth_g", "status": "failed", "error": { "message": "{\"detail\":\"Bad Request\"}" } } }
+  ],
+  "goal": [
+    { "id": "evt_204", "seq": 204, "type": "thread/goal/updated", "createdAt": 1700000200600, "scope": { "kind": "thread" },
+      "data": { "providerThreadId": "pth_g", "objective": "Migrate the API to v2", "status": "active", "timeUsedSeconds": 10, "tokenBudget": null, "tokensUsed": 1000 } },
+    { "id": "evt_224", "seq": 224, "type": "thread/goal/updated", "createdAt": 1700000929500, "scope": { "kind": "thread" },
+      "data": { "providerThreadId": "pth_g", "objective": "Migrate the API to v2", "status": "blocked", "timeUsedSeconds": 730, "tokenBudget": null, "tokensUsed": 90000 } }
+  ]
+}
