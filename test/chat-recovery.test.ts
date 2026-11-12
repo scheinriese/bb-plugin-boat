@@ -1,0 +1,369 @@
+// Any chat on this bb (not a Boat task): one recovery message after a turn
+// failed with a provider Bad Request right after a steer. Fakes only.
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
+import type Database from "better-sqlite3";
+import type { ChatState } from "../src/chat.ts";
+import { ChatRecoveryStore, createChatRecovery, type RecoveryThreads } from "../src/chat-recovery.ts";
+import { TaskStore } from "../src/store.ts";
+import { RECOVERY_PREFIX, isRecoveryText, readGoal, recoveryPrompt, type TurnEventRow } from "../src/steer-retry.ts";
+import { STEER_RETRY_HEADING } from "../src/steer-retry.ts";
+
+const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/agent-steer-bad-request.json", import.meta.url), "utf8")) as { rows: TurnEventRow[]; goal: TurnEventRow[] };
+const ROWS = FIXTURE.rows;
+const GOAL = FIXTURE.goal;
+const THREAD = "thr_local";
+const TELL_1 = "[bb message from thread:thr_other] The schema change is merged.";
+const TELL_2 = "[bb message from thread:thr_other] Please bump the client to 2.0 too.";
+
+class FakeThreads implements RecoveryThreads {
+  states = new Map<string, ChatState>();
+  events = new Map<string, TurnEventRow[]>();
+  goals = new Map<string, TurnEventRow[]>();
+  sends: { threadId: string; text: string }[] = [];
+  reads = 0;
+  stateCalls = 0;
+  sendError: Error | null = null;
+  /** Runs before each event read / state read: the chat can change between them. */
+  onRead: ((threadId: string, read: number) => void) | null = null;
+  onState: ((threadId: string, call: number) => void) | null = null;
+
+  failedThread(threadId = THREAD, rows = ROWS, goal: TurnEventRow[] = []) {
+    this.states.set(threadId, { status: "error", updatedAt: Date.now(), archived: false, environmentId: null, queued: 0, backgroundAgents: 0, workflows: 0 });
+    this.events.set(threadId, rows);
+    this.goals.set(threadId, goal);
+  }
+  async state(threadId: string) {
+    this.stateCalls += 1;
+    this.onState?.(threadId, this.stateCalls);
+    const state = this.states.get(threadId);
+    return state === undefined ? null : { ...state };
+  }
+  async turnEvents(threadId: string) {
+    this.reads += 1;
+    this.onRead?.(threadId, this.reads);
+    return [...(this.events.get(threadId) ?? [])];
+  }
+  async goalEvents(threadId: string) {
+    return [...(this.goals.get(threadId) ?? [])];
+  }
+  async send(threadId: string, text: string) {
+    if (this.sendError) throw this.sendError;
+    this.sends.push({ threadId, text });
+    const state = this.states.get(threadId);
+    if (state) state.status = "active";
+  }
+}
+
+function database(): () => Database.Database {
+  const db = new DatabaseSync(":memory:");
+  for (const statement of TaskStore.migrations()) db.exec(statement);
+  return () => db as unknown as Database.Database;
+}
+
+function setup(options: { enabled?: boolean; taskThreads?: string[]; db?: () => Database.Database; threads?: FakeThreads } = {}) {
+  const threads = options.threads ?? new FakeThreads();
+  const db = options.db ?? database();
+  const store = new ChatRecoveryStore(db);
+  const logs: { level: "info" | "warn"; line: string }[] = [];
+  let enabled = options.enabled ?? true;
+  const recovery = createChatRecovery({
+    enabled: async () => enabled,
+    isTaskThread: (threadId) => (options.taskThreads ?? []).includes(threadId),
+    threads,
+    store,
+    log: { info: (line) => void logs.push({ level: "info", line }), warn: (line) => void logs.push({ level: "warn", line }) },
+    signal: new AbortController().signal,
+    timing: { rereads: 2, rereadMs: 1 },
+  });
+  return { recovery, threads, store, logs, db, setEnabled: (value: boolean) => void (enabled = value) };
+}
+
+/** A later turn: its opening message (by default the plugin's recovery), maybe a steer, then how it ended. */
+function nextTurn(seq: number, options: { status: "failed" | "completed"; opener?: string; steer?: string; error?: string }): TurnEventRow[] {
+  const scope = { kind: "turn", turnId: `turn_${seq}` };
+  const rows: TurnEventRow[] = [
+    { id: `evt_${seq}`, seq, type: "client/turn/requested", scope: { kind: "thread" }, data: { requestId: `req_${seq}`, target: { kind: "new-turn" }, source: "tell", input: [{ type: "text", text: options.opener ?? recoveryPrompt([TELL_1, TELL_2], null) }] } },
+    { id: `evt_${seq + 1}`, seq: seq + 1, type: "turn/input/accepted", scope, data: { clientRequestId: `req_${seq}`, scope } },
+    { id: `evt_${seq + 2}`, seq: seq + 2, type: "turn/started", scope, data: {} },
+  ];
+  if (options.steer) {
+    rows.push(
+      { id: `evt_${seq + 3}`, seq: seq + 3, type: "client/turn/requested", scope: { kind: "thread" }, data: { requestId: `req_${seq + 3}`, target: { kind: "steer", expectedTurnId: scope.turnId }, source: "tell", initiator: "agent", input: [{ type: "text", text: options.steer }] } },
+      { id: `evt_${seq + 4}`, seq: seq + 4, type: "turn/input/accepted", scope, data: { clientRequestId: `req_${seq + 3}`, scope } },
+    );
+  }
+  if (options.status === "failed") {
+    rows.push({ id: `evt_${seq + 5}`, seq: seq + 5, type: "provider/error", scope, data: { message: options.error ?? '{"detail":"Bad Request"}', willRetry: false, errorInfo: { category: "unknown", providerCode: "other", httpStatusCode: null } } });
+  }
+  rows.push({ id: `evt_${seq + 6}`, seq: seq + 6, type: "turn/completed", scope, data: { status: options.status, ...(options.status === "failed" ? { error: { message: options.error ?? '{"detail":"Bad Request"}' } } : {}) } });
+  return rows;
+}
+
+test("a chat that isn't a Boat task recovers once after an agent's steers and a Bad Request", async () => {
+  const env = setup();
+  env.threads.failedThread(THREAD, ROWS, GOAL);
+  // thread.failed and turn.failed arrive together: one message.
+  const outcomes = await Promise.all([env.recovery.failed(THREAD), env.recovery.failed(THREAD)]);
+  assert.deepEqual(outcomes.sort(), ["busy", "recovered"]);
+  assert.equal(env.threads.sends.length, 1);
+  const { text } = env.threads.sends[0]!;
+  assert.ok(text.startsWith(`${RECOVERY_PREFIX} 2 messages arrived. Continue where you left off.`));
+  assert.ok(isRecoveryText(text));
+  // Both steers, quoted.
+  assert.match(text, /The messages were:\n\n> \[bb message from thread:thr_other\] The schema change is merged\.\n\n> \[bb message from thread:thr_other\] Please bump the client to 2\.0 too\./);
+  // The open goal, restated (bb has no way for a plugin to resume it).
+  assert.match(text, /Your goal is still open: “Migrate the API to v2”\. Keep working toward it\./);
+  // The log names the thread and the reason, never the messages.
+  const line = env.logs.find((entry) => entry.level === "info")!.line;
+  assert.match(line, /^chat recovery thr_local: sent one recovery message, the turn failed with a provider Bad Request right after 2 steers \(turn turn:turn_g\); goal blocked$/);
+  assert.ok(!env.logs.some((entry) => entry.line.includes("schema") || entry.line.includes("bump")));
+
+  // Seen again later (the sweep of another event): claimed already.
+  env.threads.states.get(THREAD)!.status = "error";
+  assert.equal(await env.recovery.failed(THREAD), "claimed");
+  assert.equal(env.threads.sends.length, 1);
+});
+
+test("a goal thread logs where the goal stands once the recovery turn ends", async () => {
+  const env = setup();
+  env.threads.failedThread(THREAD, ROWS, GOAL);
+  assert.equal(await env.recovery.failed(THREAD), "recovered");
+  env.threads.goals.set(THREAD, [...GOAL, { id: "evt_240", seq: 240, type: "thread/goal/updated", data: { objective: "Migrate the API to v2", status: "active" } }]);
+  await env.recovery.idle(THREAD);
+  assert.match(env.logs.at(-1)!.line, /^chat recovery thr_local: the recovery turn ended; goal active \(turn turn:turn_g\)$/);
+  // Once per recovery.
+  await env.recovery.idle(THREAD);
+  assert.equal(env.logs.filter((entry) => entry.line.includes("recovery turn ended")).length, 1);
+
+  // Codex's own goal state counts too; a paused or finished goal isn't urged on.
+  assert.deepEqual(readGoal([{ id: "e", seq: 1, type: "thread/extensionState/updated", data: { kind: "provider-codex/goal", payload: { objective: "Ship it", status: "blocked" } } }]), { objective: "Ship it", status: "blocked" });
+  assert.equal(readGoal([...GOAL, { id: "e", seq: 300, type: "thread/goal/cleared", data: {} }]), null);
+  assert.doesNotMatch(recoveryPrompt([TELL_1], { objective: "Ship it", status: "paused" }), /goal/);
+  assert.doesNotMatch(recoveryPrompt([TELL_1], { objective: "Ship it", status: "complete" }), /goal/);
+  // One message reads in the singular; long ones are bounded.
+  assert.match(recoveryPrompt([TELL_1], null), /right after a message arrived\. Continue where you left off\.\n\nThe message was:\n\n> /);
+  const long = recoveryPrompt(["x".repeat(5000), "y".repeat(5000), "z".repeat(5000), "w".repeat(5000)], null);
+  assert.ok(long.length < 7000);
+  assert.match(long, /\(\d more not repeated here\.\)/);
+});
+
+test("the setting turns it off", async () => {
+  const env = setup({ enabled: false });
+  env.threads.failedThread();
+  assert.equal(await env.recovery.failed(THREAD), "off");
+  assert.equal(env.threads.reads, 0);
+  assert.equal(env.threads.sends.length, 0);
+  env.setEnabled(true);
+  assert.equal(await env.recovery.failed(THREAD), "recovered");
+});
+
+test("no recovery when a newer message reached the chat or one is queued", async () => {
+  const env = setup();
+  env.threads.failedThread(THREAD, [...ROWS, { id: "evt_230", seq: 230, type: "client/turn/requested", data: { requestId: "req_next", target: { kind: "new-turn" }, input: [{ type: "text", text: "Status?" }] } }]);
+  assert.equal(await env.recovery.failed(THREAD), "not-this-case");
+  env.threads.failedThread("thr_queued");
+  env.threads.states.get("thr_queued")!.queued = 1;
+  assert.equal(await env.recovery.failed("thr_queued"), "busy");
+  assert.equal(env.threads.sends.length, 0);
+});
+
+test("a second failure, in the recovery's own turn, gets no second recovery", async () => {
+  const env = setup();
+  env.threads.failedThread();
+  assert.equal(await env.recovery.failed(THREAD), "recovered");
+  // The recovery's turn takes another agent message and fails the same way.
+  env.threads.failedThread(THREAD, [...ROWS, ...nextTurn(300, { status: "failed", steer: "[bb message from thread:thr_other] One more thing." })]);
+  assert.equal(await env.recovery.failed(THREAD), "own-turn");
+  assert.equal(env.threads.sends.length, 1);
+  assert.match(env.logs.at(-1)!.line, /not recovering again, the failed turn was the recovery/);
+  // A Boat task chat's retry message counts as the plugin's own too.
+  const task = setup();
+  task.threads.failedThread(THREAD, [...ROWS, ...nextTurn(300, { status: "failed", opener: `${STEER_RETRY_HEADING}\n\nYour last turn failed`, steer: "More." })]);
+  assert.equal(await task.recovery.failed(THREAD), "own-turn");
+  // A later, unrelated failure after a steer is a new case.
+  const later = setup();
+  later.threads.failedThread(THREAD, [...ROWS, ...nextTurn(300, { status: "completed" }), ...nextTurn(400, { status: "failed", opener: "Next step, please.", steer: "And the docs." })]);
+  assert.equal(await later.recovery.failed(THREAD), "recovered");
+});
+
+test("archived, deleted, stopped or interrupted chats, and Boat task chats, are left alone", async () => {
+  const env = setup({ taskThreads: ["thr_task"] });
+  env.threads.failedThread("thr_archived");
+  env.threads.states.get("thr_archived")!.archived = true;
+  assert.equal(await env.recovery.failed("thr_archived"), "gone");
+  assert.equal(await env.recovery.failed("thr_deleted"), "gone");
+  // A user's stop leaves the thread idle.
+  env.threads.failedThread("thr_stopped");
+  env.threads.states.get("thr_stopped")!.status = "idle";
+  assert.equal(await env.recovery.failed("thr_stopped"), "not-failed");
+  // An interrupt logged after the failure.
+  env.threads.failedThread("thr_halted", [...ROWS, { id: "evt_225", seq: 225, type: "system/thread/interrupted", data: { reason: "manual-stop" } }]);
+  assert.equal(await env.recovery.failed("thr_halted"), "not-this-case");
+  // Boat task chats have their own retry.
+  env.threads.failedThread("thr_task");
+  assert.equal(await env.recovery.failed("thr_task"), "task");
+  assert.equal(env.threads.sends.length, 0);
+});
+
+test("other errors get no recovery", async () => {
+  const env = setup();
+  for (const [threadId, error] of [["thr_limit", "You've hit your usage limit."], ["thr_auth", "Unauthorized"], ["thr_5xx", "502 Bad Gateway"], ["thr_400ish", "400 Bad Request"]] as const) {
+    const rows = ROWS.map((row) =>
+      row.type === "provider/error" ? { ...row, data: { ...row.data, message: error, detail: error } }
+      : row.type === "turn/completed" ? { ...row, data: { ...row.data, error: { message: error } } }
+      : row);
+    env.threads.failedThread(threadId, rows);
+    assert.equal(await env.recovery.failed(threadId), "not-this-case", threadId);
+  }
+  assert.equal(env.threads.sends.length, 0);
+});
+
+test("the once-per-turn record survives a plugin reload", async () => {
+  const first = setup();
+  first.threads.failedThread();
+  assert.equal(await first.recovery.failed(THREAD), "recovered");
+  first.threads.states.get(THREAD)!.status = "error"; // bb hasn't started the turn yet
+  const reloaded = setup({ db: first.db, threads: first.threads });
+  assert.equal(await reloaded.recovery.failed(THREAD), "claimed");
+  assert.equal(first.threads.sends.length, 1);
+});
+
+test("a failure not in the event log yet is read again, a bounded number of times", async () => {
+  const unlogged = ROWS.filter((row) => row.type !== "turn/completed" && row.type !== "provider/error");
+  const env = setup();
+  env.threads.failedThread(THREAD, unlogged);
+  env.threads.onRead = (threadId, read) => {
+    if (read === 2) env.threads.events.set(threadId, ROWS);
+  };
+  assert.equal(await env.recovery.failed(THREAD), "recovered");
+  assert.equal(env.threads.reads, 3, "two to find it, one right before the send");
+  const never = setup();
+  never.threads.failedThread(THREAD, unlogged);
+  assert.equal(await never.recovery.failed(THREAD), "no-failed-turn");
+  assert.equal(never.threads.reads, 3);
+});
+
+test("a message or an interrupt that arrives during the check stops the recovery", async () => {
+  // The second state read is the re-check right before the claim.
+  const env = setup();
+  env.threads.failedThread();
+  env.threads.onState = (threadId, call) => {
+    if (call === 2) env.threads.states.get(threadId)!.status = "active";
+  };
+  assert.equal(await env.recovery.failed(THREAD), "busy");
+  const interrupted = setup();
+  interrupted.threads.failedThread();
+  interrupted.threads.onState = (threadId, call) => {
+    if (call === 2) interrupted.threads.events.set(threadId, [...ROWS, { id: "evt_225", seq: 225, type: "system/thread/interrupted", data: {} }]);
+  };
+  assert.equal(await interrupted.recovery.failed(THREAD), "moved-on");
+  assert.equal(env.threads.sends.length + interrupted.threads.sends.length, 0);
+  // Neither claimed the turn: nothing can fire later from them.
+  assert.equal(env.store.has(THREAD, "turn:turn_g"), false);
+});
+
+test("at dispatch, a recovery queued behind a newer turn is refused", async () => {
+  const env = setup();
+  env.threads.failedThread();
+  assert.equal(await env.recovery.failed(THREAD), "recovered");
+  const text = env.threads.sends[0]!.text;
+  const dispatch = (overrides: Partial<{ text: string; fromPlugin: boolean; queuedRows: number }> = {}) =>
+    env.recovery.dispatch({ threadId: THREAD, text, fromPlugin: true, queuedRows: 1, ...overrides });
+  assert.equal(await dispatch({ queuedRows: 0 }), null);
+  // Another agent's message ran first.
+  env.threads.events.set(THREAD, [...ROWS, ...nextTurn(300, { status: "completed", opener: "Status?" })]);
+  assert.equal(await dispatch({ fromPlugin: false }), null);
+  assert.equal(await dispatch({ queuedRows: 2 }), null);
+  assert.equal(await dispatch({ text: "Something else" }), null);
+  const refused = await dispatch();
+  assert.equal(refused?.action, "reject");
+  assert.equal(env.store.latest(THREAD)?.state, "dropped");
+  assert.equal(await dispatch(), null, "refused once");
+});
+
+test("a send that fails is logged and not retried in a loop; an hourly cap backs it all up", async () => {
+  const env = setup();
+  env.threads.failedThread();
+  env.threads.sendError = new Error("bb refused the message");
+  assert.equal(await env.recovery.failed(THREAD), "unsent");
+  assert.match(env.logs.at(-1)!.line, /^chat recovery thr_local: couldn't send the recovery message \(turn turn:turn_g\): bb refused the message$/);
+  env.threads.sendError = null;
+  assert.equal(await env.recovery.failed(THREAD), "claimed");
+  // Three recoveries this hour already: the fourth waits.
+  const capped = setup();
+  for (const key of ["turn:a", "turn:b", "turn:c"]) capped.store.claim(THREAD, key);
+  capped.threads.failedThread();
+  assert.equal(await capped.recovery.failed(THREAD), "capped");
+  assert.equal(capped.threads.sends.length, 0);
+});
+
+// ---------------------------------------------------------------- through the plugin
+
+async function until(check: () => boolean, ms = 3_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > end) throw new Error("timed out");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function pluginHost(t: { after(fn: () => unknown): void }, settings: Record<string, unknown> = {}) {
+  const { default: plugin } = await import("../server.ts");
+  const { createTestHost } = await import("./fakes.ts");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-recovery-")), "state.json");
+  const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+  const { bb, harness } = await createTestHost({ pluginId: "boat", settings: { boatPath: fakeBoat, evidenceUploader: "", ...settings }, agentSkillIds: ["boat", "boat-orchestrator"] });
+  t.after(() => harness.lifecycle.dispose());
+  const { makeThreadResponse } = await import("@get-bb/plugin-sdk/testing");
+  const sends: Record<string, unknown>[] = [];
+  let rows = ROWS;
+  harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "error", providerId: "codex" }));
+  harness.sdk.stub("threads.list", async () => ({ threads: [] }));
+  harness.sdk.stub("threads.events.list", async ({ types }: { types?: string[] }) => [...(types?.includes("turn/completed") ? rows : GOAL)].reverse());
+  harness.sdk.stub("threads.send", async (args: Record<string, unknown>) => {
+    sends.push(args);
+    return { ok: true, delivery: "sent" };
+  });
+  await plugin(bb);
+  return { bb, harness, sends, makeThreadResponse, setRows: (next: TurnEventRow[]) => void (rows = next) };
+}
+
+test("the plugin recovers a chat from bb's thread.failed with a queued turn, never a steer, and refuses it at dispatch once the chat moved on", async (t) => {
+  const host = await pluginHost(t);
+  await host.harness.emitThreadEvent("thread.failed", { thread: host.makeThreadResponse({ id: THREAD, status: "error", providerId: "codex" }), error: '{"detail":"Bad Request"}' });
+  await until(() => host.sends.length > 0);
+  const send = host.sends[0]!;
+  assert.equal(send.threadId, THREAD);
+  assert.equal(send.mode, "queue-if-active");
+  assert.equal(send.originPluginId, "boat");
+  const text = (send.input as { text: string }[])[0]!.text;
+  assert.ok(isRecoveryText(text));
+  // turn.failed for the same failure: still one message.
+  const { makeTurnFailedEvent, makeMessageDispatchHookContext } = await import("@get-bb/plugin-sdk/testing");
+  await host.harness.emitThreadEvent("turn.failed", makeTurnFailedEvent({ threadId: THREAD }));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(host.sends.length, 1);
+
+  // The message waited behind another agent's turn: bb's dispatch hook refuses it.
+  const dispatch = host.harness.inspection.registrations.hooks["message.dispatch"]!;
+  const context = makeMessageDispatchHookContext({ thread: { id: THREAD }, input: { text }, originPluginId: "boat", queuedMessages: [{ originPluginId: "boat" }] });
+  const before = await dispatch(context);
+  assert.notEqual((before as { action: string }).action, "reject");
+  host.setRows([...ROWS, ...nextTurn(300, { status: "completed", opener: "Status?" })]);
+  const after = await dispatch(context);
+  assert.equal((after as { action: string }).action, "reject");
+});
+
+test("with the setting off, the plugin leaves other chats alone", async (t) => {
+  const host = await pluginHost(t, { recoverChatsAfterSteer: false });
+  await host.harness.emitThreadEvent("thread.failed", { thread: host.makeThreadResponse({ id: THREAD, status: "error" }), error: '{"detail":"Bad Request"}' });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(host.sends.length, 0);
+});

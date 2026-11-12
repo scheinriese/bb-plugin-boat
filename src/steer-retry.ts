@@ -77,6 +77,8 @@ export interface FailedTurn {
   key: string;
   /** Text of each steer the turn accepted, in order ("" for one without text). */
   steers: string[];
+  /** Text of the input that started the turn (null: its request isn't in the turn). */
+  opener: string | null;
   /** The failure was a provider Bad Request. */
   badRequest: boolean;
   /** A message reached the chat after the failure (a new request or turn). */
@@ -147,14 +149,16 @@ export function readFailedTurn(rows: readonly TurnEventRow[]): FailedTurn | null
   }
   const steers: string[] = [];
   let first = true;
+  let opener: string | null = null;
   for (const row of turn) {
     if (row.type !== "turn/input/accepted") continue;
     const request = requests.get(text(data(row).clientRequestId) ?? "");
-    const opener = first;
+    const opens = first;
     first = false;
     if (request === undefined) continue;
+    if (opens && request.target !== "steer") opener = request.text;
     if (request.notice) continue;
-    if (request.target === "steer" || (request.target === "auto" && !opener)) steers.push(request.text);
+    if (request.target === "steer" || (request.target === "auto" && !opens)) steers.push(request.text);
   }
   const failure = turn.filter((row) => row.type === "provider/error" && data(row).willRetry !== true).at(-1);
   const failureData = failure === undefined ? {} : data(failure);
@@ -175,12 +179,38 @@ export function readFailedTurn(rows: readonly TurnEventRow[]): FailedTurn | null
   return {
     key: turnId !== null ? `turn:${turnId}` : `event:${completed.id ?? completed.seq}`,
     steers,
+    opener,
     badRequest,
     newerMessage: laterTurn || later.some((row) => row.type === "client/turn/requested"),
     laterTurn,
     // A stop after the failure (the user, the orchestrator, boat_interrupt) vetoes a retry too.
     interrupted: [...turn, ...later].some((row) => row.type === "system/thread/interrupted"),
   };
+}
+
+/**
+ * Read the chat's failed turn, again a few times a moment apart when the log
+ * doesn't show it yet: bb may report a failure before its turn/completed is
+ * logged. A read that throws ends it (the caller treats that as unreadable).
+ */
+export async function readFailedTurnSettled(
+  read: () => Promise<readonly TurnEventRow[]>,
+  options: { rereads: number; rereadMs: number; signal: AbortSignal },
+): Promise<FailedTurn | null> {
+  for (let attempt = 0; ; attempt++) {
+    const turn = readFailedTurn(await read());
+    // No failed turn, or one older than a turn the log already shows: the failure may not be logged yet.
+    if ((turn !== null && !turn.newerMessage) || attempt >= options.rereads || options.signal.aborted) return turn;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(done, options.rereadMs);
+      function done() {
+        clearTimeout(timer);
+        options.signal.removeEventListener("abort", done);
+        resolve();
+      }
+      options.signal.addEventListener("abort", done, { once: true });
+    });
+  }
 }
 
 /**
@@ -253,4 +283,70 @@ export function parseAutoRetryRecord(textValue: string | null | undefined): Auto
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------- any chat on this bb
+
+/** The recovery message's first words: how the dispatch hook and the loop guard know it. */
+export const RECOVERY_PREFIX = "[boat] Your last turn failed with a provider error (Bad Request) right after";
+const RECOVERY_STEER_LIMIT = 2000;
+const RECOVERY_TOTAL_LIMIT = 6000;
+
+/** The message is the plugin's recovery message for a chat. */
+export function isRecoveryText(text: string | null | undefined): boolean {
+  return typeof text === "string" && text.trimStart().startsWith(RECOVERY_PREFIX);
+}
+
+/** A thread's goal as its events last said (thread/goal/updated, or Codex's extension state). */
+export interface ThreadGoal {
+  objective: string | null;
+  status: string;
+}
+
+/** bb's thread events that carry a goal. */
+export const GOAL_EVENT_TYPES = ["thread/goal/updated", "thread/goal/cleared", "thread/extensionState/updated"] as const;
+
+/** The thread's latest goal (null: none, or cleared). Codex's `provider-codex/goal` state counts when it names a status. */
+export function readGoal(rows: readonly TurnEventRow[]): ThreadGoal | null {
+  const events = [...rows].filter((row) => typeof row.seq === "number").sort((a, b) => b.seq - a.seq);
+  for (const row of events) {
+    const values = data(row);
+    if (row.type === "thread/goal/cleared") return null;
+    if (row.type === "thread/goal/updated" && typeof values.status === "string") return { objective: text(values.objective), status: values.status };
+    if (row.type === "thread/extensionState/updated" && values.kind === "provider-codex/goal") {
+      const payload = values.payload !== null && typeof values.payload === "object" && !Array.isArray(values.payload) ? (values.payload as Record<string, unknown>) : null;
+      const goal = payload?.goal !== null && typeof payload?.goal === "object" && !Array.isArray(payload?.goal) ? (payload.goal as Record<string, unknown>) : payload;
+      if (goal === null || goal === undefined) return null;
+      if (typeof goal.status === "string") return { objective: text(goal.objective), status: goal.status };
+    }
+  }
+  return null;
+}
+
+/** Goal statuses the recovery message asks the agent to keep working toward. */
+const OPEN_GOALS = new Set(["active", "blocked"]);
+
+/**
+ * The message that recovers any chat: a new turn (never a steer) that says
+ * what happened and quotes every steer the failed turn took, bounded in length.
+ */
+export function recoveryPrompt(steers: readonly string[], goal: ThreadGoal | null): string {
+  const said = steers.filter((steer) => steer.trim() !== "");
+  const quoted: string[] = [];
+  let used = 0;
+  for (const steer of said) {
+    const clipped = steer.length > RECOVERY_STEER_LIMIT ? `${steer.slice(0, RECOVERY_STEER_LIMIT)}…` : steer;
+    if (quoted.length > 0 && used + clipped.length > RECOVERY_TOTAL_LIMIT) break;
+    used += clipped.length;
+    quoted.push(clipped.split("\n").map((line) => `> ${line}`).join("\n"));
+  }
+  const left = said.length - quoted.length;
+  const lines = [
+    `${RECOVERY_PREFIX} ${said.length > 1 ? `${said.length} messages` : "a message"} arrived. Continue where you left off.`,
+  ];
+  if (quoted.length > 0) lines.push(`${said.length > 1 ? "The messages were" : "The message was"}:\n\n${quoted.join("\n\n")}${left > 0 ? `\n\n(${left} more not repeated here.)` : ""}`);
+  if (goal !== null && OPEN_GOALS.has(goal.status)) {
+    lines.push(goal.objective ? `Your goal is still open: “${goal.objective.slice(0, 500)}”. Keep working toward it.` : "Your goal is still open. Keep working toward it.");
+  }
+  return `${lines.join("\n\n")}\n`;
 }

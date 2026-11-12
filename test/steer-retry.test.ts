@@ -81,7 +81,7 @@ test("the Bad Request matcher takes an explicit 400 or a bare Bad Request, and n
 
 test("the incident reads as a failed turn with one accepted steer and a Bad Request", () => {
   const turn = readFailedTurn(INCIDENT)!;
-  assert.deepEqual(turn, { key: "turn:turn_a", steers: [STEER], badRequest: true, newerMessage: false, laterTurn: false, interrupted: false });
+  assert.deepEqual(turn, { key: "turn:turn_a", steers: [STEER], opener: "Add a dark mode toggle.", badRequest: true, newerMessage: false, laterTurn: false, interrupted: false });
   assert.equal(retriesAfterSteer(turn), true);
   // Order doesn't matter (bb lists newest first).
   assert.deepEqual(readFailedTurn([...INCIDENT].reverse()), turn);
