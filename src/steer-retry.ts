@@ -341,13 +341,20 @@ function goalHistory(rows: readonly TurnEventRow[]): { seq: number; status: stri
   return history;
 }
 
-/** The goal went from active to blocked during (or right after) the turn whose events start after `startSeq`. */
+/**
+ * The goal went from active to blocked during (or right after) the turn whose
+ * events start after `startSeq`, and is still blocked. The blocked stretch
+ * begins at the first blocked snapshot after the last other status: repeated
+ * blocked snapshots (usage, state updates) never move that beginning.
+ */
 export function goalBlockedSince(rows: readonly TurnEventRow[], startSeq: number): boolean {
   const history = goalHistory(rows);
-  const last = history.at(-1);
-  if (last === undefined || last.status !== "blocked" || last.seq <= startSeq) return false;
-  const before = history.filter((entry) => entry.seq < last.seq && entry.status !== "blocked").at(-1);
-  return before?.status === "active";
+  if (history.at(-1)?.status !== "blocked") return false;
+  let first = history.length - 1;
+  while (first > 0 && history[first - 1]!.status === "blocked") first -= 1;
+  // Blocked from the first snapshot on, or after something other than active (paused, cleared): not this failure's doing.
+  if (first === 0 || history[first - 1]!.status !== "active") return false;
+  return history[first]!.seq > startSeq;
 }
 
 /** Codex's command that makes a paused, blocked or usage-limited goal active again and starts a turn on it. */

@@ -251,3 +251,17 @@ test("withdrawing a queued message is confirmed by bb's queue, with a few retrie
   assert.equal(await unlisted.chat.withdraw("thr_w1", "qm_1"), "removed");
   assert.deepEqual(unlisted.calls, { delete: 2, list: 2 });
 });
+
+test("a blocked goal's stretch begins at its first blocked snapshot, however often it repeats", () => {
+  const goal = (seq: number, status: string) => ({ id: `g_${seq}`, seq, type: "thread/goal/updated", data: { objective: "Ship v2", status } });
+  // Blocked before the failed turn (which starts after 150), then repeated after it: not this failure's doing.
+  assert.equal(goalBlockedSince([goal(100, "active"), goal(140, "blocked"), goal(224, "blocked")], 150), false);
+  assert.equal(goalBlockedSince([goal(100, "active"), goal(140, "blocked"), goal(170, "blocked"), goal(224, "blocked")], 150), false);
+  // Blocked within the failed turn, then repeated: still this failure's doing.
+  assert.equal(goalBlockedSince([goal(100, "active"), goal(160, "blocked"), goal(224, "blocked")], 150), true);
+  // Active again in between: the stretch that counts begins after that.
+  assert.equal(goalBlockedSince([goal(100, "active"), goal(140, "blocked"), goal(145, "active"), goal(160, "blocked"), goal(230, "blocked")], 150), true);
+  // Blocked from the start, or after a pause: no.
+  assert.equal(goalBlockedSince([goal(50, "blocked"), goal(160, "blocked")], 150), false);
+  assert.equal(goalBlockedSince([goal(100, "paused"), goal(160, "blocked"), goal(224, "blocked")], 150), false);
+});

@@ -343,6 +343,26 @@ test("a queued recovery bb won't let go of stays guarded and is skipped, with a 
   assert.equal(removed.guards.guardedQueuedMessage(["qm_1"]), null);
 });
 
+test("/goal resume never follows for a goal already blocked before the failed turn, however often the snapshot repeats", async () => {
+  // A finished turn ends at seq 150, so the failed turn starts after it.
+  const rows = [...nextTurn(144, { status: "completed", opener: "Earlier work" }), ...ROWS];
+  const goal = (seq: number, status: string) => ({ id: `g_${seq}`, seq, type: "thread/goal/updated", data: { objective: "Migrate the API to v2", status } });
+  const before = setup();
+  before.threads.failedThread(THREAD, rows, [goal(100, "active"), goal(140, "blocked"), goal(224, "blocked")]);
+  assert.equal(await before.recovery.failed(THREAD), "recovered");
+  before.threads.recoveryTurnEnded();
+  await before.recovery.idle(THREAD);
+  assert.equal(before.threads.sends.length, 1, "only the recovery");
+  // Blocked by this failure, then repeated: resumed once.
+  const during = setup();
+  during.threads.failedThread(THREAD, rows, [goal(100, "active"), goal(160, "blocked"), goal(224, "blocked")]);
+  assert.equal(await during.recovery.failed(THREAD), "recovered");
+  during.threads.recoveryTurnEnded();
+  await during.recovery.idle(THREAD);
+  assert.equal(during.threads.sends.at(-1)!.text, GOAL_RESUME_TEXT);
+  assert.equal(during.threads.sends.length, 2);
+});
+
 test("a chat busy at send time skips the recovery for good", async () => {
   const env = setup();
   env.threads.failedThread();
