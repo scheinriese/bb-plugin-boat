@@ -152,14 +152,18 @@ when the sandbox isn't running, or for other errors (usage limits, sign-in,
 overloads, server or connection errors). The retry goes out now or never: it
 starts a turn on the failed chat right away, and if bb would queue it instead
 (another turn or a hold got there first), the plugin takes it back out at
-once and skips it.
+once and skips it. One exception: if bb won't let the plugin remove it and
+has grouped it with newer messages, those messages wait at most two minutes.
+After that they go out, and the stale retry goes out once with them, since
+holding back real input is worse than one repeated "continue".
 
 Any other chat on this bb gets the same recovery, with **Recover any chat
 after a steer Bad Request** on (Settings → Advanced; on by default). This
 covers a local orchestrator steered by another agent's `bb thread tell`, for
 example. Its turn failed with a Bad Request right after one or more messages
 steered it, so the plugin sends it one new message: a turn that starts right
-away, never a steer, and never left waiting in bb's queue. That message
+away, never a steer, and never left waiting in bb's queue (with the same
+two-minute exception as above). That message
 quotes those messages and, when the chat has an open goal, says the goal is
 still open. On Codex, when the failed turn moved the goal from active to
 blocked, the plugin also sends `/goal resume` once the recovery turn has
