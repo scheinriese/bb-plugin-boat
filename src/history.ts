@@ -41,7 +41,7 @@ export function projectHistoryEvent(row: Record<string, unknown>, task: Task | n
   let to = metadata.to ?? null;
   switch (rawKind) {
     case "created": case "orchestrator-started": kind = "started"; to ??= "working"; break;
-    case "turn": kind = "started"; to ??= "working"; break;
+    case "turn": case "auto-retry": kind = "started"; to ??= "working"; break;
     case "finished": kind = "finished"; break;
     case "review":
       if (/^Review t_[\w]+ started\b/.test(rawText)) { kind = "review-started"; to ??= "review"; }

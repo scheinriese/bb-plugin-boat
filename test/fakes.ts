@@ -814,11 +814,13 @@ export function makeService(
     linkedMachines?: boolean;
     /** The memory check's cap and the move's waits (ms; small defaults keep tests fast). */
     sizeTiming?: ServiceHooks["sizeTiming"];
+    /** Another service's store, chat and boat: the plugin after a reload. */
+    reuse?: { store: TaskStore; chat?: FakeChat; boat?: FakeBoat };
   } = {},
 ) {
-  const boat = new FakeBoat();
-  const chat = options.chat ? new FakeChat() : undefined;
-  const store = memoryStore();
+  const boat = options.reuse?.boat ?? new FakeBoat();
+  const chat = options.chat ? (options.reuse?.chat ?? new FakeChat()) : undefined;
+  const store = options.reuse?.store ?? memoryStore();
   const notifications: Notification[] = [];
   let settings = defaultSettings({ ...(options.chat ? { workerMode: "chat" as const } : {}), ...options.settings });
   const told: { threadId: string; text: string }[] = [];

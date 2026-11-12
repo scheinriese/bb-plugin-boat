@@ -265,6 +265,8 @@ export const taskPublicStatusSchema = z.object({
   reason: z.string().nullable(),
   needsYou: z.boolean(),
   moving: z.boolean(),
+  /** The running turn is the plugin's automatic retry after a provider error. */
+  retrying: z.boolean().optional(),
 });
 export type TaskPublicStatusDto = z.infer<typeof taskPublicStatusSchema>;
 
