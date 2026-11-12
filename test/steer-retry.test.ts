@@ -5,6 +5,8 @@ import { test } from "node:test";
 import {
   isBadRequestFailure,
   isBadRequestText,
+  isSteerRetryText,
+  movedOnSince,
   readFailedTurn,
   retriesAfterSteer,
   steerRetryPrompt,
@@ -13,27 +15,45 @@ import { BAD_REQUEST, INCIDENT, STEER, laterTurn, without, withError } from "./s
 
 // ---------------------------------------------------------------- the matcher
 
-test("the Bad Request matcher takes a provider 400 and nothing else", () => {
-  // The incident: no classification, the body says Bad Request.
+test("the Bad Request matcher takes an explicit 400 or a bare Bad Request, and nothing else", () => {
+  // The incident: no classification, the body is exactly {"detail":"Bad Request"}.
   assert.equal(isBadRequestFailure({ category: "unknown", httpStatusCode: null, texts: [BAD_REQUEST, BAD_REQUEST, BAD_REQUEST] }), true);
   assert.equal(isBadRequestFailure({ category: null, texts: ["Bad Request"] }), true);
-  assert.equal(isBadRequestFailure({ texts: ["400 Bad Request"] }), true);
-  assert.equal(isBadRequestFailure({ texts: ["HTTP 400: Bad Request"] }), true);
-  assert.equal(isBadRequestFailure({ texts: [`unexpected status 400 Bad Request: ${BAD_REQUEST}`] }), true);
-  assert.equal(isBadRequestFailure({ texts: ['{"error":{"message":"Bad Request","type":"invalid_request_error"}}'] }), true);
-  // The provider's own classification.
+  assert.equal(isBadRequestFailure({ texts: [" bad request "] }), true);
+  // An explicit HTTP 400, whatever its body.
   assert.equal(isBadRequestFailure({ category: "bad-request", httpStatusCode: 400, texts: ["Invalid value for 'input'."] }), true);
   assert.equal(isBadRequestFailure({ category: "unknown", httpStatusCode: 400, texts: [] }), true);
+  // A detail around a bare Bad Request doesn't hide it.
+  assert.equal(isBadRequestFailure({ texts: [`unexpected status 400 Bad Request: ${BAD_REQUEST}`, BAD_REQUEST] }), true);
+
+  // A category alone is not enough.
+  assert.equal(isBadRequestFailure({ category: "bad-request", httpStatusCode: null, texts: ["Invalid value for 'input'."] }), false);
+  assert.equal(isBadRequestFailure({ category: "bad-request", httpStatusCode: null, texts: [] }), false);
+  // Only the bare forms count as text.
+  for (const text of [
+    "400 Bad Request",
+    "HTTP 400: Bad Request",
+    "Bad Request.",
+    `unexpected status 400 Bad Request: ${BAD_REQUEST}`,
+    '{"error":{"message":"Bad Request"}}',
+    '{"message":"Bad Request"}',
+    '{"detail":"Bad Request","code":"invalid"}',
+    '{"detail":"Bad Request: invalid input"}',
+    "Bad Request: invalid input",
+  ]) {
+    assert.equal(isBadRequestText(text), false, text);
+    assert.equal(isBadRequestFailure({ category: "unknown", httpStatusCode: null, texts: [text] }), false, text);
+  }
 
   // Other categories have their own paths.
   for (const category of ["rate-limit", "unauthorized", "billing", "budget-exceeded", "overloaded", "connection-failed", "stream-disconnected", "context-window-exceeded", "internal", "policy", "sandbox"]) {
-    assert.equal(isBadRequestFailure({ category, httpStatusCode: null, texts: [BAD_REQUEST] }), false, category);
+    assert.equal(isBadRequestFailure({ category, httpStatusCode: 400, texts: [BAD_REQUEST] }), false, category);
   }
   // Other status codes.
   for (const status of [401, 403, 429, 500, 502, 503, 504]) {
     assert.equal(isBadRequestFailure({ category: "unknown", httpStatusCode: status, texts: [BAD_REQUEST] }), false, String(status));
   }
-  // Texts that are something else, or a Bad Request mixed with something else.
+  // Texts that are something else.
   for (const text of [
     "Bad Gateway",
     "502 Bad Gateway",
@@ -45,17 +65,15 @@ test("the Bad Request matcher takes a provider 400 and nothing else", () => {
     "Rate limit reached for requests",
     "tunnel closed unexpectedly",
     "stream disconnected before completion",
-    "Bad Request: usage limit reached",
-    "unexpected status 400 Bad Request: maximum context length exceeded",
-    "unexpected status 401 Unauthorized: {\"detail\":\"Bad Request\"}",
     "The model refused",
     "",
   ]) {
     assert.equal(isBadRequestFailure({ category: "unknown", httpStatusCode: null, texts: [text] }), false, text);
   }
-  // A Bad Request whose other text names a limit is a limit.
-  assert.equal(isBadRequestFailure({ category: "bad-request", texts: ["usage limit reached"] }), false);
+  // A 400 or a Bad Request next to text that names a limit, auth or context size is that.
+  assert.equal(isBadRequestFailure({ category: "unknown", httpStatusCode: 400, texts: ["maximum context length exceeded"] }), false);
   assert.equal(isBadRequestFailure({ category: "unknown", texts: [BAD_REQUEST, "rate limit reached"] }), false);
+  assert.equal(isBadRequestFailure({ category: "unknown", texts: [BAD_REQUEST, "unexpected status 401 Unauthorized"] }), false);
   assert.equal(isBadRequestText(null), false);
 });
 
@@ -63,7 +81,7 @@ test("the Bad Request matcher takes a provider 400 and nothing else", () => {
 
 test("the incident reads as a failed turn with one accepted steer and a Bad Request", () => {
   const turn = readFailedTurn(INCIDENT)!;
-  assert.deepEqual(turn, { key: "turn:turn_a", steers: [STEER], badRequest: true, newerMessage: false, interrupted: false });
+  assert.deepEqual(turn, { key: "turn:turn_a", steers: [STEER], badRequest: true, newerMessage: false, laterTurn: false, interrupted: false });
   assert.equal(retriesAfterSteer(turn), true);
   // Order doesn't matter (bb lists newest first).
   assert.deepEqual(readFailedTurn([...INCIDENT].reverse()), turn);
@@ -107,6 +125,34 @@ test("a steer counts only inside the failed turn, and bb's own notices never do"
   // A child's outcome delivered into the turn is not a steer anybody asked for.
   const notice = INCIDENT.map((row) => (row.id === "evt_110" ? { ...row, data: { ...row.data, systemMessageKind: "child-completed" } } : row));
   assert.deepEqual(readFailedTurn(notice)!.steers, []);
+});
+
+test("an interrupt after the failed completion vetoes the retry", () => {
+  // A manual stop logged after turn/completed, before the plugin settled the failure.
+  const stopped = [...INCIDENT, { id: "evt_122", seq: 122, type: "system/thread/interrupted", data: { reason: "manual-stop" } }];
+  const turn = readFailedTurn(stopped)!;
+  assert.equal(turn.key, "turn:turn_a");
+  assert.equal(turn.interrupted, true);
+  assert.equal(retriesAfterSteer(turn), false);
+  assert.equal(movedOnSince(stopped, "turn:turn_a"), true);
+  // An interrupt in an earlier turn doesn't.
+  const earlier = [{ id: "evt_090", seq: 90, type: "system/thread/interrupted", data: {} }, { id: "evt_091", seq: 91, type: "turn/completed", data: { status: "interrupted" } }, ...INCIDENT];
+  assert.equal(retriesAfterSteer(readFailedTurn(earlier)), true);
+});
+
+test("the dispatch check tells a chat that moved on from the retry's own request", () => {
+  assert.equal(movedOnSince(INCIDENT, "turn:turn_a"), false);
+  // The retry's own request may be logged before it dispatches: that's not moving on.
+  const ownRequest = [...INCIDENT, { id: "evt_130", seq: 130, type: "client/turn/requested", data: { requestId: "req_retry", target: { kind: "new-turn" }, input: [] } }];
+  assert.equal(movedOnSince(ownRequest, "turn:turn_a"), false);
+  // A turn that started, or a later finished turn, is.
+  assert.equal(movedOnSince([...ownRequest, { id: "evt_132", seq: 132, type: "turn/started", scope: { kind: "turn", turnId: "turn_b" }, data: {} }], "turn:turn_a"), true);
+  assert.equal(movedOnSince([...INCIDENT, ...laterTurn(200, { status: "completed" })], "turn:turn_a"), true);
+  assert.equal(movedOnSince(INCIDENT, "turn:other"), true);
+  // The retry message is known by its heading.
+  assert.equal(isSteerRetryText(steerRetryPrompt([STEER])), true);
+  assert.equal(isSteerRetryText("# Automatic retry is off"), false);
+  assert.equal(isSteerRetryText("Your last turn ended with a provider error."), false);
 });
 
 test("a message that reached the chat after the failure is newer", () => {
