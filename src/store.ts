@@ -665,18 +665,38 @@ export class TaskStore {
       .run(queuedMessageId, threadId, new Date().toISOString());
   }
 
-  /** removed: bb's queue no longer lists it. stuck: it couldn't be removed, and the guard stays. */
+  /**
+   * removed: bb's queue no longer lists it, so the guard goes. stuck: it
+   * couldn't be removed, and the guard stays. The guard's `at` stays its
+   * creation time either way.
+   */
   settleQueuedGuard(queuedMessageId: string, state: "removed" | "stuck"): void {
-    this.db().prepare(`UPDATE queue_guards SET state = ?, at = ? WHERE queued_message_id = ?`).run(state, new Date().toISOString(), queuedMessageId);
+    if (state === "removed") this.dropQueuedGuard(queuedMessageId);
+    else this.db().prepare(`UPDATE queue_guards SET state = ? WHERE queued_message_id = ?`).run(state, queuedMessageId);
+  }
+
+  dropQueuedGuard(queuedMessageId: string): void {
+    this.db().prepare(`DELETE FROM queue_guards WHERE queued_message_id = ?`).run(queuedMessageId);
+  }
+
+  /** The first of these queued messages the plugin still guards, with when the guard was made (epoch ms). */
+  queuedGuard(queuedMessageIds: readonly string[]): { queuedMessageId: string; threadId: string; createdAt: number } | null {
+    for (const id of queuedMessageIds) {
+      const row = this.db().prepare(`SELECT thread_id, state, at FROM queue_guards WHERE queued_message_id = ?`).get(id) as { thread_id?: string; state?: string; at?: string } | undefined;
+      if (row !== undefined && row.state !== "removed") return { queuedMessageId: id, threadId: String(row.thread_id), createdAt: Date.parse(String(row.at)) || 0 };
+    }
+    return null;
   }
 
   /** The first of these queued messages the plugin still guards (not confirmed gone), or null. */
   guardedQueuedMessage(queuedMessageIds: readonly string[]): string | null {
-    for (const id of queuedMessageIds) {
-      const row = this.db().prepare(`SELECT state FROM queue_guards WHERE queued_message_id = ?`).get(id) as { state?: string } | undefined;
-      if (row !== undefined && row.state !== "removed") return id;
-    }
-    return null;
+    return this.queuedGuard(queuedMessageIds)?.queuedMessageId ?? null;
+  }
+
+  /** Every guard still held, for the cleanup on plugin start. */
+  queuedGuards(): { queuedMessageId: string; threadId: string; createdAt: number }[] {
+    const rows = this.db().prepare(`SELECT queued_message_id, thread_id, at FROM queue_guards WHERE state != 'removed'`).all() as { queued_message_id: string; thread_id: string; at: string }[];
+    return rows.map((row) => ({ queuedMessageId: row.queued_message_id, threadId: row.thread_id, createdAt: Date.parse(row.at) || 0 }));
   }
 
   liveSandboxTasks(sandboxId: string): Task[] {

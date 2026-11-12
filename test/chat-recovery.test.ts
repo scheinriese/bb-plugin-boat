@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import type Database from "better-sqlite3";
 import type { ChatState, SendResult } from "../src/chat.ts";
 import { ChatRecoveryStore, createChatRecovery, type RecoveryThreads } from "../src/chat-recovery.ts";
@@ -462,10 +462,10 @@ test("a send that fails is logged and not retried in a loop; an hourly cap backs
 
 // ---------------------------------------------------------------- through the plugin
 
+/** Wait for a condition, by polls rather than the clock (some tests freeze Date). */
 async function until(check: () => boolean, ms = 3_000): Promise<void> {
-  const end = Date.now() + ms;
-  while (!check()) {
-    if (Date.now() > end) throw new Error("timed out");
+  for (let waited = 0; !check(); waited += 10) {
+    if (waited > ms) throw new Error("timed out");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
@@ -484,31 +484,71 @@ async function pluginHost(t: { after(fn: () => unknown): void }, settings: Recor
   const { makeThreadResponse } = await import("@get-bb/plugin-sdk/testing");
   const sends: Record<string, unknown>[] = [];
   let rows = ROWS;
-  harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "error", providerId: "codex" }));
-  harness.sdk.stub("threads.list", async () => ({ threads: [] }));
-  harness.sdk.stub("threads.events.list", async ({ types }: { types?: string[] }) => [...(types?.includes("turn/completed") ? rows : GOAL)].reverse());
   let queue: { kind: string } | null = null;
   const deleted: Record<string, unknown>[] = [];
-  harness.sdk.stub("threads.send", async (args: Record<string, unknown>) => {
-    sends.push(args);
-    if (queue === null) return { ok: true, delivery: "sent" };
-    queuedIds.add(`qm_${sends.length}`);
-    return { ok: true, delivery: "queued", queuedMessage: { id: `qm_${sends.length}`, waitingOn: queue } };
-  });
   let deleteFails = false;
   let onDelete: ((args: Record<string, unknown>) => Promise<void>) | null = null;
   const queuedIds = new Set<string>();
-  harness.sdk.stub("threads.queuedMessages.delete", async (args: Record<string, unknown>) => {
-    deleted.push(args);
-    if (onDelete) await onDelete(args);
-    if (deleteFails) throw new Error("bb didn't answer");
-    queuedIds.delete(String(args.queuedMessageId));
-    return { ok: true };
-  });
-  harness.sdk.stub("threads.queuedMessages.list", async () => [...queuedIds].map((id) => ({ id })));
+  // The fakes, shared by this host and a reloaded one.
+  const fakes = {
+    get: async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, status: "error", providerId: "codex" }),
+    list: async () => ({ threads: [] }),
+    events: async ({ types }: { types?: string[] }) => [...(types?.includes("turn/completed") ? rows : GOAL)].reverse(),
+    send: async (args: Record<string, unknown>) => {
+      sends.push(args);
+      if (queue === null) return { ok: true, delivery: "sent" };
+      queuedIds.add(`qm_${sends.length}`);
+      return { ok: true, delivery: "queued", queuedMessage: { id: `qm_${sends.length}`, waitingOn: queue } };
+    },
+    delete: async (args: Record<string, unknown>) => {
+      deleted.push(args);
+      if (onDelete) await onDelete(args);
+      if (deleteFails) throw new Error("bb didn't answer");
+      queuedIds.delete(String(args.queuedMessageId));
+      return { ok: true };
+    },
+    queued: async () => [...queuedIds].map((id) => ({ id })),
+  };
+  harness.sdk.stub("threads.get", fakes.get);
+  harness.sdk.stub("threads.list", fakes.list);
+  harness.sdk.stub("threads.events.list", fakes.events);
+  harness.sdk.stub("threads.send", fakes.send);
+  harness.sdk.stub("threads.queuedMessages.delete", fakes.delete);
+  harness.sdk.stub("threads.queuedMessages.list", fakes.queued);
   await plugin(bb);
+  const host = { bb, harness };
+  /**
+   * The plugin reloads against the same database. The replacement's stubs
+   * can't be set before it starts, so its thread and queue calls go to these
+   * same fakes; hooks, rechecks and storage stay the fake host's own.
+   */
+  const reload = async () => {
+    const overlay = <T extends object>(target: T, overrides: Record<string, unknown>): T =>
+      new Proxy(target, { get: (object, key) => (typeof key === "string" && key in overrides ? overrides[key] : Reflect.get(object, key)) });
+    const next = await host.harness.lifecycle.reload(async (fresh) => {
+      const threads = fresh.sdk.threads;
+      await plugin(overlay(fresh, {
+        sdk: overlay(fresh.sdk, {
+          threads: overlay(threads, {
+            get: fakes.get,
+            list: fakes.list,
+            send: fakes.send,
+            events: overlay(threads.events, { list: fakes.events }),
+            queuedMessages: overlay(threads.queuedMessages, { list: fakes.queued, delete: fakes.delete }),
+          }),
+        }),
+      }));
+    });
+    host.bb = next.bb;
+    host.harness = next.harness;
+    t.after(() => next.harness.lifecycle.dispose());
+    return next;
+  };
   return {
-    bb, harness, sends, deleted, makeThreadResponse,
+    get bb() { return host.bb; },
+    get harness() { return host.harness; },
+    reload,
+    sends, deleted, makeThreadResponse,
     setRows: (next: TurnEventRow[]) => void (rows = next),
     queueSends: (next: { kind: string } | null) => void (queue = next),
     failDeletes: (fail = true) => void (deleteFails = fail),
@@ -597,6 +637,90 @@ test("through the plugin, a withdrawn row grouped with newer input is taken out 
   assert.notEqual(resent.action, "wait");
   // The recovery row on its own would still be refused (it's gone now, so nothing guards it any more).
   assert.equal(host.queued.has("qm_1"), false);
+});
+
+/** A guarded recovery (bb won't let go of it) grouped with a newer follow-up: the hook holds the group. */
+async function heldGroup(t: { after(fn: () => unknown): void }) {
+  const host = await pluginHost(t);
+  const { makeMessageDispatchHookContext } = await import("@get-bb/plugin-sdk/testing");
+  const drain = (ids: string[]) =>
+    host.harness.inspection.registrations.hooks["message.dispatch"]!(
+      makeMessageDispatchHookContext({ thread: { id: THREAD }, input: { text: "x" }, originPluginId: ids.length > 1 ? "mixed" : null, queuedMessages: ids.map((id) => ({ id })) }),
+    ) as Promise<{ action: string; reason?: string; sendAt?: number | null }>;
+  host.failDeletes();
+  host.queueSends({ kind: "plugin" });
+  await host.harness.emitThreadEvent("thread.failed", { thread: host.makeThreadResponse({ id: THREAD, status: "error", providerId: "codex" }), error: '{"detail":"Bad Request"}' });
+  await until(() => host.deleted.length >= 3, 5_000);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  host.queued.add("qm_user");
+  const held = await drain(["qm_1", "qm_user"]);
+  const guards = () => new TaskStore(() => host.bb.storage.database());
+  return { host, drain, held, guards };
+}
+
+test("a held group waits at most two minutes, with bb's own wake-up, then goes out even if the cleanup failed (review 5)", async (t) => {
+  const { host, drain, held, guards } = await heldGroup(t);
+  assert.equal(held.action, "wait");
+  // bb's due sweep re-attempts the group at sendAt, whatever happens to the plugin's cleanup.
+  const created = Date.now();
+  assert.ok(typeof held.sendAt === "number" && held.sendAt > created && held.sendAt <= created + 120_000);
+  // Every delete keeps failing; at sendAt the group goes out unchanged, stale row included.
+  mock.timers.enable({ apis: ["Date"], now: held.sendAt + 1 });
+  let later;
+  try {
+    later = await drain(["qm_1", "qm_user"]);
+  } finally {
+    mock.timers.reset();
+  }
+  assert.notEqual(later.action, "wait");
+  assert.notEqual(later.action, "reject");
+  assert.ok(host.harness.inspection.logEntries.some((entry) => entry.level === "warn" && /let a queued group in thr_local through with withdrawn message qm_1/.test(entry.message)));
+  assert.equal(guards().guardedQueuedMessage(["qm_1"]), null, "its guard goes");
+});
+
+test("after a reload, an expired guard's group goes out on the start-up recheck (review 5)", async (t) => {
+  const { host, drain, held, guards } = await heldGroup(t);
+  assert.equal(held.action, "wait");
+  mock.timers.enable({ apis: ["Date"], now: (held.sendAt ?? 0) + 1 });
+  try {
+    // The plugin reloads with the group still held; it asks bb to re-attempt held rows.
+    const next = await host.reload();
+    await until(() => next.harness.inspection.recheckCount > 0);
+    assert.notEqual(guards().guardedQueuedMessage(["qm_1"]), null, "still queued, so still guarded");
+    // bb's re-attempt: the guard has expired, so the group goes out.
+    const later = await drain(["qm_1", "qm_user"]);
+    assert.notEqual(later.action, "wait");
+    assert.notEqual(later.action, "reject");
+  } finally {
+    mock.timers.reset();
+  }
+  assert.equal(guards().guardedQueuedMessage(["qm_1"]), null);
+});
+
+test("after a reload, a young guard is cleaned up and the rest goes out (review 5)", async (t) => {
+  const { host, drain, held } = await heldGroup(t);
+  assert.equal(held.action, "wait");
+  host.failDeletes(false);
+  const next = await host.reload();
+  await until(() => next.harness.inspection.recheckCount > 0);
+  const rechecks = next.harness.inspection.recheckCount;
+  // bb's re-attempt after the start-up recheck: still young, so held while the new plugin removes the row.
+  const again = await drain(["qm_1", "qm_user"]);
+  assert.equal(again.action, "wait");
+  await until(() => !host.queued.has("qm_1") && next.harness.inspection.recheckCount > rechecks, 5_000);
+  assert.ok(host.queued.has("qm_user"));
+  // And the re-attempt after that carries only the follow-up: it goes out.
+  const out = await drain(["qm_user"]);
+  assert.notEqual(out.action, "wait");
+  assert.notEqual(out.action, "reject");
+});
+
+test("on start, a guard whose queue row is gone is dropped", async (t) => {
+  const { host, guards } = await heldGroup(t);
+  host.queued.delete("qm_1");
+  const next = await host.reload();
+  await until(() => next.harness.inspection.recheckCount > 0);
+  assert.equal(guards().guardedQueuedMessage(["qm_1"]), null);
 });
 
 test("with the setting off, the plugin leaves other chats alone", async (t) => {
