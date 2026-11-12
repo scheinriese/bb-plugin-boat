@@ -72,6 +72,7 @@ inherits the global setting; an explicit native task drawer choice wins.
 | Orchestrators | Size for chats on a Boat sandbox | `orchestratorMachineType` | `small` |
 | Orchestrators | Full access for cloud orchestrators | `cloudOrchestratorFullAccess` | on |
 | Advanced | Hard stop after (hours) | `sandboxTtlHours` | `2` |
+| Advanced | Recover any chat after a steer Bad Request | `recoverChatsAfterSteer` | on |
 | Advanced | Make room at your sandbox limit | `freeSlotsWhenFull` | on |
 | Advanced | Delete sandboxes when tasks close | `deleteSandboxOnClose` | on (sandboxes with unshipped work are kept) |
 | Advanced | Where reviews run | `reviewSandbox` | `auto` (a new sandbox if there's room); `new`, `same` |
