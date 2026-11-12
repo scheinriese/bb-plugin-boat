@@ -203,3 +203,51 @@ test("the chat runner reads only the lifecycle events, newest first, and drops m
   assert.deepEqual(rows, [INCIDENT[6], INCIDENT[0]]);
   assert.deepEqual(calls, [{ threadId: "thr_w1", order: "desc", limit: "200", types: ["client/turn/requested", "turn/input/accepted", "turn/started", "turn/completed", "provider/error", "system/thread/interrupted"] }]);
 });
+
+test("withdrawing a queued message is confirmed by bb's queue, with a few retries", async () => {
+  const { createChatRunner } = await import("../src/chat.ts");
+  function runner(options: { deleteFails: number; listFails?: number; goneWithoutDelete?: boolean }) {
+    let queued = true;
+    const calls = { delete: 0, list: 0 };
+    let listFails = options.listFails ?? 0;
+    const bb = {
+      sdk: {
+        threads: {
+          queuedMessages: {
+            delete: async () => {
+              calls.delete += 1;
+              if (calls.delete <= options.deleteFails) throw new Error("bb didn't answer");
+              queued = false;
+              return { ok: true };
+            },
+            list: async () => {
+              calls.list += 1;
+              if (listFails > 0) {
+                listFails -= 1;
+                throw new Error("bb didn't answer");
+              }
+              return queued && !options.goneWithoutDelete ? [{ id: "qm_1" }, { id: "qm_other" }] : [{ id: "qm_other" }];
+            },
+          },
+        },
+      },
+    } as unknown as Parameters<typeof createChatRunner>[0];
+    return { chat: createChatRunner(bb, { withdrawBackoffMs: [1, 1] }), calls };
+  }
+  // The first two deletes fail; the third works, and the queue confirms it.
+  const retried = runner({ deleteFails: 2 });
+  assert.equal(await retried.chat.withdraw("thr_w1", "qm_1"), "removed");
+  assert.deepEqual(retried.calls, { delete: 3, list: 3 });
+  // Every delete fails and the queue still lists it: stuck, after three tries.
+  const stuck = runner({ deleteFails: 99 });
+  assert.equal(await stuck.chat.withdraw("thr_w1", "qm_1"), "stuck");
+  assert.deepEqual(stuck.calls, { delete: 3, list: 3 });
+  // A delete that seemed to fail but the row is gone: removed.
+  const gone = runner({ deleteFails: 99, goneWithoutDelete: true });
+  assert.equal(await gone.chat.withdraw("thr_w1", "qm_1"), "removed");
+  assert.equal(gone.calls.delete, 1);
+  // A queue bb can't list isn't a confirmation.
+  const unlisted = runner({ deleteFails: 0, listFails: 1 });
+  assert.equal(await unlisted.chat.withdraw("thr_w1", "qm_1"), "removed");
+  assert.deepEqual(unlisted.calls, { delete: 2, list: 2 });
+});

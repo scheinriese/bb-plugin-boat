@@ -124,8 +124,12 @@ export interface ChatRunner {
     text: string,
     options: { steer: boolean; model?: string | null; effort?: string | null },
   ): Promise<SendResult>;
-  /** Take a message the plugin sent back out of bb's queue before it runs. */
-  withdraw(threadId: string, queuedMessageId: string): Promise<void>;
+  /**
+   * Take a message the plugin sent back out of bb's queue before it runs:
+   * "removed" once bb's queue no longer lists it (a delete is retried a few
+   * times, a moment apart), "stuck" when it still does.
+   */
+  withdraw(threadId: string, queuedMessageId: string): Promise<"removed" | "stuck">;
   /** null: the chat no longer exists. */
   state(threadId: string): Promise<ChatState | null>;
   output(threadId: string): Promise<string | null>;
@@ -150,7 +154,11 @@ function isNotFound(error: unknown): boolean {
   return /not[ _]found|404/i.test(error instanceof Error ? error.message : String(error));
 }
 
-export function createChatRunner(bb: BbPluginApi): ChatRunner {
+/** Waits between tries to delete a queued message (three tries, about 1.5 s in all). */
+const WITHDRAW_BACKOFF_MS = [300, 1_200];
+
+export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?: readonly number[] } = {}): ChatRunner {
+  const backoffMs = options.withdrawBackoffMs ?? WITHDRAW_BACKOFF_MS;
   return {
     async attachMachine({ taskId, sandboxId, signal, keepSandbox }) {
       const key = keepSandbox ? `task-${taskId}-m${Date.now().toString(36)}` : `task-${taskId}`;
@@ -329,7 +337,15 @@ export function createChatRunner(bb: BbPluginApi): ChatRunner {
     },
 
     async withdraw(threadId, queuedMessageId) {
-      await bb.sdk.threads.queuedMessages.delete({ threadId, queuedMessageId });
+      for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs[attempt - 1]));
+        await bb.sdk.threads.queuedMessages.delete({ threadId, queuedMessageId }).catch(() => undefined);
+        // Confirmed only by the queue itself: a delete that seemed to fail may have worked, and one that seemed to work may not have.
+        const listed = (await bb.sdk.threads.queuedMessages.list({ threadId }).catch(() => null)) as unknown;
+        const rows = Array.isArray(listed) ? listed : ((listed as { items?: unknown[]; queuedMessages?: unknown[] } | null)?.items ?? (listed as { queuedMessages?: unknown[] } | null)?.queuedMessages ?? null);
+        if (Array.isArray(rows) && !rows.some((row) => (row as { id?: unknown } | null)?.id === queuedMessageId)) return "removed";
+      }
+      return "stuck";
     },
 
     async state(threadId) {

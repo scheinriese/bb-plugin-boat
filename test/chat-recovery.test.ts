@@ -33,6 +33,7 @@ class FakeThreads implements RecoveryThreads {
   /** bb queues sends instead of starting them (a turn or a hold got there first). */
   queueSends: { waitingOn: string } | null = null;
   withdrawn: { threadId: string; queuedMessageId: string }[] = [];
+  withdrawResult: "removed" | "stuck" = "removed";
 
   failedThread(threadId = THREAD, rows = ROWS, goal: TurnEventRow[] = [], providerId = "codex") {
     this.states.set(threadId, { status: "error", updatedAt: Date.now(), archived: false, environmentId: null, queued: 0, backgroundAgents: 0, workflows: 0, providerId });
@@ -63,6 +64,7 @@ class FakeThreads implements RecoveryThreads {
   }
   async withdraw(threadId: string, queuedMessageId: string) {
     this.withdrawn.push({ threadId, queuedMessageId });
+    return this.withdrawResult;
   }
   /** The recovery's turn ran and ended: the chat is idle again. */
   recoveryTurnEnded(threadId = THREAD, status: "completed" | "interrupted" = "completed", extra: TurnEventRow[] = []) {
@@ -84,6 +86,7 @@ function setup(options: { enabled?: boolean; taskThreads?: string[]; db?: () => 
   const threads = options.threads ?? new FakeThreads();
   const db = options.db ?? database();
   const store = new ChatRecoveryStore(db);
+  const guards = new TaskStore(db);
   const logs: { level: "info" | "warn"; line: string }[] = [];
   let enabled = options.enabled ?? true;
   const recovery = createChatRecovery({
@@ -91,11 +94,12 @@ function setup(options: { enabled?: boolean; taskThreads?: string[]; db?: () => 
     isTaskThread: (threadId) => (options.taskThreads ?? []).includes(threadId),
     threads,
     store,
+    guards,
     log: { info: (line) => void logs.push({ level: "info", line }), warn: (line) => void logs.push({ level: "warn", line }) },
     signal: new AbortController().signal,
     timing: { rereads: 2, rereadMs: 1 },
   });
-  return { recovery, threads, store, logs, db, setEnabled: (value: boolean) => void (enabled = value) };
+  return { recovery, threads, store, guards, logs, db, setEnabled: (value: boolean) => void (enabled = value) };
 }
 
 /** A later turn: its opening message (by default the plugin's recovery), maybe a steer, then how it ended. */
@@ -322,6 +326,23 @@ test("a recovery bb queues instead of starting is withdrawn at once, so it never
   }
 });
 
+test("a queued recovery bb won't let go of stays guarded and is skipped, with a warning", async () => {
+  const env = setup();
+  env.threads.failedThread();
+  env.threads.queueSends = { waitingOn: "plugin" };
+  env.threads.withdrawResult = "stuck";
+  assert.equal(await env.recovery.failed(THREAD), "skipped");
+  assert.equal(env.store.latest(THREAD)?.state, "skipped");
+  assert.equal(env.guards.guardedQueuedMessage(["qm_1"]), "qm_1");
+  assert.ok(env.logs.some((entry) => entry.level === "warn" && entry.line === "chat recovery thr_local: couldn't remove the queued recovery message qm_1 (turn turn:turn_g); it stays refused if bb ever dispatches it"));
+  // Removed for sure: no guard left.
+  const removed = setup();
+  removed.threads.failedThread();
+  removed.threads.queueSends = { waitingOn: "plugin" };
+  assert.equal(await removed.recovery.failed(THREAD), "skipped");
+  assert.equal(removed.guards.guardedQueuedMessage(["qm_1"]), null);
+});
+
 test("a chat busy at send time skips the recovery for good", async () => {
   const env = setup();
   env.threads.failedThread();
@@ -450,14 +471,30 @@ async function pluginHost(t: { after(fn: () => unknown): void }, settings: Recor
   const deleted: Record<string, unknown>[] = [];
   harness.sdk.stub("threads.send", async (args: Record<string, unknown>) => {
     sends.push(args);
-    return queue === null ? { ok: true, delivery: "sent" } : { ok: true, delivery: "queued", queuedMessage: { id: `qm_${sends.length}`, waitingOn: queue } };
+    if (queue === null) return { ok: true, delivery: "sent" };
+    queuedIds.add(`qm_${sends.length}`);
+    return { ok: true, delivery: "queued", queuedMessage: { id: `qm_${sends.length}`, waitingOn: queue } };
   });
+  let deleteFails = false;
+  let onDelete: ((args: Record<string, unknown>) => Promise<void>) | null = null;
+  const queuedIds = new Set<string>();
   harness.sdk.stub("threads.queuedMessages.delete", async (args: Record<string, unknown>) => {
     deleted.push(args);
+    if (onDelete) await onDelete(args);
+    if (deleteFails) throw new Error("bb didn't answer");
+    queuedIds.delete(String(args.queuedMessageId));
     return { ok: true };
   });
+  harness.sdk.stub("threads.queuedMessages.list", async () => [...queuedIds].map((id) => ({ id })));
   await plugin(bb);
-  return { bb, harness, sends, deleted, makeThreadResponse, setRows: (next: TurnEventRow[]) => void (rows = next), queueSends: (next: { kind: string } | null) => void (queue = next) };
+  return {
+    bb, harness, sends, deleted, makeThreadResponse,
+    setRows: (next: TurnEventRow[]) => void (rows = next),
+    queueSends: (next: { kind: string } | null) => void (queue = next),
+    failDeletes: () => void (deleteFails = true),
+    onDelete: (handler: (args: Record<string, unknown>) => Promise<void>) => void (onDelete = handler),
+    queued: queuedIds,
+  };
 }
 
 test("the plugin recovers a chat from bb's thread.failed with a new turn, never a steer, once", async (t) => {
@@ -484,6 +521,30 @@ test("through the plugin, a recovery bb queues is deleted from bb's queue at onc
   await until(() => host.deleted.length > 0);
   assert.deepEqual(host.deleted, [{ threadId: THREAD, queuedMessageId: "qm_1" }]);
   assert.equal(host.sends.length, 1);
+});
+
+test("through the plugin, a queued recovery bb won't delete is refused at dispatch, by its exact id", async (t) => {
+  const host = await pluginHost(t);
+  const { makeMessageDispatchHookContext } = await import("@get-bb/plugin-sdk/testing");
+  const dispatch = host.harness.inspection.registrations.hooks["message.dispatch"]!;
+  const drain = (id: string) => dispatch(makeMessageDispatchHookContext({ thread: { id: THREAD }, input: { text: "x" }, queuedMessages: [{ id }] })) as Promise<{ action: string; message?: string }>;
+  // Core drains the row while the first delete is still in flight: the guard is already on it.
+  const early: { action: string }[] = [];
+  host.onDelete(async (args) => {
+    if (early.length === 0) early.push(await drain(String(args.queuedMessageId)));
+  });
+  host.failDeletes();
+  host.queueSends({ kind: "plugin" });
+  await host.harness.emitThreadEvent("thread.failed", { thread: host.makeThreadResponse({ id: THREAD, status: "error", providerId: "codex" }), error: '{"detail":"Bad Request"}' });
+  await until(() => host.deleted.length >= 3, 5_000);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(early[0]?.action, "reject", "refused before the delete landed");
+  // Every delete failed and bb still lists it: refused whenever it dispatches, and only that row.
+  assert.ok(host.queued.has("qm_1"));
+  const refused = await drain("qm_1");
+  assert.equal(refused.action, "reject");
+  assert.match(refused.message!, /Boat withdrew this automatic message/);
+  assert.notEqual((await drain("qm_someone_else")).action, "reject");
 });
 
 test("with the setting off, the plugin leaves other chats alone", async (t) => {

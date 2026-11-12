@@ -720,6 +720,8 @@ export class FakeChat implements ChatRunner {
   /** bb queues the next sends instead of running them (another turn or a hold got there first). */
   queueSends: { waitingOn: string } | null = null;
   withdrawn: { threadId: string; queuedMessageId: string }[] = [];
+  /** What withdrawing a queued message comes to (stuck: bb's queue still lists it after the tries). */
+  withdrawResult: "removed" | "stuck" = "removed";
   async send(threadId: string, text: string, options: { steer: boolean; model?: string | null; effort?: string | null }): Promise<SendResult> {
     this.sends.push({ threadId, text, ...options });
     if (this.queueSends) return { delivery: "queued", queuedMessageId: `qm_${this.sends.length}`, waitingOn: this.queueSends.waitingOn };
@@ -729,6 +731,7 @@ export class FakeChat implements ChatRunner {
   }
   async withdraw(threadId: string, queuedMessageId: string) {
     this.withdrawn.push({ threadId, queuedMessageId });
+    return this.withdrawResult;
   }
   async state(threadId: string) {
     return this.states.get(threadId) ?? null;

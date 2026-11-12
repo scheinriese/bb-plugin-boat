@@ -343,6 +343,33 @@ test("a retry bb queues instead of starting is withdrawn at once, so it never ru
   assert.equal(held.notifications.length, 1);
 });
 
+test("a queued retry bb won't let go of stays guarded, refused at dispatch, and is never a retry", async () => {
+  for (const waitingOn of ["thread-busy", "plugin"]) {
+    const env = makeService({ chat: true });
+    const task = await chatTask(env);
+    env.chat.queueSends = { waitingOn };
+    env.chat.withdrawResult = "stuck";
+    await fail(env, task.threadId!, INCIDENT);
+    const id = `qm_${env.chat.sends.length}`;
+    assert.deepEqual(env.chat.withdrawn, [{ threadId: task.threadId!, queuedMessageId: id }], waitingOn);
+    // Not recorded as a retry: the task follows the other turn, or reports the failure.
+    const after = env.store.get(task.id)!;
+    assert.equal(env.service.publicStatus(after).retrying, undefined, waitingOn);
+    assert.ok(!env.store.events(task.id, 50).some((event) => event.kind === "auto-retry"), waitingOn);
+    assert.equal(after.status, waitingOn === "plugin" ? "failed" : "running", waitingOn);
+    // The guard stays on that exact row (bb's dispatch hook refuses it), and a warning says so.
+    assert.equal(env.store.guardedQueuedMessage(["qm_other", id]), id);
+    assert.equal(env.store.guardedQueuedMessage(["qm_other"]), null);
+    assert.ok(env.warnings.some((line) => line.includes(`couldn't remove the queued retry ${id}`)), waitingOn);
+  }
+  // Removed for sure: no guard left.
+  const removed = makeService({ chat: true });
+  const task = await chatTask(removed);
+  removed.chat.queueSends = { waitingOn: "plugin" };
+  await fail(removed, task.threadId!, INCIDENT);
+  assert.equal(removed.store.guardedQueuedMessage([`qm_${removed.chat.sends.length}`]), null);
+});
+
 test("a chat busy at send time skips the retry for good", async () => {
   const env = makeService({ chat: true });
   const task = await chatTask(env);
