@@ -1,0 +1,22 @@
+{
+  "about": "A Codex task chat's lifecycle events, shaped like bb's thread event log: a turn, a steer into it, then a provider Bad Request that fails the turn. Ids and texts are fake.",
+  "rows": [
+    { "id": "evt_101", "seq": 101, "type": "client/turn/requested", "createdAt": 1700000110000, "scope": { "kind": "thread" },
+      "data": { "requestId": "req_turn", "target": { "kind": "new-turn" }, "source": "tell", "initiator": "agent", "senderThreadId": "thr_orch",
+        "input": [{ "type": "text", "text": "Add a dark mode toggle.", "mentions": [] }] } },
+    { "id": "evt_102", "seq": 102, "type": "turn/input/accepted", "createdAt": 1700000110500, "scope": { "kind": "turn", "turnId": "turn_a" },
+      "data": { "clientRequestId": "req_turn", "providerThreadId": "pth_1", "scope": { "kind": "turn", "turnId": "turn_a" } } },
+    { "id": "evt_103", "seq": 103, "type": "turn/started", "createdAt": 1700000110600, "scope": { "kind": "turn", "turnId": "turn_a" },
+      "data": { "providerThreadId": "pth_1" } },
+    { "id": "evt_110", "seq": 110, "type": "client/turn/requested", "createdAt": 1700000121000, "scope": { "kind": "thread" },
+      "data": { "requestId": "req_steer", "target": { "kind": "steer", "expectedTurnId": "turn_a" }, "source": "tell", "initiator": "user", "senderThreadId": null,
+        "input": [{ "type": "text", "text": "Keep the old settings route working too.", "mentions": [] }] } },
+    { "id": "evt_111", "seq": 111, "type": "turn/input/accepted", "createdAt": 1700000121200, "scope": { "kind": "turn", "turnId": "turn_a" },
+      "data": { "clientRequestId": "req_steer", "providerThreadId": "pth_1", "scope": { "kind": "turn", "turnId": "turn_a" } } },
+    { "id": "evt_120", "seq": 120, "type": "provider/error", "createdAt": 1700000144000, "scope": { "kind": "turn", "turnId": "turn_a" },
+      "data": { "providerThreadId": "pth_1", "message": "{\"detail\":\"Bad Request\"}", "detail": "{\"detail\":\"Bad Request\"}", "willRetry": false,
+        "errorInfo": { "category": "unknown", "providerCode": "other", "httpStatusCode": null } } },
+    { "id": "evt_121", "seq": 121, "type": "turn/completed", "createdAt": 1700000144100, "scope": { "kind": "turn", "turnId": "turn_a" },
+      "data": { "providerThreadId": "pth_1", "status": "failed", "error": { "message": "{\"detail\":\"Bad Request\"}" } } }
+  ]
+}
