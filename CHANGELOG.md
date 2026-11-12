@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.7
+
+- Retry a task chat's turn once when the provider answers Bad Request right after a steer, repeating the steer, and show it as Retrying instead of Agent stopped.
+- Recover any other chat the same way, behind a new setting, Recover any chat after a steer Bad Request (on by default); on Codex, resume a goal the failure blocked.
+- Send these as a new turn or not at all, so they never run after newer messages or a stop.
+
 ## 0.2.6
 
 - Show manually created coordinating bb chats and their native child-thread activity in Today and the compact Home summary.
