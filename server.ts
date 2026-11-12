@@ -491,6 +491,7 @@ export default async function plugin(bb: BbPluginApi) {
       withdraw: (threadId, queuedMessageId) => chatRunner.withdraw(threadId, queuedMessageId),
     },
     store: new ChatRecoveryStore(() => bb.storage.database()),
+    guards: service.store,
     log: { info: (line) => bb.log.info(line), warn: (line) => bb.log.warn(line) },
     signal: lifecycle.signal,
   });
@@ -566,6 +567,12 @@ export default async function plugin(bb: BbPluginApi) {
   });
   // The same note for a message that would go straight to the worker: held a moment, once, to add it.
   bb.experimental_hooks.on("message.dispatch", async (context) => {
+    // A steer retry or chat recovery the plugin withdrew but bb's queue may still hold: never let it run.
+    const guarded = service.store.guardedQueuedMessage(context.queuedMessages.map((row) => row.id));
+    if (guarded !== null) {
+      bb.log.warn(`refused queued message ${guarded} in ${context.thread.id}: the plugin withdrew it, the chat moved on before it could run`);
+      return { action: "reject", message: "Boat withdrew this automatic message: the chat moved on before it could run." };
+    }
     const start = await nativeStart(context, runtime, quotas);
     if (start?.action === "wait" || start?.action === "reject") return start;
     return watchdog.dispatch({

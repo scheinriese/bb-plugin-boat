@@ -654,6 +654,31 @@ export class TaskStore {
   }
 
   /** Tasks still occupying (or possibly occupying) a sandbox. */
+  /**
+   * Guard a queued message the plugin is withdrawing (a steer retry or chat
+   * recovery bb queued instead of starting): bb's dispatch hook refuses that
+   * exact row until the delete is confirmed.
+   */
+  guardQueuedMessage(threadId: string, queuedMessageId: string): void {
+    this.db()
+      .prepare(`INSERT OR REPLACE INTO queue_guards (queued_message_id, thread_id, state, at) VALUES (?, ?, 'pending', ?)`)
+      .run(queuedMessageId, threadId, new Date().toISOString());
+  }
+
+  /** removed: bb's queue no longer lists it. stuck: it couldn't be removed, and the guard stays. */
+  settleQueuedGuard(queuedMessageId: string, state: "removed" | "stuck"): void {
+    this.db().prepare(`UPDATE queue_guards SET state = ?, at = ? WHERE queued_message_id = ?`).run(state, new Date().toISOString(), queuedMessageId);
+  }
+
+  /** The first of these queued messages the plugin still guards (not confirmed gone), or null. */
+  guardedQueuedMessage(queuedMessageIds: readonly string[]): string | null {
+    for (const id of queuedMessageIds) {
+      const row = this.db().prepare(`SELECT state FROM queue_guards WHERE queued_message_id = ?`).get(id) as { state?: string } | undefined;
+      if (row !== undefined && row.state !== "removed") return id;
+    }
+    return null;
+  }
+
   liveSandboxTasks(sandboxId: string): Task[] {
     return (
       this.db()

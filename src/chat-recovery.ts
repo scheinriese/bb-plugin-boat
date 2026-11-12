@@ -98,8 +98,14 @@ export interface RecoveryThreads {
   goalEvents(threadId: string): Promise<TurnEventRow[]>;
   /** Start a new turn with this message (queued when bb can't start it now); never a steer. */
   send(threadId: string, text: string): Promise<SendResult>;
-  /** Take a queued message back out before it runs. */
-  withdraw(threadId: string, queuedMessageId: string): Promise<void>;
+  /** Take a queued message back out before it runs: "removed" once bb's queue no longer lists it, else "stuck". */
+  withdraw(threadId: string, queuedMessageId: string): Promise<"removed" | "stuck">;
+}
+
+/** Queued messages being withdrawn: bb's dispatch hook refuses a guarded one until it's confirmed gone (TaskStore). */
+export interface QueueGuards {
+  guardQueuedMessage(threadId: string, queuedMessageId: string): void;
+  settleQueuedGuard(queuedMessageId: string, state: "removed" | "stuck"): void;
 }
 
 export interface ChatRecoveryDeps {
@@ -109,6 +115,7 @@ export interface ChatRecoveryDeps {
   isTaskThread(threadId: string): boolean;
   threads: RecoveryThreads;
   store: ChatRecoveryStore;
+  guards: QueueGuards;
   log: { info(line: string): void; warn(line: string): void };
   signal: AbortSignal;
   /** Tests: how often and how far apart a failure is read again (ms). */
@@ -168,7 +175,8 @@ export function createChatRecovery(deps: ChatRecoveryDeps) {
 
   /**
    * Send `text` as a turn that starts now, or not at all: a message bb queued
-   * is withdrawn at once. "sent", "queued" (withdrawn), or "failed".
+   * is withdrawn at once, and refused at dispatch until that's confirmed.
+   * "sent", "queued" (withdrawn or refused), or "failed".
    */
   async function sendNow(threadId: string, text: string, what: string, turnKey: string): Promise<"sent" | "queued" | "failed"> {
     let result: SendResult;
@@ -180,12 +188,13 @@ export function createChatRecovery(deps: ChatRecoveryDeps) {
     }
     if (result.delivery === "sent") return "sent";
     if (result.queuedMessageId !== null) {
-      try {
-        await deps.threads.withdraw(threadId, result.queuedMessageId);
-      } catch (error) {
-        // Already on its way: it runs now.
-        deps.log.warn(`chat recovery ${threadId}: couldn't withdraw the queued ${what} (turn ${turnKey}): ${message(error)}`);
-        return "sent";
+      // Guarded before the delete: until bb's queue no longer lists it, the dispatch hook refuses this exact row.
+      deps.guards.guardQueuedMessage(threadId, result.queuedMessageId);
+      const removed = await deps.threads.withdraw(threadId, result.queuedMessageId).catch(() => "stuck" as const);
+      deps.guards.settleQueuedGuard(result.queuedMessageId, removed);
+      if (removed === "stuck") {
+        deps.log.warn(`chat recovery ${threadId}: couldn't remove the queued ${what} ${result.queuedMessageId} (turn ${turnKey}); it stays refused if bb ever dispatches it`);
+        return "queued";
       }
     }
     deps.log.info(`chat recovery ${threadId}: skipped the ${what}, bb queued it (${result.waitingOn ?? "waiting"}) and it was withdrawn (turn ${turnKey})`);

@@ -3,4 +3,6 @@ export const CHAT_RECOVERY_MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS chat_recoveries (thread_id TEXT NOT NULL, turn_key TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (thread_id, turn_key))`,
   // The failed turn moved a Codex goal from active to blocked: resume it once the recovery turn ends.
   `ALTER TABLE chat_recoveries ADD COLUMN resume_goal INTEGER NOT NULL DEFAULT 0`,
+  // A retry or recovery bb queued and the plugin is withdrawing: bb's dispatch hook refuses it until it's confirmed gone.
+  `CREATE TABLE IF NOT EXISTS queue_guards (queued_message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL)`,
 ];

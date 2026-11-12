@@ -2597,13 +2597,12 @@ export class BoatService {
     if (sent.delivery === "queued") {
       // bb queued it (a turn got there first, or a hold): never leave it waiting to run after newer work.
       if (sent.queuedMessageId !== null) {
-        try {
-          await chat.withdraw(task.threadId, sent.queuedMessageId);
-        } catch (error) {
-          // Already on its way: it runs as the retry.
-          this.hooks.log.warn(`steer retry: couldn't withdraw the queued retry in ${task.threadId}: ${errorText(error)}`);
-          this.store.addEvent(task.id, AUTO_RETRY_EVENT, AUTO_RETRY_TEXT);
-          return "retried";
+        // Guarded before the delete: until bb's queue no longer lists it, the dispatch hook refuses this exact row.
+        this.store.guardQueuedMessage(task.threadId, sent.queuedMessageId);
+        const removed = await chat.withdraw(task.threadId, sent.queuedMessageId).catch(() => "stuck" as const);
+        this.store.settleQueuedGuard(sent.queuedMessageId, removed);
+        if (removed === "stuck") {
+          this.hooks.log.warn(`steer retry: couldn't remove the queued retry ${sent.queuedMessageId} from ${task.threadId}; it stays refused if bb ever dispatches it`);
         }
       }
       restore();
