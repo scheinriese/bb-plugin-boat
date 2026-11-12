@@ -514,7 +514,7 @@ function StoppedComposerBanner() {
   const detail = useTask(task?.id ?? null).data?.task;
   if (
     !task || task.threadId !== threadId ||
-    !["stopped", "broken", "waiting-reset"].includes(cardStatus(task).status)
+    !(["stopped", "broken", "waiting-reset"].includes(cardStatus(task).status) || cardStatus(task).retrying)
   )
     return null;
   if (!detail || detail.threadId !== threadId) return null;
@@ -527,9 +527,9 @@ function StoppedBanner({task,power}:{task:TaskDetailDto;power:SandboxPower}) {
   const recovery=taskRecovery(task,power,oom,Boolean(task.memory?.canResize && task.memory.next));
   if(!recovery)return null;
   return <div className="boat-ui flex flex-wrap items-center gap-2 rounded-lg border border-border bg-secondary px-3 py-2 text-[12px] text-muted-foreground">
-    <Icon name={recovery.icon} className="size-3.5 shrink-0" />
+    <Icon name={recovery.icon} className={recovery.icon==='Loading'?'size-3.5 shrink-0 animate-spin':'size-3.5 shrink-0'} />
     <span className="min-w-0 flex-1">{recovery.message}</span>
-    <Button size="sm" variant="outline" onClick={()=>{if(recovery.action==='resize')setResizing(true);else composer.focus()}}>{recovery.action==='resize'?`Continue on ${task.memory?.next?.label}`:'Write a follow-up'}</Button>
+    {recovery.action&&<Button size="sm" variant="outline" onClick={()=>{if(recovery.action==='resize')setResizing(true);else composer.focus()}}>{recovery.action==='resize'?`Continue on ${task.memory?.next?.label}`:'Write a follow-up'}</Button>}
     <ResizeDialog task={task} mode="oom" open={resizing} onOpenChange={setResizing}/>
   </div>;
 

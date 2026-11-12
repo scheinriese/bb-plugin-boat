@@ -35,6 +35,12 @@ export const SANDBOX_POWER_SHORT: Record<SandboxPower, string> = {
 /** These actions never equate resuming a VM with repairing an agent. */
 export function taskRecovery(task: TaskDto, power: SandboxPower, oom: boolean, canResize: boolean) {
   const state = cardStatus(task);
+  // The plugin's one automatic retry after a provider error runs: nothing to recover yet.
+  if (state.retrying && state.status === "working") return {
+    message: "Retrying automatically · provider error after a steer",
+    action: null,
+    icon: "Loading" as const,
+  };
   if (state.moving || !["stopped", "broken", "waiting-reset"].includes(state.status)) return null;
   // Native bb owns the power controls for paused or transitioning machines.
   if (["off", "starting", "stopping", "removed"].includes(power)) return null;

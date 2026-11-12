@@ -61,3 +61,13 @@ test("only a connected active host establishes a powered-on sandbox", () => {
   assert.equal(sandboxPower(host("new-phase")), "unavailable");
   assert.equal(sandboxPower(null), "unavailable");
 });
+
+test("an automatic retry after a provider error shows as retrying, not Agent stopped", () => {
+  const retrying = { phase: "working", error: null, publicStatus: { status: "working", moving: true, label: "Retrying", tone: "neutral", reason: null, needsYou: false, retrying: true } } as unknown as TaskDto;
+  const recovery = taskRecovery(retrying, "on", false, false)!;
+  assert.equal(recovery.message, "Retrying automatically · provider error after a steer");
+  assert.equal(recovery.action, null);
+  assert.equal(recovery.icon, "Loading");
+  // A plain running turn still has no banner.
+  assert.equal(taskRecovery(task("working", true), "on", false, false), null);
+});
