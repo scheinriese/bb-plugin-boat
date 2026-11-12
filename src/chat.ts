@@ -4,6 +4,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { hasWork, readMachineActivity, rowWork, type MachineActivity, type ThreadRow } from "./activity.ts";
 import { MACHINE_PROVIDER_ID, keepSandboxKey } from "./machine.ts";
 import { threadSection } from "./sections.ts";
+import { TURN_EVENT_TYPES, type TurnEventRow } from "./steer-retry.ts";
 import type { Provider } from "./store.ts";
 
 export const PERSONAL_PROJECT = "proj_personal";
@@ -121,6 +122,8 @@ export interface ChatRunner {
   /** null: the chat no longer exists. */
   state(threadId: string): Promise<ChatState | null>;
   output(threadId: string): Promise<string | null>;
+  /** The chat's latest turn lifecycle events (requests, accepted inputs, turn starts and ends, provider errors). */
+  turnEvents(threadId: string): Promise<TurnEventRow[]>;
   stop(threadId: string): Promise<void>;
   archive(threadId: string): Promise<void>;
 }
@@ -345,6 +348,12 @@ export function createChatRunner(bb: BbPluginApi): ChatRunner {
     async output(threadId) {
       const result = (await bb.sdk.threads.output({ threadId })) as { output?: string | null };
       return result.output ?? null;
+    },
+
+    async turnEvents(threadId) {
+      const raw = (await bb.sdk.threads.events.list({ threadId, order: "desc", limit: "200", types: [...TURN_EVENT_TYPES] } as never)) as unknown;
+      const rows = (Array.isArray(raw) ? raw : ((raw as { events?: unknown[] } | null)?.events ?? [])) as TurnEventRow[];
+      return rows.filter((row) => row !== null && typeof row === "object" && typeof row.seq === "number" && typeof row.type === "string");
     },
 
     async stop(threadId) {

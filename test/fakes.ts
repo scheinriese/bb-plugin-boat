@@ -24,6 +24,7 @@ import { BoatError } from "../src/boat.ts";
 import { SIZE_SPECS, isMachineType, type SizedProject } from "../src/memory.ts";
 import type { MachineTypeFacts } from "../src/setup.ts";
 import type { ChatRunner, ChatSpawn, ChatState, MachineState } from "../src/chat.ts";
+import type { TurnEventRow } from "../src/steer-retry.ts";
 import { NO_WORK, addWork, hasWork, messagesWaiting, rowWork, turnRuns, type MachineActivity, type ThreadRow } from "../src/activity.ts";
 import { BoatService, type BoatSettings, type Notification, type ServiceHooks } from "../src/service.ts";
 import { TaskStore, type Runner } from "../src/store.ts";
@@ -723,6 +724,16 @@ export class FakeChat implements ChatRunner {
   }
   async output(threadId: string) {
     return this.outputs.get(threadId) ?? null;
+  }
+  /** Each chat's lifecycle events, as bb's event log lists them (scripted by tests). */
+  events = new Map<string, TurnEventRow[]>();
+  /** bb can't list a chat's events. */
+  eventsError: Error | null = null;
+  eventReads = 0;
+  async turnEvents(threadId: string) {
+    this.eventReads += 1;
+    if (this.eventsError) throw this.eventsError;
+    return [...(this.events.get(threadId) ?? [])];
   }
   async stop(threadId: string) {
     this.stopped.push(threadId);
