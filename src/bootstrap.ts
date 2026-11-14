@@ -78,7 +78,7 @@ export function bootstrapExecutor(
   executor: MachineExecutor,
   report: { log(message: string): void },
   clock: { now(): number; wait(ms: number, signal: AbortSignal): Promise<unknown> } = {
-    now: Date.now,
+    now: () => performance.now(),
     wait: (ms, signal) => delay(ms, undefined, { signal }),
   },
 ): MachineExecutor {
