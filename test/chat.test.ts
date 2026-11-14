@@ -5,6 +5,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createChatRunner } from "../src/chat.ts";
 import { TaskError } from "../src/service.ts";
 import { makeService } from "./fakes.ts";
+import { bootstrapFailureMessage } from "../src/bootstrap.ts";
 
 const REPORT = `Done.
 
@@ -202,6 +203,18 @@ test("a failed machine setup removes the machine and fails the task", async () =
   assert.equal(task!.status, "failed");
   // Without a machine the plugin deletes the sandbox it made.
   assert.ok(env.boat.calls.some((call) => call.startsWith("delete ")));
+});
+
+test("exhausted bootstrap downloads are reported as retryable setup failures with normal cleanup", async () => {
+  const env = makeService({ chat: true });
+  env.chat.attachError = new Error(`Machine setup failed: ${bootstrapFailureMessage({ code: "E404", attempts: 3 })}\nRaw diagnostics are not repeated`);
+  await assert.rejects(dispatch(env), (error: unknown) => error instanceof TaskError && error.code === "bootstrap_retryable" && !error.message.includes("Raw diagnostics"));
+  const [task] = env.store.list({ limit: 10 });
+  assert.equal(task.status, "failed"); assert.match(task.error!, /agent did not start.*Retry starting/);
+  assert.match(env.store.latestEvent(task.id, "failed")!.text, /bootstrap_retryable/);
+  assert.equal(env.chat.spawns.length, 0);
+  assert.equal(env.boat.created.length, 1);
+  assert.ok(env.boat.calls.some(call => call.startsWith("delete ")));
 });
 
 test("an archived worker chat cancels its task", async () => {

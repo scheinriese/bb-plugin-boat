@@ -29,6 +29,7 @@ import { checkPreview, previewLink, previewView, type PreviewView } from "./prev
 import { KEEP_LIMIT_MS, describeWork, hasWork } from "./activity.ts";
 import { BOAT_GIT_ENV, aiProxyPrice, autoStopHours, withinAutoStopCap, type AiProxyState } from "./boat-api.ts";
 import { BoatError } from "./boat.ts";
+import { bootstrapFailureMessage, retryableBootstrap } from "./bootstrap.ts";
 import { alwaysProtectedBranches, protectedBranches, type OrchestratorProject, type ProjectRepo } from "./projects.ts";
 import {
   composeEvidencePrompt,
@@ -1869,14 +1870,16 @@ export class BoatService {
         this.hooks.changed([id]);
         return this.store.get(id) ?? task;
       }
-      const message = errorText(error);
+      const transient = task.runner === "chat" && this.store.get(id)?.threadId === null ? retryableBootstrap(error) : null;
+      const failure = transient ? new TaskError(bootstrapFailureMessage(transient), "bootstrap_retryable", "Retry starting this task after npm's registry recovers; no agent turn ran.") : error;
+      const message = errorText(failure);
       this.store.transition(id, ["starting"], { status: "failed", error: clip(message, 4000), finishedAt: new Date().toISOString() });
-      this.store.addEvent(id, "failed", message);
+      this.store.addEvent(id, "failed", message, transient ? { source: "system", cause: "bootstrap_retryable", detail: `npm ${transient.code}; ${transient.attempts} installation attempts; no agent started` } : {});
       this.hooks.changed([id]);
       // Do not leave a fresh sandbox behind when setup failed.
       release();
       await this.discardNew(id, createdSandbox, createdHost);
-      throw error;
+      throw failure;
     } finally {
       release();
       input.signal?.removeEventListener("abort", onOuterAbort);

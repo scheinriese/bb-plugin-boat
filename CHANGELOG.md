@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.8
+
+- Recover transient npm dependency fetch failures while installing bb on a Boat sandbox: up to three attempts on the same allocation, with 30s/60s backoff, cancellation and the original setup deadline.
+- Report exhausted installation retries as `bootstrap_retryable`, with no agent turn started and normal failed-dispatch cleanup.
+- Leave authentication, integrity, permissions and post-install failures unchanged. This recovery does not freeze bb core's dependency graph; reproducible bb artifacts remain an upstream packaging concern.
+
 ## 0.2.7
 
 - Retry a task chat's turn once when the provider answers Bad Request right after a steer, repeating the steer, and show it as Retrying instead of Agent stopped.

@@ -5,6 +5,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BoatApi } from "../src/boat-api.ts";
 import type { BoatCli } from "../src/boat.ts";
 import { keepSandboxKey, registerBoatMachine } from "../src/machine.ts";
+import { bootstrapFailureMessage } from "../src/bootstrap.ts";
 import { defaultSettings, makeService } from "./fakes.ts";
 
 type Provider = {
@@ -14,7 +15,7 @@ type Provider = {
   reconcileCleanup(args: unknown): Promise<{ status: string; message?: string }>;
 };
 
-function setup(settings: Parameters<typeof makeService>[0] = {}) {
+function setup(settings: Parameters<typeof makeService>[0] = {}, bootstrap: BbPluginApi["experimental_machines"]["bootstrap"] = async () => ({ hostId: "host_123456" })) {
   const fake = makeService(settings);
   let provider: Provider | null = null;
   const bb = {
@@ -22,7 +23,7 @@ function setup(settings: Parameters<typeof makeService>[0] = {}) {
       register: (definition: Provider) => {
         provider = definition;
       },
-      bootstrap: async () => ({ hostId: "host_123456" }),
+      bootstrap,
     },
     experimental_environments: { register: () => undefined },
     storage: {
@@ -67,6 +68,16 @@ test("cloud orchestrator sandboxes are small, whatever the worker size", async (
   assert.equal(created.name, "bb machine abc");
   // Any bb chat may use the machine: the repo's own git hooks stay in charge.
   assert.deepEqual(created.env, {});
+});
+
+test("exhausted bootstrap keeps one checkpointed allocation and returns a sanitized retryable failure", async () => {
+  let calls = 0;
+  const env = setup({}, async () => { calls++; throw new Error(`Raw installer diagnostics\n${bootstrapFailureMessage({ code: "ETARGET", attempts: 3 })}`); });
+  const checkpoints: unknown[] = [];
+  const result = await env.provider().create({ ...env.args("failed-bootstrap"), checkpoint: async (resource: unknown) => { checkpoints.push(resource); } });
+  assert.equal(result.status, "failed"); assert.match(result.message!, /bootstrap_retryable:ETARGET:3/);
+  assert.ok(!result.message!.includes("Raw installer diagnostics"));
+  assert.equal(calls, 1, "core enrollment is not replayed"); assert.equal(env.boat.created.length, 1); assert.equal(checkpoints.length, 1);
 });
 
 test("the orchestrator size is a setting, and an explicit input wins", async () => {

@@ -10,6 +10,7 @@ import { BoatError, type BoatCli } from "./boat.ts";
 import type { BoatService, BoatSettings } from "./service.ts";
 import type { ConnectCheck } from "./connect.ts";
 import { machineProblem, type Setup, type SetupSettings } from "./setup.ts";
+import { bootstrapExecutor, bootstrapFailureMessage, retryableBootstrap } from "./bootstrap.ts";
 
 export const MACHINE_PROVIDER_ID = "boat-sandbox";
 
@@ -62,7 +63,9 @@ function message(error: unknown): string {
 export function sshExecutor(cli: BoatCli, sandboxId: string): MachineExecutor {
   return {
     async exec({ command, stdin, timeoutMs, signal, onOutput }) {
+      signal.throwIfAborted();
       const binary = await cli.binary();
+      signal.throwIfAborted();
       // ssh hands the remote side one command string; quote each argv entry
       // and run it in a login shell so the sandbox's node (nvm) is on PATH.
       const remote = `bash -lc ${shellQuote(command.map(shellQuote).join(" "))}`;
@@ -199,14 +202,15 @@ export function registerBoatMachine(
         report.step("Installing bb on the sandbox");
         const { hostId } = await bb.experimental_machines.bootstrap({
           key,
-          executor: sshExecutor(cli, sandbox.id),
+          executor: bootstrapExecutor(sshExecutor(cli, sandbox.id), report),
           report,
           signal,
         });
         return { status: "created" as const, name: `Boat ${sandbox.id} (${hostId.slice(-6)})`, resource: { sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) } };
       } catch (error) {
         signal.throwIfAborted();
-        return { status: "failed" as const, message: message(error) };
+        const transient = retryableBootstrap(error);
+        return { status: "failed" as const, message: transient ? bootstrapFailureMessage(transient) : message(error) };
       }
     },
     async reconcileCleanup({ key }) {
@@ -235,7 +239,7 @@ export function registerBoatMachine(
         await service.bringUp(sandboxId, signal);
       }
       report.step("Restarting bb on the sandbox");
-      await bb.experimental_machines.bootstrap({ key, executor: sshExecutor(cli, sandboxId), report, signal });
+      await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(sshExecutor(cli, sandboxId), report), report, signal });
       return { resource };
     },
     async remove({ resource }) {

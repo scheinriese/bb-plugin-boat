@@ -539,6 +539,27 @@ grey out the sizes your boat plan doesn't include, with boat's reason.
 - A missing snapshot, or a plan without snapshots, gets a plain message
   instead of boat's raw error.
 
+## Installing bb on a sandbox
+
+Task chats and cloud orchestrators use bb's machine installer. If npm cannot
+fetch a dependency during the bb installation step, the plugin can retry the
+same installer command on the same sandbox, without creating another task,
+machine or agent turn. It makes at most three attempts, waiting 30 and 60
+seconds between them, within bb's original setup deadline. Cancellation stops
+the retries.
+
+Recovery applies to npm `E404` for a public npm-registry tarball, `ETARGET`,
+`ETIMEDOUT` and `ECONNRESET`. Authentication, integrity, permissions, disk,
+engine and dependency-conflict failures are not retried. Neither are errors
+after bb installation succeeds. If recovery runs out of attempts or time,
+the task reports `bootstrap_retryable` and follows normal failed-setup cleanup;
+check registry availability before starting it again. The agent did not start.
+
+The plugin does not change bb's package artifact, dependency versions, npm
+registry or installation scripts. A locked dependency graph or bundled bb
+artifact must be supplied by bb itself; retries mitigate temporary registry
+failures without providing that reproducibility guarantee.
+
 ## Environments, secrets and GitHub access
 
 Tasks start in a **boat environment**: the repos it clones, the variables
