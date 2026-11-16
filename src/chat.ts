@@ -390,9 +390,21 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
     },
 
     async turnEvents(threadId) {
-      const raw = (await bb.sdk.threads.events.list({ threadId, order: "desc", limit: "200", types: [...TURN_EVENT_TYPES] } as never)) as unknown;
-      const rows = (Array.isArray(raw) ? raw : ((raw as { events?: unknown[] } | null)?.events ?? [])) as TurnEventRow[];
-      return rows.filter((row) => row !== null && typeof row === "object" && typeof row.seq === "number" && typeof row.type === "string");
+      // bb caps an event page at 100. Keep the existing 200-event reading
+      // window without losing a turn's opening input or steer at the boundary.
+      const rows = new Map<number, TurnEventRow>();
+      let beforeSeq: number | undefined;
+      for (let page = 0; page < 2; page++) {
+        const raw = (await bb.sdk.threads.events.list({ threadId, order: "desc", limit: "100", types: [...TURN_EVENT_TYPES], ...(beforeSeq === undefined ? {} : { beforeSeq: String(beforeSeq) }) })) as unknown;
+        const entries = (Array.isArray(raw) ? raw : ((raw as { events?: unknown[] } | null)?.events ?? [])) as TurnEventRow[];
+        const valid = entries.filter((row) => row !== null && typeof row === "object" && Number.isSafeInteger(row.seq) && row.seq >= 0 && typeof row.type === "string");
+        for (const row of valid) if (beforeSeq === undefined || row.seq < beforeSeq) rows.set(row.seq, row);
+        if (entries.length < 100 || valid.length === 0) break;
+        const oldest = Math.min(...valid.map((row) => row.seq));
+        if (beforeSeq !== undefined && oldest >= beforeSeq) break;
+        beforeSeq = oldest;
+      }
+      return [...rows.values()];
     },
 
     async stop(threadId) {

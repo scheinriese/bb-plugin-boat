@@ -201,7 +201,35 @@ test("the chat runner reads only the lifecycle events, newest first, and drops m
   } as unknown as Parameters<typeof createChatRunner>[0];
   const rows = await createChatRunner(bb).turnEvents("thr_w1");
   assert.deepEqual(rows, [INCIDENT[6], INCIDENT[0]]);
-  assert.deepEqual(calls, [{ threadId: "thr_w1", order: "desc", limit: "200", types: ["client/turn/requested", "turn/input/accepted", "turn/started", "turn/completed", "provider/error", "system/thread/interrupted"] }]);
+  assert.deepEqual(calls, [{ threadId: "thr_w1", order: "desc", limit: "100", types: ["client/turn/requested", "turn/input/accepted", "turn/started", "turn/completed", "provider/error", "system/thread/interrupted"] }]);
+});
+
+test("recovery reads two capped pages so an accepted steer at the boundary is retained", async () => {
+  const { createChatRunner } = await import("../src/chat.ts");
+  const filler = Array.from({ length: 100 }, (_, index) => ({ seq: 200 + index, type: "turn/started", data: {} }));
+  const events = [...INCIDENT.slice(0, 5), ...filler, ...INCIDENT.slice(5).map((row) => ({ ...row, seq: row.seq + 200 }))].sort((a, b) => b.seq - a.seq);
+  const calls: Record<string, unknown>[] = [];
+  const bb = { sdk: { threads: { events: { list: async (args: Record<string, unknown>) => {
+    calls.push(args);
+    assert.equal(args.limit, "100", "the real bb endpoint rejects larger pages");
+    return { events: events.filter((row) => args.beforeSeq === undefined || row.seq < Number(args.beforeSeq)).slice(0, 100) };
+  } } } } } as unknown as Parameters<typeof createChatRunner>[0];
+  const rows = await createChatRunner(bb).turnEvents("thr_w1");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]!.beforeSeq, String(events[99]!.seq));
+  assert.deepEqual(readFailedTurn(rows)!.steers, [STEER]);
+  assert.equal(retriesAfterSteer(readFailedTurn(rows)), true);
+});
+
+test("recovery event reads stay bounded when a server repeats a full page", async () => {
+  const { createChatRunner } = await import("../src/chat.ts");
+  const page = Array.from({ length: 100 }, (_, index) => ({ seq: 200 - index, type: "turn/started", data: {} }));
+  let calls = 0;
+  const bb = { sdk: { threads: { events: { list: async () => { calls++; return page; } } } } } as unknown as Parameters<typeof createChatRunner>[0];
+  const rows = await createChatRunner(bb).turnEvents("thr_w1");
+  assert.equal(calls, 2);
+  assert.equal(rows.length, 100);
+  assert.equal(new Set(rows.map((row) => row.seq)).size, rows.length);
 });
 
 test("withdrawing a queued message is confirmed by bb's queue, with a few retries", async () => {
