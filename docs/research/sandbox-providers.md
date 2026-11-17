@@ -1000,3 +1000,377 @@ For reference, outside the five ([licensing](#macos-licensing-the-24-hour-rule),
 | Darkbloom mac-c4-m8 $0.35, mac-c4-m16 $0.45, mac-c8-m16 $0.70, mac-c8-m32 $0.90 per hour | Confirmed | Same | [Darkbloom pricing](https://docs.darkbloom.dev/sandboxes/pricing) |
 | Darkbloom has about 1,100 Macs | Confirmed, as an inference count | 1,124 active in the public stats and 1,231 on the homepage counter on 2026-11-17; sandbox hosts aren't counted separately | [stats](https://api.darkbloom.dev/v1/stats), [homepage](https://www.darkbloom.ai/) |
 | Darkbloom Mac sandboxes are in private beta | Differs | "Experimental and open by invitation", for Linux too; the terms call the service a "public alpha" | [overview](https://docs.darkbloom.dev/sandboxes/overview), [terms](https://www.darkbloom.ai/terms) |
+
+## Part B2: cross-platform browser testing
+
+The owner's second use case is different from agent workspaces: rent a Mac for real Safari and WebKit rendering (an Astro site with scroll-driven animations and 3D CSS that Linux WebKit can't reproduce), and Windows for Edge, Chrome, font rendering and scrollbars, across all projects.
+
+### Test runner vs agent workspace
+
+| | Test runner | Agent workspace |
+|---|---|---|
+| Lifetime | Minutes | Hours to days |
+| State | None: a fresh image each run | Checkout, caches, logins, bb's daemon |
+| Credentials on the box | The preview link and an upload path | GitHub token, agent logins, bb machine credentials |
+| Needs | The real browser on the target OS, a display session, screen capture, outbound HTTPS | Shell, git, Node, long-lived processes, previews, snapshots |
+| Billing that fits | Per minute or per second, no minimum | Hourly or monthly; minimums spread over many tasks |
+
+Which providers suit which, given their billing minimums:
+
+- **Mac test runner.** Per-minute macOS CI runners fit: GitHub's macOS runner costs $0.062 a minute, so a 5-minute capture costs $0.31 ([GitHub pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)). Hosted grids fit at volume ([below](#hosted-browser-testing-services-vs-raw-boxes)). Instabox Macs fit only inside a lease that is already held, because every new lease bills 24 hours ([Instabox macOS](https://instabox.sh/docs/machines/macos.md)). Darkbloom bills per second ([Darkbloom pricing](https://docs.darkbloom.dev/sandboxes/pricing)), but needs an invitation, can't reach preview URLs that aren't HTTPS on port 443 at an allowlisted hostname, documents no browsers, and warns that a host Mac "can also alter a job's results" ([Darkbloom CI security](https://docs.darkbloom.dev/ci/security)).
+- **Windows test runner.** GitHub's Windows runners cost $0.010 a minute: Windows Server 2025 x64, or Windows 11 Enterprise on Arm64 ([GitHub runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners), [pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)). Windows 10 and 11 on x64 come from hosted grids. None of the five providers in this report sells Windows.
+- **Linux baseline.** Any Linux provider works, billed per second: a 5-minute run on boat's small size costs about $0.0015 ([boat section](#boatdev-baseline)).
+- **Mac agent workspace.** A whole Mac for at least 24 hours: an Instabox lease (from $10.80 a day), EC2 Mac (from $15.60 a day) or a Mac rented by the month (MacStadium from $149) ([licensing section](#macos-licensing-the-24-hour-rule)).
+- **Windows agent workspace.** Not available from the five providers; see [Windows sandboxes and licensing](#windows-sandboxes-and-licensing).
+
+### Safari and WebKit automation on cloud Macs
+
+#### safaridriver and real Safari
+
+Safari's driver is `/usr/bin/safaridriver`; WebDriver stays off until `safaridriver --enable` runs, which may need `sudo` ([Apple](https://developer.apple.com/documentation/webkit/testing-with-webdriver-in-safari)). With passwordless sudo this works unattended: GitHub's image build runs `sudo safaridriver --enable` and sets `AllowRemoteAutomation` in `~/Library/WebDriver/com.apple.Safari.plist` ([runner-images](https://github.com/actions/runner-images/blob/main/images/macos/scripts/build/install-safari.sh)).
+
+Each macOS instance runs one Safari with one WebDriver session, in a clean automation window under a "glass pane" that blocks stray input ([Apple](https://developer.apple.com/documentation/safari-developer-tools/webdriver)). Parallel captures need one VM each, and Apple's macOS 27 license allows two extra macOS VMs per Mac for development and testing ([license](https://www.apple.com/legal/sla/docs/macOS27.pdf)). Safari has no headless mode ([WebdriverIO](https://webdriver.io/docs/platforms/web)). It needs a logged-in GUI (Aqua) session; SSH into a Mac where nobody is logged in gets a command-line session ([Apple, 2017](https://developer.apple.com/library/archive/documentation/DeveloperTools/Conceptual/testing_with_xcode/chapters/08-automation.html)). CI images use auto-login ([runner-images](https://github.com/actions/runner-images/blob/main/images/macos/scripts/build/configure-autologin.sh)), which FileVault blocks ([Apple](https://support.apple.com/en-us/102316)).
+
+Take Screenshot returns the visual viewport only ([W3C](https://www.w3.org/TR/webdriver2/#take-screenshot)), and MDN lists no WebDriver BiDi support in Safari ([MDN](https://github.com/mdn/browser-compat-data/blob/main/webdriver/bidi/session.json)).
+
+Video needs OS capture, which macOS gates behind the Screen Recording permission ([Apple](https://developer.apple.com/documentation/screencapturekit), [runner-images](https://github.com/actions/runner-images/blob/main/images/macos/scripts/build/configure-tccdb-macos.sh)): `screencapture -V <seconds>` ([ss64](https://ss64.com/mac/screencapture.html), third-party), ffmpeg's avfoundation input ([ffmpeg](https://ffmpeg.org/ffmpeg-devices.html#avfoundation)) or ScreenCaptureKit. MDM privacy profiles can't grant it ([Apple](https://developer.apple.com/documentation/devicemanagement/privacypreferencespolicycontrol/services-data.dictionary)), and macOS 27's permission defaults have no Screen Recording key and need the user's consent ([Apple](https://developer.apple.com/documentation/devicemanagement/appsettings), [keys](https://developer.apple.com/documentation/devicemanagement/appsettingsappdictionaryobject)). CI images write TCC database rows with SIP disabled ([Cirrus Labs](https://github.com/cirruslabs/macos-image-templates/blob/main/.github/workflows/base.yml), [script](https://github.com/cirruslabs/macos-image-templates/blob/main/scripts/update-tcc-database.sh), [CircleCI](https://github.com/CircleCI-Public/macos-orb/blob/main/src/scripts/add-safari-permissions.sh)), and GitHub's script still does on macOS 27 ([runner-images](https://github.com/actions/runner-images/blob/main/images/macos/scripts/build/configure-tccdb-macos-27.sh)), which says apps can no longer access that database directly ([Apple](https://developer.apple.com/documentation/macos-release-notes/macos-27-release-notes)). GitHub also pre-approves replayd, because on macOS 15 and later legacy capture raises a recurring alert that takes focus ([runner-images](https://github.com/actions/runner-images/blob/main/images/macos/scripts/build/configure-tccdb-macos.sh)).
+
+Safari 27's MCP server (`safaridriver --mcp`) lets Claude Code and Codex load pages, read the DOM and take screenshots, but it needs the "Allow remote automation and external agents" setting and has no video tool ([Apple](https://developer.apple.com/documentation/safari-developer-tools/connecting-an-ai-agent-to-safari)).
+
+#### Playwright WebKit is not Safari
+
+Playwright's WebKit is a patched build of WebKit's main branch and can't drive Safari; Playwright advises running it on a Mac for the closest-to-Safari results ([Playwright](https://playwright.dev/docs/browsers#webkit)). On Linux it runs WebKit's GTK port when headed and WPE port when headless ([script](https://github.com/microsoft/playwright/blob/main/browser_patches/webkit/pw_run.sh)), which paint with Skia and use coordinated graphics ([GTK](https://github.com/WebKit/WebKit/blob/main/Source/cmake/OptionsGTK.cmake), [WPE](https://github.com/WebKit/WebKit/blob/main/Source/cmake/OptionsWPE.cmake)), while the Cocoa port uses Core Graphics and Core Animation ([WebKit](https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/PlatformUse.h)).
+
+Safari 26.0 (September 2025) added scroll-driven animations ([Apple](https://developer.apple.com/documentation/safari-release-notes/safari-26-release-notes)), and Safari 26.4 (March 2026) moved them to the compositor thread ([WebKit](https://webkit.org/blog/17862/webkit-features-for-safari-26-4/)). WebKit builds that path only for Cocoa: its preference requires `ENABLE(THREADED_ANIMATIONS)` ([preferences](https://github.com/WebKit/WebKit/blob/main/Source/WTF/Scripts/Preferences/UnifiedWebPreferences.yaml)), which defaults to 1 on Cocoa and 0 elsewhere ([Cocoa](https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/PlatformEnableCocoa.h), [default](https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/PlatformEnable.h)). Linux builds still support the properties, which have no feature flag, but run them on the main thread ([CSS properties](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/css/CSSProperties.json)) (inference from source). WebKit bug 327193 shows the risk: Safari 27's threaded path drew a `translate: none` keyframe wrongly on iOS and macOS ([bug](https://bugs.webkit.org/show_bug.cgi?id=327193)). The fix shipped in Safari Technology Preview 256 on November 4, 2026, for macOS 27 and 26 only ([Apple](https://developer.apple.com/documentation/safari-technology-preview-release-notes/stp-release-256), [MacRumors](https://www.macrumors.com/2026/11/04/apple-releases-safari-technology-preview-256/)); the preview has its own safaridriver ([Apple](https://developer.apple.com/documentation/webkit/testing-with-webdriver-in-safari)).
+
+Record the Safari version with each capture: the 27.3 beta (November 16, 2026) alone lists 16 animation fixes, most for scroll and view timelines ([Apple](https://developer.apple.com/documentation/safari-release-notes/safari-27_3-release-notes)).
+
+#### iOS Simulator Safari
+
+The Simulator ships with Xcode, which is free ([Apple](https://developer.apple.com/documentation/safari-developer-tools/installing-xcode-and-simulators)) but needs Apple ID credentials to download ([xcodes](https://github.com/XcodesOrg/xcodes/blob/main/README.md)), so images must include it. Xcode 27 carries the iOS 27 SDK and needs macOS Tahoe 26.6 or later ([Apple](https://developer.apple.com/documentation/xcode-release-notes/xcode-27-release-notes)); iOS 26 simulators still run with Xcode 26 ([runner-images](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)). The iOS 27.2 arm64 runtime is 8,321,588,736 bytes, about 8.3 GB ([catalog](https://devimages-cdn.apple.com/downloads/xcode/simulators/index2.dvtdownloadableindex)), and installs with `xcodebuild -downloadPlatform iOS` ([Apple](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components)).
+
+safaridriver drives it with `platformName: "ios"` and `safari:useSimulator: true` ([WebKit, 2019](https://webkit.org/blog/9395/webdriver-is-coming-to-safari-in-ios-13/), [Appium Safari driver](https://appium.github.io/appium-safari-driver/latest/reference/capabilities/)). Appium's XCUITest driver also works but builds WebDriverAgent unless it is prebuilt ([capabilities](https://github.com/appium/appium-xcuitest-driver/blob/master/docs/guides/capability-sets.md), [prebuilt WDA](https://github.com/appium/appium-xcuitest-driver/blob/master/docs/guides/run-prebuilt-wda.md)). `xcrun simctl openurl` opens the page, and `io screenshot` and `io recordVideo` capture the whole device screen ([NSHipster](https://nshipster.com/simctl/), third-party). The Simulator needs an Aqua session too ([Apple, 2017](https://developer.apple.com/library/archive/documentation/DeveloperTools/Conceptual/testing_with_xcode/chapters/08-automation.html)).
+
+It runs in Apple-silicon VMs: GitHub's Xcode 27 image, with iOS 27.0 to 27.2 simulators ([runner-images](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)), runs on GitHub's 3-core M1, 7 GB VM runners ([GitHub](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)). In Cua's tests a Virtualization-framework guest's paravirtualized GPU reported a reduced Metal profile ([Cua, 2026](https://github.com/trycua/cua/blob/main/blog/gpu-passthrough-macos-vms.md)); its effect on Safari rendering is untested (unverified; compare captures against a physical Mac). A fresh simulator can use over 300% CPU for 1 to 2 minutes, so CircleCI recommends restoring a warm snapshot ([CircleCI](https://support.circleci.com/hc/en-us/articles/46737392770203-Reducing-iOS-Simulator-CPU-Overhead-on-macOS-Executors)); Bitrise recommends a 90-second boot timeout ([Bitrise](https://github.com/bitrise-steplib/bitrise-step-xcode-start-simulator/blob/main/step.yml)).
+
+#### A capture recipe
+
+1. **Boot a pre-baked image.** Provider: auto-login with FileVault off, passwordless sudo, Safari launched once and automation enabled ([Cirrus Labs](https://github.com/cirruslabs/macos-image-templates/blob/main/templates/vanilla-tahoe.pkr.hcl)). The display must fit the largest viewport: Tart defaults to 1024x768 ([Tart](https://github.com/openai/tart/blob/main/docs/quick-start.md)) and uses 72 ppi on hosts without a screen ([source](https://github.com/openai/tart/blob/main/Sources/tart/Platform/Darwin.swift)), likely `devicePixelRatio` 1 (unverified; log it per capture). No independent boot benchmark was found; MacStadium claims its Orka VMs start in under a minute ([vendor blog, 2025](https://macstadium.com/blog/orka-cluster-on-aws-how-enterprises-can-accelerate-app-development-on-ec2-macs)), but the first run of an uncached image can take several minutes ([docs](https://docs.macstadium.com/orka/orka-resources/image-caching)).
+2. **Run inside the GUI session.** Provider: a LaunchAgent in the user's `gui/<UID>` domain, which Apple's developer support prefers to SSH ([forums, 2024](https://developer.apple.com/forums/thread/765060)), or a guest agent like Tart's, whose `tart exec` service runs as a global LaunchAgent ([Tart](https://github.com/openai/tart-guest-agent/blob/main/README.md)). bb's daemon would need the same placement (inference).
+3. **Start video.** Provider: Screen Recording pre-granted to the capturing process (an image built with SIP off), or host-side capture such as the Virtualization framework VNC server that Tart exposes experimentally ([Tart](https://github.com/openai/tart/blob/main/Sources/tart/Commands/Run.swift)) (unverified; a test recording would confirm).
+4. **Capture Safari.** Run WebdriverIO or Selenium on the Mac itself; an old man page says the driver listens on localhost only ([man page, 2017](https://www.manpagez.com/man/1/safaridriver/)) (unverified; check `man safaridriver`). No public timing for Safari's first launch or session start was found. Open the tokenized private preview link, because automation windows start without cookies ([Apple](https://developer.apple.com/documentation/safari-developer-tools/webdriver), [plugin docs](../features.md#previews)). Safari 26.2 changed navigation's default readiness state to Interactive ([Apple](https://developer.apple.com/documentation/safari-release-notes/safari-26_2-release-notes)), so wait for load and `document.fonts.ready`, then scroll, wait two frames and take a viewport screenshot at each position.
+5. **Optional iOS pass.** Provider: Xcode, a runtime and about 3 vCPU for the first boot ([CircleCI](https://support.circleci.com/hc/en-us/articles/46737392770203-Reducing-iOS-Simulator-CPU-Overhead-on-macOS-Executors)).
+6. **Upload and destroy.** Provider: egress to the bucket. Apple's license sets a 24-hour minimum for each lease of a Mac ([license](https://www.apple.com/legal/sla/docs/macOS27.pdf)); see the licensing section.
+
+Reference price (GitHub Actions is not a plugin provider):
+
+| Runner | Price | Billing | Source |
+|---|---|---|---|
+| macOS standard (3-core M1 or 4-core Intel) | $0.062 per minute | Rounded up to whole minutes per job; free on public repositories | [pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing), [runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) |
+
+Example math at that rate ([pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)), with assumed durations (unverified; time real runs on each provider):
+
+- Safari-only capture, 4 billed minutes: 4 × $0.062 = $0.248.
+- 20 Safari captures per workday for 22 workdays: 20 × 22 = 440 runs; 440 × 4 = 1,760 minutes; 1,760 × $0.062 = $109.12 per month on a private repository, $0 on a public one ([runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)).
+
+### Windows browser automation
+
+#### Playwright with Edge and Chrome
+
+- Playwright 1.65.1 (November 13, 2026) is the current release ([npm](https://registry.npmjs.org/playwright)). It supports Windows 11+ and Windows Server 2019+ with Node.js 22, 24 or 26 ([requirements](https://playwright.dev/docs/intro#system-requirements)).
+- Its bundled browser has been a Chrome for Testing build since 1.57, which isn't the browser users run ([release notes](https://playwright.dev/docs/release-notes)). The `msedge` and `chrome` channels drive the installed browsers, and `npx playwright install msedge` overwrites the system copy ([browsers](https://playwright.dev/docs/browsers)). Version 1.65 was tested against Chrome 157 and Edge 156 ([release notes](https://playwright.dev/docs/release-notes)).
+- Use x64. In June 2026 a maintainer said Windows on Arm isn't officially supported ([#41339](https://github.com/microsoft/playwright/issues/41339)).
+- `recordVideo` saves one .webm per page when the context closes. By default it is scaled to fit 800x800 ([videos](https://playwright.dev/docs/videos)). Since 1.64 it uses VP9 and has an `fps` option ([release notes](https://playwright.dev/docs/release-notes)). `page.screencast` (1.59+) adds explicit start and stop, at 25 fps by default ([Screencast](https://playwright.dev/docs/api/class-screencast)).
+- Both build video from JPEG frames of the DevTools screencast, encoded with Playwright's ffmpeg ([crPage.ts](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/chromium/crPage.ts), [videoRecorder.ts](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/videoRecorder.ts)). So they need no desktop capture (inferred from the code). The frames are lossy, though, so use PNG screenshots for font evidence.
+
+#### Headless, RDP and the interactive desktop
+
+- Every headless Chromium launch gets `--hide-scrollbars`, including the branded channels ([chromium.ts](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/chromium/chromium.ts)). Playwright has no scrollbar API ([#30228](https://github.com/microsoft/playwright/issues/30228), 2024). Scrollbar evidence therefore needs headed runs.
+- Without a channel, headless runs use chrome-headless-shell, which renders in software by default ([source](https://chromium.googlesource.com/chromium/src/+/main/headless/lib/headless_content_main_delegate.cc)). The channels use Chrome's new headless mode, which changes screenshots and GPU behavior ([#33566](https://github.com/microsoft/playwright/issues/33566), 2024).
+- Headed runs need an interactive desktop. Services run in session 0 and can't show UI ([services](https://learn.microsoft.com/en-us/windows/win32/services/interactive-services)). Scheduled tasks with an S4U logon get a non-interactive desktop ([logon types](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/ne-taskschd-task_logon_type)). In August 2026 a runner-images contributor found that GitHub runner jobs run in an interactive session on WinSta0 ([#14049](https://github.com/actions/runner-images/issues/14049)). Headed Edge on those runners is unverified until one run succeeds.
+- On EC2 or Azure, use autologon plus a task that starts at logon. Sysinternals Autologon stores the password as an LSA secret, while the registry method stores it in plain text ([autologon](https://learn.microsoft.com/en-us/troubleshoot/windows-server/user-profiles-and-logon/turn-on-automatic-logon)).
+- SmartBear says that minimizing the RDP window drops the session's GUI and that closing RDP locks the machine. Its fix is `tscon <session> /dest:console` ([minimized](https://support.smartbear.com/testcomplete/docs/testing-with/running/via-rdp/in-minimized-window.html), [unlocked](https://support.smartbear.com/testcomplete/docs/testing-with/running/via-rdp/keeping-computer-unlocked.html)). Microsoft's tscon page doesn't document this use ([tscon](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/tscon)) (unverified; a headed screenshot after the handoff would confirm it).
+- Chromium stops rendering occluded windows, and a locked screen counts every window as occluded ([occlusion](https://chromium.googlesource.com/chromium/src/+/main/docs/windows_native_window_occlusion_tracking.md)). Playwright passes `--disable-backgrounding-occluded-windows` ([switches](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/chromium/chromiumSwitches.ts)), which makes Chromium treat occluded pages as visible ([web_contents_impl.cc](https://chromium.googlesource.com/chromium/src/+/main/content/browser/web_contents/web_contents_impl.cc)). That doesn't cover minimized windows. Whether frames keep coming on a locked screen is unverified (a screenshot taken while locked would confirm it).
+- Chromium turns off GPU features when the display adapter is a Microsoft-vendor one ([blocklist](https://chromium.googlesource.com/chromium/src/+/main/gpu/config/software_rendering_list.json)), and it can fall back to D3D11 WARP software rendering ([gl_switches.cc](https://chromium.googlesource.com/chromium/src/+/main/ui/gl/gl_switches.cc)). 3D CSS on GPU-less VMs may therefore differ from users' machines (unverified; comparing with a GPU instance would confirm it).
+- Desktop capture tools also need the desktop. ffmpeg's ddagrab fails without access to it ([ddagrab](https://ffmpeg.org/ffmpeg-filters.html#ddagrab), [DuplicateOutput](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgioutput1-duplicateoutput)), and Windows.Graphics.Capture draws a yellow border around what it captures ([screen capture](https://learn.microsoft.com/en-us/windows/uwp/audio-video-camera/screen-capture)).
+
+#### Fonts and scrollbars
+
+- Linux can't stand in for Windows text. On Windows, Chromium takes its text settings from the Windows session ([font_render_params_win.cc](https://chromium.googlesource.com/chromium/src/+/main/ui/gfx/font_render_params_win.cc)), while on Linux it takes them from fontconfig ([font_render_params_linux.cc](https://chromium.googlesource.com/chromium/src/+/main/ui/gfx/font_render_params_linux.cc)).
+- Many Windows fonts are optional packages that some images lack ([font support](https://learn.microsoft.com/en-us/globalization/input/font-support), 2023). Server 2025's desktop follows the Windows 11 style and pins Edge to the Start menu ([what's new](https://learn.microsoft.com/en-us/windows-server/get-started/whats-new-windows-server-2025)). Whether it ships Segoe UI Variable is unverified (comparing `C:\Windows\Fonts` with Windows 11 would confirm it).
+- Playwright forces an sRGB color profile ([switches](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/chromium/chromiumSwitches.ts)).
+- Chrome 136 made 15px Fluent scrollbars the default on both Windows and Linux ([Chrome Status](https://chromestatus.com/feature/5693137379917824)), so scrollbar width alone doesn't separate the two. Overlay scrollbars are off by default on Windows, so Chrome's scrollbars take layout space ([features](https://chromium.googlesource.com/chromium/src/+/main/ui/native_theme/features/native_theme_features.cc)). When overlay mode is on, Chromium can follow the `DynamicScrollbars` registry value ([settings](https://chromium.googlesource.com/chromium/src/+/main/ui/native_theme/os_settings_provider_win.cc)).
+- Firefox on Windows 11 draws overlay scrollbars and follows the "Always show scrollbars" setting ([Firefox 100](https://www.mozilla.org/en-US/firefox/100.0/releasenotes/), 2022). In March 2026 a Microsoft Q&A moderator described Edge's Fluent overlay scrollbars as an edge://flags option ([Q&A](https://learn.microsoft.com/en-us/answers/questions/5831483/size-of-scroll-bar)) (unverified; checking edge://flags on the box would confirm it).
+- Playwright emulates `prefers-reduced-motion: no-preference` by default ([params](https://github.com/microsoft/playwright/blob/main/docs/src/api/params.md)). Chromium's smooth scrolling still follows the Windows animation setting ([animation_win.cc](https://chromium.googlesource.com/chromium/src/+/main/ui/gfx/animation/animation_win.cc)).
+- `page.screenshot` leaves animations running, while `toHaveScreenshot` turns them off by default ([params](https://github.com/microsoft/playwright/blob/main/docs/src/api/params.md)).
+
+#### A capture recipe
+
+1. Wake or extend the preview. Its private link carries a token ([features](../features.md#previews)). Provider: outbound HTTPS and a way to pass secrets.
+2. Start an x64 Windows Server 2025 box, such as a GitHub job on `windows-2025` ([runner-images](https://github.com/actions/runner-images)). Provider: an API to start boxes, per-second or per-minute billing, and an interactive session.
+   - Boot time: stock EC2 AMIs launched in about 45 s with Fast Launch ([AWS](https://aws.amazon.com/blogs/modernizing-with-aws/launch-windows-faster-on-ec2/), 2022). GitHub and Azure boot times are unverified (measuring them would confirm).
+   - Windows 11 x64 instead of Server needs your own license on dedicated AWS hardware ([AWS](https://aws.amazon.com/blogs/modernizing-with-aws/bringing-your-windows-11-image-to-aws-with-vm-import-export/), 2022) or Windows 11 Enterprise E3/E5 rights on Azure ([Microsoft](https://learn.microsoft.com/en-us/azure/virtual-machines/windows/windows-desktop-multitenant-hosting-deployment)).
+3. Install Playwright and its ffmpeg ([registry](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/registry/index.ts)), and use the preinstalled Edge and Chrome. These can trail the current release: the `windows-2025` image has version 156, while the newer `windows-2022` image has 157 ([2025](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-VS2026-Readme.md), [2022](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)). Provider: current browsers.
+4. Set the display to 1920x1080 with `Set-DisplayResolution`. In 2021 the runners defaulted to 1024x768 ([#2935](https://github.com/actions/runner-images/issues/2935)). Run headed `msedge` and `chrome` at scale factors 1, 1.25 and 1.5 (Playwright's default is 1 ([params](https://github.com/microsoft/playwright/blob/main/docs/src/api/params.md))). Take PNG screenshots of the viewport (not full page) and record one scroll. Provider: an unlocked desktop.
+5. Save the browser versions, OS build, ClearType settings and scrollbar settings with the files. Provider: PowerShell.
+6. Upload to presigned PUT URLs created in the boat sandbox, so the Windows box never holds bucket keys ([S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/PresignedUrlUploadObject.html)). Presigned links last at most 7 days ([expiry](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)). The plugin's current uploader would need the bucket keys on the box ([uploader](../../assets/evidence-upload.mjs)). Provider: outbound HTTPS.
+7. Delete the box. An EC2 instance terminates on shutdown only if it's configured to ([EC2](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Using_ChangingInstanceInitiatedShutdownBehavior.html)). Azure keeps billing a VM shut down from inside Windows until it's deallocated ([Azure](https://learn.microsoft.com/en-us/azure/virtual-machines/states-billing)). Provider: an API to delete boxes.
+
+| Option | Price | Billing | Source |
+| --- | --- | --- | --- |
+| GitHub Windows 2-core x64 | $0.010/min | Rounded up per job; free in public repos | [GitHub](https://docs.github.com/en/billing/reference/actions-runner-pricing) |
+| EC2 m7i.large Windows, us-east-1 | $0.1928/h | Per second, 60 s minimum | [price list](https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/ec2/USD/current/ec2-ondemand-without-sec-sel/US%20East%20(N.%20Virginia)/Windows/index.json), [EC2](https://aws.amazon.com/ec2/pricing/on-demand/) |
+| Azure D2s v5 Windows, East US | $0.188/h | Full minutes | [retail API](https://prices.azure.com/api/retail/prices?$filter=armRegionName%20eq%20%27eastus%27%20and%20armSkuName%20eq%20%27Standard_D2s_v5%27%20and%20priceType%20eq%20%27Consumption%27), [FAQ](https://azure.microsoft.com/en-us/pricing/details/virtual-machines/windows/) |
+| Playwright Workspaces, Windows browsers | $0.02/test min | Per second | [App Testing](https://azure.microsoft.com/en-us/pricing/details/app-testing/) |
+
+Example costs per run:
+
+- **GitHub:** a 6 min 20 s job bills as 7 min, so 7 × $0.010 = $0.07.
+- **EC2, 12 minutes:** compute is 0.2 h × $0.1928 = $0.0386. A public IPv4 address adds 0.2 h × $0.005 = $0.001 ([VPC](https://aws.amazon.com/vpc/pricing/)). A 30 GB gp3 disk adds 30 × $0.08 × 0.2/730 = $0.0007 ([EBS](https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/ec2/USD/current/ebs.json)). The total is about $0.040.
+- **Azure, 12 minutes:** 12 × $0.188/60 = $0.0376, before disk and IP charges.
+- **Playwright Workspaces:** 2 browsers × 3 viewports × 40 s = 4 test minutes, and 4 × $0.02 = $0.08. Whether its Windows pool offers `msedge`, `chrome` or headed mode is unverified (a trial run would confirm).
+
+### Hosted browser-testing services vs raw boxes
+
+#### Services
+
+Playwright can't drive branded Safari; it tests its own WebKit build ([Playwright docs](https://github.com/microsoft/playwright/blob/main/docs/src/browsers.md)). So hosted Playwright on macOS means that WebKit build, and real desktop Safari needs WebDriver, such as Selenium ([BrowserStack](https://www.browserstack.com/docs/automate/playwright/browsers-and-os), [TestMu AI](https://www.testmuai.com/support/docs/playwright-testing.md), [Sauce Labs](https://docs.saucelabs.com/web-apps/automated-testing/playwright.md), [TestingBot](https://testingbot.com/support/web-automate/playwright/options.md)). Apple allows one Safari instance and one WebDriver session at a time, so parallel Safari runs need separate Macs or macOS VMs ([Apple, undated](https://developer.apple.com/documentation/webkit/about-webdriver-for-safari)).
+
+| Service | Real Safari | Windows Edge and Chrome | Playwright support | Price | Source |
+|---|---|---|---|---|---|
+| BrowserStack Automate | Safari 27 on macOS 27 "Golden Gate", 26.4 on Tahoe; real iPhones | Windows 10, 11 | macOS: WebKit build, not Safari; real iPhones with Safari | $99 to $129 per parallel a month | [list](https://www.browserstack.com/list-of-browsers-and-platforms/automate), [pricing](https://www.browserstack.com/pricing) |
+| TestMu AI (formerly LambdaTest) | Safari on Golden Gate, labeled Beta on a June 2026 page | Windows 10, 11 | macOS: `pw-webkit`, not Safari; real iPhones in beta | $79 to $99 | [Golden Gate](https://www.testmuai.com/test-on-macos-golden-gate/), [Playwright](https://www.testmuai.com/support/docs/playwright-testing.md), [pricing](https://www.testmuai.com/pricing.md) |
+| Sauce Labs | Safari 26 and 27, "with the required subscription" | Windows 10, 11 | WebKit 26.6 build, not Safari; no macOS 27 yet | $149 to $199 | [macOS](https://docs.saucelabs.com/web-apps/macos-apple-silicon.md), [Playwright](https://docs.saucelabs.com/web-apps/automated-testing/playwright.md), [pricing](https://saucelabs.com/pricing) |
+| TestingBot | Safari 27 on Golden Gate, 26 on Tahoe; real iPhones | Windows 10, 11 | WebKit build, not Safari | €0.06 a minute, or €90 to €120 unlimited | [browsers](https://testingbot.com/support/web-automate/browsers.md), [pricing](https://testingbot.com/pricing) |
+| Azure Playwright Workspaces | None: Linux and Windows hosts only | Windows (edition unverified) | Playwright test runner or NUnit only | $0.02 a Windows minute | [limits](https://learn.microsoft.com/en-us/azure/app-testing/playwright-workspaces/resource-limits-quotas-capacity), [prices](https://prices.azure.com/api/retail/prices?$filter=contains%28productName,%27App%20Testing%27%29) |
+| GitHub Actions runners | Safari 27.2 and SafariDriver on a macOS 26 VM | Windows Server 2025 x64, Windows 11 Arm64 | Any, you install it | $0.062 (macOS), $0.010 (Windows) a minute | [macOS image](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md), [runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners), [pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing) |
+
+- LambdaTest renamed itself TestMu AI on January 12, 2026 ([press release](https://www.aap.com.au/aapreleases/cision20260112ae60862/)). Its Playwright on real iPhones is a beta that the account team must switch on, for Playwright 1.53 to 1.60 ([docs](https://www.testmuai.com/support/docs/playwright-ios-device.md)). BrowserStack has run Playwright on real iPhones with Safari since June 2025 ([press release](https://www.browserstack.com/press/browserstack-becomes-the-first-platform-to-enable-playwright-testing-on-real-ios-devices-with-safari)).
+- Microsoft retired Microsoft Playwright Testing on March 8, 2026, in favor of Playwright Workspaces ([notice](https://www.microsoft.com/releasecommunications/api/v2/azure/499860)).
+- Visual-diff services re-render captured DOM instead of recording a live browser: Percy-managed Chrome, Firefox and Edge render on Linux ([Percy](https://www.browserstack.com/docs/percy/project-settings/cross-browser)), Chromatic pauses animations ([notes](https://www.chromatic.com/docs/infrastructure-release-notes/)), and Applitools re-renders DOM states ([Applitools](https://applitools.com/platform-pricing/)). Browserbase is Chromium only ([docs](https://docs.browserbase.com/platform/browser/getting-started/remote-browser-versus-local-browser.md)); Browserless lists no Safari ([docs](https://docs.browserless.io/baas/infrastructure/supported-browsers.md)).
+- The grids record session video and screenshots ([BrowserStack](https://www.browserstack.com/pricing), [TestMu AI](https://www.testmuai.com/support/docs/playwright-testing.md), [Sauce](https://saucelabs.com/pricing), [TestingBot](https://testingbot.com/pricing)). Boat's private links carry a `_token` that boat says to redact from logs, and hosting the port again returns the same token ([boat API](https://docs.boat.dev/api/reference/agent/expose-a-port)). Grids and runners should open these links without a tunnel, and vendor logs and videos will then hold the token (both unverified; one test session per vendor would confirm).
+
+#### Prices
+
+| Item | Price | Source |
+|---|---|---|
+| GitHub standard runner, macOS | $0.062 a minute | [GitHub](https://docs.github.com/en/billing/reference/actions-runner-pricing) |
+| GitHub standard runner, Windows x64 or Arm64 | $0.010 a minute | [GitHub](https://docs.github.com/en/billing/reference/actions-runner-pricing) |
+| GitHub included compute | $12 (Free), $18 (Pro, Team) a month; standard runners free in public repos | [GitHub](https://docs.github.com/en/billing/concepts/product-billing/github-actions) |
+| BrowserStack Automate Desktop, 1 parallel | $99 a month billed annually, $129 monthly | [BrowserStack](https://www.browserstack.com/pricing) |
+| BrowserStack Automate Desktop & Mobile, 1 parallel | $175 annual, $225 monthly | [BrowserStack](https://www.browserstack.com/pricing) |
+| TestMu AI Automation Desktop (All OS), 1 parallel | $79 annual, $99 monthly | [TestMu AI](https://www.testmuai.com/pricing.md) |
+| Sauce Labs Virtual Device Cloud, 1 parallel | $149 annual, $199 monthly | [Sauce](https://saucelabs.com/pricing) |
+| TestingBot pay as you go, 1 parallel | €60 per 1,000 minutes, €600 per 15,000; credits never expire | [TestingBot](https://testingbot.com/pricing) |
+| TestingBot Automated Pro, 1 parallel | €90 annual, €120 monthly, before VAT | [TestingBot](https://testingbot.com/pricing) |
+| Azure Playwright Workspaces, Windows | $0.02 a minute, billed by the second | [prices](https://prices.azure.com/api/retail/prices?$filter=contains%28productName,%27App%20Testing%27%29), [Azure](https://azure.microsoft.com/en-us/pricing/details/app-testing/) |
+| AWS EC2 Mac (us-east-1), mac2 (M1) or mac-m4 | $0.65 or $1.23 a host-hour, 24-hour minimum | [prices](https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/ec2/USD/current/dedicatedhost-ondemand.json), [AWS](https://aws.amazon.com/ec2/instance-types/mac/) |
+| AWS t3.large Windows Server (us-east-1) | $0.1108 an hour | [prices](https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/ec2/USD/current/ec2-ondemand-without-sec-sel/US%20East%20%28N.%20Virginia%29/Windows/index.json) |
+
+GitHub cut runner prices up to 39% on January 1, 2026 ([GitHub](https://github.com/resources/insights/2026-pricing-changes-for-github-actions)). On October 28, 2026, it replaced free minutes with a dollar pool of "the same value", which Copilot cloud sandboxes also draw on ([changelog](https://github.blog/changelog/2026-10-28-work-from-anywhere-with-a-new-connected-copilot-cloud-experience/)). Whether Sauce's self-serve plans include macOS 14 to 27 is unverified; a written answer from Sauce would confirm it.
+
+#### The math: hosted services vs raw boxes
+
+Heavy use is 20 runs a day for 30 days: 600 runs, 3,000 Mac minutes and 3,000 Windows minutes. Light use is 10 runs a week: 10 × 52 / 12 = 43.3 runs, or 217 minutes per OS.
+
+- GitHub, private repo ([rates](https://docs.github.com/en/billing/reference/actions-runner-pricing)): heavy is 3,000 × $0.062 + 3,000 × $0.010 = $186 + $30 = $216, or $198 after Pro's $18. Light is 217 × $0.062 + 217 × $0.010 = $13.43 + $2.17 = $15.60, or $0 to $3.60 after the allowance. Public repos pay $0 ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
+- A hosted parallel has unlimited minutes, so both volumes cost the same: $79 to $99 (TestMu AI), $99 to $129 (BrowserStack), $149 to $199 (Sauce) ([TestMu AI](https://www.testmuai.com/pricing.md), [BrowserStack](https://www.browserstack.com/pricing), [Sauce](https://saucelabs.com/pricing)). Heavy use is 6,000 session minutes (200 a day), so one queued parallel suffices.
+- TestingBot ([pricing](https://testingbot.com/pricing)): light is 433 × €0.06 = €26 pay as you go; heavy is €90 to €120 unlimited, since pay as you go would be 6,000 × €0.04 = €240.
+- Break-even, private repo ([rates](https://docs.github.com/en/billing/reference/actions-runner-pricing)): a 5-minute Mac plus Windows pair costs 5 × $0.062 + 5 × $0.010 = $0.36 on GitHub. A $79 plan wins above 79 / 0.36 = 219 pairs a month, a $129 plan above 358. The included allowance adds 33 to 50 pairs.
+- AWS bills EC2 Mac per second with a 24-hour minimum, citing Apple's license ([AWS](https://aws.amazon.com/ec2/instance-types/mac/)), and the current macOS license still requires 24-hour leases ([Apple](https://www.apple.com/legal/sla/docs/macOS27.pdf)). A mac2 therefore costs at least 24 × $0.65 = $15.60 per allocation, one 24-hour block a week costs 4.33 × $15.60 = $67.60 a month, and keeping it costs 730 × $0.65 = $474.50 (M4: 730 × $1.23 = $897.90). A Windows Server t3.large started only for heavy runs costs 50 hours × $0.1108 = $5.54, plus boot time and disk.
+
+#### Fit for this owner
+
+- Light use: GitHub is cheapest if Windows Server will do. macos-latest has safaridriver enabled ([script](https://github.com/actions/runner-images/blob/main/images/macos/scripts/build/install-safari.sh)), and windows-latest ships Edge, Chrome and their drivers ([image](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-VS2026-Readme.md)). The workflow dispatch API starts a run and returns its ID ([REST docs](https://docs.github.com/en/rest/actions/workflows)). Run from each site's repo, because GitHub bars runner use unrelated to the repository's project ([terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features)). In a public repo any signed-in user can download artifacts ([docs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)), so send evidence to the plugin's bucket.
+- Safari screen video on GitHub is unverified. The image pre-approves screen capture for the runner agent ([script](https://github.com/actions/runner-images/blob/main/images/macos/scripts/build/configure-tccdb-macos.sh)); one test job would confirm it.
+- Whether Server 2025 or Windows 11 Arm64 matches Windows 11 x64 fonts and scrollbars is unverified; one side-by-side capture would show it. Raw Windows 11 clients are hard to rent: AWS WorkSpaces BYOL needs 50 WorkSpaces per Region a month ([AWS](https://docs.aws.amazon.com/workspaces/latest/adminguide/byol-windows-images.html)). So use a grid for Windows 11: TestingBot per minute when light, TestMu AI or BrowserStack per parallel when heavy.
+- Real iPhones: TestingBot runs Selenium against mobile Safari on real devices ([docs](https://testingbot.com/support/web-automate/mobile.md)). For Playwright, only BrowserStack is generally available; which plan covers it is unverified (its plan comparison would confirm).
+- Raw Macs pay off only when kept busy, for example as the owner's bb machine for Mac and iOS work. For 5-minute captures, a $15.60 minimum loses to a $0.31 GitHub run (5 × $0.062).
+- A leaked preview link keeps working while its sandbox exists, so point third-party grids at a sandbox you delete afterward ([boat API](https://docs.boat.dev/api/reference/agent/expose-a-port); unverified).
+
+### Test targets in the plugin
+
+**What it is.** A `capture` capability that any task can call: "take real Safari (macOS), Safari in the iOS Simulator, and Edge and Chrome (Windows) captures of this preview link." A Linux agent task on boat asks for a Mac Safari capture of its own preview; the plugin runs it elsewhere and attaches the results to the task as evidence, like today's screenshots.
+
+**Request and result.** The request names the preview link, the targets (`macos-safari`, `ios-simulator-safari`, `windows-edge`, `windows-chrome`, `linux-chrome`), viewport sizes and scale factors, scroll positions or a short script, and whether to record video. The result holds screenshot and video links plus the OS and browser versions that actually ran.
+
+**Where it runs.** The agent calls a plugin tool. The plugin, on the bb machine, starts the run with its own credentials, waits, and posts the results back to the task. The agent never sees runner or grid credentials, and the capture box never sees the agent's.
+
+**Backends**, in the order the plugin would try them:
+
+1. **GitHub Actions in the site's own repo.** One workflow file per project, started through the workflow dispatch API, which returns the run ([GitHub REST](https://docs.github.com/en/rest/actions/workflows)). Running from the site's repo keeps inside GitHub's rule that runners serve the repository's own project ([GitHub terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features)). The macOS job drives real Safari through `safaridriver`, which the image enables ([runner image script](https://github.com/actions/runner-images/blob/main/images/macos/scripts/build/install-safari.sh)), and the iOS Simulator through `simctl` screenshots and recordings. The Windows job runs Playwright with the `msedge` and `chrome` channels, headed, in the runner's interactive session. A 5-minute run costs $0.31 on macOS and $0.05 on Windows in a private repo, and nothing in a public one ([GitHub pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)).
+2. **A WebDriver grid account** (TestingBot, TestMu AI or BrowserStack) for Windows 10 and 11 on x64, other Safari versions and real iPhones. Recordings stay with the vendor; the plugin links to them or copies them into the bucket.
+3. **A Mac the user already holds** (an Instabox lease or an enrolled bb machine), for heavy capture days or when an agent works on that Mac anyway. It needs a logged-in GUI session, passwordless sudo for `safaridriver --enable` and a Screen Recording grant for video ([Safari automation](#safari-and-webkit-automation-on-cloud-macs)).
+4. **A Linux baseline** in any sandbox (Playwright's Chromium, Firefox and WebKit), labeled "not Safari".
+
+**Preview access.** boat's private link carries its token in the query and works in any browser without a tunnel ([boat hosting](https://docs.boat.dev/hosting)), which keeps remote capture simple. But the token then lands in runner logs, grid logs and recordings, and hosting the port again returns the same token ([boat API](https://docs.boat.dev/api/reference/agent/expose-a-port)). So capture a preview whose sandbox is deleted afterward, or ask boat for revocable links.
+
+**Evidence upload.** The best default is presigned upload links minted where the bucket keys already live, in the task's sandbox, and handed to the capture job; the capture box then never holds keys, and the links expire within at most 7 days ([S3 presigned uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/PresignedUrlUploadObject.html), [expiry](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)). That needs a small uploader feature: today the bundled uploader is a Node script that signs uploads with keys from the boat environment ([assets/evidence-upload.mjs](../../assets/evidence-upload.mjs), [src/evidence.ts](../../src/evidence.ts)). The fallback is to store the bucket keys as repository secrets, the same trust model as the boat environment. Don't use workflow artifacts for private sites: in a public repo, any signed-in user can download them ([GitHub artifacts](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)).
+
+**Limits to design for.** Safari allows one WebDriver session per macOS instance, so parallel Safari captures need parallel machines ([Apple](https://developer.apple.com/documentation/webkit/about-webdriver-for-safari)). Headless Chromium hides scrollbars and renders in software, so Windows scrollbar and font evidence needs headed runs ([Windows automation](#windows-browser-automation)). Whether Safari screen video records on GitHub's runners is unverified; one test job would settle it.
+
+**Interface sketch:**
+
+```ts
+type CaptureBrowser =
+  | "macos-safari" | "ios-simulator-safari"
+  | "windows-edge" | "windows-chrome"
+  | "linux-chrome" | "linux-webkit";
+
+interface CaptureTarget {
+  id: string;                       // "github-actions", "grid", "held-mac", "sandbox"
+  browsers: CaptureBrowser[];
+  realBrowser: boolean;             // false for Playwright's WebKit
+  minBillingSeconds: number | null; // 60 on GitHub (whole minutes); 86,400 for a new Mac lease
+  maxParallel: number | null;       // Safari: one WebDriver session per macOS instance
+  capture(request: CaptureRequest, signal: AbortSignal): Promise<CaptureResult>;
+}
+
+interface CaptureRequest {
+  taskId: string;
+  url: string;                      // the task's preview link
+  browsers: CaptureBrowser[];
+  viewports: { width: number; height: number; scale?: number }[];
+  scrollPositions?: number[];
+  script?: string;                  // optional WebDriver or Playwright steps
+  video: boolean;
+}
+
+interface CaptureResult {
+  items: {
+    browser: CaptureBrowser;
+    os: string;
+    browserVersion: string;
+    screenshots: string[];          // evidence links
+    video: string | null;
+  }[];
+  costUsd: number | null;
+}
+```
+
+## Part C: recommendation
+
+### The matrix
+
+Details and sources are in Part B. Prices are list prices on 2026-11-17.
+
+| Provider | OS and Mac hardware | API maturity | Sessions | Previews and SSH | bb machine (task chats) | Price: Linux 4 vCPU / 8 GiB; Mac | Trust |
+|---|---|---|---|---|---|---|---|
+| boat.dev | Linux (Ubuntu 24.04, x86_64). No Mac, no Windows | GA, self-serve: CLI, REST v1, TS and Python SDKs | No cap on paid plans; fixed auto-stop (1 h default, up to 30 days or off); disk snapshots | Token-gated preview links; SSH with stdin | Yes, today | $0.036/h flat, per second; $20/month minimum | Dedicated EU hosts; one KVM VM per sandbox; SOC 2 in progress |
+| Instabox | Linux (Firecracker, x86_64); macOS 26 with Xcode in a VM on a whole leased Mac (M2, M2 Pro, M4, M4 Pro); Windows announced only | Public REST API (OpenAPI), CLI, TS and Python SDKs; invite-only launch on 2026-10-14 | Linux: no cap on paid plans, pause keeps memory, free disk snapshots. Mac: no pause, 24 h minimum lease | Public or token-gated port URLs; SSH gateway | Likely on paid Linux (untested); macOS unknown | $0.034/h; Mac $0.45 to $1.25/h with a 24 h minimum ($10.80 to $30) | Six-person YC company; AWS and Latitude.sh; Mac host unstated |
+| Darkbloom | Linux (arm64) and experimental macOS VMs on Macs owned by individuals. No Windows | Experimental, invite-only; CLI sent by hand; no REST API or SDK | 24 h max per boot; idle stop ignores work inside; no snapshots | No inbound ports or preview URLs; SSH through the CLI | Unverified, and it would hold credentials Darkbloom says to keep out | $0.192/h; Mac $0.35 to $0.90/h, per second | Not confidential from the Mac's owner; Darkbloom can decrypt workspaces |
+| Modal | Linux only (gVisor or KVM VMs, x86-64) | Platform GA; Python SDK stable, JS and Go SDKs Beta | 24 h max lifetime; no pause; filesystem snapshots (memory snapshots Alpha) | Public tunnels or token-gated Connect Tokens; no managed SSH | Yes, through bb's official Modal plugin (experimental) | about $0.48/h reserved, less when bursting; $0 plan with $30 credit | Capacity rented from large clouds; shared hosts; SOC 2 Type II |
+| Vercel Sandbox | Linux only (Firecracker, x86-64) | GA since 2026-01-30; TS and Python SDKs, CLI | 24 h max on Pro (45 min on Hobby); no idle stop; filesystem snapshots | Public, unauthenticated URLs (up to 15 ports); no OpenSSH | Likely (untested); daemon restarts every session | $0.22/h at 10% CPU to $0.68/h at 100%; $20/month Pro | Vercel's platform on AWS bare metal; Firecracker microVMs; broad compliance |
+
+Reading the matrix:
+
+- **No single provider covers the brief.** boat.dev, Modal and Vercel are Linux-only. Darkbloom has Macs but fails on trust, networking and API access. Instabox is the only one with a usable Mac today, and nobody among the five sells Windows.
+- **Mac work splits in two.** Short Safari and Simulator captures are cheapest on per-minute macOS CI runners ([licensing](#macos-licensing-the-24-hour-rule)). Mac agent workspaces need a whole Mac for at least 24 hours under Apple's license, which Instabox enforces ([Instabox macOS](https://instabox.sh/docs/machines/macos.md)).
+- **bb already has the machine layer.** The plugin registers boat as a bb machine provider today ([src/machine.ts](../../src/machine.ts)), and bb ships an official Modal provider with an internal backend interface meant for more vendors ([bb providers](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/providers/README.md)).
+
+### Recommended architecture
+
+**Two layers, kept apart.**
+
+1. **Sandbox providers**: machines where agents work for hours. They need exec, a lifecycle, previews, secrets, and either bb enrollment or an agent runner.
+2. **Test targets**: short-lived browsers that capture a preview URL and return screenshots and video. They need no agent logins, no bb daemon and no repo credentials, only the preview link and an upload path.
+
+Mixing them would force the 24-hour Mac lease onto five-minute captures, and put agent credentials on boxes that only need a URL.
+
+**Task chats are the common path.** Every new provider gets task chats through bb machine enrollment: bb installs its daemon on the sandbox and runs Claude Code or Codex there. That path already exists for boat. It needs only a lifecycle and an executor from the provider, and bb owns the daemon bootstrap, enrollment and credential injection ([bb Modal plugin README](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/README.md)). Headless tasks stay a boat capability (`headlessAgent`), because only boat has a full agent runner with conversations, events and steering today; Instabox has a CLI-only one ([Instabox CLI](https://instabox.sh/docs/reference/cli.md)). One limit follows from the plugin's trust rules: task chats put bb's machine credentials in the sandbox, so the plugin runs untrusted repos headless only ([src/service.ts:1466](../../src/service.ts#L1466)). On a provider without a runner, untrusted repos stay on boat until the plugin has a generic exec-based runner (Part A).
+
+**Where the code lives.** Follow the layout bb uses for its Modal backend ([bb providers](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/providers/README.md)): vendor calls in one folder per provider, everything else provider-neutral.
+
+```text
+src/providers/
+  types.ts          SandboxProvider, capabilities, CapacityReport (Part A)
+  registry.ts       enabled providers; picks one per project, task and OS
+  machine.ts        registers any provider as a bb machine provider
+                    (today's src/machine.ts minus the boat calls)
+  shell.ts          POSIX or PowerShell script rendering, home and temp paths
+  exec-runner.ts    later: headless runner on exec for providers without one
+  boat/             today's boat.ts and most of boat-api.ts, setup checks,
+                    fake CLI fixtures
+  instabox/         REST client, CLI runner adapter, Mac lease handling
+  vercel/           SDK adapter
+  bb-provider/      adapter over another plugin's bb machine provider
+                    (bb's modal-sandbox) and over existing bb machines
+src/capture/
+  types.ts          CaptureTarget, CaptureRequest, CaptureResult
+  github-actions.ts workflow in the project's own repo
+  grid.ts           WebDriver grid account (Windows 11 x64, real iPhones)
+  sandbox.ts        capture inside a sandbox or a held Mac
+```
+
+**Users bring their own accounts.** Modal, Vercel and Instabox all forbid reselling or giving third parties access ([Modal terms](https://modal.com/legal/terms), [Vercel section](#vercel-sandbox), [Instabox terms](https://instabox.sh/terms)). Apple's license makes whoever leases Macs to others a Lessor with enforcement and notice duties ([macOS 27 SLA](https://www.apple.com/legal/sla/docs/macOS27.pdf)). So the plugin should never pool accounts or Macs across users. Each user signs in to their own providers, as they do with boat today.
+
+### Settings and UI
+
+- **Settings → Providers:** enable providers, store their tokens as bb secret settings, and pick a default for Linux and one for macOS. The setup checklist shows one row per enabled provider, from its `availability()` and doctor checks.
+- **Projects:** a **Runs on** choice (provider and size) and a **Needs macOS** switch. Mac-only projects never start on Linux.
+- **New task:** show a provider or OS choice only when more than one is enabled. Before the first Mac task of a lease, say what it costs ("Starts a 24-hour Mac lease: $10.80").
+- **Sandboxes page:** group by provider. Show a Mac lease's end time, and keep the lease until then rather than stopping it early, since a stop inside the minimum doesn't save money ([Instabox macOS](https://instabox.sh/docs/machines/macos.md)).
+- **Capture:** per project, the capture targets (Safari on macOS, Safari in the iOS Simulator, Edge and Chrome on Windows, Chrome on Linux), the backend for each, and a monthly budget.
+
+### Tiers, quotas and the start queue
+
+- **Model tiers and agent quotas don't change.** They describe Claude and Codex subscriptions, not sandboxes, and the audit found them provider-independent ([src/limits.ts](../../src/limits.ts), [src/quota.ts](../../src/quota.ts)).
+- **Plan limits become a CapacityReport per provider:** concurrency in its own unit (sandboxes, vCPUs or memory), start windows, budget, the auto-stop cap and the sizes on offer. boat's `limits` maps onto it directly. Providers without a limits API get plugin-side limits: **Sandboxes at once** per provider, plus an optional monthly spend cap computed from the provider's price table.
+- **The start queue should wait for capacity instead of failing.** Today it queues only when agents are at their limit; a full account fails the task ([src/start-queue.ts](../../src/start-queue.ts)). With several providers and scarce Macs, the queue needs one lane per provider and OS.
+- **Mac leases are a pool of one, per user.** When the provider bills 24 hours at a time, the plugin keeps one lease, runs queued Mac tasks and captures on it until the lease ends, and stops it then unless work is waiting. It never shares a lease across users, for the licensing reason above.
+
+### Phased plan
+
+| Phase | What | Why this order | Needs the owner |
+|---|---|---|---|
+| 0 | Decisions and accounts: capture backends, Mac budget, Instabox access, naming | Nothing else can be tested without accounts | Yes: all of it |
+| 1 | Extract the provider interface with boat.dev as the only implementation | Every later phase needs it; no behavior change, so it is safe to ship alone | Review only |
+| 2 | Cross-platform capture (test targets): GitHub Actions first, then a grid | Solves the Safari and Windows testing need now, at cents per run, with no Mac lease and no credentials on other boxes; doesn't depend on Phase 1 and can overlap it | GitHub workflow in each site repo; a grid account if wanted |
+| 3a | Mac tasks on an existing bb machine (a Mac rented by the month or a held lease, enrolled by hand) | The fastest way to run agents on a Mac: no provider API work, and bb already supports macOS hosts | Rent and enroll the Mac |
+| 3b | Instabox adapter: Linux and Mac leases, private ports, secrets | The only provider with a usable Mac API; its Linux side checks the interface on a second vendor | Instabox account; vendor answers |
+| 4 | Modal (through bb's own provider) and Vercel Sandbox | Requested by a user, but Linux-only, so they add choice rather than new capability | Modal and Vercel accounts for testing |
+| 5 | Windows workspaces | Blocked today: no provider in the brief sells Windows, and bb can't yet enroll Windows from a provider plugin | Provider choice; bb support |
+
+**Phase 1: extract the interface.** Split `src/boat-api.ts` and `src/boat.ts` into a boat adapter and neutral modules. Add a state normalizer, the CapacityReport, the shell abstraction and provider-scoped ids, and generalize the bb machine registration in the shape of bb's `SandboxBackend`. Fix the audit issues that would otherwise multiply with each provider: idempotent creates, a start queue that waits for capacity, and the hooks path. The existing tests keep passing against the fake boat CLI, and a second fake provider tests the neutral code. Part A has the sizes and the invasive spots.
+
+**Phase 2: cross-platform capture.** A `capture` tool and command for tasks, with results as evidence links. Details are in [Test targets in the plugin](#test-targets-in-the-plugin). This comes before Mac agent workspaces because it answers the most concrete need (Safari rendering of scroll-driven and 3D CSS, Windows fonts and scrollbars) for far less money and risk, and it works with the plugin as it is.
+
+**Phase 3: Mac agent workspaces.** Start with an existing machine: bb can enroll a Mac by hand with `bb machine create --provider manual`, and manual machines never idle-suspend ([bb machines guide](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/templates/src/templates/bb-guide-machines.md#L372-L392)). The plugin then routes Mac tasks there as task chats, using bb's existing-machine selection ([environment provider types](../../node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk-environment-provider.d.ts), local after `npm ci`). Then add the Instabox adapter, so the plugin can start and stop leases itself.
+
+**Phase 4: Modal and Vercel.** For Modal, drive bb's own `modal-sandbox` machine provider through `hosts.experimental_create` instead of writing a Modal client ([bb Modal plugin README](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/README.md)). The user installs bb's official Modal plugin. That path is chat-only, so trusted repos only, with no boat-style preview links, plan limits or usage; if users want more, port Modal into the plugin's own adapter later. For Vercel, write an adapter on `@vercel/sandbox`, with a token-checking proxy for previews, because its URLs are public ([Vercel section](#vercel-sandbox)).
+
+**Phase 5: Windows.** Start when a provider sells Windows sandboxes with an API, and bb can enroll Windows hosts from a provider plugin. Until then, Windows stays a capture target.
+
+**Darkbloom is not in the plan.** Revisit it if it publishes an API, offers isolation from host owners (or Macs it owns), and states its basis under Apple's license.
+
+### Open questions
+
+**Need vendor contact or an account** (the research rules allowed neither):
+
+- **Instabox:** Xcode and Simulator versions on the Mac image; whether signing, the keychain, Screen Recording and `safaridriver` work in headless sessions; whether ports, Secrets and the agent runner work on macOS; where the Macs are hosted; whether Apple was notified under Section 3A and how lessees accept Apple's terms; Windows edition, sizes, price and date; whether the invite gate is still on; whether its SOC 2 report covers Instabox.
+- **Darkbloom:** any written Apple arrangement; whether customers can restrict sandboxes to Darkbloom-owned Macs; a GA date and service level.
+- **Modal:** snapshot storage price; JS SDK stability plans.
+- **GitHub:** whether Safari screen video records on hosted macOS runners; whether a capture workflow in each site's repo stays inside the Actions terms.
+- **Grids:** whether Sauce Labs' self-serve plans include current macOS; which BrowserStack plan covers Playwright on real iPhones.
+- **boat.dev:** SOC 2 timeline; any plans for macOS or Windows.
+- **bb:** whether provider plugins will get a Windows bootstrap path.
+
+**Need the owner:**
+
+- Mac budget: an always-on Mac (about $150 to $330 a month) or 24-hour leases on demand ($10.80 to $30 each)?
+- Capture: GitHub Actions only, or also a grid account for Windows 11 x64 and real iPhones? Are the site repos public (free runner minutes) or private?
+- May capture workflows hold evidence-bucket keys as repository secrets?
+- Accept Instabox's maturity risk (one month old, invite-only) for Mac work?
+- Allow Darkbloom for work without secrets, or leave it out entirely?
+- Require task chats (and so bb Connect) for every non-boat provider?
+- Naming (below).
+
+### Naming
+
+The plugin is "Boat Cloud Agents", its commands live under `bb boat`, and its skills are `boat` and `boat-orchestrator` ([package.json](../../package.json)). Once it supports several providers, "Boat" names one vendor among many, and the README already has to explain that the plugin isn't made by boat.dev ([README](../../README.md)). Options, without a decision:
+
+- **Keep the name.** No migration and no lost recognition, but more confusion with the vendor as other providers arrive.
+- **A descriptive name**, such as "Cloud Agents", which the plugin's page already uses. Clear, but generic and hard to search for.
+- **A new name** that keeps the nautical theme without naming a vendor (a harbor or fleet idea). Check existing products and marks first.
+
+A rename touches the plugin id and settings keys, the `bb boat` command namespace (keep an alias), the skill names, the marketplace entry, the docs and the screenshots. It is independent of the refactor and can come last.
