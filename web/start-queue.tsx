@@ -15,11 +15,13 @@ export function registerStartQueueUi(app: PluginAppBuilder): void {
   app.slots.messageDirective({id: "boat-start-queue", component: QueuedStartCard});
   // A sidebar row for a queued start opens the chat that requested it; its
   // card there then scrolls into view (start-queue-reveal.ts).
-  app.contentScripts.register({id: "queued-start-reveal", mount(context) {
-    document.addEventListener("click", event => {
+  app.contentScripts.register({id: "queued-start-reveal", mount() {
+    const onClick = (event: MouseEvent) => {
       const id = queuedRowClickId(event);
       if (id) revealQueuedStart(id);
-    }, {capture: true, signal: context.signal});
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
   }});
 }
 
