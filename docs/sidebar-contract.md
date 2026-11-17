@@ -12,6 +12,15 @@ The timezone field is optional, integer, bounded to -840..840, and uses the
 JavaScript sign: local time is UTC minus the offset. `{version:1}` remains
 valid with the producer's server-local fallback. Berlin winter time is -60.
 
+A fixed offset is the reader's offset now. Day-named reset lines can be days
+ahead, so across a daylight saving change one can read an hour off: on a
+Friday in Berlin summer time (-120), a Monday 1:00 am reset after the change
+reads `Mon 2:00 am`. Consumers can also send the optional additive
+`timeZone`, an IANA name such as
+`Intl.DateTimeFormat().resolvedOptions().timeZone` (at most 64 characters).
+A name the producer knows wins and follows daylight saving time; an unknown
+name falls back to the offset. Older producers ignore it.
+
 The response is `{version:1, revision:string, threads:SidebarThreadDto[],
 truncated:boolean}`; at most 2000 records. Every record contains:
 
@@ -103,7 +112,8 @@ always emits the field and includes its ordered contents in `revision`.
 | taskThreadId | Verified open BB chat for that task, otherwise null |
 | secondLine | Additive, optional: `{text,tone:"neutral"}` for a waiting request, otherwise null |
 
-`secondLine` is Boat's own reset line in the requested `timezoneOffsetMinutes`,
+`secondLine` is Boat's own reset line in the requested `timeZone`, else
+`timezoneOffsetMinutes`,
 worded like its chat cards: `Waits for reset · 1:00 am` later today or
 overnight (next day, under 12 hours away), `· tomorrow 1:00 am`, `· Thu 1:00 am`
 within the week, `· Nov 26, 1:00 am` further out, or `Waits for reset` with no

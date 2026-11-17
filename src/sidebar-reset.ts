@@ -58,12 +58,12 @@ export async function readPausedResets(
   );
   return result;
 }
-/** `Waits for reset · Thu 1:00 am`; the day rules are in lib/reset-time.ts. */
+/** `Waits for reset · Thu 1:00 am`; the day and zone rules are in lib/reset-time.ts. */
 export function resetWaitText(
   at: number,
-  timezoneOffsetMinutes?: number,
+  zone?: number | string,
   now = Date.now(),
 ): string {
-  const when = resetTimeText(at, now, timezoneOffsetMinutes);
+  const when = resetTimeText(at, now, zone);
   return when ? `Waits for reset · ${when}` : "Waits for reset";
 }

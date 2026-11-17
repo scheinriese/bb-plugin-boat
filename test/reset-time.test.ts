@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resetTimeText } from "../lib/reset-time.ts";
+import { isTimeZone, resetTimeText } from "../lib/reset-time.ts";
 import { resetWaitText } from "../src/sidebar-reset.ts";
 
 const at = (iso: string) => Date.parse(iso);
@@ -82,4 +82,25 @@ test("ISO strings work; missing or unparsable times give no text", () => {
 test("without an offset, the runtime's own time zone applies", () => {
   const reset = at("2026-11-19T00:00:00Z");
   assert.equal(resetTimeText(reset, NOW), resetTimeText(reset, NOW, new Date(reset).getTimezoneOffset()));
+});
+
+test("an IANA time zone follows daylight saving time; a fixed offset can be an hour off across the change", () => {
+  // Berlin leaves summer time on Sunday 2026-10-25. Friday 12:00 CEST is UTC+2 (offset -120).
+  const friday = at("2026-10-23T10:00:00Z");
+  const monday = at("2026-10-26T00:00:00Z"); // Monday 01:00 CET
+  assert.equal(resetTimeText(monday, friday, "Europe/Berlin"), "Mon 1:00 am");
+  assert.equal(resetTimeText(monday, friday, -120), "Mon 2:00 am", "the documented fixed-offset limitation");
+  // New York enters daylight time on Sunday 2027-03-14.
+  const ny = resetTimeText(at("2027-03-15T05:00:00Z"), at("2027-03-12T17:00:00Z"), "America/New_York");
+  assert.equal(ny, "Mon 1:00 am");
+  // Half-hour and far zones keep their own rules.
+  assert.equal(resetTimeText(at("2026-11-18T06:30:00Z"), at("2026-11-17T20:00:00Z"), "Asia/Kolkata"), "12:00 pm");
+  assert.equal(resetTimeText(at("2026-11-18T06:30:00Z"), at("2026-11-17T20:00:00Z"), "UTC"), "6:30 am");
+});
+
+test("an unknown zone name falls back to the runtime's own zone", () => {
+  const reset = at("2026-11-19T00:00:00Z");
+  assert.equal(isTimeZone("Europe/Berlin"), true);
+  for (const name of ["Mars/Olympus", "", "x".repeat(65), 5, null]) assert.equal(isTimeZone(name), false);
+  assert.equal(resetTimeText(reset, NOW, "Mars/Olympus"), resetTimeText(reset, NOW));
 });

@@ -2,6 +2,7 @@ import { readPausedResets, resetWaitText, type PausedReset } from "./sidebar-res
 import type { Runtime } from "./runtime.ts";
 import type { FidelityUsageDto } from "../contract-fidelity.ts";
 import { usageWindows } from "./usage.ts";
+import { isTimeZone } from "../lib/reset-time.ts";
 import { sidebarState } from "./sidebar.ts";
 import { createHash } from "node:crypto";
 import type { SidebarQueuedStartDto } from "../contract-sidebar.ts";
@@ -13,7 +14,7 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
   const { service } = runtime;
   let pausedCache: { at: number; value: Promise<Map<string, PausedReset>> } | null = null;
   const cache = new Map<string, { at: number; value: Promise<FidelityUsageDto> }>();
-  async function readQueuedStarts(timezoneOffsetMinutes?: number): Promise<{ rows: SidebarQueuedStartDto[]; truncated: boolean }> {
+  async function readQueuedStarts(zone?: number | string): Promise<{ rows: SidebarQueuedStartDto[]; truncated: boolean }> {
     if (!runtime.startQueue) return { rows: [], truncated: false };
     let truncated = false;
     let pending: QueuedStartDto[] = [], started: QueuedStartDto[] = [];
@@ -57,7 +58,7 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
         rows[index] = { id: entry.id, revision: entry.revision, title: entry.title, sourceThreadId: entry.threadId,
           provider: task?.provider ?? entry.requestedProvider, resetsAt: entry.resetsAt, createdAt: entry.createdAt,
           state: entry.state as SidebarQueuedStartDto["state"], taskId: task?.id ?? null, taskThreadId,
-          secondLine: entry.state === "waiting" ? { text: resetWaitText(Date.parse(entry.resetsAt ?? ""), timezoneOffsetMinutes), tone: "neutral" } : null };
+          secondLine: entry.state === "waiting" ? { text: resetWaitText(Date.parse(entry.resetsAt ?? ""), zone), tone: "neutral" } : null };
       }
     }));
     return { rows: rows.filter((row): row is SidebarQueuedStartDto => row !== null), truncated };
@@ -109,10 +110,12 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
       if (cache.size >= 16) cache.delete(cache.keys().next().value!);
       const value = readUsage(input); cache.set(key, { at: Date.now(), value }); return value;
     },
-    sidebarState: async (input: { version: 1; timezoneOffsetMinutes?: number }) => {
+    sidebarState: async (input: { version: 1; timezoneOffsetMinutes?: number; timeZone?: string }) => {
+      // A known IANA zone follows daylight saving time; the fixed offset is the fallback.
+      const zone = isTimeZone(input.timeZone) ? input.timeZone : input.timezoneOffsetMinutes;
       if (runtime.bb && (!pausedCache || Date.now() - pausedCache.at > 15_000)) pausedCache = { at: Date.now(), value: readPausedResets(runtime.bb) };
-      const base = sidebarState(service, runtime.bb ? await pausedCache!.value : new Map(), input.timezoneOffsetMinutes);
-      const queued = await readQueuedStarts(input.timezoneOffsetMinutes);
+      const base = sidebarState(service, runtime.bb ? await pausedCache!.value : new Map(), zone);
+      const queued = await readQueuedStarts(zone);
       return { ...base, queuedStarts: queued.rows, truncated: base.truncated || queued.truncated,
         revision: createHash("sha256").update(JSON.stringify([base.revision, queued.rows])).digest("hex").slice(0, 24) };
     },

@@ -5,7 +5,7 @@ import type { BoatService } from "./service.ts";
 import { parseReport } from "./briefs.ts";
 
 /** Public DTO only. No sandbox IDs, repo paths, settings, credentials or report bodies. */
-export function sidebarState(service: Pick<BoatService, "store" | "publicStatus">, pausedResets: ReadonlyMap<string, PausedReset> = new Map(), timezoneOffsetMinutes?: number) {
+export function sidebarState(service: Pick<BoatService, "store" | "publicStatus">, pausedResets: ReadonlyMap<string, PausedReset> = new Map(), zone?: number | string) {
   const open = service.store.list({ statuses: ["starting", "running", "idle", "failed"], limit: 1000 });
   const closed = service.store.list({ statuses: ["done", "cancelled"], limit: 1000 });
   const tasks = [...open, ...closed];
@@ -53,7 +53,7 @@ export function sidebarState(service: Pick<BoatService, "store" | "publicStatus"
     if (!reset || reset.sendAt <= Date.now() || row.hidden || row.moving || ["needs-you", "broken", "ready", "shipped"].includes(row.status)) continue;
     row.status = "waiting-reset";
     row.moving = false;
-    row.secondLine = { text: resetWaitText(reset.sendAt, timezoneOffsetMinutes), tone: "neutral" };
+    row.secondLine = { text: resetWaitText(reset.sendAt, zone), tone: "neutral" };
     if (reset.updatedAt > Date.parse(row.updatedAt)) row.updatedAt = new Date(reset.updatedAt).toISOString();
   }
   const bounded = threads.slice(0, 2000);

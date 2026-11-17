@@ -73,6 +73,12 @@ test("a waiting request carries the local reset line with its day; other states 
  const east=await e.handlers.sidebarState({version:1,timezoneOffsetMinutes:300});
  assert.match(east.queuedStarts.find(row=>row.title==="Lab notebook")!.secondLine!.text,/^Waits for reset · (Sun|Mon|Tue|Wed|Thu|Fri|Sat|tomorrow) 7:00 pm$/);
  assert.notEqual(east.revision,result.revision);
+ // An IANA zone wins over the offset; an unknown name falls back to it.
+ const named=await e.handlers.sidebarState({version:1,timezoneOffsetMinutes:300,timeZone:"Etc/GMT-1"});
+ assert.equal(sidebarRpcMethods.sidebarState.input.safeParse({version:1,timezoneOffsetMinutes:300,timeZone:"Etc/GMT-1"}).success,true);
+ assert.equal(named.queuedStarts.find(row=>row.title==="Lab notebook")!.secondLine!.text,`Waits for reset · ${day} 1:00 am`);
+ const unknown=await e.handlers.sidebarState({version:1,timezoneOffsetMinutes:-60,timeZone:"Mars/Olympus"});
+ assert.equal(unknown.queuedStarts.find(row=>row.title==="Lab notebook")!.secondLine!.text,`Waits for reset · ${day} 1:00 am`);
 });
 
 test("started queue association uses real open tasks and verified chats; headless has no invented thread",async t=>{
