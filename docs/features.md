@@ -768,3 +768,41 @@ command has `--help`, and `--json` gives machine-readable output.
 Orchestrators get the same as agent tools (`boat_dispatch`, `boat_review`,
 `boat_followup`, `boat_tasks`, `boat_ship` and others). The `boat` and
 `boat-orchestrator` skills teach agents how to use them.
+
+### Goal continuity during provider switches
+
+At the usage cutoff, an active orchestrator receives one queued handoff request
+instead of waiting indefinitely for its long-running goal to become idle. It
+finishes its current turn; the plugin never interrupts that turn on an automatic
+handoff timer. An explicit `[boat handoff ready]` note lets the plugin complete
+the handoff promptly. At a hard limit it can use the saved goal, latest reply and
+open tasks without inventing a handoff note.
+
+Before stopping the source, the plugin reads its public native goal snapshot.
+The successor receives its exact objective, status, restrictions and original
+usage/budget figures in its kickoff and plugin metadata. Unreadable or oversized
+native goal data defers handover rather than silently losing the goal. Paused,
+completed and budget-limited goals are not automatically restarted. A cleared
+native Codex goal is not resurrected from an older carried record.
+
+On a provider without native goal controls, this is an explicit continuation
+objective and plan, not a claim of native automatic goal scheduling. `boat_goal`
+reads the carried record after compaction and records completion, a blocker or a
+pause; active requires an explicit user request to resume. A missing record from
+an older handoff can be recovered only from its recorded predecessor; `boat_protocol` includes it too. This tool does not create a goal, automatically resume a
+paused one, control a native goal, or reset its token budget. A bounded budget
+that cannot be accounted for across providers requires clarification.
+
+Task handover and workspace chats follow the current core thread environment,
+even if core replaced an earlier non-null environment ID. The task registry is
+reconciled from that current attachment; the existing checkout is reused rather
+than creating a new sandbox to evade an unavailable workspace.
+
+A cancellation used as a recovery workaround can be reversed explicitly with
+`bb boat task reopen <id> --user-approved`, only after the owner asks to resume.
+It requires the original sandbox and an idle, unarchived chat workspace, restores
+that task to idle, and starts no turn or new sandbox. It cannot recover a deleted
+checkout or silently revive cancelled work. `bb boat goal <thread>` reads the
+carried goal; `--source-thread` can recover a missing older snapshot only through
+the recorded predecessor/successor link. `--status active` requires the owner's
+explicit continuation request and cannot reset an exhausted token budget.

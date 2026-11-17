@@ -196,3 +196,13 @@ need per-request paid approval unless `paidClaudeHeadless` is also enabled
 after the owner confirms the same Claude subscription and billing account. Do not name a provider/model to bypass a
 waiting receipt or dispatch replacement work. If billing is unavailable, keep
 waiting. This setting changes spending behavior: set it only when the owner asks.
+
+## Goals during handover
+
+A carried goal is available through `boat_goal` and `boat_protocol`. Preserve its
+exact scope, status and original budget. On Claude this is an explicit objective
+and plan when native goal controls are absent; do not claim native scheduling.
+Record completion, pause or a blocker with `boat_goal`; use provider controls for
+any actual native goal. A `[boat relay]` request goes behind the current turn:
+finish safely, include the goal and remaining work in the handoff, and end with
+`[boat handoff ready]`. Do not mark the goal complete merely to hand over.

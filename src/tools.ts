@@ -13,9 +13,11 @@ import { explainBoatError } from "./setup.ts";
 import { OPEN_STATUSES, PROVIDERS, TASK_ROLES, TASK_STATUSES, type Provider, type Task, type TaskStatus } from "./store.ts";
 import { EFFORTS, TIERS, type Tier } from "./tiers.ts";
 import { resizeText } from "./sandbox-size.ts";
+import { continuationGoalText } from "./goal-handoff.ts";
 
 export const TOOL_NAMES = [
   "boat_protocol",
+  "boat_goal",
   "boat_status",
   "boat_dispatch",
   "boat_review",
@@ -98,8 +100,18 @@ export function registerTools(runtime: Runtime): void {
         const project = params.project
           ? await runtime.resolveProject(parseProjectRef(params.project))
           : await runtime.projectForThread(ctx.threadId);
-        return runtime.orchestratorProtocol(project, ctx.signal);
+        return [await runtime.orchestratorProtocol(project, ctx.signal), continuationGoalText(await runtime.continuationGoal(ctx.threadId))].filter(Boolean).join("\n\n");
       }),
+  });
+
+  bb.agents.registerTool({
+    name:"boat_goal",
+    description:"Read an existing goal carried through a provider handoff, or record its completion, blocker or pause with progress. Does not create a goal, control a native goal, automatically restart a paused goal, reset budgets or provide native goal scheduling. Use provider goal controls for native goals. Call after compaction and update when the carried objective is complete or blocked.",
+    parameters:z.object({status:z.enum(["active","complete","blocked","paused"]).optional().describe("Use active only when the user explicitly asks to resume the existing carried goal."),progress:z.string().max(4000).optional(),source_thread_id:z.string().max(200).optional().describe("Recover a missing goal from an older handoff; only this chat's recorded predecessor is accepted.")}),
+    execute:(params,ctx)=>attempt(async()=>{
+      const goal=await runtime.continuationGoal(ctx.threadId,params.status?{status:params.status,progress:params.progress??""}:undefined,params.source_thread_id);
+      return goal?continuationGoalText(goal):"No carried goal is recorded for this chat. Follow the current user request; do not invent a goal.";
+    }),
   });
 
   bb.agents.registerTool({

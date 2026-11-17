@@ -311,3 +311,12 @@ test("without a runner the rules decide as before", async () => {
   const project = toOrchestratorProject(normalizeProject({ id: "local", name: "Local", repos: [{ repo: "acme/local", baseBranch: "main" }] }));
   assert.equal((await start(made, { repo: null, project })).task.runner, "chat");
 });
+
+test("handover follows core's current workspace when a non-null registry environment was replaced",async()=>{
+ const made=env();const {task}=await start(made);made.chat.finish(task.threadId!,"Done.");made.store.update(task.id,{status:"idle",finishedAt:new Date().toISOString()});const before=made.store.get(task.id)!;made.chat.states.get(before.threadId!)!.environmentId="env_replacement";const count=made.boat.calls.filter(c=>c.startsWith("create ")).length;
+ await made.service.followup(task.id,"Continue the approved fix.",{provider:"codex"});assert.equal(made.chat.spawns.at(-1)!.where.kind,"environment");assert.deepEqual(made.chat.spawns.at(-1)!.where,{kind:"environment",environmentId:"env_replacement"});assert.equal(made.store.get(task.id)!.environmentId,"env_replacement");assert.equal(made.boat.calls.filter(c=>c.startsWith("create ")).length,count);
+});
+
+test("cancelled workspace recovery requires owner approval, reuses the actual idle checkout and starts nothing",async()=>{
+ const made=env();const {task}=await start(made);made.chat.finish(task.threadId!,"Done.");made.store.update(task.id,{status:"cancelled"});const calls=made.boat.calls.filter(c=>c.startsWith("create ")).length;await assert.rejects(made.service.reopenTask(task.id,false),/explicit request/);made.chat.states.get(task.threadId!)!.environmentId="env_kept";const restored=await made.service.reopenTask(task.id,true);assert.equal(restored.status,"idle");assert.equal(restored.environmentId,"env_kept");assert.equal(made.chat.spawns.length,1);assert.equal(made.boat.calls.filter(c=>c.startsWith("create ")).length,calls);await assert.rejects(made.service.reopenTask(task.id,true),/Only a cancelled/);
+});

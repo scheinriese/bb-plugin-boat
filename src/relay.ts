@@ -64,6 +64,8 @@ export type RelayState =
       note?: string | null;
       noteAt?: number | null;
       automaticUsage?: boolean;
+      /** Automatic request was queued behind a turn; never interrupt it on a timer. */
+      waitForTurn?: boolean;
     }
   | { phase: "cooldown"; until: number }
   | { phase: "both-out"; since: number }
@@ -142,6 +144,7 @@ export function decideRelay(
   // too long), take over, unless the target filled up in the meantime.
   if (state?.phase === "handoff-requested") {
     if (!hasRoom(quotas.get(state.to), settings) && !(state.to === "claude" && automaticPaidClaude(quotas, settings, "both", now))) return decideRelay(orchestrator, quotas, null, settings, now);
+    if (state.waitForTurn && !state.noteAt && (busy || now - state.since < HANDOFF_WAIT_MS && (quotas.get(orchestrator.provider!)?.usedPercent ?? 0) < 100)) return {kind:"none"};
     const answered =
       (state.noteAt ?? 0) > state.since ||
       (orchestrator.updatedAt !== null && orchestrator.updatedAt > state.since) ||
@@ -180,15 +183,15 @@ function decideMove(
   // Away from an agent at (or near) its limit.
   if (!hasRoom(ownQuota, settings)) {
     if (hasRoom(otherQuota, settings)) {
-      if (busy) return { kind: "none" };
+      if (busy && orchestrator.status !== "active") return { kind: "none" };
       const reason = describe(ownQuota!);
       // No budget left for a note: take over from what the plugin and bb already know.
-      return ownQuota!.usedPercent >= 100 ? { kind: "take-over", to: other, reason } : { kind: "request-handoff", to: other, reason };
+      return ownQuota!.usedPercent >= 100 && !busy ? { kind: "take-over", to: other, reason } : { kind: "request-handoff", to: other, reason };
     }
     if (automaticPaidClaude(quotas, settings, "both", now)) {
-      if (current === "claude" || busy) return { kind: "none" };
+      if (current === "claude" || busy && orchestrator.status !== "active") return { kind: "none" };
       const reason = "Included allowances are near their limits; automatic Claude extra usage is authorized. Claude's billing limits apply";
-      return ownQuota!.usedPercent >= 100 ? { kind: "take-over", to: "claude", reason } : { kind: "request-handoff", to: "claude", reason };
+      return ownQuota!.usedPercent >= 100 && !busy ? { kind: "take-over", to: "claude", reason } : { kind: "request-handoff", to: "claude", reason };
     }
     // Both near their limits: wait for a reset rather than pay for extra usage.
     if (state?.phase === "both-out") return { kind: "none" };
@@ -219,7 +222,7 @@ export function retryDelay(attempts: number): number {
 export function handoffRequest(to: Provider, reason: string): string {
   return `[boat relay] ${reason}. A ${AGENT_NAME[to]} orchestrator takes over from this chat after this turn, with your open tasks and decisions.
 
-Write a short handoff as your final message now: decisions in force, open questions waiting on the user, what's running, and what's next. Don't dispatch, follow up or close anything else.`;
+At the end of your current turn, write a handoff: the exact goal and its status, completed and remaining work, constraints, decisions, open questions, running tasks and next steps. Don't dispatch, follow up or close anything else. Do not mark the goal complete just to hand over. End with [boat handoff ready].`;
 }
 
 /**

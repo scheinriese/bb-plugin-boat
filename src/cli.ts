@@ -696,6 +696,12 @@ export function buildCli(runtime: Runtime) {
           });
         },
       }),
+      "task reopen": cliCommand({
+        summary:"Restore a cancelled task chat on its original existing workspace, only at the user's request; starts no turn",
+        positionals:[{name:"id",description:"Cancelled task id",required:true}],
+        options:{"user-approved":{type:"boolean",description:"The user explicitly asked to resume this cancelled work"},json},
+        async run({positionals,options}) {return guard(async()=>{const task=await service.reopenTask(positionals.id,options["user-approved"]===true);return out(task,options.json,()=>`Reopened ${task.id} on its existing workspace; no agent turn or sandbox was started.`);});},
+      }),
       "task transcript": cliCommand({
         summary: "Show the task's conversation so far (prompts, tool steps, replies)",
         positionals: [{ name: "id", description: "Task id", required: true }],
@@ -1250,6 +1256,12 @@ export function buildCli(runtime: Runtime) {
             );
           });
         },
+      }),
+      "goal": cliCommand({
+        summary:"Read or update an existing carried goal; does not control native provider goals or reset budgets",
+        positionals:[{name:"thread",description:"Successor orchestrator thread (default: this one)",required:false}],
+        options:{"source-thread":{type:"string",description:"Recover a missing snapshot only from its recorded predecessor"},status:{type:"enum",values:["active","complete","blocked","paused"],description:"active only when the user explicitly requested continuation"},progress:{type:"string",description:"Recorded progress or blocker"},json},
+        async run({positionals,options},ctx){return guard(async()=>{const id=positionals.thread??ctx.threadId;if(!id)throw new PluginCliError("Name the successor orchestrator thread.",{code:"invalid_value"});const goal=await runtime.continuationGoal(id,options.status?{status:options.status as "active"|"complete"|"blocked"|"paused",progress:options.progress??""}:undefined,options["source-thread"]);return out(goal,options.json,()=>goal?JSON.stringify(goal,null,2):"No carried goal is recorded.");});},
       }),
       "relay switch": cliCommand({
         summary: "Move an orchestrator to the other agent now (it writes a handoff note first unless --now)",

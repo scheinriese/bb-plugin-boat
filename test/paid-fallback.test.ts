@@ -24,7 +24,7 @@ test("orchestrator hands over to authorized Claude, stays there, and returns to 
  assert.equal(decideRelay(view,usage(),null,settings,now).kind,"take-over");
  assert.deepEqual(decideRelay({...view,provider:"claude"},usage(),null,settings,now),{kind:"none"});
  const back=decideRelay({...view,provider:"claude"},usage(100,0),{phase:"cooldown",until:now+3600000},settings,now);assert.equal(back.kind,"take-over");assert.equal(back.kind==='take-over'&&back.to,"codex");
- assert.deepEqual(decideRelay({...view,status:"active"},usage(),null,settings,now),{kind:"none"});
+ assert.equal(decideRelay({...view,status:"active"},usage(),null,settings,now).kind,"request-handoff");
  const state={phase:"handoff-requested" as const,to:"claude" as const,reason:"Automatic extra usage",since:now-600000};assert.equal(decideRelay(view,usage(),state,{...settings,paidClaudeFallback:false},now).kind,"both-out");
 });
 test("availability comes from refreshed routed Account Pooler state, not host quota or a disabled account",async()=>{

@@ -4,6 +4,7 @@
 import { projectReviewInstructions } from "./review-policy.ts";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { parseOrchestratorProject, type OrchestratorProject } from "./projects.ts";
+import { CONTINUATION_GOAL, continuationGoalText, type ContinuationGoal } from "./goal-handoff.ts";
 
 export const ORCHESTRATOR_ROLE = "orchestrator";
 export const PERSONAL_PROJECT_ID = "proj_personal";
@@ -116,6 +117,9 @@ export interface TakeOver {
   fileName?: string | null;
   /** The user's messages that were still waiting for the previous orchestrator. */
   userMessages?: string[];
+  /** Existing native/portable goal, captured before stopping the source. */
+  continuationGoal?: ContinuationGoal | null;
+  childThreadIds?: string[];
 }
 
 export interface SpawnOrchestratorInput {
@@ -132,6 +136,7 @@ export interface SpawnOrchestratorInput {
   prompt: string;
   /** Rendered take-over section (see takeOverSection). */
   takeOverSection?: string | null;
+  continuationGoal?: ContinuationGoal | null;
   /** Sidebar placement: a section (the project's) and/or Pinned. */
   sectionId?: string | null;
   pinned?: boolean;
@@ -238,6 +243,9 @@ export async function takeOverSection(bb: BbPluginApi, takeOver: TakeOver, moved
       quote(takeOver.text.trim(), MAX_HANDOFF),
     );
   }
+  const goal = continuationGoalText(takeOver.continuationGoal ?? null);
+  if (goal) parts.push(goal);
+  if (takeOver.childThreadIds?.length) parts.push("## Existing bb child chats",`These existing chats are reparented to you: ${takeOver.childThreadIds.map(id=>`@thread:${id}`).join(", ")}. Inspect their actual status and latest results too; do not duplicate or restart their work merely because of the handoff.`);
   const waiting = (takeOver.userMessages ?? []).filter((text) => text.trim() !== "");
   if (waiting.length > 0) {
     parts.push(
@@ -259,6 +267,7 @@ export async function spawnOrchestrator(bb: BbPluginApi, input: SpawnOrchestrato
       since: new Date().toISOString(),
       project: input.project as unknown as Record<string, never>,
       ...(input.picks ? { picks: input.picks as Record<string, never> } : {}),
+      ...(input.continuationGoal ? { [CONTINUATION_GOAL]: input.continuationGoal as unknown as Record<string, never> } : {}),
     },
     // Their project's section or Pinned; worker chats nest under them.
     ...(input.sectionId ? { sectionId: input.sectionId } : {}),

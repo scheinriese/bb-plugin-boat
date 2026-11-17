@@ -50,6 +50,9 @@ export async function createTestHost(options: Omit<CreateFakePluginHostOptions, 
     else throw new Error(`test setting "${key}" doesn't exist`);
   }
   const host = createFakePluginHost({ ...options, settings: declared });
+  // No native goal unless a test explicitly supplies one.
+  host.harness.sdk.stub("threads.timeline", async () => ({goal:null}));
+  host.harness.sdk.stub("threads.list", async () => []);
   await host.bb.storage.kv.set(PLUGIN_SETTINGS_KEY, own);
   return host;
 }

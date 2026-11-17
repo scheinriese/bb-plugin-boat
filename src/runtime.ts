@@ -54,6 +54,7 @@ import { createStartQueue, type StartQueue, type StartLaunch } from "./start-que
 import { StartQueueStore, queueDigest } from "./start-queue-store.ts";
 import type { StartTaskInput } from "./service.ts";
 import { START_QUEUE_TAG } from "../contract-start-queue.ts";
+import { CONTINUATION_GOAL, continuationGoalSchema, continuationGoalText, readContinuationGoal, type ContinuationGoal } from "./goal-handoff.ts";
 
 /** How a caller names a project: a configured one, or a local bb project. */
 export type ProjectRef = { kind: "boat"; id: string } | { kind: "local"; bbProjectId: string };
@@ -90,6 +91,7 @@ export interface Runtime {
   saveModelTiers(tiers: TierMap | null): Promise<void>;
   /** The shared protocol plus the project's rules file, for an orchestrator. */
   orchestratorProtocol(project: OrchestratorProject | null, signal?: AbortSignal): Promise<string>;
+  continuationGoal(threadId: string, update?: {status: "active" | "complete" | "blocked" | "paused"; progress: string}, sourceThreadId?: string): Promise<ContinuationGoal | null>;
   /** How long CLI/tool calls wait for a dispatch before returning "starting". */
   launchWaitMs: number;
   /** New work waits durably on agents_at_limit; internal review/test launch paths stay direct. */
@@ -274,6 +276,17 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     const moving = takeOver?.threadId
       ? service.store.list({ orchestratorThreadId: takeOver.threadId, statuses: OPEN_STATUSES, limit: 500 }).map((task) => task.id)
       : [];
+    if (takeOver?.threadId && takeOver.continuationGoal === undefined) {
+      const source = await readThread(takeOver.threadId);
+      takeOver.continuationGoal = await readContinuationGoal(bb, takeOver.threadId, source?.providerId);
+    }
+    const nativeChildren: string[] = [];
+    if (takeOver?.threadId) {
+      const raw = await bb.sdk.threads.list({parentThreadId:takeOver.threadId,includeHidden:true,limit:200}).catch(()=>[]);
+      const rows = (Array.isArray(raw)?raw:((raw as {threads?:unknown[]}).threads??[])) as {id?:string;archivedAt?:unknown;deletedAt?:unknown}[];
+      nativeChildren.push(...rows.filter(row=>row.id&&!row.archivedAt&&!row.deletedAt).map(row=>row.id!));
+      takeOver.childThreadIds = nativeChildren;
+    }
     const section = takeOver ? await takeOverSection(bb, takeOver, moving) : null;
     const policy = await service.settings();
     const policyRevision = startPolicyRevision;
@@ -294,6 +307,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       title: options.title,
       prompt: options.prompt,
       takeOverSection: section,
+      continuationGoal: takeOver?.continuationGoal,
       sectionId: options.sectionId,
       pinned: options.pinned,
       environmentId: options.environmentId ?? null,
@@ -320,6 +334,10 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
           .update({ threadId: workerThreadId, parentThreadId: threadId, ...(options.sectionId ? { sectionId: options.sectionId } : {}) } as never)
           .catch((error: unknown) => bb.log.warn(`re-parent ${workerThreadId}: ${message(error)}`));
       }
+    }
+    for (const childId of nativeChildren) {
+      const child = await readThread(childId);
+      if (child?.parentThreadId === old) await bb.sdk.threads.update({threadId:childId,parentThreadId:threadId}).catch(error=>bb.log.warn(`re-parent child ${childId}: ${message(error)}`));
     }
     deps.changed();
     // Notices held back during the hand-over go to the successor now.
@@ -389,6 +407,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       deletedAt?: unknown;
       environmentId?: string | null;
       projectId?: string | null;
+      parentThreadId?: string | null;
       pinnedAt?: unknown;
     };
   }
@@ -448,6 +467,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     if (project === null) throw new Error("the orchestrator has no project");
     const old = await readThread(oldThreadId);
     if (old === null || old.deletedAt) throw new Error("the orchestrator chat is gone");
+    const continuationGoal = await readContinuationGoal(bb, oldThreadId, old.providerId);
     handingOver.add(oldThreadId);
     try {
       // Two orchestrators must never act at once: a turn still running (one
@@ -498,6 +518,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         prompt,
         takeOver: {
           threadId: oldThreadId,
+          continuationGoal,
           // A note followed by another turn isn't its last message any more.
           ...(note !== "" && note !== lastOutput ? { text: note, fileName: "its handoff note" } : {}),
           userMessages: forwardable(rows),
@@ -558,7 +579,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       return { threadId, kind: "took-over", to, reason, successor };
     }
     const since = Date.now();
-    await bb.storage.kv.set(relayKey(threadId), { phase: "handoff-requested", to, reason, since, ...(options.automaticUsage ? { automaticUsage: true } : {}) } satisfies RelayState);
+    await bb.storage.kv.set(relayKey(threadId), { phase: "handoff-requested", to, reason, since, ...(options.automaticUsage ? { automaticUsage: true, waitForTurn: view.status === "active" } : {}) } satisfies RelayState);
     await bb.sdk.threads.send({
       threadId,
       mode: "queue-if-active",
@@ -777,7 +798,9 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     if (state?.phase !== "handoff-requested" || !text?.trim()) return;
     const when = at ?? Date.now();
     if (when <= state.since) return;
-    await bb.storage.kv.set(relayKey(threadId), { ...state, note: text.slice(0, 20_000), noteAt: when } satisfies RelayState).catch(() => undefined);
+    if (state.waitForTurn && !text.includes("[boat handoff ready]")) return;
+    await bb.storage.kv.set(relayKey(threadId), { ...state, note: text.replace("[boat handoff ready]", "").trim().slice(0, 20_000), noteAt: when } satisfies RelayState);
+    if (text.includes("[boat handoff ready]")) await relayTick();
   }
 
   const startQueue = createStartQueue({ bb, service, store: new StartQueueStore(() => bb.storage.database()), quotas: deps.quotas,
@@ -798,6 +821,25 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       const shared = renderSharedProtocol(deps.protocol.read().text, (await modelTiers()).tiers, await service.settings());
       const rules = await loadProjectRules(project, deps.readRepoFile, signal);
       return composeProtocol(shared, project, rules);
+    },
+    async continuationGoal(threadId, update, sourceThreadId) {
+      const metadata = await bb.sdk.threads.getPluginMetadata({threadId});
+      let parsed = continuationGoalSchema.safeParse((metadata as Record<string, unknown>)[CONTINUATION_GOAL]);
+      if (!parsed.success && sourceThreadId) {
+        const old = await bb.sdk.threads.getPluginMetadata({threadId:sourceThreadId}) as Record<string,unknown>;
+        if (old.role !== "former-orchestrator" || old.successor !== threadId) throw new TaskError("That chat is not this orchestrator's recorded predecessor.","goal_source_mismatch");
+        const source = await readThread(sourceThreadId);
+        const carried = await readContinuationGoal(bb,sourceThreadId,source?.providerId);
+        if (carried) parsed = continuationGoalSchema.safeParse(carried);
+        if (parsed.success) await bb.sdk.threads.updatePluginMetadata({threadId,set:{[CONTINUATION_GOAL]:parsed.data}});
+      }
+      if (!parsed.success) return null;
+      if (!update) return parsed.data;
+      if (parsed.data.goal.status === "complete" && update.status !== "complete") throw new TaskError("A completed carried goal cannot be reopened by this tool. Follow a new explicit user goal instead.", "goal_complete");
+      if (update.status === "active" && (parsed.data.goal.status === "budgetLimited" || parsed.data.goal.tokenBudget !== null && parsed.data.goal.tokensUsed >= parsed.data.goal.tokenBudget)) throw new TaskError("The carried token budget is exhausted; this tool cannot allocate another budget.","goal_budget_limited");
+      const next = continuationGoalSchema.parse({...parsed.data, goal:{...parsed.data.goal,status:update.status}, progress:update.progress});
+      await bb.sdk.threads.updatePluginMetadata({threadId,set:{[CONTINUATION_GOAL]:next}});
+      return next;
     },
     launchWaitMs: 90_000,
     launchTask: (input, waitMs = 90_000) => startQueue.launch(input, waitMs),

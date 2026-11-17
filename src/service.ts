@@ -2671,11 +2671,11 @@ export class BoatService {
       message: string | null;
     },
   ): Promise<string> {
-    let environmentId = task.environmentId;
-    if (environmentId === null && task.threadId !== null) {
-      environmentId = (await this.hooks.chat!.state(task.threadId).catch(() => null))?.environmentId ?? null;
-      if (environmentId !== null) this.store.update(task.id, { environmentId });
-    }
+    // Core can replace a task chat's environment without changing its thread.
+    // The current chat attachment wins over the registry's old non-null id.
+    const current = task.threadId ? await this.hooks.chat!.state(task.threadId) : null;
+    const environmentId = current?.environmentId ?? task.environmentId;
+    if (environmentId !== null && environmentId !== task.environmentId) this.store.update(task.id, { environmentId });
     if (environmentId === null) {
       throw new TaskError(`Task ${task.id}'s workspace is unknown, so another agent can't join it.`, "task_not_dispatched", "Start a new task.");
     }
@@ -2968,11 +2968,9 @@ export class BoatService {
     if (task.status === "done" || task.status === "cancelled") {
       throw new TaskError(`Task ${task.id} is ${task.status}; its workspace may be gone.`, "task_closed", "Start a new task instead.");
     }
-    let environmentId = task.environmentId;
-    if (environmentId === null) {
-      environmentId = (await chat.state(task.threadId).catch(() => null))?.environmentId ?? null;
-      if (environmentId !== null) this.store.update(task.id, { environmentId });
-    }
+    const current = await chat.state(task.threadId);
+    const environmentId = current?.environmentId ?? task.environmentId;
+    if (environmentId !== null && environmentId !== task.environmentId) this.store.update(task.id, { environmentId });
     if (environmentId === null) throw new TaskError(`Task ${task.id}'s workspace isn't ready yet.`, "task_not_dispatched", "Try again in a moment.");
     const { threadId } = await chat.spawnComposed({
       taskId: task.id,
@@ -4120,6 +4118,21 @@ export class BoatService {
     return { task: closed.task, shipped: result.shipped, sandbox: closed.sandbox };
   }
 
+  /** Explicit owner recovery of a cancelled chat whose original workspace still exists. No turn or VM is started. */
+  async reopenTask(idOrPrefix: string, userApproved: boolean): Promise<Task> {
+    if (!userApproved) throw new TaskError("Reopening cancelled work needs the user's explicit request.","approval_required");
+    const task = this.mustGet(idOrPrefix);
+    if (task.status !== "cancelled" || task.runner !== "chat" || !task.threadId || !task.sandboxId || !this.hooks.chat) throw new TaskError("Only a cancelled task chat with its original sandbox can be reopened.","task_not_reopenable");
+    const state = await this.hooks.chat.state(task.threadId);
+    if (!state || state.archived || state.status !== "idle" || !state.environmentId || state.queued > 0 || state.backgroundAgents > 0 || (state.workflows ?? 0) > 0) throw new TaskError("The original task chat must have an idle, available workspace before it can be reopened.","task_not_reopenable");
+    await this.boat.info(task.sandboxId);
+    const reopened = this.store.transition(task.id,["cancelled"],{status:"idle",environmentId:state.environmentId,readyAt:null,readyNote:null,error:null,shipApproval:null});
+    if (!reopened) throw new TaskError("The task changed while its workspace was checked.","task_changed");
+    this.store.addEvent(task.id,"reopened","Reopened the existing task and checkout at the user's explicit request. No agent turn or sandbox was started.");
+    this.hooks.changed([task.id]);
+    return reopened;
+  }
+
   async closeTask(
     idOrPrefix: string,
     options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal } = {},
@@ -4534,7 +4547,7 @@ export class BoatService {
       return false;
     }
     const nowIso = new Date(now).toISOString();
-    if (state !== null && task.environmentId === null && state.environmentId !== null) {
+    if (state !== null && state.environmentId !== null && state.environmentId !== task.environmentId) {
       task = this.store.update(task.id, { environmentId: state.environmentId }) ?? task;
     }
     if (state === null || state.archived || hint?.kind === "archived") {

@@ -49,8 +49,8 @@ test("an orchestrator near its limit asks for a handoff note, at a quiet moment"
   assert.equal(near.kind, "request-handoff");
   assert.equal(near.kind === "request-handoff" && near.to, "codex");
   assert.match(near.kind === "request-handoff" ? near.reason : "", /^Claude is at 92% of its weekly limit/);
-  // Mid-turn (or stopping): wait for the turn to end.
-  assert.deepEqual(decideRelay(view({ status: "active" }), quotas(92, 10), null, SETTINGS, NOW), { kind: "none" });
+  // An active turn gets a queued note request; stopping work is left alone.
+  assert.equal(decideRelay(view({ status: "active" }), quotas(92, 10), null, SETTINGS, NOW).kind, "request-handoff");
   assert.deepEqual(decideRelay(view({ status: "stopping" }), quotas(92, 10), null, SETTINGS, NOW), { kind: "none" });
   // Off, archived or another agent: nothing.
   assert.deepEqual(decideRelay(view(), quotas(92, 10), null, { ...SETTINGS, enabled: false }, NOW), { kind: "none" });
@@ -320,6 +320,8 @@ async function relayHost(t: { after(fn: () => unknown): void }, usage: { claude:
     return { id };
   });
   harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => threads.get(threadId) ?? { id: threadId, environmentId: null, deletedAt: null, archivedAt: null });
+  harness.sdk.stub("threads.list", async ({parentThreadId}: {parentThreadId:string}) => [...threads.values()].filter(row=>row.parentThreadId===parentThreadId));
+  harness.sdk.stub("threads.update", async ({threadId,...set}: {threadId:string;parentThreadId?:string}) => Object.assign(threads.get(threadId) ?? {}, set));
   harness.sdk.stub("threads.getPluginMetadata", async ({ threadId }: { threadId: string }) => metadata.get(threadId) ?? {});
   harness.sdk.stub("threads.output", async () => ({ output: "Handoff: the header PR is open; waiting on the user for the font." }));
   harness.sdk.stub("threads.send", async () => ({ ok: true, delivery: "sent" }));
@@ -657,4 +659,39 @@ test("actual monitor moves exhausted Codex to authorized Claude once, then retur
  const state=await harness.callRpc("relay",null) as {paidClaudeFallback:boolean;paidClaudeAvailable:boolean};assert.equal(state.paidClaudeFallback,true);assert.equal(state.paidClaudeAvailable,true);
  await harness.runCli(["relay","check","--json"]);assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,2,"paid continuation is not repeatedly respawned");
  usage.codex=0;threads.get("thr_new")!.providerId="claude-code";threads.get("thr_new")!.status="error";await harness.runCli(["relay","check","--json"]);assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,3);assert.equal((harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as {providerId:string}).providerId,"codex");
+});
+
+test("active orchestrators queue one handoff request and wait for the actual note without interrupting a long turn",()=>{
+ const state={phase:"handoff-requested" as const,to:"claude" as const,reason:"Codex near limit",since:NOW-2*HANDOFF_WAIT_MS,automaticUsage:true,waitForTurn:true};
+ assert.deepEqual(decideRelay(view({provider:"codex",status:"active"}),quotas(10,98),state,SETTINGS,NOW),{kind:"none"});
+ const saved={...state,note:"The actual handoff",noteAt:NOW-1};const d=decideRelay(view({provider:"codex",status:"idle"}),quotas(10,98),saved,SETTINGS,NOW);assert.equal(d.kind,"take-over");assert.equal(d.kind==='take-over'&&d.to,"claude");
+});
+test("goal is captured before native stop pauses it, persists in successor metadata, and is readable/settleable through boat_goal",async t=>{
+ const {harness,threads,metadata}=await relayHost(t,{claude:10,codex:98});await harness.callRpc("startOrchestrator",{project:{kind:"boat",id:"storefront"},prompt:"Coordinate",title:null,hostId:null,cloud:false});threads.get("thr_old")!.providerId="codex";
+ const goal={objective:"Finish the approved fixture, keep its constraints.",status:"active",tokenBudget:1000,tokensUsed:200,timeUsedSeconds:60,sourceSeq:20,updatedAt:Date.now()};harness.sdk.stub("threads.timeline",async()=>({goal:{...goal}}));harness.sdk.stub("threads.stop",async()=>{goal.status="paused";return{ok:true};});
+ harness.sdk.stub("threads.updatePluginMetadata",async({threadId,set}:{threadId:string;set:Record<string,unknown>})=>{const next={...(metadata.get(threadId) as object),...set};metadata.set(threadId,next);return next;});
+ const switched=await harness.runCli(["relay","switch","thr_old","--to","claude","--now","--json"]);assert.equal(switched.exitCode,0,switched.stderr);const spawn=harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as {prompt:string;pluginMetadata:{continuationGoal:{goal:{status:string}}}};assert.equal(spawn.pluginMetadata.continuationGoal.goal.status,"active");assert.match(spawn.prompt,/remaining at transfer: 800/);
+ const read=await harness.callAgentTool("boat_goal",{}, {threadId:"thr_new"});assert.match(JSON.stringify(read),/Finish the approved fixture/);await harness.callAgentTool("boat_goal",{status:"complete",progress:"All checks passed."},{threadId:"thr_new"});assert.equal((metadata.get("thr_new") as {continuationGoal:{goal:{status:string}}}).continuationGoal.goal.status,"complete");
+});
+
+test("older successor goals can be recovered only from their actual predecessor and explicitly resumed without a new budget",async t=>{
+ const {harness,threads,metadata}=await relayHost(t,{claude:10,codex:98});await harness.callRpc("startOrchestrator",{project:{kind:"boat",id:"storefront"},prompt:"Coordinate",title:null,hostId:null,cloud:false});threads.get("thr_old")!.providerId="codex";
+ const goal={objective:"Complete the existing approved fixture.",status:"active",tokenBudget:1000,tokensUsed:200,timeUsedSeconds:60,sourceSeq:20,updatedAt:Date.now()};harness.sdk.stub("threads.timeline",async()=>({goal:{...goal}}));harness.sdk.stub("threads.stop",async()=>{goal.status="paused";return{ok:true};});harness.sdk.stub("threads.updatePluginMetadata",async({threadId,set}:{threadId:string;set:Record<string,unknown>})=>{const next={...(metadata.get(threadId) as object),...set};metadata.set(threadId,next);return next;});await harness.runCli(["relay","switch","thr_old","--to","claude","--now","--json"]);
+ const next=metadata.get("thr_new") as Record<string,unknown>;delete next.continuationGoal;const wrong=await harness.runCli(["goal","thr_new","--source-thread","thr_other","--status","active","--json"]);assert.equal(wrong.exitCode,1);
+ const recovered=await harness.runCli(["goal","thr_new","--source-thread","thr_old","--status","active","--json"]);assert.equal(recovered.exitCode,0,recovered.stderr);const saved=JSON.parse(recovered.stdout);assert.equal(saved.goal.status,"active");assert.equal(saved.goal.tokensUsed,200);assert.equal(saved.goal.tokenBudget,1000);
+});
+
+test("provider handoff also preserves ordinary bb child chats without restarting them", async t => {
+  const {harness, threads} = await relayHost(t, {claude:10,codex:98});
+  await harness.callRpc("startOrchestrator", {project:{kind:"boat",id:"storefront"},prompt:"Coordinate",title:null,hostId:null,cloud:false});
+  threads.get("thr_old")!.providerId="codex";
+  threads.set("thr_child", {id:"thr_child",parentThreadId:"thr_old",status:"active",providerId:"codex",sectionId:"sec_existing",archivedAt:null,deletedAt:null});
+  const switched=await harness.runCli(["relay","switch","thr_old","--to","claude","--now","--json"]);
+  assert.equal(switched.exitCode,0,switched.stderr);
+  assert.equal(threads.get("thr_child")!.parentThreadId,"thr_new");
+  assert.equal(threads.get("thr_child")!.sectionId,"sec_existing");
+  assert.equal(threads.get("thr_child")!.status,"active");
+  const spawn=harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as {prompt:string};
+  assert.match(spawn.prompt,/@thread:thr_child/);
+  assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,2);
 });
