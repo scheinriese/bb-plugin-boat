@@ -9,6 +9,24 @@ import type { Provider } from "./store.ts";
 
 export const PERSONAL_PROJECT = "proj_personal";
 
+/** Older personal chats can be attached directly to a checkout that core no
+ * longer permits a new Personal chat to reuse. Keep the same host and code;
+ * only the new chat's shell workspace is personal, as for an initial worker. */
+async function spawnWorkspaceChat(bb: BbPluginApi, args: Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0]) {
+  try {
+    return await bb.sdk.threads.spawn(args);
+  } catch (error) {
+    if (args.projectId !== PERSONAL_PROJECT || args.environment?.type !== "reuse" || !/Personal project threads must reuse a personal workspace/.test(error instanceof Error ? error.message : String(error))) throw error;
+    const raw = await bb.sdk.environments.get({environmentId:args.environment.environmentId});
+    const env = ((raw as {environment?:unknown}).environment ?? raw) as {hostId?:string;path?:string;projectId?:string;environmentProviderId?:string|null};
+    if (env.projectId !== PERSONAL_PROJECT || !env.hostId || !env.path || env.environmentProviderId) throw error;
+    const notice=`Your bb shell workspace is separate from the existing task checkout on this SAME sandbox. Run all repository work in the existing checkout at ${JSON.stringify(env.path)}. Preserve its branch, uncommitted changes and commits. Do not clone or initialize a replacement repository.\n\n`;
+    const environment={type:"host" as const,hostId:env.hostId,workspace:{type:"personal" as const}};
+    if (args.input) return await bb.sdk.threads.spawn({...args,environment,input:[{type:"text",text:notice,mentions:[]},...args.input]});
+    return await bb.sdk.threads.spawn({...args,environment,prompt:notice+args.prompt});
+  }
+}
+
 /** bb's agent provider for each of our agents. */
 export const CHAT_PROVIDER: Record<Provider, string> = { claude: "claude-code", codex: "codex" };
 
@@ -265,7 +283,7 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
             : { type: "host" as const, hostId: args.where.hostId, workspace: { type: "unmanaged" as const, path: args.where.path } };
       // Workers join their orchestrator's section (they nest under it there).
       const sectionId = args.parentThreadId ? await threadSection(bb, args.parentThreadId) : null;
-      const result = (await bb.sdk.threads.spawn({
+      const result = (await spawnWorkspaceChat(bb, {
         projectId,
         ...(sectionId ? { sectionId } : {}),
         prompt: args.prompt,
@@ -292,7 +310,7 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
 
     async spawnComposed({ taskId, request, parentThreadId, projectId, environmentId }) {
       const sectionId = parentThreadId ? await threadSection(bb, parentThreadId) : null;
-      const result = (await bb.sdk.threads.spawn({
+      const result = (await spawnWorkspaceChat(bb, {
         ...request,
         projectId: projectId ?? PERSONAL_PROJECT,
         environment: { type: "reuse", environmentId },

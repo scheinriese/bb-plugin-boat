@@ -16,3 +16,10 @@ test('Claude can carry the saved objective again, while an explicitly cleared na
 test('unreadable or oversized native goals defer handover instead of silently dropping the objective',async()=>{
  const bb={sdk:{threads:{timeline:async()=>{throw Error('Offline');}}}} as never;await assert.rejects(readContinuationGoal(bb,'thr_old','codex'),/deferred/);await assert.rejects(readContinuationGoal(fixture({...goal,objective:'x'.repeat(32769)}),'thr_old','codex'));assert.equal(continuationGoalSchema.safeParse({version:1,sourceThreadId:'thr_old',goal:{...goal,tokenBudget:-1}}).success,false);
 });
+test('current provider-owned goal state is read from public events without losing budget; explicit clears and EOF stay empty',async()=>{
+ const event={seq:99,createdAt:200,type:'thread/extensionState/updated',data:{kind:'provider-codex/goal',payload:goal}};
+ const rows:unknown[]=[event];const bb={sdk:{threads:{timeline:async()=>({extensionStates:{}}),events:{list:async()=>rows}}}} as never;
+ const saved=await readContinuationGoal(bb,'thr_old','codex');assert.equal(saved?.goal.objective,goal.objective);assert.equal(saved?.goal.tokensUsed,250);assert.equal(saved?.goal.sourceSeq,99);
+ rows.splice(0,1,{...event,data:{kind:'provider-codex/goal',payload:null}});assert.equal(await readContinuationGoal(bb,'thr_old','codex'),null);
+ rows.length=0;assert.equal(await readContinuationGoal(bb,'thr_old','codex'),null);
+});

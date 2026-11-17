@@ -584,3 +584,15 @@ test("the bb runner's moves: a per-try key with the keep flag set first, detach,
     args: { hostId: "host_9", path: "/home/user/.boat-tasks/t_1/conversation.md", content: "# hi", contentEncoding: "utf8", createParents: true, mode: 0o600 },
   });
 });
+
+test("legacy attached Personal checkout handovers keep their host and exact code path when core requires a personal shell workspace", async () => {
+  const calls:Record<string,unknown>[]=[];
+  const bb={pluginId:"boat",sdk:{threads:{spawn:async(args:Record<string,unknown>)=>{calls.push(args);if(calls.length===1)throw new Error("HTTP 409: Personal project threads must reuse a personal workspace");return{id:"thr_next",environmentId:"env_personal"};}},environments:{get:async()=>({id:"env_attached",projectId:"proj_personal",hostId:"host_existing",path:"/home/user/web",environmentProviderId:null})}}} as unknown as BbPluginApi;
+  const runner=createChatRunner(bb);
+  const result=await runner.spawn({taskId:"t_existing",title:"Continue",prompt:"Fix the reviewed change.",provider:"claude",model:null,effort:"high",parentThreadId:null,projectId:"proj_personal",where:{kind:"environment",environmentId:"env_attached"}});
+  assert.deepEqual(result,{threadId:"thr_next",environmentId:"env_personal"});
+  assert.deepEqual(calls[1]!.environment,{type:"host",hostId:"host_existing",workspace:{type:"personal"}});
+  assert.match(String(calls[1]!.prompt),/existing checkout at "\/home\/user\/web"/);
+  assert.match(String(calls[1]!.prompt),/Do not clone/);
+  assert.match(String(calls[1]!.prompt),/Fix the reviewed change/);
+});
