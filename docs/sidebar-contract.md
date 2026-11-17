@@ -148,8 +148,11 @@ watches for a plain left click on a link with an `href` inside an element
 marked `data-queued-start-id="<id>"` and `data-queued-start-state="waiting"` or
 `"dispatching"`. That is how Workbench's row is marked today. For the next 10
 seconds, the live `::boat-start-queue` card listing that request scrolls into
-view and is outlined briefly once it renders. In a group card, that request is
-selected for **Start now on paid usage…**. The consumer still navigates to
+view and is outlined briefly once it renders. When several cards list it, the
+card whose own marker is that request wins; another card listing it (such as
+an older group card) takes it only after 300 ms without one. In a group card,
+that request is selected for **Start now on paid usage…**. A wheel or touch
+scroll after the click cancels a reveal that hasn't happened yet. The consumer still navigates to
 `sourceThreadId` itself. Nothing is sent, started or changed. A card that bb
 hasn't rendered, such as one far up a long chat, stays where it is; the chat's
 context row still says how many requests wait.

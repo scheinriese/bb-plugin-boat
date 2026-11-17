@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { useCloudAgentsNavigation, useInterval, useRelay } from "./hooks";
 import { resetTimeText } from "@/lib/reset-time";
 import { cn } from "@/lib/utils";
-import { claimQueuedStartReveal, onQueuedStartReveal, queuedRowClickId, revealQueuedStart } from "./start-queue-reveal";
+import { cancelQueuedStartReveal, claimQueuedStartReveal, onQueuedStartReveal, queuedRowClickId, revealQueuedStart } from "./start-queue-reveal";
 import "./ship-interaction.css";
 
 export function registerStartQueueUi(app: PluginAppBuilder): void {
@@ -20,13 +20,22 @@ export function registerStartQueueUi(app: PluginAppBuilder): void {
       const id = queuedRowClickId(event);
       if (id) revealQueuedStart(id);
     };
+    // Scrolling after the click means the user went elsewhere: a card that
+    // renders later doesn't pull the chat back.
+    const onScroll = () => cancelQueuedStartReveal();
     document.addEventListener("click", onClick, true);
-    return () => document.removeEventListener("click", onClick, true);
+    document.addEventListener("wheel", onScroll, {capture: true, passive: true});
+    document.addEventListener("touchmove", onScroll, {capture: true, passive: true});
+    return () => {
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("wheel", onScroll, true);
+      document.removeEventListener("touchmove", onScroll, true);
+    };
   }});
 }
 
 /** Scrolls this card into view and rings it briefly when one of its requests is opened from elsewhere. */
-function useQueuedStartReveal(ids: readonly string[], onReveal?: (id: string) => void) {
+function useQueuedStartReveal(ownId: string | null, ids: readonly string[], onReveal?: (id: string) => void) {
   const ref = useRef<HTMLElement>(null);
   const [revealed, setRevealed] = useState<string | null>(null);
   const key = ids.join(" ");
@@ -34,7 +43,7 @@ function useQueuedStartReveal(ids: readonly string[], onReveal?: (id: string) =>
     const attempt = () => {
       const element = ref.current;
       if (!element) return;
-      const id = claimQueuedStartReveal(key.split(" "));
+      const id = claimQueuedStartReveal(ownId, key.split(" "));
       if (!id) return;
       scrollIntoChat(element);
       setRevealed(id);
@@ -42,7 +51,7 @@ function useQueuedStartReveal(ids: readonly string[], onReveal?: (id: string) =>
     };
     attempt();
     return onQueuedStartReveal(attempt);
-  }, [key]);
+  }, [ownId, key]);
   useEffect(() => {
     if (!revealed) return;
     const timer = window.setTimeout(() => setRevealed(null), 2400);
@@ -137,7 +146,7 @@ function QueuedStartGroup({initial}:{initial:QueuedStartDto}) {
   const request=requests.find(item=>item.id===selected)??requests[0];
   const resetProvider=(item:QueuedStartDto)=>item.requestedProvider??relay?.agents.find(agent=>agent.resetsAt===item.resetsAt)?.provider??null;
   const [busy,setBusy]=useState(false);const [error,setError]=useState<string|null>(null);
-  const reveal=useQueuedStartReveal([initial.id,...(query.data?.requests??[]).filter(item=>item.id!==initial.id&&(item.state==="waiting"||item.state==="dispatching")).map(item=>item.id)],id=>{if(requests.some(item=>item.id===id))setSelected(id);});
+  const reveal=useQueuedStartReveal(initial.id,[initial.id,...(query.data?.requests??[]).filter(item=>item.id!==initial.id&&(item.state==="waiting"||item.state==="dispatching")).map(item=>item.id)],id=>{if(requests.some(item=>item.id===id))setSelected(id);});
   useInterval(()=>{if(document.visibilityState==="visible"&&!query.isFetching)void query.refetch();},5000);
   async function act(item:QueuedStartDto,action:"paid"|"cancel") {
     if(busy)return;setBusy(true);setError(null);
@@ -161,7 +170,7 @@ export function QueuedStartReceipt({request,loading=false}:{request:QueuedStartD
   const [provider,setProvider]=useState<"claude"|"codex">(request?.requestedProvider??"claude");
   const {openTask}=useCloudAgentsNavigation();
   useEffect(()=>setProvider(request?.requestedProvider??"claude"),[request?.id,request?.requestedProvider]);
-  const reveal=useQueuedStartReveal(request?[request.id]:[]);
+  const reveal=useQueuedStartReveal(request?.id??null,request?[request.id]:[]);
   const [busy,setBusy]=useState(false);const [error,setError]=useState<string|null>(null);
   async function act(action:"cancel"|"paid") {
     if(!request||busy)return;setBusy(true);setError(null);

@@ -6,29 +6,60 @@
 
 /** Long enough for a navigation to load the chat; a later visit doesn't jump. */
 export const REVEAL_WINDOW_MS = 10_000;
+/**
+ * A chat can hold several cards that list the same request (an older group
+ * card, a repeated marker). The card whose own marker is the request takes the
+ * reveal at once; a card that only lists it waits this long for that card first.
+ */
+export const LISTED_FALLBACK_MS = 300;
 const QUEUED_START_ID = /^qs_[0-9a-f-]{36}$/;
 
-let pending: { id: string; until: number } | null = null;
+let pending: { id: string; until: number; fallbackAt: number | null } | null = null;
 const listeners = new Set<() => void>();
+const notify = () => { for (const listener of [...listeners]) listener(); };
 
 /** Bring the card that shows this request into view, now or when it renders. */
 export function revealQueuedStart(id: string, now = Date.now()): void {
   if (!QUEUED_START_ID.test(id)) return;
-  pending = { id, until: now + REVEAL_WINDOW_MS };
-  for (const listener of [...listeners]) listener();
+  pending = { id, until: now + REVEAL_WINDOW_MS, fallbackAt: null };
+  notify();
 }
 
-/** A card showing these requests takes the pending reveal once. Returns the request id. */
-export function claimQueuedStartReveal(ids: readonly string[], now = Date.now()): string | null {
+/**
+ * A card takes the pending reveal once and gets the request id back.
+ * `ownId` is the request of the card's own marker; `ids` are all the requests
+ * it lists. The owner wins; a listing card wins only after LISTED_FALLBACK_MS
+ * passed without an owner (listeners hear again when it has).
+ */
+export function claimQueuedStartReveal(ownId: string | null, ids: readonly string[], now = Date.now()): string | null {
   if (!pending) return null;
   if (pending.until < now) {
     pending = null;
     return null;
   }
-  if (!ids.includes(pending.id)) return null;
   const { id } = pending;
+  if (ownId !== id) {
+    if (!ids.includes(id)) return null;
+    if (pending.fallbackAt === null) {
+      const waiting = pending;
+      waiting.fallbackAt = now + LISTED_FALLBACK_MS;
+      // Timers and Date.now can disagree by a millisecond: the timer itself opens the fallback.
+      const timer = setTimeout(() => {
+        if (pending !== waiting) return;
+        waiting.fallbackAt = 0;
+        notify();
+      }, LISTED_FALLBACK_MS) as { unref?: () => void };
+      timer.unref?.();
+    }
+    if (now < (pending.fallbackAt ?? 0)) return null;
+  }
   pending = null;
   return id;
+}
+
+/** The user scrolled after the click: a card that renders later stays where it is. */
+export function cancelQueuedStartReveal(): void {
+  pending = null;
 }
 
 export function onQueuedStartReveal(listener: () => void): () => void {
@@ -59,7 +90,3 @@ export function queuedRowClickId(event: ClickLike): string | null {
   return QUEUED_START_ID.test(id) ? id : null;
 }
 
-/** Test seam: forget a pending reveal. */
-export function resetQueuedStartReveal(): void {
-  pending = null;
-}
