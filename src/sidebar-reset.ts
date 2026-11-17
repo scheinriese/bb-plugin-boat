@@ -1,6 +1,7 @@
 // Only live provider-retry queue rows establish a paused subscription reset.
 // Quota timestamps or Boat's both-out planning state alone do not pause a turn.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { resetTimeText } from "../lib/reset-time.ts";
 export interface PausedReset {
   sendAt: number;
   updatedAt: number;
@@ -57,11 +58,12 @@ export async function readPausedResets(
   );
   return result;
 }
+/** `Waits for reset · Thu 1:00 am`; the day rules are in lib/reset-time.ts. */
 export function resetWaitText(
   at: number,
-  timezoneOffsetMinutes = new Date().getTimezoneOffset(),
+  timezoneOffsetMinutes?: number,
+  now = Date.now(),
 ): string {
-  const local = new Date(at - timezoneOffsetMinutes * 60000);
-  const hours = local.getUTCHours();
-  return `Waits for reset · ${hours % 12 || 12}:${String(local.getUTCMinutes()).padStart(2, "0")} ${hours >= 12 ? "pm" : "am"}`;
+  const when = resetTimeText(at, now, timezoneOffsetMinutes);
+  return when ? `Waits for reset · ${when}` : "Waits for reset";
 }
