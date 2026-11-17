@@ -184,3 +184,15 @@ with `boat_ready`), **Running**. No wide tables, no commit hashes; link the
 Cloud agents page from `boat_tasks` for the full picture. A table only if
 the user asks, at most three columns. The Cloud agents page is the ledger;
 don't keep or paste a separate one.
+
+## Automatic paid Claude fallback
+
+The owner can opt into `paidClaudeFallback` in Usage limits or with
+`bb boat config set paidClaudeFallback true`. Use included allowances first;
+only then may eligible bb task chats and orchestrators use Claude extra usage
+when Account Pooler reports recent availability. Claude enforces billing; Boat
+cannot read a money cap or balance and never buys credits. Headless Boat tasks
+need per-request paid approval unless `paidClaudeHeadless` is also enabled
+after the owner confirms the same Claude subscription and billing account. Do not name a provider/model to bypass a
+waiting receipt or dispatch replacement work. If billing is unavailable, keep
+waiting. This setting changes spending behavior: set it only when the owner asks.

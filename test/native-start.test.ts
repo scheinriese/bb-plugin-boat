@@ -524,3 +524,11 @@ test(
     e.noWork();
   },
 );
+
+test("saved automatic Claude policy admits only the selected Claude with fresh paid room, and pauses again when availability is lost", async t=>{
+ const e=usageFixture();t.after(()=>e.harness.lifecycle.dispose());const settings=await e.service.settings();e.setSettings({relay:{...settings.relay,paidClaudeFallback:true}});e.context.requestedExecution.providerId="claude-code";
+ const q:Quotas=new Map([['claude',{provider:'claude',usedPercent:100,resetsAt:null,window:'Weekly limit',extraUsage:{allowed:true,observedAt:Date.now()}}],['codex',{provider:'codex',usedPercent:100,resetsAt:null,window:'Weekly limit'}]]);e.usage(q);
+ assert.equal(await nativeStart(e.context,e.runtime,e.reader),null);e.noWork();
+ q.get('claude')!.extraUsage!.allowed=false;assert.equal((await nativeStart(e.context,e.runtime,e.reader))?.action,'wait');e.noWork();
+ q.get('claude')!.extraUsage!.allowed=true;q.get('codex')!.usedPercent=10;assert.equal((await nativeStart(e.context,e.runtime,e.reader))?.action,'wait','selected Claude cannot bypass included Codex');e.noWork();
+});

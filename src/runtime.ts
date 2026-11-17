@@ -267,6 +267,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       environmentId?: string | null;
       /** Start in Full Access (an orchestrator in a boat sandbox). */
       fullAccess?: boolean;
+      automaticUsage?: boolean;
     },
   ): Promise<{ threadId: string; movedTaskIds: string[] }> {
     const takeOver = options.takeOver;
@@ -274,6 +275,13 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       ? service.store.list({ orchestratorThreadId: takeOver.threadId, statuses: OPEN_STATUSES, limit: 500 }).map((task) => task.id)
       : [];
     const section = takeOver ? await takeOverSection(bb, takeOver, moving) : null;
+    const policy = await service.settings();
+    const policyRevision = startPolicyRevision;
+    if (policy.relay.paidClaudeFallback || options.automaticUsage) {
+      const provider = PROVIDER_FROM_ID[options.providerId ?? ""];
+      if (provider) await service.assertSubscriptionRoom(provider, { settings: policy, runner: "chat" });
+      if (policyRevision !== startPolicyRevision) throw new TaskError("The usage policy changed before the handover. It will be checked again.", "agents_at_limit");
+    }
     const { threadId } = await spawnThread(bb, {
       projectId: options.bbProjectId,
       project,
@@ -435,7 +443,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   }
 
   /** Move an orchestrator to another agent: a successor chat in the same workspace takes over. */
-  async function relayHandover(oldThreadId: string, to: Provider, reason: string, state: RelayState | null): Promise<string> {
+  async function relayHandover(oldThreadId: string, to: Provider, reason: string, state: RelayState | null, automaticUsage = false): Promise<string> {
     const project = await getThreadProject(bb, oldThreadId);
     if (project === null) throw new Error("the orchestrator has no project");
     const old = await readThread(oldThreadId);
@@ -476,6 +484,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         .filter(Boolean)
         .join(" ");
       const { threadId } = await launch(project, {
+        automaticUsage: automaticUsage || state?.phase === "handoff-requested" && state.automaticUsage === true,
         bbProjectId: old.projectId ?? PERSONAL_PROJECT_ID,
         hostId: null,
         cloud: false,
@@ -526,7 +535,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     }
   }
 
-  async function relaySwitch(threadId: string, to: Provider, options: { immediate?: boolean; reason?: string } = {}): Promise<RelayAction> {
+  async function relaySwitch(threadId: string, to: Provider, options: { immediate?: boolean; reason?: string; automaticUsage?: boolean } = {}): Promise<RelayAction> {
     const reason = options.reason ?? `requested by hand`;
     const only = onlyAgent((await service.settings()).agents);
     if (only !== null && to !== only) {
@@ -545,11 +554,11 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       throw new TaskError("That orchestrator has no project, so it can't be restarted on another agent.", "project_not_found");
     }
     if (options.immediate || view.status === "error") {
-      const successor = await relayHandover(threadId, to, reason, await readState(threadId));
+      const successor = await relayHandover(threadId, to, reason, await readState(threadId), options.automaticUsage);
       return { threadId, kind: "took-over", to, reason, successor };
     }
     const since = Date.now();
-    await bb.storage.kv.set(relayKey(threadId), { phase: "handoff-requested", to, reason, since } satisfies RelayState);
+    await bb.storage.kv.set(relayKey(threadId), { phase: "handoff-requested", to, reason, since, ...(options.automaticUsage ? { automaticUsage: true } : {}) } satisfies RelayState);
     await bb.sdk.threads.send({
       threadId,
       mode: "queue-if-active",
@@ -575,7 +584,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   async function relayPass(): Promise<RelayAction[]> {
     const settings = await service.settings();
     if (deps.quotas === undefined) return [];
-    const quotas = await deps.quotas.read();
+    const quotas = await deps.quotas.read(undefined, { fresh: settings.relay.paidClaudeFallback === true });
     const actions: RelayAction[] = [];
     const now = () => Date.now();
     // With one agent (Coding agents) the relay is off.
@@ -611,9 +620,9 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       }
       try {
         if (decision.kind === "request-handoff") {
-          actions.push(await relaySwitch(row.threadId, decision.to, { reason: decision.reason }));
+          actions.push(await relaySwitch(row.threadId, decision.to, { reason: decision.reason, automaticUsage: true }));
         } else if (decision.kind === "take-over") {
-          const successor = await relayHandover(row.threadId, decision.to, decision.reason, state);
+          const successor = await relayHandover(row.threadId, decision.to, decision.reason, state, true);
           actions.push({ threadId: row.threadId, kind: "took-over", to: decision.to, reason: decision.reason, successor });
         } else if (decision.kind === "both-out") {
           await bb.storage.kv.set(relayKey(row.threadId), { phase: "both-out", since: now() } satisfies RelayState);

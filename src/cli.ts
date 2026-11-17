@@ -1209,7 +1209,9 @@ export function buildCli(runtime: Runtime) {
                   : relay.enabled
                     ? `Claude ↔ Codex switching on: hands over at ${relay.switchAtPercent}%, back to ${AGENT_NAME[relay.preferred]} below ${relay.switchBackBelowPercent}% after ${relay.quietMinutes} quiet minutes.`
                     : "Claude ↔ Codex switching off: orchestrators stay on their agent.",
-                avoidExtraUsage
+                relay.paidClaudeFallback
+                  ? `Included allowances first; automatic Claude extra usage is authorized when Account Pooler confirms availability. Claude enforces billing limits; Boat cannot read the money cap. ${relay.paidClaudeHeadless ? "Headless tasks included: owner-confirmed same Claude subscription/billing account." : "Headless tasks require separate approval."}`
+                  : avoidExtraUsage
                   ? `No paid extra usage: with ${only === null ? "both agents" : AGENT_NAME[only]} near ${only === null ? "their limits" : "its limit"}, new work waits.`
                   : "Paid extra usage allowed.",
                 "",

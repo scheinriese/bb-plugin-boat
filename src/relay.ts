@@ -2,7 +2,7 @@
 // room left. Near a usage limit it hands over to the other agent (after
 // asking for a handoff note while there's budget for one); once the preferred
 // agent has room again, it hands back at a quiet moment. Paid extra usage is
-// avoided: with both agents near their limits, it waits and tells the user.
+// avoided by default. An explicit paid Claude policy is the final fallback.
 import type { AgentQuota, Quotas } from "./quota.ts";
 import type { Provider } from "./store.ts";
 
@@ -15,6 +15,31 @@ export interface RelaySettings {
   switchBackBelowPercent: number;
   /** Hand back only after the orchestrator has been quiet this long. */
   quietMinutes: number;
+  /** Explicit owner policy; provider billing controls remain authoritative. */
+  paidClaudeFallback?: boolean;
+  /** Owner confirms headless environments use the same Claude subscription/billing account. */
+  paidClaudeHeadless?: boolean;
+}
+
+export const PAID_USAGE_EVIDENCE_MS = 5 * 60_000;
+
+/** Never infer paid allowance from a full subscription, a reset time, or unknown usage. */
+export function automaticPaidClaude(quotas: Quotas, settings: RelaySettings, agents: AgentChoice = "both", now = Date.now()): boolean {
+  if (settings.paidClaudeFallback !== true || agents === "codex") return false;
+  const providers: Provider[] = agents === "claude" ? ["claude"] : ["claude", "codex"];
+  if (!providers.every(p => { const q = quotas.get(p); return q !== undefined && Number.isFinite(q.usedPercent) && q.usedPercent >= settings.switchAtPercent; })) return false;
+  const q = quotas.get("claude")!, evidence = q.extraUsage;
+  return !(q.blockedUntil && q.blockedUntil > now) && evidence?.allowed === true && evidence.observedAt <= now && now - evidence.observedAt <= PAID_USAGE_EVIDENCE_MS;
+}
+
+/** Included allowance always wins; the separately authorized paid fallback is last. */
+export function agentForWork(wanted: Provider, quotas: Quotas, settings: RelaySettings, agents: AgentChoice = "both"): Provider | null {
+  return agentWithRoom(wanted, quotas, settings.switchAtPercent, agents) ?? (automaticPaidClaude(quotas, settings, agents) ? "claude" : null);
+}
+
+export function automaticRoom(provider: Provider, quotas: Quotas, settings: RelaySettings, agents: AgentChoice = "both"): boolean {
+  const q = quotas.get(provider);
+  return !!q && (q.usedPercent < settings.switchAtPercent || provider === "claude" && automaticPaidClaude(quotas, settings, agents));
 }
 
 export interface OrchestratorView {
@@ -38,6 +63,7 @@ export type RelayState =
       /** The note, once the chat finished the turn that writes it. */
       note?: string | null;
       noteAt?: number | null;
+      automaticUsage?: boolean;
     }
   | { phase: "cooldown"; until: number }
   | { phase: "both-out"; since: number }
@@ -115,7 +141,7 @@ export function decideRelay(
   // with the relay switched off since. Once that turn is over (or it takes
   // too long), take over, unless the target filled up in the meantime.
   if (state?.phase === "handoff-requested") {
-    if (!hasRoom(quotas.get(state.to), settings)) return decideRelay(orchestrator, quotas, null, settings, now);
+    if (!hasRoom(quotas.get(state.to), settings) && !(state.to === "claude" && automaticPaidClaude(quotas, settings, "both", now))) return decideRelay(orchestrator, quotas, null, settings, now);
     const answered =
       (state.noteAt ?? 0) > state.since ||
       (orchestrator.updatedAt !== null && orchestrator.updatedAt > state.since) ||
@@ -127,7 +153,9 @@ export function decideRelay(
   }
 
   if (!settings.enabled || orchestrator.provider === null) return { kind: "none" };
-  if (state?.phase === "cooldown" && now < state.until) return { kind: "none" };
+  // A fresh included allowance takes precedence over paid continuation, even during cooldown.
+  const returnToIncluded = settings.paidClaudeFallback && orchestrator.provider === "claude" && (quotas.get("claude")?.usedPercent ?? 0) >= settings.switchAtPercent && (quotas.get("codex")?.usedPercent ?? Infinity) < settings.switchAtPercent;
+  if (state?.phase === "cooldown" && now < state.until && !returnToIncluded) return { kind: "none" };
   if (state?.phase === "failed" && now < state.retryAt) return { kind: "none" };
   const decision = decideMove(orchestrator, quotas, state, settings, now, busy);
   if ((decision.kind === "request-handoff" || decision.kind === "take-over") && !orchestrator.hasProject) {
@@ -156,6 +184,11 @@ function decideMove(
       const reason = describe(ownQuota!);
       // No budget left for a note: take over from what the plugin and bb already know.
       return ownQuota!.usedPercent >= 100 ? { kind: "take-over", to: other, reason } : { kind: "request-handoff", to: other, reason };
+    }
+    if (automaticPaidClaude(quotas, settings, "both", now)) {
+      if (current === "claude" || busy) return { kind: "none" };
+      const reason = "Included allowances are near their limits; automatic Claude extra usage is authorized. Claude's billing limits apply";
+      return ownQuota!.usedPercent >= 100 ? { kind: "take-over", to: "claude", reason } : { kind: "request-handoff", to: "claude", reason };
     }
     // Both near their limits: wait for a reset rather than pay for extra usage.
     if (state?.phase === "both-out") return { kind: "none" };

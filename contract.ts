@@ -645,6 +645,9 @@ export const rpcContract = defineRpcContract({
       preferred: providerSchema,
       switchAtPercent: z.number(),
       avoidExtraUsage: z.boolean(),
+      paidClaudeFallback: z.boolean().optional(),
+      paidClaudeAvailable: z.boolean().optional(),
+      paidClaudeHeadless: z.boolean().optional(),
       agents: z.array(
         z.object({
           provider: providerSchema,

@@ -11,7 +11,7 @@ export function setupNeedsWork(status: SetupStatusDto): boolean {
 
 export const SETTINGS_GROUPS = [
   { title: "Agents", keys: ["agents", "relayPreferred"] },
-  { title: "Sandboxes & cost", keys: ["machineType", "maxActiveSandboxes", "stopIdleAfterMinutes", "avoidExtraUsage"] },
+  { title: "Sandboxes & cost", keys: ["machineType", "maxActiveSandboxes", "stopIdleAfterMinutes", "avoidExtraUsage", "paidClaudeFallback", "paidClaudeHeadless"] },
   { title: "Orchestrators", keys: ["tasksBeforeAsking"] },
   { title: "Notifications", keys: ["notifyNeedsYou", "notifyReady", "notifyProgress"] },
 ] as const;
@@ -27,7 +27,7 @@ export const EVERYDAY_SETTING_COPY: Record<string, { label?: string; description
   machineType: { label: "Default size", description: "Projects and tasks can pick another." },
   maxActiveSandboxes: { description: "The most running at the same time." },
   stopIdleAfterMinutes: { label: "Stop idle sandboxes after", description: "Work in progress keeps a sandbox on." },
-  avoidExtraUsage: { description: "New tasks wait for the usage reset instead." },
+  avoidExtraUsage: { description: "Wait near limits, except for an authorized Claude fallback or a confirmed paid start." },
   tasksBeforeAsking: { description: "Above this, the orchestrator asks you first." },
 };
 

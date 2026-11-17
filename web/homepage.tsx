@@ -52,6 +52,7 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
     ...(relay?.agents ?? []).flatMap(agent => agent.usedPercent === null ? [] : [`${agent.provider === "codex" ? "Codex" : "Claude"} ${Math.round(agent.usedPercent)}%`]),
   ].filter(Boolean).join(" · ");
   return <section className="boat-ui relative" aria-label="Cloud agents">
+    {relay?.paidClaudeFallback&&<p role="status" className="mb-3 text-xs leading-5 text-muted-foreground">{relay.paidClaudeAvailable ? "Included allowances are near their limits. Automatic Claude extra usage is available; Claude’s billing controls apply." : "Included allowances first · automatic Claude extra usage permitted when available · Claude’s billing controls apply"}</p>}
     <span className="mb-2 block text-xs leading-4 text-[color:var(--boat-faint)] sm:absolute sm:-top-8 sm:right-0 sm:mb-0 sm:text-right">{firstRun ? "All set · nothing running" : meta}</span>
     {firstRun ? <div className="grid gap-[10px] sm:grid-cols-3">
       {[

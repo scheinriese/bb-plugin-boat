@@ -209,8 +209,22 @@ export const PLUGIN_SETTINGS = {
     section: "usage-limits",
     type: "boolean",
     label: "Don't start work on paid extra usage",
-    description: "With your agents near their usage limits, new tasks wait for a reset (and you're told) instead of using paid extra usage.",
+    description: "New work waits near usage limits, except for an enabled automatic paid Claude fallback or a separately confirmed paid start. Running turns can continue past a limit.",
     default: true,
+  },
+  paidClaudeFallback: {
+    section: "usage-limits",
+    type: "boolean",
+    label: "Allow automatic paid Claude fallback",
+    description: "Use included allowances first. When all connected agents are near their limits, bb task chats and orchestrators may use Claude extra usage if Account Pooler reports it available. Claude enforces your billing limit; Boat cannot read or set the money cap or buy credits.",
+    default: false,
+  },
+  paidClaudeHeadless: {
+    section: "usage-limits",
+    type: "boolean",
+    label: "Include headless Boat tasks in paid fallback",
+    description: "Only with automatic paid Claude fallback enabled. Authorize headless tasks too after confirming Boat uses the same Claude subscription account and billing controls as bb. The availability signal comes from bb; Boat cannot verify every environment's login. Leave off for different accounts or API keys.",
+    default: false,
   },
   relayEnabled: {
     section: "usage-limits",

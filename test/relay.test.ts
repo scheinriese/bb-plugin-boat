@@ -343,7 +343,7 @@ async function relayHost(t: { after(fn: () => unknown): void }, usage: { claude:
   harness.sdk.stub("plugins.callRpc", async ({ pluginId, method, input }: { pluginId: string; method: string; input: { resourceId?: string } }) => {
     if (pluginId !== "account-pool") throw new Error("not installed");
     if (method === "status.get") {
-      return { routing: { claude: true, codex: true }, accounts: [{ id: "c", provider: "claude", status: "ready" }, { id: "x", provider: "codex", status: "ready" }] };
+      return { routing: { claude: true, codex: true }, accounts: [{ id: "c", provider: "claude", status: "ready", extraUsage: {status:"allowed",observedAt:Date.now()} }, { id: "x", provider: "codex", status: "ready" }] };
     }
     if (method.endsWith("listResources")) return { resources: [{ id: "c", providerId: "claude-code" }, { id: "x", providerId: "codex" }] };
     const usedPercent = input.resourceId === "c" ? usage.claude : usage.codex;
@@ -648,4 +648,13 @@ test("Auto-detect: while boat.dev can't be read, the relay never moves an orches
   const check = JSON.parse((await harness.runCli(["relay", "check", "--json"])).stdout) as { actions: { kind: string; reason: string }[] };
   assert.deepEqual(check.actions.map((action) => [action.kind, action.reason]), [["skipped", "boat.dev last reported Codex as not connected"]]);
   assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length, 1, "no successor");
+});
+
+test("actual monitor moves exhausted Codex to authorized Claude once, then returns to fresh included quota",async t=>{
+ const usage={claude:100,codex:100};const {harness,threads}=await relayHost(t,usage,{paidClaudeFallback:true,agents:"both"});
+ await harness.callRpc("startOrchestrator",{project:{kind:"boat",id:"storefront"},prompt:"Coordinate the fixture",title:null,hostId:null,cloud:false});threads.get("thr_old")!.providerId="codex";threads.get("thr_old")!.status="error";
+ const moved=await harness.runCli(["relay","check","--json"]);assert.equal(moved.exitCode,0,moved.stderr);assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,2);const last=harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as {providerId:string};assert.equal(last.providerId,"claude-code");
+ const state=await harness.callRpc("relay",null) as {paidClaudeFallback:boolean;paidClaudeAvailable:boolean};assert.equal(state.paidClaudeFallback,true);assert.equal(state.paidClaudeAvailable,true);
+ await harness.runCli(["relay","check","--json"]);assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,2,"paid continuation is not repeatedly respawned");
+ usage.codex=0;threads.get("thr_new")!.providerId="claude-code";threads.get("thr_new")!.status="error";await harness.runCli(["relay","check","--json"]);assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,3);assert.equal((harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as {providerId:string}).providerId,"codex");
 });

@@ -58,6 +58,8 @@ inherits the global setting; an explicit native task drawer choice wins.
 | Advanced | Screenshots and recordings | `evidenceUploader` | empty (off) |
 | Advanced | When an agent hits its limit mid-task, continue with the other one | `autoFailover` | on |
 | Advanced | Don't start work on paid extra usage | `avoidExtraUsage` | on |
+| Usage limits | Allow automatic paid Claude fallback | `paidClaudeFallback` | off |
+| Usage limits | Include headless Boat tasks in paid fallback | `paidClaudeHeadless` | off |
 | Advanced | Claude ↔ Codex switching for orchestrators | `relayEnabled` | off |
 | Advanced | Switch at (% of a usage limit) | `relaySwitchAt` | `90` |
 | Advanced | Switch back below (%) | `relaySwitchBackBelow` | `50` (at least 5 below Switch at) |
@@ -159,3 +161,48 @@ Import reads backups from older versions (format version 1) and maps them:
 If values were already lost by an older update before this migration was
 available, restore a backup or set them with `bb boat config set`; the
 migration cannot reconstruct values that are no longer stored.
+
+## Automatic paid Claude fallback
+
+`bb boat config set paidClaudeFallback true` authorizes ongoing automatic
+Claude extra usage for eligible bb task chats and orchestrators. It is off by
+default and can stay on alongside `avoidExtraUsage`: this is a narrow exception,
+not permission for paid Codex or arbitrary provider changes.
+
+The order is included allowance on the requested/default agent, included allowance
+on the other connected agent, then authorized Claude extra usage when all
+connected agents have reached `relaySwitchAt`. A recent affirmative Account
+Pooler availability signal and active Claude routing are required. Unknown,
+stale, disabled or refused paid availability keeps work waiting. A reported
+usage/billing failure blocks further automatic paid admission during its tracked
+hold. Fresh included quota takes precedence again after reset. Running turns
+are not interrupted just to change providers; orchestrators use the existing
+handoff/successor path, retaining their workspace and task relationships.
+
+Claude enforces the account's spend cap and credit availability. Boat cannot
+read or verify the numeric cap, balance, tax, bundle discount or auto-reload
+configuration, does not track a separate money budget, and never purchases
+credits. Set and verify the desired monthly cap in Claude before enabling this
+policy. Auto-reload purchases and monthly consumption are separate billing
+controls. Do not present the usage percentage or an allowed header as euros
+remaining or proof that a particular request is being billed.
+
+The availability signal comes from Account Pooler. Headless Boat tasks may
+use separately stored credentials. They require a separate paid confirmation
+unless `paidClaudeHeadless` is enabled too. Enable that only after confirming
+those environments use the same Claude subscription account and billing controls
+as bb; leave it off for different accounts or API keys. Boat does not attest
+every environment login. An explicitly chosen Codex/model/reviewer
+is not silently turned into paid Claude; fixed-agent requests can remain queued.
+Native Send now retains its documented core override. Ordinary local chats that
+are not registered Boat orchestrators/tasks are not automatically migrated by
+this plugin. This policy cannot guarantee completion when a provider, network,
+authentication, sandbox or billing account is unavailable.
+
+Task history records `paid-fallback-authorized` separately from a manual
+`paid-start-approved` receipt. The context line and Cloud agents home indicate
+when extra usage is permitted; the actual provider determines whether a request
+uses included quota or credits. Disable the policy to prevent new automatic
+paid admissions; already running turns are governed by the provider's billing
+controls. The setting persists across restarts and is included in config
+backups. Tests use fake providers, never paid requests.

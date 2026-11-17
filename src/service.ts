@@ -73,7 +73,7 @@ import {
 import type { ChatRunner, ChatWhere, ComposerRequest } from "./chat.ts";
 import type { WorkspaceInfo } from "./briefs.ts";
 import type { QuotaReader } from "./quota.ts";
-import { AGENT_NAME, agentWithRoom, effectiveRelay, onlyAgent, otherAgent, type AgentChoice, type RelaySettings } from "./relay.ts";
+import { AGENT_NAME, agentForWork, automaticPaidClaude, effectiveRelay, onlyAgent, otherAgent, type AgentChoice, type RelaySettings } from "./relay.ts";
 import type { ConnectCheck } from "./connect.ts";
 import { renderBoatTranscript, transcriptDir, transcriptPath } from "./transcript.ts";
 import type { PreflightInput } from "./setup.ts";
@@ -216,6 +216,8 @@ export interface ServiceHooks {
   projectInstructions?(projectId: string | null, repo: string | null): string[];
   /** Each agent's subscription usage (the relay's signal); absent: unknown. */
   quotas?: QuotaReader;
+  /** Same-account headless refusal: prevent repeated automatic paid starts. */
+  usageRefused?(provider: Provider): Promise<void>;
   /** The evidence uploader's source (the bundled one, or fetched from GitHub on this machine). */
   evidence?: EvidenceSource;
   /** Does a preview link answer? (Tests replace the HTTP check.) */
@@ -305,9 +307,9 @@ export interface StartTaskInput {
   /** Internal automatic native review binding; never accepted from RPC/tool input. */
   nativeReview?: { source: NativeReviewSource; signal?: AbortSignal; beforeDispatch(reviewTaskId: string): Promise<void> };
   /** Internal durable-queue insertion capability; never accepted from RPC/tool input. */
-  queuedStart?: { taskId: string; beforeInsert(): Promise<void>; insert(task: Task, save: () => Task, preparedSettings: BoatSettings): Task };
+  queuedStart?: { taskId: string; paidApproved?: boolean; beforeInsert(): Promise<void>; insert(task: Task, save: () => Task, preparedSettings: BoatSettings): Task };
   /** Internal public-new-work quota guard, resolved against the actual chosen agent. */
-  subscriptionGuard?: { check(provider: Provider, settings: BoatSettings): Promise<void>; assertCurrent(): void };
+  subscriptionGuard?: { check(provider: Provider, settings: BoatSettings, runner: Runner): Promise<void>; assertCurrent(): void };
   signal?: AbortSignal;
 }
 
@@ -1060,13 +1062,24 @@ export class BoatService {
   }
 
   /** Automatic/public work cannot turn an explicit agent/model into paid approval. */
-  async assertSubscriptionRoom(provider: Provider, options: { settings?: BoatSettings; signal?: AbortSignal } = {}): Promise<void> {
+  async assertSubscriptionRoom(provider: Provider, options: { settings?: BoatSettings; signal?: AbortSignal; runner?: Runner } = {}): Promise<boolean> {
     const settings = options.settings ?? await this.settings();
-    if (!settings.avoidExtraUsage || !this.hooks.quotas) return;
+    if (!settings.avoidExtraUsage && !settings.relay.paidClaudeFallback) return false;
+    if (!this.hooks.quotas) {
+      if (settings.relay.paidClaudeFallback) throw new TaskError("Current agent usage is unavailable. Automatic paid work will wait.", "agents_at_limit");
+      return false;
+    }
     const quotas = await this.hooks.quotas.read(options.signal, { fresh: true }).catch(() => new Map());
     options.signal?.throwIfAborted(); this.hooks.lifecycle.throwIfAborted();
     const reading = quotas.get(provider);
+    if (settings.relay.paidClaudeFallback) {
+      const current = await this.settings();
+      options.signal?.throwIfAborted(); this.hooks.lifecycle.throwIfAborted();
+      if (!reading || current.relay.paidClaudeFallback !== true || current.relay.paidClaudeHeadless !== settings.relay.paidClaudeHeadless || current.relay.switchAtPercent !== settings.relay.switchAtPercent || current.agents !== settings.agents || current.notConnectedAgents.includes(provider)) throw new TaskError("Current usage or the saved fallback policy could not be confirmed. This work will wait.", "agents_at_limit");
+    }
+    if (provider === "claude" && (options.runner !== "boat" || settings.relay.paidClaudeHeadless === true) && automaticPaidClaude(quotas, settings.relay, settings.agents) && !settings.notConnectedAgents.includes(provider)) return true;
     if (reading && reading.usedPercent >= settings.relay.switchAtPercent) throw new TaskError(`${AGENT_NAME[provider]} is near its usage limit. This work will wait for a reset.`, "agents_at_limit");
+    return false;
   }
 
   private async prepareTask(input: StartTaskInput): Promise<{ task: Task; run: () => Promise<Task> }> {
@@ -1135,8 +1148,8 @@ export class BoatService {
       // With the relay off, the default agent stays; only "both out" still stops new work.
       const pick =
         relay.enabled || reviewWithRoom
-          ? agentWithRoom(provider, quotas, relay.switchAtPercent, settings.agents)
-          : agentWithRoom(provider, quotas, relay.switchAtPercent, settings.agents) === null
+          ? agentForWork(provider, quotas, relay, settings.agents)
+          : agentForWork(provider, quotas, relay, settings.agents) === null
             ? null
             : provider;
       if (pick === null && settings.avoidExtraUsage) {
@@ -1161,8 +1174,6 @@ export class BoatService {
         provider = pick;
       }
     }
-    if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings);
-    if (input.nativeReview) await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal });
     const roleModel = (input.role === "review" ? settings.reviewModel : settings.implementModel).trim() || null;
     const configuredModel = provider === roleProvider ? roleModel : defaultModelFor(provider, settings);
     // A model for the agent the user doesn't have can't run on the other one:
@@ -1184,6 +1195,8 @@ export class BoatService {
     // One rule for every repo the task clones: the runner's, --chat's and New task's.
     const trust = chatTrust(repos, settings, repoMode);
     const runner = this.chooseRunner(input, parent, settings, trust);
+    if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings, runner);
+    if (input.nativeReview) await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal, runner });
     // A sandbox that runs bb (or did) holds this bb's login: never for repos you
     // don't trust, whatever the runner. Its own task's sandbox is no news to a review.
     const named = namedSandbox(input.sandbox);
@@ -1334,14 +1347,16 @@ export class BoatService {
       unshipped: null,
       shipApproval: null,
     };
-    if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings);
+    if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings, runner);
+    const paidFallback = settings.relay.paidClaudeFallback === true && !input.queuedStart?.paidApproved && await this.assertSubscriptionRoom(provider, { settings, signal: input.signal, runner });
     if (input.nativeReview) {
-      await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal });
+      await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal, runner });
       this.assertNativeReviewSource(input.nativeReview.source);
     }
     if (input.queuedStart) await input.queuedStart.beforeInsert();
     input.subscriptionGuard?.assertCurrent();
     const task = input.queuedStart ? input.queuedStart.insert(record, () => this.store.insert(record), settings) : this.store.insert(record);
+    if (paidFallback) this.store.addEvent(task.id, "paid-fallback-authorized", "Automatic Claude extra usage authorized by the saved fallback policy after included allowances reached the cutoff. Claude's billing controls apply; no euro balance is available to Boat.");
     if (input.nativeReview) this.store.addEvent(id, "native-review-source", JSON.stringify(input.nativeReview.source));
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
     if (input.measureMemory) this.sizes.watch(id); // sizes
@@ -1873,6 +1888,7 @@ export class BoatService {
       const transient = task.runner === "chat" && this.store.get(id)?.threadId === null ? retryableBootstrap(error) : null;
       const failure = transient ? new TaskError(bootstrapFailureMessage(transient), "bootstrap_retryable", "Retry starting this task after npm's registry recovers; no agent turn ran.") : error;
       const message = errorText(failure);
+      if (task.runner === "boat" && settings.relay.paidClaudeFallback && settings.relay.paidClaudeHeadless && USAGE_LIMIT_PATTERN.test(message)) await this.hooks.usageRefused?.(provider);
       this.store.transition(id, ["starting"], { status: "failed", error: clip(message, 4000), finishedAt: new Date().toISOString() });
       this.store.addEvent(id, "failed", message, transient ? { source: "system", cause: "bootstrap_retryable", detail: `npm ${transient.code}; ${transient.attempts} installation attempts; no agent started` } : {});
       this.hooks.changed([id]);
@@ -2188,6 +2204,7 @@ export class BoatService {
       this.store.latestEvent(task.id, "approval") !== null;
     assertFrontierAllowed(settings.modelTiers, tier, model, reasoningEffort, options.userApproved === true || keepsApproval);
     if (options.dryRun === true) return task;
+    if (settings.relay.paidClaudeFallback) await this.assertSubscriptionRoom(provider, { settings, signal: options.signal, runner: task.runner });
     const newlyApproved =
       options.userApproved === true && !keepsApproval && needsFrontierApproval(settings.modelTiers, tier, model, reasoningEffort);
     const reason = options.reason?.trim()
@@ -2305,7 +2322,7 @@ export class BoatService {
     const quotas = await this.hooks.quotas.read().catch(() => null);
     const own = quotas?.get(task.provider);
     if (quotas == null || own === undefined || own.usedPercent < settings.relay.switchAtPercent) return null;
-    if (agentWithRoom(task.provider, quotas, settings.relay.switchAtPercent, settings.agents) !== other) return null;
+    if (agentForWork(task.provider, quotas, settings.relay, settings.agents) !== other) return null;
     return {
       provider: other,
       note: `${AGENT_NAME[task.provider]} is at ${Math.round(own.usedPercent)}% of its limit; continued with ${AGENT_NAME[other]}`,
@@ -4662,6 +4679,9 @@ export class BoatService {
     if (!settings.autoFailover || onlyAgent(settings.agents) !== null) return false;
     if (this.store.events(task.id, 1).at(-1)?.kind === "failover") return false;
     const next: Provider = task.provider === "claude" ? "codex" : "claude";
+    if (settings.relay.paidClaudeFallback) {
+      try { await this.assertSubscriptionRoom(next, { settings, runner: "chat" }); } catch { return false; }
+    }
     const tier = isTier(task.tier) ? task.tier : null;
     const choice = tier === null ? null : choiceFor(settings.modelTiers, tier, next);
     const model = agentModel("chat", next, choice?.model ?? defaultModelFor(next, settings));
@@ -4749,6 +4769,7 @@ export class BoatService {
       (status === "failed" && USAGE_LIMIT_PATTERN.test(`${failedEvent?.error ?? ""}\n${text}`)) ||
       (status === "finished" && text.length < 400 && LIMIT_NOTICE_PATTERN.test(text));
     if (limitHit) {
+      if ((await this.settings()).relay.paidClaudeHeadless) await this.hooks.usageRefused?.(task.provider);
       const switched = await this.failover(task, `${failedEvent?.error ?? ""}\n${text}`.trim());
       if (switched !== null) return true;
     }
@@ -4815,6 +4836,9 @@ export class BoatService {
     const last = this.store.events(task.id, 1).at(-1);
     if (last?.kind === "failover") return null;
     const next: Provider = task.provider === "claude" ? "codex" : "claude";
+    if (settings.relay.paidClaudeFallback) {
+      try { await this.assertSubscriptionRoom(next, { settings, runner: "boat" }); } catch { return null; }
+    }
     // Same tier on the other agent; without a tier, its configured default.
     const tier = isTier(task.tier) ? task.tier : null;
     const choice = tier === null ? null : choiceFor(settings.modelTiers, tier, next);

@@ -14,6 +14,10 @@ export interface AgentQuota {
   resetsAt: string | null;
   /** "Weekly limit", "5-hour limit", … */
   window: string;
+  /** Recent public Account Pooler evidence, never a money balance or spending cap. */
+  extraUsage?: { allowed: boolean; observedAt: number };
+  /** A real failed turn blocks automatic paid admission until this time. */
+  blockedUntil?: number;
 }
 
 export type Quotas = Map<Provider, AgentQuota>;
@@ -32,7 +36,7 @@ const listSchema = z.object({
 const windowSchema = z
   .object({
     label: z.string().optional(),
-    usedPercent: z.number(),
+    usedPercent: z.number().finite().nonnegative(),
     resetsAt: z.string().nullable().optional(),
     model: z.string().nullable().optional(),
   })
@@ -111,8 +115,11 @@ export function applyLimitFlags(quotas: Quotas, flags: LimitFlags): Quotas {
   const merged: Quotas = new Map(quotas);
   for (const [provider, until] of Object.entries(flags) as [Provider, number][]) {
     const reading = quotas.get(provider);
-    if (reading !== undefined && reading.usedPercent >= 100) continue;
-    merged.set(provider, { provider, usedPercent: 100, resetsAt: new Date(until).toISOString(), window: "Usage limit (hit)" });
+    if (reading !== undefined && reading.usedPercent >= 100) {
+      merged.set(provider, { ...reading, blockedUntil: until });
+      continue;
+    }
+    merged.set(provider, { provider, usedPercent: 100, resetsAt: new Date(until).toISOString(), window: "Usage limit (hit)", blockedUntil: until });
   }
   return merged;
 }
@@ -120,7 +127,10 @@ export function applyLimitFlags(quotas: Quotas, flags: LimitFlags): Quotas {
 const poolStatusSchema = z
   .object({
     routing: z.object({ claude: z.boolean(), codex: z.boolean() }).partial().passthrough(),
-    accounts: z.array(z.object({ id: z.string(), provider: z.string().optional(), status: z.string().optional() }).passthrough()),
+    accounts: z.array(z.object({ id: z.string(), provider: z.string().optional(), status: z.string().optional(),
+      extraUsage: z.object({ status: z.string(), observedAt: z.number().finite().nullable().optional() }).passthrough().nullable().optional(),
+      usageRestriction: z.unknown().optional(),
+    }).passthrough()),
   })
   .passthrough();
 
@@ -142,6 +152,15 @@ async function poolFilter(bb: BbPluginApi, signal?: AbortSignal): Promise<(resou
     const account = accounts.get(resourceId);
     return account === undefined || account.status !== "disabled";
   };
+}
+
+/** Read AFTER fresh resource refreshes; subscription numbers alone never imply paid room. */
+async function poolExtraUsage(bb: BbPluginApi, provider: Provider, signal?: AbortSignal): Promise<AgentQuota["extraUsage"]> {
+  const status = await bb.sdk.plugins.callRpc({ pluginId: "account-pool", method: "status.get", input: null, outputSchema: poolStatusSchema, ...(signal ? { signal } : {}) } as never) as z.infer<typeof poolStatusSchema>;
+  if (status.routing[provider] !== true) return undefined;
+  const allowed = status.accounts.filter(a => a.provider === provider && a.status === "ready" && a.usageRestriction == null && a.extraUsage?.status === "allowed" && typeof a.extraUsage.observedAt === "number")
+    .sort((a,b) => b.extraUsage!.observedAt! - a.extraUsage!.observedAt!)[0];
+  return allowed ? { allowed: true, observedAt: allowed.extraUsage!.observedAt! } : { allowed: false, observedAt: Date.now() };
 }
 
 async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: AbortSignal, fresh = false): Promise<Quotas> {
@@ -175,7 +194,10 @@ async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: Abor
     }
     for (const [provider, accounts] of byProvider) {
       const quota = pickAgentQuota(provider, accounts);
-      if (quota) quotas.set(provider, quota);
+      if (quota) {
+        if (sourcePluginId === "account-pool" && provider === "claude") quota.extraUsage = await poolExtraUsage(bb, provider, signal).catch(() => undefined);
+        quotas.set(provider, quota);
+      }
     }
   } catch {
     // This source isn't installed or doesn't answer: try the next one.

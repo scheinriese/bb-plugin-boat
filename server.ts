@@ -26,7 +26,7 @@ import { createRepoFileReader, ghStatus } from "./src/github.ts";
 import { ProjectStore, parseOrchestratorProject } from "./src/projects.ts";
 import { ProtocolStore } from "./src/protocol.ts";
 import { createQuotaReader } from "./src/quota.ts";
-import { PROVIDER_OF_ID, createLimitTracker, limitFromErrorText, limitFromTurnFailure, type TurnFailure } from "./src/limits.ts";
+import { DEFAULT_LIMIT_MS, PROVIDER_OF_ID, createLimitTracker, limitFromErrorText, limitFromTurnFailure, type TurnFailure } from "./src/limits.ts";
 import { createEvidenceSource, parseEvidenceSource } from "./src/evidence.ts";
 import { CLI_MISSING_STATUS, createSetup, effectiveAgents, parseAgentsSetting, type SetupSettings } from "./src/setup.ts";
 import { runnersFor } from "./src/settings.ts";
@@ -160,6 +160,8 @@ export default async function plugin(bb: BbPluginApi) {
         switchAtPercent: values.relaySwitchAt,
         switchBackBelowPercent: Math.min(values.relaySwitchBackBelow, values.relaySwitchAt - 5),
         quietMinutes: values.relayQuietMinutes,
+        paidClaudeFallback: values.paidClaudeFallback,
+        paidClaudeHeadless: values.paidClaudeHeadless,
       },
       avoidExtraUsage: values.avoidExtraUsage,
       pushNotifications: values.pushNotifications,
@@ -270,6 +272,7 @@ export default async function plugin(bb: BbPluginApi) {
     // Tests answer preview checks without the network.
     ...(process.env.BOAT_PLUGIN_PREVIEW_CHECK ? { checkPreview: async () => process.env.BOAT_PLUGIN_PREVIEW_CHECK as "up" | "down" | "unknown" } : {}),
     quotas,
+    usageRefused: provider => limits.record(provider, Date.now() + DEFAULT_LIMIT_MS),
     connect,
     preflight: (input) => setup.preflight(input),
     // Sandbox sizes: the projects' sizes, the plan's sizes (never waiting unless fresh), and plain messages to chats.

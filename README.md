@@ -138,7 +138,13 @@ What the plugin does to keep that down:
   retain bb's machine lifecycle.
 - With **Don't start work on paid extra usage**, a current over-limit
   reading queues delegated work until a reset. An early start needs explicit
-  approval for that request; naming a provider or model does not bypass it.
+  approval for that request, or the opt-in **Allow automatic paid Claude
+  fallback** policy; naming a provider or model does not bypass it.
+- Automatic paid Claude fallback uses included allowances first, then permits
+  extra usage for bb task chats and orchestrators only when Account Pooler
+  reports recent availability. Claude enforces your billing limits; Boat cannot
+  read the money cap or balance and never buys credits. Headless tasks need
+  a separate same-account opt-in or their per-task paid confirmation. [Policy and limits](docs/settings.md#automatic-paid-claude-fallback).
 - It never turns on boat's paid extra starts (`boat billing extra-starts`,
   off by default).
 

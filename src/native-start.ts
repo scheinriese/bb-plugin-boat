@@ -9,6 +9,7 @@ import { normalizeRepo } from "./boat-api.ts";
 import { newTaskId } from "./store.ts";
 import type { Runtime } from "./runtime.ts";
 import type { QuotaReader } from "./quota.ts";
+import { automaticPaidClaude } from "./relay.ts";
 
 const NATIVE_USAGE_RETRY_MS = 30_000;
 const NATIVE_USAGE_READ_MS = 4_000;
@@ -108,6 +109,7 @@ async function nativeUsageWait(
     )
       return unknown();
     if (quota.usedPercent < current.relay.switchAtPercent) return null;
+    if (provider === "claude" && !current.notConnectedAgents.includes(provider) && automaticPaidClaude(reading, current.relay, current.agents)) return null;
     const now = Date.now(),
       reset = quota.resetsAt ? Date.parse(quota.resetsAt) : NaN;
     // A real earlier reset can shorten the retry. A future timestamp alone
