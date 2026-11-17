@@ -29,7 +29,7 @@ export function automaticPaidClaude(quotas: Quotas, settings: RelaySettings, age
   const providers: Provider[] = agents === "claude" ? ["claude"] : ["claude", "codex"];
   if (!providers.every(p => { const q = quotas.get(p); return q !== undefined && Number.isFinite(q.usedPercent) && q.usedPercent >= settings.switchAtPercent; })) return false;
   const q = quotas.get("claude")!, evidence = q.extraUsage;
-  return !(q.blockedUntil && q.blockedUntil > now) && evidence?.allowed === true && evidence.observedAt <= now && now - evidence.observedAt <= PAID_USAGE_EVIDENCE_MS;
+  return !(q.blockedUntil && q.blockedUntil > now) && evidence?.allowed === true && evidence.observedAt !== null && evidence.observedAt <= now && now - evidence.observedAt <= PAID_USAGE_EVIDENCE_MS;
 }
 
 /** Included allowance always wins; the separately authorized paid fallback is last. */

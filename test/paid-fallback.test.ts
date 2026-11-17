@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
 import {agentForWork,automaticPaidClaude,decideRelay,PAID_USAGE_EVIDENCE_MS,type RelaySettings,type OrchestratorView} from "../src/relay.ts";
-import {applyLimitFlags,createQuotaReader,type Quotas} from "../src/quota.ts";
+import {applyLimitFlags,createQuotaReader,poolExtraUsage,type Quotas} from "../src/quota.ts";
 const now=Date.now();
 const settings:RelaySettings={enabled:true,preferred:"claude",switchAtPercent:98,switchBackBelowPercent:50,quietMinutes:10,paidClaudeFallback:true};
 function usage(claude=100,codex=100):Quotas{return new Map(([['claude',claude],['codex',codex]] as const).map(([provider,usedPercent])=>[provider,{provider,usedPercent,resetsAt:null,window:"Weekly limit",...(provider==='claude'?{extraUsage:{allowed:true,observedAt:now}}:{})}]))}
@@ -34,4 +34,17 @@ test("availability comes from refreshed routed Account Pooler state, not host qu
  }}}};
  const read=()=>createQuotaReader(bb as never,{sources:['account-pool']}).read(undefined,{fresh:true});assert.equal((await read()).get('claude')?.extraUsage?.allowed,true);
  allowed=false;assert.equal((await read()).get('claude')?.extraUsage?.allowed,false);allowed=true;restricted=true;assert.equal((await read()).get('claude')?.extraUsage?.allowed,false);restricted=false;ready=false;assert.equal((await read()).size,0);ready=true;routed=false;assert.equal((await read()).size,0);
+});
+test("a stale Pooler rejection keeps its own time and status; it is never restamped as fresh",async()=>{
+ const old=now-30*60_000;const pool=(accounts:unknown[],routing=true)=>({sdk:{plugins:{callRpc:async()=>({routing:{claude:routing,codex:true},accounts})}}}) as never;
+ assert.deepEqual(await poolExtraUsage(pool([{id:'a',provider:'claude',status:'ready',usageRestriction:null,extraUsage:{status:'rejected',observedAt:old,source:'usage'}}]),'claude'),{allowed:false,status:'rejected',observedAt:old,pool:'on'});
+ assert.deepEqual(await poolExtraUsage(pool([{id:'a',provider:'claude',status:'ready',usageRestriction:{reason:'spend_control_reached'},extraUsage:{status:'allowed',observedAt:old}}]),'claude'),{allowed:false,status:'disabled',observedAt:old,pool:'on'});
+ assert.deepEqual(await poolExtraUsage(pool([{id:'a',provider:'claude',status:'ready'}]),'claude'),{allowed:false,status:'unknown',observedAt:null,pool:'on'});
+ assert.deepEqual(await poolExtraUsage(pool([],false),'claude'),{allowed:false,status:'unknown',observedAt:null,pool:'not-routing'});
+ assert.deepEqual(await poolExtraUsage({sdk:{plugins:{callRpc:async()=>{throw new Error('disabled')}}}} as never,'claude'),{allowed:false,status:'unknown',observedAt:null,pool:'off'});
+ // Newest allowed wins; a disabled account's reading doesn't count.
+ assert.deepEqual(await poolExtraUsage(pool([{id:'a',provider:'claude',status:'ready',extraUsage:{status:'rejected',observedAt:now}},{id:'b',provider:'claude',status:'ready',extraUsage:{status:'allowed',observedAt:old}},{id:'c',provider:'claude',status:'disabled',extraUsage:{status:'allowed',observedAt:now}}]),'claude'),{allowed:true,status:'allowed',observedAt:old,pool:'on'});
+ // The stale allowance is shown but cannot start paid work.
+ const q=usage();q.get('claude')!.extraUsage={allowed:true,status:'allowed',observedAt:old,pool:'on'};assert.equal(automaticPaidClaude(q,settings,'both',now),false);
+ q.get('claude')!.extraUsage={allowed:false,status:'rejected',observedAt:now,pool:'on'};assert.equal(automaticPaidClaude(q,settings,'both',now),false);
 });

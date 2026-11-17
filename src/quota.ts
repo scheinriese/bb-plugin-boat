@@ -15,9 +15,24 @@ export interface AgentQuota {
   /** "Weekly limit", "5-hour limit", … */
   window: string;
   /** Recent public Account Pooler evidence, never a money balance or spending cap. */
-  extraUsage?: { allowed: boolean; observedAt: number };
+  extraUsage?: ExtraUsageEvidence;
   /** A real failed turn blocks automatic paid admission until this time. */
   blockedUntil?: number;
+}
+
+export type ExtraUsageStatus = "allowed" | "rejected" | "disabled" | "unknown";
+
+/**
+ * Claude extra usage as the Account Pooler last saw it. `observedAt` is when
+ * the Pooler read it (null: never), so an old "rejected" never looks fresh.
+ * `pool`: "off" when the Pooler doesn't answer, "not-routing" when it doesn't
+ * route this agent; then nothing is known.
+ */
+export interface ExtraUsageEvidence {
+  allowed: boolean;
+  status?: ExtraUsageStatus;
+  observedAt: number | null;
+  pool?: "on" | "off" | "not-routing";
 }
 
 export type Quotas = Map<Provider, AgentQuota>;
@@ -97,6 +112,9 @@ export function createQuotaReader(bb: BbPluginApi, options: QuotaReaderOptions =
       for (const [provider, quota] of found) if (!quotas.has(provider)) quotas.set(provider, quota);
       if (quotas.size === 2) break;
     }
+    // Read after the sources refreshed, so the Pooler's state is its newest.
+    const claude = quotas.get("claude");
+    if (claude !== undefined && sources.includes("account-pool")) quotas.set("claude", { ...claude, extraUsage: await poolExtraUsage(bb, "claude", signal) });
     cache = { at: Date.now(), quotas };
     return quotas;
   }
@@ -154,13 +172,32 @@ async function poolFilter(bb: BbPluginApi, signal?: AbortSignal): Promise<(resou
   };
 }
 
-/** Read AFTER fresh resource refreshes; subscription numbers alone never imply paid room. */
-async function poolExtraUsage(bb: BbPluginApi, provider: Provider, signal?: AbortSignal): Promise<AgentQuota["extraUsage"]> {
-  const status = await bb.sdk.plugins.callRpc({ pluginId: "account-pool", method: "status.get", input: null, outputSchema: poolStatusSchema, ...(signal ? { signal } : {}) } as never) as z.infer<typeof poolStatusSchema>;
-  if (status.routing[provider] !== true) return undefined;
-  const allowed = status.accounts.filter(a => a.provider === provider && a.status === "ready" && a.usageRestriction == null && a.extraUsage?.status === "allowed" && typeof a.extraUsage.observedAt === "number")
-    .sort((a,b) => b.extraUsage!.observedAt! - a.extraUsage!.observedAt!)[0];
-  return allowed ? { allowed: true, observedAt: allowed.extraUsage!.observedAt! } : { allowed: false, observedAt: Date.now() };
+const UNKNOWN_EXTRA_USAGE = (pool: ExtraUsageEvidence["pool"]): ExtraUsageEvidence => ({ allowed: false, status: "unknown", observedAt: null, pool });
+
+/**
+ * Read AFTER fresh resource refreshes; subscription numbers alone never imply
+ * paid room. The newest allowed account wins (the Pooler moves to it);
+ * otherwise the newest real reading, with the time the Pooler took it.
+ */
+export async function poolExtraUsage(bb: BbPluginApi, provider: Provider, signal?: AbortSignal): Promise<ExtraUsageEvidence> {
+  let status: z.infer<typeof poolStatusSchema>;
+  try {
+    status = await bb.sdk.plugins.callRpc({ pluginId: "account-pool", method: "status.get", input: null, outputSchema: poolStatusSchema, ...(signal ? { signal } : {}) } as never) as z.infer<typeof poolStatusSchema>;
+  } catch {
+    return UNKNOWN_EXTRA_USAGE("off");
+  }
+  if (status.routing[provider] !== true) return UNKNOWN_EXTRA_USAGE("not-routing");
+  const readings = status.accounts
+    .filter(a => a.provider === provider && a.status === "ready")
+    .map((a): ExtraUsageEvidence => {
+      const observedAt = typeof a.extraUsage?.observedAt === "number" ? a.extraUsage.observedAt : null;
+      if (a.usageRestriction != null) return { allowed: false, status: "disabled", observedAt, pool: "on" };
+      const known = a.extraUsage?.status === "allowed" || a.extraUsage?.status === "rejected";
+      if (!known || observedAt === null) return { allowed: false, status: "unknown", observedAt, pool: "on" };
+      return { allowed: a.extraUsage!.status === "allowed", status: a.extraUsage!.status as "allowed" | "rejected", observedAt, pool: "on" };
+    })
+    .sort((a, b) => (b.observedAt ?? -Infinity) - (a.observedAt ?? -Infinity));
+  return readings.find(r => r.allowed) ?? readings.find(r => r.observedAt !== null) ?? readings[0] ?? UNKNOWN_EXTRA_USAGE("on");
 }
 
 async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: AbortSignal, fresh = false): Promise<Quotas> {
@@ -194,10 +231,7 @@ async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: Abor
     }
     for (const [provider, accounts] of byProvider) {
       const quota = pickAgentQuota(provider, accounts);
-      if (quota) {
-        if (sourcePluginId === "account-pool" && provider === "claude") quota.extraUsage = await poolExtraUsage(bb, provider, signal).catch(() => undefined);
-        quotas.set(provider, quota);
-      }
+      if (quota) quotas.set(provider, quota);
     }
   } catch {
     // This source isn't installed or doesn't answer: try the next one.
@@ -211,4 +245,9 @@ export function quotaLine(quota: AgentQuota | undefined, provider: Provider): st
   if (!quota) return `${name}: usage unknown`;
   const resets = quota.resetsAt ? `, resets ${new Date(quota.resetsAt).toISOString().slice(0, 16).replace("T", " ")} UTC` : "";
   return `${name}: ${Math.round(quota.usedPercent)}% of the ${quota.window.toLowerCase()} used${resets}`;
+}
+
+/** What the relay RPC shows: the Pooler's verdict and when it was taken. */
+export function extraUsageDto(evidence: ExtraUsageEvidence): { status: ExtraUsageStatus; observedAt: number | null; pool: "on" | "off" | "not-routing" } {
+  return { status: evidence.status ?? (evidence.allowed ? "allowed" : "unknown"), observedAt: evidence.observedAt, pool: evidence.pool ?? "on" };
 }

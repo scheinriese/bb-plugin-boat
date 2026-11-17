@@ -221,10 +221,13 @@ test("usage readings: the binding window, the freest pooled account, the first s
     "provider-claude-code provider-usage.v1.getResource",
     "provider-codex provider-usage.v1.listResources",
     "provider-codex provider-usage.v1.getResource",
+    // Claude extra usage: asked of the Pooler after the refresh; here it doesn't answer.
+    "account-pool status.get",
   ]);
+  assert.deepEqual(read.get("claude")?.extraUsage, { allowed: false, status: "unknown", observedAt: null, pool: "off" });
   // Cached for a minute.
   await reader.read();
-  assert.equal(calls.length, 5);
+  assert.equal(calls.length, 6);
 });
 
 test("Account Pooler readings count only for the agents it routes, and only its enabled accounts", async () => {
@@ -290,7 +293,7 @@ test("a worker's default agent gives way near its limit; both out stops new work
   );
 });
 
-async function relayHost(t: { after(fn: () => unknown): void }, usage: { claude: number; codex: number }, settings: Record<string, unknown> = {}) {
+async function relayHost(t: { after(fn: () => unknown): void }, usage: { claude: number; codex: number }, settings: Record<string, unknown> = {}, pool: { off?: boolean; extraUsage?: () => { status: string; observedAt: number } } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "boat-relay-test-"));
   const statePath = join(dir, "state.json");
   process.env.FAKE_BOAT_STATE = statePath;
@@ -343,9 +346,9 @@ async function relayHost(t: { after(fn: () => unknown): void }, usage: { claude:
   });
   harness.sdk.stub("system.config", async () => ({ primaryHostId: "host_1" }));
   harness.sdk.stub("plugins.callRpc", async ({ pluginId, method, input }: { pluginId: string; method: string; input: { resourceId?: string } }) => {
-    if (pluginId !== "account-pool") throw new Error("not installed");
+    if (pluginId !== "account-pool" || pool.off) throw new Error("not installed");
     if (method === "status.get") {
-      return { routing: { claude: true, codex: true }, accounts: [{ id: "c", provider: "claude", status: "ready", extraUsage: {status:"allowed",observedAt:Date.now()} }, { id: "x", provider: "codex", status: "ready" }] };
+      return { routing: { claude: true, codex: true }, accounts: [{ id: "c", provider: "claude", status: "ready", extraUsage: pool.extraUsage?.() ?? {status:"allowed",observedAt:Date.now()} }, { id: "x", provider: "codex", status: "ready" }] };
     }
     if (method.endsWith("listResources")) return { resources: [{ id: "c", providerId: "claude-code" }, { id: "x", providerId: "codex" }] };
     const usedPercent = input.resourceId === "c" ? usage.claude : usage.codex;
@@ -694,4 +697,21 @@ test("provider handoff also preserves ordinary bb child chats without restarting
   const spawn=harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as {prompt:string};
   assert.match(spawn.prompt,/@thread:thr_child/);
   assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,2);
+});
+
+test("relay RPC shows a stale Pooler rejection with its real check time, and never as paid room",async t=>{
+ const checked=Date.now()-25*60_000;let extra={status:"rejected",observedAt:checked};
+ const {harness}=await relayHost(t,{claude:100,codex:100},{paidClaudeFallback:true,agents:"both"},{extraUsage:()=>extra});
+ type Relay={paidClaudeAvailable:boolean;claudeExtraUsage:{status:string;observedAt:number|null;pool:string}};
+ let state=await harness.callRpc("relay",null) as Relay;
+ assert.equal(state.paidClaudeAvailable,false);assert.deepEqual(state.claudeExtraUsage,{status:"rejected",observedAt:checked,pool:"on"},"the old rejection keeps its own time, not now");
+ extra={status:"allowed",observedAt:checked};await new Promise(r=>setTimeout(r,0));
+ const fresh=await relayHost(t,{claude:100,codex:100},{paidClaudeFallback:true,agents:"both"},{extraUsage:()=>extra});
+ state=await fresh.harness.callRpc("relay",null) as Relay;
+ assert.equal(state.claudeExtraUsage.status,"allowed");assert.equal(state.paidClaudeAvailable,false,"a 25-minute-old allowance is too old for automatic paid use");
+});
+test("relay RPC says unknown, Pooler off, when the Account Pooler doesn't answer",async t=>{
+ const {harness}=await relayHost(t,{claude:100,codex:100},{paidClaudeFallback:true,agents:"both"},{off:true});
+ const state=await harness.callRpc("relay",null) as {paidClaudeAvailable:boolean;claudeExtraUsage:unknown};
+ assert.equal(state.paidClaudeAvailable,false);assert.deepEqual(state.claudeExtraUsage,{status:"unknown",observedAt:null,pool:"off"});
 });

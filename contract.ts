@@ -647,6 +647,16 @@ export const rpcContract = defineRpcContract({
       avoidExtraUsage: z.boolean(),
       paidClaudeFallback: z.boolean().optional(),
       paidClaudeAvailable: z.boolean().optional(),
+      /**
+       * Claude extra usage as the Account Pooler last saw it, and when (epoch
+       * ms; null: never). pool "off"/"not-routing": nothing is known. Never a
+       * money balance.
+       */
+      claudeExtraUsage: z.object({
+        status: z.enum(["allowed", "rejected", "disabled", "unknown"]),
+        observedAt: z.number().nullable(),
+        pool: z.enum(["on", "off", "not-routing"]),
+      }).optional(),
       paidClaudeHeadless: z.boolean().optional(),
       agents: z.array(
         z.object({

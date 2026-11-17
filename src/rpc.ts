@@ -24,6 +24,7 @@ import { buildBoard, isReady, phaseOf, reviewState, resolveTaskStatus, type Task
 import { ConfigError, applyImport, changeCount, exportConfig, exportFileName, planImport, summarize } from "./config.ts";
 import { CHAT_PROVIDER } from "./chat.ts";
 import { OPEN_STATUSES, PROVIDERS, type Provider, type Task } from "./store.ts";
+import { extraUsageDto, poolExtraUsage } from "./quota.ts";
 import { automaticPaidClaude, effectiveRelay, onlyAgent, relayNote } from "./relay.ts";
 import { explainBoatError, sandboxSizes, testTaskInput, type ExplainedError } from "./setup.ts";
 import { SettingsError, settingRows } from "./settings-store.ts";
@@ -504,6 +505,7 @@ export function registerRpc(runtime: Runtime): void {
         avoidExtraUsage: settings.avoidExtraUsage,
         paidClaudeFallback: settings.relay.paidClaudeFallback === true,
         paidClaudeAvailable: automaticPaidClaude(status.quotas, settings.relay, settings.agents),
+        claudeExtraUsage: extraUsageDto(status.quotas.get("claude")?.extraUsage ?? await poolExtraUsage(bb, "claude")),
         paidClaudeHeadless: settings.relay.paidClaudeHeadless === true,
         agents: PROVIDERS.filter((provider) => onlyAgent(settings.agents) === null || provider === settings.agents).map((provider) => {
           const quota = status.quotas.get(provider);

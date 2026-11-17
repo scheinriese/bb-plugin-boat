@@ -24,6 +24,7 @@ import { experimental_useRpcQuery } from "@get-bb/plugin-sdk/app";
 import { rpcContract, type DecisionDto, type TaskDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { claudeExtraUsageLine } from "./relay-logic";
 import { cn } from "@/lib/utils";
 import { Board } from "./board";
 import {
@@ -113,7 +114,11 @@ export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentP
     return <span className="boat-ui ml-auto hidden text-[12px] text-[#FC8C45] md:inline">{relay?.agents.filter(agent=>agent.usedPercent!==null).map(agent=>`${agent.provider==='claude'?'Claude':'Codex'} ${Math.round(agent.usedPercent!)}%`).join(' · ')||'Running work continues'}</span>;
   }
   if((own?.provider??currentAgent)==='claude'&&relay?.paidClaudeAvailable)
-    return <span className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title="Included allowances are near their limits. Automatic Claude extra usage is authorized; Claude's billing controls apply. Boat cannot read your money balance."><AgentLogo provider="claude" className="size-3"/>Claude extra usage permitted</span>;
+    return <span className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title="Included allowances are near their limits. Automatic Claude extra usage is authorized; Claude's billing controls apply. Boat cannot read your money balance."><AgentLogo provider="claude" className="size-3"/>Claude extra usage available</span>;
+  if((own?.provider??currentAgent)==='claude'&&relay?.paidClaudeFallback&&usage?.provider==='claude'&&usage.usedPercent!==null&&usage.usedPercent>=relay.switchAtPercent){
+    const line=claudeExtraUsageLine(relay.claudeExtraUsage,false);
+    return <span className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex" title={`${line}. Boat sees only allowed or blocked, never a balance or spending cap.`}><AgentLogo provider="claude" className="size-3"/>{line.replace(/^Claude extra usage: /,'Claude extra usage ').replace(' by the Account Pooler','')}</span>;
+  }
   if(!own&&relay?.enabled&&currentAgent){
     const preferredUsage=relay.agents.find(agent=>agent.provider===relay.preferred);
     if(currentAgent!==relay.preferred&&preferredUsage?.usedPercent!==null&&preferredUsage?.usedPercent!==undefined&&preferredUsage.usedPercent>=relay.switchAtPercent)
