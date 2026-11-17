@@ -1,4 +1,4 @@
-import { readPausedResets, type PausedReset } from "./sidebar-reset.ts";
+import { readPausedResets, resetWaitText, type PausedReset } from "./sidebar-reset.ts";
 import type { Runtime } from "./runtime.ts";
 import type { FidelityUsageDto } from "../contract-fidelity.ts";
 import { usageWindows } from "./usage.ts";
@@ -13,7 +13,7 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
   const { service } = runtime;
   let pausedCache: { at: number; value: Promise<Map<string, PausedReset>> } | null = null;
   const cache = new Map<string, { at: number; value: Promise<FidelityUsageDto> }>();
-  async function readQueuedStarts(): Promise<{ rows: SidebarQueuedStartDto[]; truncated: boolean }> {
+  async function readQueuedStarts(timezoneOffsetMinutes?: number): Promise<{ rows: SidebarQueuedStartDto[]; truncated: boolean }> {
     if (!runtime.startQueue) return { rows: [], truncated: false };
     let truncated = false;
     let pending: QueuedStartDto[] = [], started: QueuedStartDto[] = [];
@@ -56,7 +56,8 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
         }
         rows[index] = { id: entry.id, revision: entry.revision, title: entry.title, sourceThreadId: entry.threadId,
           provider: task?.provider ?? entry.requestedProvider, resetsAt: entry.resetsAt, createdAt: entry.createdAt,
-          state: entry.state as SidebarQueuedStartDto["state"], taskId: task?.id ?? null, taskThreadId };
+          state: entry.state as SidebarQueuedStartDto["state"], taskId: task?.id ?? null, taskThreadId,
+          secondLine: entry.state === "waiting" ? { text: resetWaitText(Date.parse(entry.resetsAt ?? ""), timezoneOffsetMinutes), tone: "neutral" } : null };
       }
     }));
     return { rows: rows.filter((row): row is SidebarQueuedStartDto => row !== null), truncated };
@@ -111,7 +112,7 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
     sidebarState: async (input: { version: 1; timezoneOffsetMinutes?: number }) => {
       if (runtime.bb && (!pausedCache || Date.now() - pausedCache.at > 15_000)) pausedCache = { at: Date.now(), value: readPausedResets(runtime.bb) };
       const base = sidebarState(service, runtime.bb ? await pausedCache!.value : new Map(), input.timezoneOffsetMinutes);
-      const queued = await readQueuedStarts();
+      const queued = await readQueuedStarts(input.timezoneOffsetMinutes);
       return { ...base, queuedStarts: queued.rows, truncated: base.truncated || queued.truncated,
         revision: createHash("sha256").update(JSON.stringify([base.revision, queued.rows])).digest("hex").slice(0, 24) };
     },

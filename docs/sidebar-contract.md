@@ -101,6 +101,14 @@ always emits the field and includes its ordered contents in `revision`.
 | state | waiting, dispatching, or started |
 | taskId | Actual started task registry id, otherwise null |
 | taskThreadId | Verified open BB chat for that task, otherwise null |
+| secondLine | Additive, optional: `{text,tone:"neutral"}` for a waiting request, otherwise null |
+
+`secondLine` is Boat's own reset line in the requested `timezoneOffsetMinutes`,
+worded like its chat cards: `Waits for reset · 1:00 am` later today or
+overnight (next day, under 12 hours away), `· tomorrow 1:00 am`, `· Thu 1:00 am`
+within the week, `· Nov 26, 1:00 am` further out, or `Waits for reset` with no
+known time. Thread rows' `waiting-reset` lines follow the same rules. A
+consumer that prints its own clock should prefer this text.
 
 This separate collection never manufactures a BB thread. Waiting/dispatching
 requests retain capacity before started receipts, independently of the most
