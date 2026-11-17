@@ -181,6 +181,9 @@ Short: up to three headed lists, one line per item with its links, empty
 ones left out: **Needs you** (each with your recommendation, also posted
 with `boat_needs_you`), **Ready to review** (pull request and preview, marked
 with `boat_ready`), **Running**. No wide tables, no commit hashes; link the
-Cloud agents page from `boat_tasks` for the full picture. A table only if
+Cloud agents page from `boat_tasks` for the full picture. Refer to a chat
+as a bare `@thread:thr_…` (or `@thread:thr_…#msg=N`), never inside a
+Markdown link target like `[chat](@thread:thr_…)`, which opens as a missing
+file; Markdown links are for URLs and files only. A table only if
 the user asks, at most three columns. The Cloud agents page is the ledger;
 don't keep or paste a separate one.
