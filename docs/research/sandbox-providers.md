@@ -2,6 +2,8 @@
 
 Research and design only: this document changes no code. It looks at how the plugin, today tied to boat.dev, could work with several cloud sandbox providers, with Mac and iOS work as the priority. It also covers a second use case: short-lived Mac and Windows boxes for cross-platform browser testing.
 
+**Reading guide.** For the decision, read the Summary and Part C. Part A is the code audit behind the refactor. Parts B and B2 are the sourced reference: one section per provider, then licensing, Windows and browser testing.
+
 - **Date:** 2026-11-17. Prices are list prices in US dollars on that date, and they change.
 - **Code audited:** this repository at commit `aaf1442` (version 0.2.8), and bb's public source at commit [`de34f34`](https://github.com/get-bb/bb/tree/de34f3492e4c69ade967e7b9b1345c9e8d62b03d).
 - **Providers:** boat.dev (the baseline), Instabox, Darkbloom, Modal and Vercel Sandbox, plus Windows options and hosted browser-testing services.
@@ -9,23 +11,23 @@ Research and design only: this document changes no code. It looks at how the plu
 ## Summary
 
 1. **No provider covers everything.** boat.dev, Modal and Vercel Sandbox are Linux-only. Of the five, only Instabox has a self-serve Mac API, since 2026-11-12, and its Xcode and Simulator details are still undocumented. None of the five sells Windows.
-2. **Top recommendation:** keep boat.dev as the Linux default. Extract a provider interface built on bb's own machine layer. Then ship a cross-platform capture feature before Mac agent workspaces. That puts the second use case ahead of the stated Mac priority, because it is cheap, low-risk and works with the plugin as it is. Mac work can start the same day on a Mac enrolled by hand in bb.
-3. **Capture runs on per-minute runners.** Real Safari and Windows Edge and Chrome on GitHub's hosted runners cost about $0.31 and $0.05 per 5-minute run, or nothing for public repos. Hosted grids cover Windows 11 x64 and real iPhones. TestingBot is pay as you go from about €60 per 1,000 minutes. Unlimited per-parallel plans cost $79 to $129 a month for desktop browsers, and $175 to $225 with real iPhones.
-4. **Renting a Mac for agent work means leasing a whole Mac for at least 24 hours.** That is Apple's Section 3A; a Mac you own has no minimum. Start by enrolling an owned or rented Mac as a bb machine. Scaleway rents a 16 GiB Mac mini for €115 a month or €4.08 a day. Then add one Mac API: Instabox (macOS 26 with Xcode, from $10.80 a day, Linux too) or Scaleway (whole Mac minis, from €2.64 a day).
-5. **Darkbloom is not fit for agents that hold credentials.** Its docs say Darkbloom can decrypt workspaces and that sandboxes "do not yet claim confidentiality" from the Mac's owner. It is invite-only, has no documented API (only a CLI and an MCP server) and no inbound ports, and doesn't address Apple's lease rule.
-6. **Modal and Vercel Sandbox are Linux options.** For Modal, reuse bb's official Modal machine provider rather than writing a client. Vercel needs a new adapter, a token-checking proxy for its public preview URLs, and a restart at the 24-hour session cap.
-7. **Two ways to run tasks on a new provider.** Task chats (bb on the sandbox) work on any provider with a lifecycle and an executor, but only for repos you trust, because the sandbox then holds bb's credentials. Headless tasks, the default, need an agent runner per provider: boat's today, then Instabox's CLI runner, then a generic one. Until then, untrusted repos stay on boat.
-8. **Windows waits on bb, not on supply.** None of the five sells Windows, but Daytona, Orgo, Windows 365 for Agents, EC2 and Azure do. Microsoft's licensing keeps Windows 11 away from third-party sandboxes, and bb can't yet enroll Windows from a provider plugin. Use Windows as a capture target first.
-9. **The refactor is moderate.** About 3% of the TypeScript names boat, but it sits in the core modules (service, setup, the boat API, machine, sizing). Phase 1 can ship with no behavior change.
-10. **Pricing:** the owner's Instabox Mac prices and Darkbloom Linux and Mac prices are all confirmed. "Private beta" for Darkbloom is close: its sandboxes are invitation-only and labeled experimental, for Linux too.
+2. **Top recommendation:** keep boat.dev as the Linux default. Extract a provider interface modeled on bb's `SandboxBackend`. Then ship a cross-platform capture feature, which can overlap that work, before plugin-managed Mac agent workspaces. That puts the second use case ahead of the stated Mac priority, because it is cheap, low-risk and works with the plugin as it is (owner to confirm). Mac work can start the same day in bb's own chats, on a Mac enrolled by hand.
+3. **Capture runs on per-minute runners.** Real Safari, and Edge and Chrome on Windows Server 2025, cost about $0.31 and $0.05 per 5-minute run on GitHub's hosted runners, or nothing for public repos, whose run logs are public, so the preview link must be masked. Whether Server 2025 renders like Windows 11, and whether headed Edge works there, is unverified. Hosted grids cover Windows 11 x64 and real iPhones. TestingBot is pay as you go from about €60 per 1,000 minutes. Unlimited per-parallel plans cost $79 to $129 a month for desktop browsers, and $175 to $225 with real iPhones ([GitHub pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing), [TestingBot](https://testingbot.com/pricing), [BrowserStack](https://www.browserstack.com/pricing), [TestMu AI](https://www.testmuai.com/pricing.md)).
+4. **Renting a Mac for agent work means leasing a whole Mac for at least 24 hours.** That is Apple's Section 3A; a Mac you own has no minimum. Start by enrolling an owned or rented Mac as a bb machine. Scaleway rents a 16 GiB Mac mini for €115 a month or €4.08 a day. Then add one Mac API: Instabox (macOS 26 with Xcode, from $10.80 a day, Linux too) or Scaleway (whole Mac minis, from €2.64 a day) ([Apple's license](https://www.apple.com/legal/sla/docs/macOS27.pdf), [Scaleway catalog](https://api.scaleway.com/product-catalog/v2alpha1/public-catalog/products?product_types=apple_silicon&page_size=100), [Instabox macOS](https://instabox.sh/docs/machines/macos.md)).
+5. **Darkbloom is not fit for agents that hold credentials.** Its docs say Darkbloom can decrypt workspaces and that sandboxes "do not yet claim confidentiality" from the Mac's owner. It is invite-only, has no documented API (only a CLI and an MCP server) and no inbound ports, and doesn't address Apple's lease rule ([security](https://docs.darkbloom.dev/sandboxes/security), [overview](https://docs.darkbloom.dev/sandboxes/overview)).
+6. **Modal and Vercel Sandbox are Linux options.** For Modal, reuse bb's official Modal machine provider rather than writing a client (inferred feasible; untested). Vercel needs a new adapter, a token-checking proxy for its public preview URLs, and a restart at the 24-hour session cap (see [Modal](#modal) and [Vercel Sandbox](#vercel-sandbox)).
+7. **Two ways to run tasks on a new provider.** Task chats (bb on the sandbox) work on any provider with a lifecycle and an executor, but by default only for repos you trust, because the sandbox then holds bb's credentials. Headless tasks, the default, need an agent runner per provider: boat's today, then Instabox's CLI runner, then a generic one. Until then, untrusted repos stay on boat (see [Recommended architecture](#recommended-architecture)).
+8. **Windows waits on bb, not on supply.** None of the five sells Windows, but Daytona, Orgo, Windows 365 for Agents, EC2 and Azure do. Each is gated (Daytona's Tier 3, Orgo's monthly plans, Windows 365's Intune and Agent 365 licenses). Microsoft's licensing seems to keep Windows 11 away from third-party sandboxes (inferred), and bb can't yet enroll Windows from a provider plugin. Use Windows as a capture target first (see [Windows sandboxes and licensing](#windows-sandboxes-and-licensing)).
+9. **The refactor is moderate.** About 3% of the plugin's non-test TypeScript is coupled to boat, but it sits in the core modules (service, setup, the boat API, machine, sizing). The extraction itself (Phase 1a) can ship with no behavior change (see [How much is boat-specific](#how-much-is-boat-specific)).
+10. **Pricing:** the owner's Instabox Mac prices and Darkbloom Linux and Mac prices are all confirmed. "Private beta" for Darkbloom is close: its sandboxes are invitation-only and labeled experimental, for Linux too (see [owner-supplied figures](#owner-supplied-figures)).
 11. **Needs the owner:** a Mac budget (owned, monthly or leased), capture backends, a Mac provider account, and a decision on naming.
 
 ## How this was researched
 
 - **Code audit.** Five independent audits covered lifecycle and limits, exec and the agent runner, repo, previews and secrets, bb machine enrollment, and setup and UI. A sixth pass grepped every boat call to check completeness and spot-checked the line pointers.
 - **Providers and topics.** One researcher per topic used public sources only: docs, pricing pages, terms, GitHub and changelogs. No accounts were created, no paid APIs were called and no vendor was contacted. An independent checker then re-fetched the sources, recomputed the costs and corrected the draft section.
-- **Final review.** Separate reviewers tried to refute the whole document against the brief before publishing.
-- **Labels.** "(unverified)" marks claims not confirmed in a primary source. "(inferred)" marks this report's own reasoning. Vendor comparison pages are treated as biased.
+- **Final review.** Seven more reviewers tried to refute the draft, each through one lens: prices and cost math, the recommendation, Mac licensing and trust, testing and Windows facts, code claims, coverage of the brief, and citations and style. Together they re-checked several hundred claims and links, and their corrections are applied.
+- **Labels.** "(unverified)" marks claims not confirmed in a primary source. "(inferred)" and "this report's reading" mark this report's own reasoning. "(untested)" marks what would need an account to try. "(vendor claim)" marks a vendor's statement about itself that nobody independent measured. Vendor comparison pages are treated as biased.
 
 ## Part A: what the plugin needs from a provider
 
@@ -46,7 +48,7 @@ Every boat call in the code, grouped by capability. A grep found 114 calls into 
 | CLI client and errors | `boat <sub> --json` spawned on the bb host; JSON Lines; error record `{event:"error",code,error,status}`; 60 s default timeout | `src/boat.ts:145`, `src/boat.ts:77`, `src/boat.ts:99` | Required: SDK or HTTP client mapped to one error shape |
 | Create | `boat new --name --type [--environment] [--from] [-e K=V] [--ttl]`; reads `created` and `ready`, then `boat info` | `src/boat-api.ts:858`, `src/service.ts:898`, `src/service.ts:1667` | Required; idempotent by key or tag |
 | Get and list | `boat info <id>` (`{sandbox}`); `boat list [--all]` (`{sandboxes}`); `not_found` or 404 means gone | `src/boat-api.ts:831`, `src/boat-api.ts:849`, `src/service.ts:4416` | Required |
-| State model | Active: provisioned, cloning, ready, idle, running. Stopped: stopped, archived. Dead: error, cancelled | `src/boat-api.ts:74`, `src/service.ts:551`, `src/watchdog.ts:62`, `web/format.ts:180` | Required: normalized state plus the raw value |
+| State model | Active: provisioned, cloning, ready, idle, running. Transitional: provisioning, starting, stopping, archiving, resuming, pending (waited out up to 120 s). Stopped: stopped, archived. Dead: error, cancelled | `src/boat-api.ts:74`, `src/service.ts:551`, `src/watchdog.ts:62`, `web/format.ts:180` | Required: normalized state plus the raw value |
 | Stop and resume | `boat stop <id>` keeps disk and conversations; `boat resume <id> [--ttl] [--type]` counts as a start; stopped boxes go after 14 days | `src/boat-api.ts:920`, `src/boat-api.ts:925`, `src/service.ts:966`, `src/service.ts:3707` | Optional. Fallback: snapshot and terminate, or delete when idle |
 | Delete | `boat delete <id> --yes` | `src/boat-api.ts:916`, `src/service.ts:1009`, `src/machine.ts:249` | Required |
 | Orphan cleanup | Failed `boat new` deletes its `created` id; bb machines found by name `bb machine <key>` in `boat list --all` | `src/boat-api.ts:883`, `src/machine.ts:51`, `src/machine.ts:129` | Required: tags or idempotent create |
@@ -80,7 +82,7 @@ Every boat call in the code, grouped by capability. A grep found 114 calls into 
 | Preview health and restart | bb host fetches `*.on.boat.dev` only (403 means stopped); restart by detached exec with `ss -ltnpH` and the Vite allow-host variable | `src/previews.ts:80`, `src/service.ts:454`, `src/service.ts:459` | Optional. Without it, health stays unknown |
 | **Evidence** | | | |
 | Uploader install | Base64 heredoc over exec; `sudo install` to `/usr/local/bin/evidence-upload`; Node 20+ | `src/evidence.ts:159`, `src/evidence.ts:169`, `src/service.ts:1606` | Optional (off by default). Needs sudo or a user dir |
-| Bucket keys and links | `EVIDENCE_*` or `AWS_*` in the boat environment; SigV4 PUT, presigned GET (1 to 7 days); re-link with `bb boat sandbox exec ... evidence-upload --link` | `src/evidence.ts:26`, `assets/evidence-upload.mjs:224`, `src/protocol.ts:180` | Optional. Better: presign on the bb host |
+| Bucket keys and links | `EVIDENCE_*` or `AWS_*` in the boat environment; SigV4 PUT, presigned GET (1 to 7 days); re-link with `bb boat sandbox exec ... evidence-upload --link` | `src/evidence.ts:26`, `assets/evidence-upload.mjs:224`, `src/protocol.ts:180` | Optional. Better: presign in the task's sandbox, where the keys live, and hand capture jobs only the URLs (Part B2) |
 | **Limits, usage and start queue** | | | |
 | Plan limits and start counts | `boat limits`: `canStart`, `startBlockedReason`, `checkoutRequired`, `starts.day/hour.remaining`, `activeSandboxes`, `machineTypes` | `src/boat-api.ts:789`, `src/service.ts:817`, `src/setup.ts:248` | Optional. Worth requiring: a concurrency max and canStart |
 | Sandboxes at once and make room | cap is min(plan, setting); used counts the whole boat account; stops the least recently used idle box | `src/service.ts:790`, `src/service.ts:808`, `src/service.ts:842` | Required logic (plugin side). Unit: boxes or vCPUs |
@@ -110,13 +112,13 @@ The plugin holds no boat key. It spawns the local boat CLI, which uses the user'
 **bb credentials**
 - Task chats and cloud orchestrators install bb in the box. The enrollment bundle goes over `boat ssh` stdin, not argv (`src/machine.ts:60`).
 - bb core then adds machine credentials. For non-primary hosts it also forwards the server's gh login as `GH_TOKEN` with a credential helper ([configuration.md#L888-L918](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/docs/configuration.md#L888-L918), [git-credentials.ts#L8-L40](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/services/machines/git-credentials.ts#L8-L40)).
-- Trust routing keeps these credentials away from untrusted code. Untrusted repos run headless (`src/service.ts:1468`). A sandbox that ever ran bb is never reused for an untrusted repo (`src/service.ts:1190`) and never snapshotted (`src/service.ts:2884`). A provider without a headless runner loses this split.
+- Trust routing keeps these credentials away from untrusted code by default. Untrusted repos run headless unless the user confirms a task chat for them (`--chat`, Run as a chat or Continue as a chat), and a confirmed task's reviews still run headless (`src/service.ts:1431`, `src/service.ts:1465`, `src/service.ts:1468`). A sandbox that runs or ran bb is refused for an untrusted repo, except for a review in its own task's sandbox, and is never snapshotted (`src/service.ts:1190`, `src/service.ts:2884`). A provider without a headless runner loses this default split.
 
 **Back to the bb host**
 - `boat env list` and `boat env info` return `envContents` with values. The plugin keeps names only (`src/boat-api.ts:620`, `src/setup.ts:277`), but the values pass through process memory.
 
 **Network**
-- Inbound: only `boat host --private` links on `*.on.boat.dev`. They carry `?_token=`, set a cookie on the first visit and survive stop and resume (`src/boat-api.ts:933`, `src/store.ts:278`). No public IP and no inbound SSH. `boat ssh` is a user hint and the enrollment transport.
+- Inbound: the plugin uses only `boat host --private` links on `*.on.boat.dev`. They carry `?_token=`, set a cookie on the first visit and survive stop and resume (`src/boat-api.ts:933`, `src/store.ts:278`). boat also gives each sandbox public IPv6 and SSH (see [boat.dev](#boatdev-baseline)), but the plugin uses neither directly; `boat ssh` is a user hint and the enrollment transport.
 - Health checks: the bb host fetches preview links, only on `*.on.boat.dev` (`src/previews.ts:80`).
 - Outbound: assumed open and never configured. Boxes reach GitHub, package registries, AI APIs, the S3 or R2 bucket, and the bb server when enrolled.
 - Agents run with full permissions in a disposable box (`src/chat.ts:278`). Guard rails: the protected-branch pre-push hook and a trust note in every brief (`src/briefs.ts:169`).
@@ -126,7 +128,7 @@ The plugin holds no boat key. It spawns the local boat CLI, which uses the user'
 - A GitHub token path: a provider app, or tokens minted on the bb host and injected as `GH_TOKEN` with a credential helper, as bb core does.
 - Egress to GitHub, registries, AI APIs, the bucket and the bb server. Allowlists must include them.
 - A token-gated HTTPS preview link. bb shared ports need a bb Connect session to view, so their links can't be shared.
-- Test runners need only the preview URL and a presigned PUT URL minted on the bb host. No GitHub token, agent logins or bucket keys.
+- Test runners need only the preview URL and a presigned PUT URL minted in the task's sandbox (or on the bb host, if the user moves the bucket keys there). No GitHub token, agent logins or bucket keys.
 
 ### How much is boat-specific
 
@@ -145,13 +147,14 @@ The plugin holds no boat key. It spawns the local boat CLI, which uses the user'
 
 - Per-area structural counts from the audits (blocks that exist only for boat): lifecycle 2,175 of 5,336 non-blank lines (41%); exec and runner 1,823 of 6,663 (27%); repo, previews and secrets about 835 of 3,976 (21%); bb enrollment 104 hard lines, about 380 with `src/keeper.ts`.
 - 63% of lexical logic lines sit in five files: `src/boat-api.ts` 278, `src/setup.ts` 177, `src/service.ts` 145, `src/memory.ts` 69, `src/sandbox-size.ts` 55.
-- Scripts: `/home/user/research/audit/count-boat.mjs` (lexical), `/home/user/research/audit/consolidate/fn-units.mjs` (blast radius).
+- Counted at `aaf1442` with a TypeScript-parser script (lexical) and a per-function scan (blast radius); the scripts are not included.
 
 **Thin adapters** (wording, enums, capability gates)
 - `src/cli.ts`, `src/tools.ts`, `src/rpc.ts`, `src/rpc-fidelity.ts`, `src/rpc-size.ts`, `src/project-catalog.ts`: route calls through the provider; hide console and SSH links when absent.
 - `contract*.ts`, `src/settings.ts`, `src/config.ts`, `src/settings-store.ts`, `web/`: size enum to provider size ids; provider-scoped settings; labels.
 - `src/previews.ts` (host suffix), `src/evidence.ts` (installer per shell), `src/tiers.ts` (model ids move to the runner), `src/transcript.ts` (home dir), `src/usage.ts`, `src/briefs.ts` and protocol text (preview host, gh notes).
-- Already neutral: `src/chat.ts`, `src/chat-recovery.ts`, `src/steer-retry.ts`, `src/relay.ts`, `src/activity.ts` (provider id only), `src/limits.ts`, `src/quota.ts`, `src/start-queue*.ts`, `src/bootstrap.ts`, `src/github.ts`, `src/merge*.ts`, `src/local-projects.ts`.
+- `src/chat.ts`: the machine provider id and the adopt-a-sandbox inputs per provider (`src/chat.ts:167`).
+- Already neutral: `src/chat-recovery.ts`, `src/steer-retry.ts`, `src/relay.ts`, `src/activity.ts` (provider id only), `src/limits.ts`, `src/quota.ts`, `src/start-queue*.ts`, `src/bootstrap.ts`, `src/github.ts`, `src/merge*.ts`, `src/local-projects.ts`.
 
 **Deep changes**
 - `src/boat.ts`, `src/boat-api.ts`: move to `providers/boat`. Keep the POSIX git scripts (prepareRepo, hooks, ship, access check) in a shared module with a shell and home parameter.
@@ -181,7 +184,7 @@ The plugin holds no boat key. It spawns the local boat CLI, which uses the user'
 | Tools in scripts | Containers may lack `ss`, journalctl and systemd (`src/service.ts:457`, `src/memory.ts:165`) | No `ss` (use `lsof`), no `/proc`, no GNU `timeout`. Use `sysctl` and `vm_stat` | Get-NetTCPConnection, Stop-Process and CIM instead |
 | Process model | The exec API must not reap detached children. The `boat ps` filters name Linux daemons (`src/boat-api.ts:137`) | `nohup` works. `ps` CPU% is per core. launchd, WindowServer and mds count as infrastructure. jetsam replaces the OOM killer | Start-Process or a scheduled task. Job objects can kill children when the session ends. Get-Process reports CPU seconds, so take two samples. ssh and services run in session 0 |
 | Privileges | The evidence installer assumes passwordless sudo (`src/evidence.ts:169`) | sudo usually asks for a password | UAC; no `/usr/local` |
-| Agent runner | Only boat has one. Others: a plugin ExecRunner over detached exec, or task chats | ExecRunner with Homebrew or npm CLIs | ExecRunner in PowerShell |
+| Agent runner | Only boat has a full one; Instabox has a CLI-only one (Part B). Others: a plugin ExecRunner over detached exec, or task chats | ExecRunner with Homebrew or npm CLIs | ExecRunner in PowerShell |
 | bb enrollment | Works with Node 22.19+, curl and egress. Without systemd the installer runs a nohup daemon | The installer supports Darwin but registers a LaunchAgent with `launchctl bootstrap gui/<uid>`, which needs a GUI login. Set `BB_INSTALL_SKIP_SERVICE=1`. Node is not preinstalled | Blocked at de34f34: bootstrap runs POSIX `sh`, and the installer refuses other OSes. Only a manual PowerShell enrollment exists |
 | Sizes and cost | The size enum and the MemTotal check are boat-shaped (`src/memory.ts:72`) | Fixed hardware, often a 24 h minimum. Idle stop (`src/settings.ts:109`), delete on close (`src/settings.ts:359`) and resize then waste paid time | VM SKUs with their own minimums |
 | GUI capture (runners) | Headless browser | Aqua session plus Screen Recording (TCC) permission for video | An interactive desktop session, not session 0 |
@@ -203,7 +206,7 @@ bb references: [bootstrap.ts#L7-L30](https://github.com/get-bb/bb/blob/de34f3492
 Links pin get-bb/bb at de34f34.
 
 **Machine-provider API (core)**
-- A plugin registers a provider with `bb.experimental_machines.register`: `availability`, `validate`, `create`, `reconcileCleanup`, optional `suspend` and `resume`, and `remove` ([machine-provider.ts#L69-L108](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/plugin-sdk/src/machine-provider.ts#L69-L108)). `suspend` must stop any remaining compute ([#L97](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/plugin-sdk/src/machine-provider.ts#L97)).
+- A plugin registers a provider with `bb.experimental_machines.register`: required `create`, `reconcileCleanup` and `remove`; optional `availability`, `validate`, `suspend` and `resume` ([machine-provider.ts#L69-L108](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/plugin-sdk/src/machine-provider.ts#L69-L108)). `suspend` must stop any remaining compute ([#L97](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/plugin-sdk/src/machine-provider.ts#L97)).
 - Core owns enrollment. `bb.experimental_machines.bootstrap` takes a `MachineExecutor` with `command[]`, `stdin`, `onOutput` and `timeoutMs` ([machine-bootstrap.ts#L3-L13](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/plugin-sdk/src/machine-bootstrap.ts#L3-L13)). It runs `sh -c` to fetch `/install.sh` with the enrollment JSON on stdin, or `sh -s -- --start` on resume. It allows 600 s for the exec and 120 s for the connection ([bootstrap.ts#L7-L30](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/services/machines/bootstrap.ts#L7-L30), [#L65-L121](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/services/machines/bootstrap.ts#L65-L121)).
 - The installer accepts macOS and Linux only and needs Node 22.19+ ([install-machine.sh#L384-L409](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/assets/install-machine.sh#L384-L409)). It installs a systemd or launchd service, or a nohup daemon ([#L440-L461](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/assets/install-machine.sh#L440-L461), [#L994-L1023](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/assets/install-machine.sh#L994-L1023), [#L1047-L1118](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/assets/install-machine.sh#L1047-L1118)).
 - Thread-lifetime launches of an ephemeral provider are ephemeral. Standalone `hosts.experimental_create` machines are persistent, so the plugin deletes them itself ([provider-orchestration.ts#L540-L550](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/services/machines/provider-orchestration.ts#L540-L550), [#L596-L606](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/services/machines/provider-orchestration.ts#L596-L606)).
@@ -232,8 +235,8 @@ Links pin get-bb/bb at de34f34.
 4. For screenshot runners: bb's browser-automation plugin runs headless Chrome with screenshots on enrolled Linux and macOS hosts. It has no Windows build and no cloud provisioning ([browser-automation/README.md#L1-L14](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/browser-automation/README.md#L1-L14), [#L35](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/browser-automation/README.md#L35)).
 
 **Recommendation**
-- Now: option 2. Put a `SandboxProvider` in this plugin whose lifecycle and executor follow `SandboxBackend`. Port boat first, then Linux vendors.
-- Option 1 as a chat-only fallback for providers bb ships, for trusted repos.
+- Now: option 2. Put a `SandboxProvider` in this plugin whose lifecycle and executor follow `SandboxBackend`. Port boat first, then Instabox, then the other Linux vendors.
+- Option 1 for Modal (bb's own provider), chat-only and for trusted repos.
 - Option 3 for core changes: a platform hint on bootstrap, the macOS service fallback, and Windows enrollment.
 
 ### Draft SandboxProvider interface
@@ -255,7 +258,8 @@ export type SandboxState = 'starting' | 'running' | 'stopping' | 'stopped' | 'fa
 export interface SandboxCapabilities {
   os: Os;                                    // boat: 'linux'
   arch: 'x64' | 'arm64';
-  shell: 'bash' | 'zsh' | 'powershell';      // boat: bash -lc
+  shell: 'bash' | 'powershell';              // boat: bash -lc (macOS: bash 3.2, login PATH set in zsh)
+  tempDir: string;                           // boat: /tmp
   homeDir: string;                           // boat: /home/user
   sudo: boolean;                             // boat: passwordless (evidence installer)
   stop: 'keep-disk' | 'snapshot' | 'none';   // boat: keep-disk (boat stop)
@@ -269,29 +273,27 @@ export interface SandboxCapabilities {
   minBillingSeconds: number | null;          // boat: null; Mac hosts often 86400
   maxSessionSeconds: number | null;          // boat: null; Modal 86400
   execMaxSeconds: number;                    // boat: 600
-  detachedExec: boolean;                     // boat: exec --detach
-  processList: 'native' | 'exec' | 'none';   // boat: native (boat ps)
+    processList: 'native' | 'exec' | 'none';   // boat: native (boat ps)
   previews: 'token-link' | 'public' | 'bb-shared-port' | 'none'; // boat: token-link (host --private)
-  headlessAgent: boolean;                    // boat: prompt, conversations, events, steer, interrupt
-  agentBusyState: boolean;                   // boat: state 'running' while its agent works
+    agentBusyState: boolean;                   // boat: state 'running' while its agent works
   agentLogins: 'provider' | 'secrets' | 'none'; // boat: credential profile per environment
   githubAuth: 'provider' | 'injected' | 'none'; // boat: GitHub App via passGithub
   bbEnrollment: boolean;                     // boat: boat ssh, login bash with Node 22.19+
   desktop: boolean;                          // boat: desktopUrl (parsed, unused)
   ssh: boolean;                              // boat: boat ssh
-  usage: boolean;                            // boat: usage
-  concurrencyUnit: 'sandboxes' | 'vcpus';    // boat: sandboxes, counted account-wide
+    concurrencyUnit: 'sandboxes' | 'vcpus' | 'memoryGb'; // boat: sandboxes, counted account-wide
 }
 
 export interface SandboxInfo {
   id: string; name: string | null; key: string | null; sizeId: string | null;
   state: SandboxState; rawState: string;     // boat: provisioned to archived, error, cancelled
+  createdAt: string | null;                  // boat: createdAt; also when a paid minimum lease ends
   agentBusy: boolean | null;                 // boat: state === 'running'
   stopsAt: string | null; stoppedAt: string | null; // boat: archiveAfter, stoppedAt
   error: string | null;
 }
 export interface SizeOption { id: string; label: string; vcpus: number; memoryGb: number; hourlyDollars: number | null; available: boolean; reason: string | null; needsApproval: boolean }
-export interface Capacity {
+export interface CapacityReport {          // the plugin adds its own monthly spend cap on top
   canStart: boolean; blockedReason: string | null; setupRequired: string | null; // boat limits: canStart, startBlockedReason, checkoutRequired
   used: number; max: number | null;          // boat limits: activeSandboxes, currentLimits.activeSandboxes
   startWindows: { window: 'minute' | 'hour' | 'day'; remaining: number | null; resetsAt: string | null }[]; // boat limits: starts.*
@@ -316,7 +318,7 @@ export interface SandboxProvider {
 
   // Required
   availability(): Promise<PluginMachineProviderAvailability>; // boat --version, boat status
-  capacity(opts?: { fresh?: boolean }): Promise<Capacity>;  // boat limits
+  capacity(opts?: { fresh?: boolean }): Promise<CapacityReport>; // boat limits
   sizes(): Promise<SizeOption[]>;            // MACHINE_TYPES plus limits.machineTypes
   create(req: {
     key: string; name: string; sizeId: string; environment?: string | null; snapshot?: string | null;
@@ -340,7 +342,7 @@ export interface SandboxProvider {
   snapshot?(id: string, name: string): Promise<{ name: string; sizeBytes: number | null }>; // boat snapshot
   snapshots?(): Promise<{ names: string[]; included: number | null; used: number | null }>; // boat snapshots
   environments?(): Promise<{ name: string; isDefault: boolean }[]>; // boat env list
-  environmentInfo?(name: string): Promise<{ secretNames: string[]; repos: string[]; passGithub: boolean | null; passAgentLogins: boolean | null }>; // boat env info, names only
+  environmentInfo?(name: string): Promise<{ secretNames: string[]; secretFiles: string[]; repos: string[]; passGithub: boolean | null; passSecrets: boolean | null; passAgentLogins: boolean | null }>; // boat env info, names only
   agentLogins?(environment: string | null): Promise<Agent[] | null>; // boat ai profiles plus env list
   usage?(id: string, window: { since?: string; until?: string }): Promise<{ seconds: number | null; dollars: number | null }>; // boat usage
   runner?: AgentRunner;                      // boat prompt, conversations, events, steer, interrupt
@@ -359,9 +361,10 @@ export interface AgentRunner {
 }
 ```
 
-Two rules that the interface alone doesn't show:
+Three rules that the interface alone doesn't show:
 
-- **Untrusted repos need a headless runner.** Today untrusted repos always run headless, so bb's machine credentials never enter their sandbox, and a sandbox that ever ran bb is never reused for an untrusted repo or snapshotted (`src/service.ts:1466`, `src/service.ts:1190`, `src/service.ts:2884`). A provider without `runner` can serve trusted repos through task chats only, until the plugin has a generic exec-based runner.
+- **Untrusted repos need a headless runner.** Today the rules run untrusted repos headless unless the user confirms a task chat for them, so by default bb's machine credentials stay out of their sandbox (`src/service.ts:1431`, `src/service.ts:1468`). A sandbox that runs or ran bb is refused for an untrusted repo, except for a review in its own task's sandbox, and is never snapshotted (`src/service.ts:1190`, `src/service.ts:2884`). A provider without `runner` can serve untrusted repos only through user-confirmed task chats, until the plugin has a generic exec-based runner.
+- **The plugin needs exec on machines it uses.** Task chats today rely on the plugin's own exec before bb takes over: the per-task checkout, the protected-branch hook and the no-push marker (`prepareRepo`), the evidence uploader, and Ship. bb's hosts API has no exec for machines the plugin didn't create (a Mac enrolled by hand, bb's Modal machines). The route there is a plugin host entry that bb runs on enrolled machines, reached through `bb.hosts.experimental_client` ([backend-contract.ts](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/plugin-sdk/src/backend-contract.ts#L2139-L2147); experimental, untested here). Without it, such machines run tasks in bb's own project checkout, without those steps.
 - **Every create is idempotent by key.** A timed-out or aborted `boat new` can leave a sandbox the plugin never recorded (see the issues below). Providers with idempotency keys or tags close that gap: Instabox requires an `Idempotency-Key` header on lifecycle calls ([llms.txt](https://instabox.sh/llms.txt)), and bb's Modal backend tags each sandbox with its machine key ([backend.ts](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/providers/modal/backend.ts#L230-L299)).
 
 ### Issues found during the audit
@@ -375,7 +378,7 @@ Found by reading the code, not by running it, and not fixed here: this task chan
 5. The plan's auto-stop cap is parsed from English text (`src/boat-api.ts:26`).
 6. Git's hooks path is pinned to `/home/user/.boat-hooks` while the hooks are written to `$HOME/.boat-hooks` (`src/boat-api.ts:456`, `src/boat-api.ts:1100`). On any provider where HOME differs, the protected-branch guard is silently off.
 7. `collectResult` doesn't treat `cancelled` as terminal, unlike the rest of the code (`src/service.ts:4718` vs `src/service.ts:574`).
-8. The watchdog's user notice is a no-op (`server.ts:545`).
+8. docs/features.md promises a phone or desktop notice when an orchestrator's own messages are stuck, but the watchdog's `notifyUser` is deliberately a no-op (`server.ts:544`).
 9. Docs drift: SECURITY.md calls the bb machine's `gh` use read-only, but merging runs `gh pr merge` there (`src/github.ts:140`). The boat.dev section below lists three more README and SECURITY.md statements that boat's docs contradict.
 
 ## Part B: providers
@@ -492,7 +495,7 @@ VM time draws on the plan's included $20, so light use still bills $20 a month (
 
 ### Instabox
 
-Instabox, from InsForge AI, Inc., gives each agent a persistent Linux microVM and, since 2026-11-12, a macOS VM on a whole leased Mac ([terms](https://instabox.sh/terms), [changelog](https://instabox.sh/changelog/macos.md)). Its own "Migrate from Boat" guide maps boat's CLI almost one to one ([from Boat](https://instabox.sh/docs/migrate/from-boat.md)). Linux is cheap, each Mac lease has a 24-hour minimum, and Windows is only advertised ([pricing](https://instabox.sh/pricing.md), [homepage](https://instabox.sh/)).
+Instabox, from InsForge AI, Inc., gives each agent a persistent Linux microVM and, since 2026-11-12, a macOS VM on a whole leased Mac ([terms](https://instabox.sh/terms), [changelog](https://instabox.sh/changelog/macos.md)). Its own "Migrate from Boat" guide maps boat's CLI almost one to one ([from Boat](https://instabox.sh/docs/migrate/from-boat.md)). Linux is cheap, each Mac lease has a 24-hour minimum, and Windows is listed on the homepage but not launched or documented ([pricing](https://instabox.sh/pricing.md), [homepage](https://instabox.sh/)).
 
 #### OS and hardware
 
@@ -539,7 +542,7 @@ Instabox, from InsForge AI, Inc., gives each agent a persistent Linux microVM an
 
 #### Windows
 
-The homepage lists Windows ([homepage](https://instabox.sh/)), and the API models `windows` host-pool templates with a VNC desktop ([OpenAPI](https://api.instabox.sh/v1/openapi.json)). CLI 0.8.289 lists `windows` as a restricted admin template ([npm tarball](https://registry.npmjs.org/instabox/-/instabox-0.8.289.tgz)). No public template, edition, RDP support, size, price or date exists, so Windows is announced only.
+The homepage lists Windows ([homepage](https://instabox.sh/)), and the API models `windows` host-pool templates with a VNC desktop ([OpenAPI](https://api.instabox.sh/v1/openapi.json)). CLI 0.8.289 lists `windows` as a restricted admin template ([npm tarball](https://registry.npmjs.org/instabox/-/instabox-0.8.289.tgz)). No public template, edition, RDP support, size, price or date exists, so Windows is listed but not launched or documented.
 
 #### Cross-platform testing fit
 
@@ -617,7 +620,7 @@ A web console can stop sandboxes but can't resume them ([lifecycle](https://docs
 - bb has no Darkbloom support. Its sandbox environment plugin is for Modal ([bb](https://github.com/get-bb/bb/tree/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox)).
 - Codex comes in the image with a `codex` runner (`--json` events, `--thread`). Claude Code gets only an `anthropic` egress set and a skill file ([agents](https://docs.darkbloom.dev/sandboxes/agents-and-mcp), [connect](https://docs.darkbloom.dev/sandboxes/create-and-connect)).
 - bb's daemon could be installed over SSH with stdin. But bb turns on Node's env proxy only for `http://` or `https://` values ([node-network.ts](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/process-utils/src/node-network.ts)), and Darkbloom shows the proxy without a scheme. It is also unknown whether daemon heartbeats prevent the idle stop (unverified; testing needs an account).
-- There are no previews, snapshots, environments or plan-limit reads. Evidence would have to come back over SSH or go to an allowlisted bucket hostname (inference). Secrets are files that last one boot (at most 32, up to 64 KiB each) ([security](https://docs.darkbloom.dev/sandboxes/security)). Only the machine that created a sandbox can reach it ([connect](https://docs.darkbloom.dev/sandboxes/create-and-connect)).
+- There are no previews, snapshots, environments or plan-limit reads. Evidence would have to come back over SSH or go to an allowlisted bucket hostname (inferred). Secrets are files that last one boot (at most 32, up to 64 KiB each) ([security](https://docs.darkbloom.dev/sandboxes/security)). Only the machine that created a sandbox can reach it ([connect](https://docs.darkbloom.dev/sandboxes/create-and-connect)).
 
 #### Mac specifics
 
@@ -667,7 +670,7 @@ Example costs. Darkbloom bills by size, not CPU use ([pricing](https://docs.dark
 - The CLI checks a boot statement signed with an App Attest key ([security](https://docs.darkbloom.dev/sandboxes/security)). App Attest validates "the instance of your app running on a device" ([Apple](https://developer.apple.com/documentation/devicecheck/dcappattestservice)). It does not show that the owner is locked out (inference).
 - Darkbloom states: "Darkbloom can decrypt your workspace, and agent sandboxes do not yet claim confidentiality from the owner of the Mac they run on" ([security](https://docs.darkbloom.dev/sandboxes/security)). The owner could corrupt or roll back parts of the workspace without the sandbox noticing. With SIP off, "an administrator can read a running VM's memory" ([security](https://docs.darkbloom.dev/sandboxes/security), [hosting](https://docs.darkbloom.dev/provider/sandbox-hosting)).
 - The CI docs say to "Assume everything inside the job" is visible to the owner ([CI](https://docs.darkbloom.dev/ci/security)). The Aug 2026 plan said the host "can still inspect or interpose on the session" ([plan](https://github.com/Layr-Labs/d-inference/blob/6575e0f32dbc8eac366cbe9fc37a1ac0af1c550d/docs/reports/2026-08-22-sandbox-platform-plan.md)).
-- Beyond the VM boundary, protection from owners is contractual: providers must keep SIP and Secure Boot on and must not inspect customer content ([terms](https://www.darkbloom.ai/terms)). The host add-on is "closed-source" ([threat model](https://github.com/Layr-Labs/d-inference/blob/master/docs/threat-model.yaml)).
+- Beyond the VM boundary, protection from owners is contractual: the terms bind providers to keep SIP and Secure Boot on and not to inspect customer content ([terms](https://www.darkbloom.ai/terms)). Those terms describe inference, so whether they cover sandbox hosts is unconfirmed. The host add-on is "closed-source" ([threat model](https://github.com/Layr-Labs/d-inference/blob/master/docs/threat-model.yaml)).
 - Darkbloom keeps gateway byte counts for 90 days and logs hostnames and client IPs ([security](https://docs.darkbloom.dev/sandboxes/security)). It publishes no SOC 2, ISO 27001, HIPAA or DPA ([privacy](https://www.darkbloom.ai/privacy)).
 - For agents, treat GitHub tokens, Claude and Codex logins and bb machine credentials as exposed to the owner and to Darkbloom. Push code over SSH, as Darkbloom advises ([quickstart](https://docs.darkbloom.dev/sandboxes/quickstart)).
 
@@ -680,7 +683,7 @@ Example costs. Darkbloom bills by size, not CPU use ([pricing](https://docs.dark
 
 ### Modal
 
-Modal Sandboxes are self-serve, per-second-billed Linux containers or VMs, driven only through Modal's SDKs ([guide](https://modal.com/docs/guide/sandboxes), [maturity](https://modal.com/docs/guide/feature-maturity)). They suit priority 2 (Linux agents; bb already ships a Modal machine provider) and Linux-only browser runs ([bb](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/README.md)). Modal has no macOS or Windows and has announced neither, so it cannot serve priorities 1 and 3 or the Mac and Windows half of priority 4 ([changelog](https://modal.com/changelog)).
+Modal Sandboxes are self-serve, per-second-billed Linux containers or VMs, driven only through Modal's SDKs ([guide](https://modal.com/docs/guide/sandboxes), [maturity](https://modal.com/docs/guide/feature-maturity)). They suit Linux agent work (bb already ships a Modal machine provider) and Linux-only browser runs ([bb](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/README.md)). Modal has no macOS or Windows and has announced neither, so it can't serve Mac or Windows agents, or the Mac and Windows half of the browser testing ([changelog](https://modal.com/changelog)).
 
 #### OS and hardware
 
@@ -761,6 +764,7 @@ Spiky use raises the low case. If 90% of seconds sit at the 0.125-core floor and
 - Modal runs no physical servers of its own ([DPA, Oct 31, 2025](https://modal.com/legal/dpa)). Its capacity comes from AWS, GCP, Azure and OCI ([blog, Dec 28, 2025](https://modal.com/blog/gpu-health)), in a pool spanning 20+ clouds ([blog, Oct 14, 2026](https://modal.com/blog/1-billion-annualized-run-rate-series-d)).
 - Each sandbox runs under gVisor or in a KVM VM ([networking](https://modal.com/docs/guide/sandbox-networking)), on hosts shared with other customers ([blog, Nov 12, 2026](https://modal.com/blog/sandbox-bursting)).
 - Modal provides a SOC 2 Type II report, a GDPR DPA, HIPAA on Enterprise, TLS 1.3 and encryption at rest. It makes no ISO 27001 claim ([security](https://modal.com/docs/guide/security)). Snapshots, Images, Secrets and logs are stored in the US ([residency](https://modal.com/docs/guide/data-residency)).
+- Customer data is "expunged promptly following completion of processing", and an account is deleted within 60 days of termination ([terms](https://modal.com/legal/terms)). How long exec output and logs are kept is not stated (unverified).
 - Any process in the sandbox can read secrets passed as env vars ([injection](https://modal.com/docs/guide/sandbox-secret-injection)), and snapshots keep any credentials written to disk. Use expiring tokens, scoped GitHub tokens, a separate Environment and budgets ([budgets](https://modal.com/docs/guide/budgets)).
 
 #### Risks
@@ -772,7 +776,7 @@ Spiky use raises the low case. If 90% of seconds sit at the 0.125-core floor and
 
 ### Vercel Sandbox
 
-Vercel Sandbox runs Linux-only Firecracker microVMs on bare-metal AWS EC2 hosts and has been generally available since 30 January 2026 ([GA](https://vercel.com/changelog/vercel-sandboxes-ga), [bounty post](https://vercel.com/blog/one-million-dollar-hacker-challenge-for-vercel-sandbox)). It is a cheap, fast Linux workspace with Claude Code and Codex preinstalled ([pricing](https://vercel.com/docs/sandbox/pricing), [managed images](https://vercel.com/changelog/vercel-sandbox-managed-images)), and its SDK appears to cover what a bb machine needs (inferred). It has no macOS, no Windows, no private preview URLs and no hosted agent runner, so it fits priority 2 only ([docs](https://vercel.com/docs/sandbox), [guide](https://vercel.com/docs/sandbox/working-with-sandbox)).
+Vercel Sandbox runs Linux-only Firecracker microVMs on bare-metal AWS EC2 hosts and has been generally available since 30 January 2026 ([GA](https://vercel.com/changelog/vercel-sandboxes-ga), [bounty post](https://vercel.com/blog/one-million-dollar-hacker-challenge-for-vercel-sandbox)). It is a cheap, fast Linux workspace with Claude Code and Codex preinstalled ([pricing](https://vercel.com/docs/sandbox/pricing), [managed images](https://vercel.com/changelog/vercel-sandbox-managed-images)), and its SDK appears to cover what a bb machine needs (inferred). It has no macOS, no Windows, no private preview URLs and no hosted agent runner, so it fits Linux agent work only ([docs](https://vercel.com/docs/sandbox), [guide](https://vercel.com/docs/sandbox/working-with-sandbox)).
 
 #### OS and hardware
 
@@ -860,7 +864,7 @@ Example costs (Pro, iad1, [pricing](https://vercel.com/docs/sandbox/pricing)):
 - The microVM is the boundary, run under Firecracker's jailer, and Vercel says hardware side channels remain ([bounty post](https://vercel.com/blog/one-million-dollar-hacker-challenge-for-vercel-sandbox), [findings](https://vercel.com/blog/findings-from-the-1-million-dollar-vercel-sandbox-challenge), [security model, undated](https://vercel.com/docs/sandbox/concepts/security)).
 - The August 2026 bounty paid $242,000. A kernel zero-day leaked host memory from production sandboxes and, on a matching test setup, crashed or took over the host; a cross-tenant snapshot swap was fixed within a week; no customer data access was reported ([findings](https://vercel.com/blog/findings-from-the-1-million-dollar-vercel-sandbox-challenge)).
 - Snapshots are encrypted at rest, and Vercel uses AES-256 at rest and TLS 1.3 in transit ([security model, undated](https://vercel.com/docs/sandbox/concepts/security), [compliance](https://vercel.com/docs/security/compliance)).
-- Vercel has SOC 2 Type 2, ISO 27001:2022, PCI DSS and TISAX AL2, plus a GDPR DPA and HIPAA BAAs, but Sandbox scope isn't stated ([compliance](https://vercel.com/docs/security/compliance)).
+- Vercel has SOC 2 Type 2, ISO 27001:2022, PCI DSS and TISAX AL2, plus a GDPR DPA and HIPAA BAAs, but Sandbox scope isn't stated ([compliance](https://vercel.com/docs/security/compliance)). The Sandbox overview, security and pricing pages don't say how long command output is kept (unverified) ([docs](https://vercel.com/docs/sandbox), [security model](https://vercel.com/docs/sandbox/concepts/security), [pricing](https://vercel.com/docs/sandbox/pricing)).
 - Hobby and Pro-trial content may be used to train Vercel's and third parties' AI; paid Pro is opt-in ([terms](https://vercel.com/legal/terms)).
 - For agents holding tokens: broker AI keys, deny egress by default, use 1-hour GitHub App tokens and keep long-lived secrets out of create-time env (inferred from [firewall](https://vercel.com/docs/sandbox/concepts/firewall) and [guide](https://vercel.com/docs/sandbox/working-with-sandbox)).
 
@@ -966,7 +970,7 @@ bb's native Windows 11 x64 host is alpha and needs Git for Windows ([platform su
 - **Shell.** Windows Server 2025 comes with OpenSSH installed ([install](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)). Windows OpenSSH starts cmd.exe unless an admin sets DefaultShell ([config](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration)), and cmd rejects commands longer than 8191 characters ([Daytona](https://www.daytona.io/docs/en/windows-sandboxes.md)). The plugin's `bash -lc` wrapper ([machine.ts](../../src/machine.ts#L71)) must become PowerShell. PowerShell's `-EncodedCommand` flag exists for commands that need "complex, nested quoting" ([pwsh](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh)).
 - **Paths and files.** Paths use drive letters, and bb compares them case-insensitively ([host paths](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/docs/api_to_audit.md#L20-L28)). MAX_PATH is 260 characters unless both a registry setting and the app manifest opt in ([MAX_PATH](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation)). The plugin's files under /tmp must move ([briefs.ts](../../src/briefs.ts#L91), [memory.ts](../../src/memory.ts#L194)). Git for Windows checks out CRLF line endings by default ([installer](https://github.com/git-for-windows/build-extra/blob/main/installer/install.iss)). chmod can change only the write bit ([Node fs](https://github.com/nodejs/node/blob/main/doc/api/fs.md)), and Git decides what is executable from the file extension or a `#!` line ([run-command.c](https://github.com/git/git/blob/master/run-command.c)).
 - **Processes.** Windows has no POSIX signals, so Node turns SIGTERM and SIGINT into a forced kill ([Node](https://github.com/nodejs/node/blob/main/doc/api/child_process.md)), and bb stops processes with `taskkill /T /F` ([Windows CI](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/docs/windows-ci.md#L184-L201)). Windows OpenSSH kills a session's processes when the session ends ([Win32-OpenSSH, 2018 to 2021](https://github.com/PowerShell/Win32-OpenSSH/issues/1195)), so previews started with `nohup` die. A detached server needs WMI `Win32_Process.Create`, a scheduled task ([tasks](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/register-scheduledtask)) or a service ([services](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.management/new-service)).
-- **Agent runner.** No Windows provider has an API like boat's prompt, events and steer. The plugin would have to launch claude or codex through PowerShell, detach it, poll a log file for progress and stop it by killing its process tree (design inference).
+- **Agent runner.** No Windows provider has an API like boat's prompt, events and steer. The plugin would have to launch claude or codex through PowerShell, detach it, poll a log file for progress and stop it by killing its process tree (inferred).
 - **Tools.** WinGet works only after a user has signed in once ([WinGet](https://learn.microsoft.com/en-us/windows/package-manager/winget/)), Chocolatey installs from an admin shell ([Chocolatey](https://docs.chocolatey.org/en-us/choco/setup/)), and Scoop needs no admin rights ([Scoop](https://github.com/ScoopInstaller/Scoop)). Dev Drive, which reduces Defender's scanning overhead, is documented for Windows 11 and listed among Windows Server 2025's new storage features ([Dev Drive](https://learn.microsoft.com/en-us/windows/dev-drive/), [Server 2025](https://learn.microsoft.com/en-us/windows-server/get-started/whats-new-windows-server-2025)). Whether Defender's performance mode applies on Server images is unverified.
 - **bb enrollment.** bb's plugin bootstrap needs a PowerShell path for two steps: running install.ps1, and running `install-machine-windows.mjs --start` after each resume. The second step is needed because the Run key starts the daemon only when a user signs in ([guide](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/templates/src/templates/bb-guide-machines.md#L383-L386)).
 
@@ -1200,13 +1204,13 @@ Heavy use is 20 runs a day for 30 days: 600 runs, 3,000 Mac minutes and 3,000 Wi
 
 **How a task asks for one.** Task chats, orchestrators and native chats can call a plugin tool. Headless tasks, the default, run no bb in their sandbox, so they can't call plugin tools ([features](../features.md#how-tasks-run-in-boat-or-as-task-chats)). For them the plugin starts captures itself: when a task reports a preview (the `PREVIEW:` line it already parses, [src/briefs.ts](../../src/briefs.ts#L85)), from a new `CAPTURE:` report line, from the task page, or from an orchestrator's tools.
 
-**Request and result.** The request names the preview link, the targets (`macos-safari`, `ios-simulator-safari`, `windows-edge`, `windows-chrome`, `linux-chrome`), viewport sizes and scale factors, scroll positions or a short script, and whether to record video. The result holds screenshot and video links plus the OS and browser versions that actually ran.
+**Request and result.** The request names the preview link, the targets (`macos-safari`, `ios-simulator-safari`, `windows-edge`, `windows-chrome`, and the Linux baselines `linux-chrome`, `linux-firefox` and `linux-webkit`), viewport sizes and scale factors, scroll positions or a short script, and whether to record video. The result holds screenshot and video links plus the OS and browser versions that actually ran.
 
 **Where it runs.** The plugin, on the bb machine, starts the run with its own credentials, waits, and posts the results back to the task. The agent never sees runner or grid credentials. The capture box holds only the preview link and short-lived upload links, never the agent's credentials.
 
 **Backends**, in the order the plugin would try them:
 
-1. **A Mac the user already holds and isn't busy** (a monthly or owned Mac enrolled in bb, or a held lease). It costs nothing extra and keeps the preview token out of third-party logs. It needs a logged-in GUI session, passwordless sudo for `safaridriver --enable` and a Screen Recording grant for video ([Safari automation](#safari-and-webkit-automation-on-cloud-macs)).
+1. **A Mac the user already holds and isn't busy** (a monthly or owned Mac enrolled in bb, or a held lease). It costs nothing extra and keeps the preview token out of third-party logs. On a Mac the plugin didn't create, the capture runs through the plugin's host entry (see [Part A](#draft-sandboxprovider-interface)). It needs a logged-in GUI session, passwordless sudo for `safaridriver --enable` and a Screen Recording grant for video ([Safari automation](#safari-and-webkit-automation-on-cloud-macs)).
 2. **GitHub Actions in the site's own repo.** One workflow file per project, started through the workflow dispatch API, which returns the run ([GitHub REST](https://docs.github.com/en/rest/actions/workflows)). The workflow must be on the default branch, and dispatching needs Actions write access, while the plugin uses the `gh` login read-only today ([events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows), [SECURITY.md](../../SECURITY.md)). Running from the site's repo keeps inside GitHub's rule that runners serve the repository's own project; the same terms allow Actions only "to develop and test your application(s)", so keep captures to preview builds ([GitHub terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features)).
    - **Safari:** a job on `macos-latest` (macOS 26, Safari 27.2) drives real Safari through `safaridriver`, which the image enables ([image](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md), [script](https://github.com/actions/runner-images/blob/main/images/macos/scripts/build/install-safari.sh)).
    - **iOS Simulator:** a second job on the `xcode-27` image, which has the iOS 27 simulators but an older desktop Safari (27.0.1) ([image](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)).
@@ -1227,7 +1231,7 @@ Heavy use is 20 runs a day for 30 days: 600 runs, 3,000 Mac minutes and 3,000 Wi
 type CaptureBrowser =
   | "macos-safari" | "ios-simulator-safari"
   | "windows-edge" | "windows-chrome"
-  | "linux-chrome" | "linux-webkit";
+  | "linux-chrome" | "linux-firefox" | "linux-webkit";
 
 interface CaptureTarget {
   id: string;                       // "github-actions", "grid", "held-mac", "sandbox"
@@ -1269,7 +1273,7 @@ Details and sources are in Part B. Prices are list prices on 2026-11-17.
 | Provider | OS and Mac hardware | API maturity | Sessions | Previews and SSH | bb machine (task chats) | Price: Linux 4 vCPU / 8 GiB; Mac | Trust |
 |---|---|---|---|---|---|---|---|
 | boat.dev | Linux (Ubuntu 24.04, x86_64). No Mac, no Windows | GA, self-serve: CLI, REST v1, TS and Python SDKs | No cap on paid plans; fixed auto-stop (1 h default, up to 30 days or off); disk snapshots | Token-gated preview links; SSH with stdin | Yes, today | $0.036/h flat, per second; $20/month minimum | Dedicated EU hosts; one KVM VM per sandbox; SOC 2 in progress |
-| Instabox | Linux (Firecracker, x86_64); macOS 26 with Xcode in a VM on a whole leased Mac (M2, M2 Pro, M4, M4 Pro); Windows announced only | Public REST API (OpenAPI), CLI with an agent runner, TS and Python SDKs; launched 2026-10-14, Pro skips the waitlist | Linux: no cap on paid plans, pause keeps memory, free disk snapshots. Mac: no pause, 24 h minimum lease | Public or token-gated port URLs; SSH gateway | Likely on paid Linux (untested); macOS unknown | $0.034/h; Mac $0.45 to $1.25/h with a 24 h minimum ($10.80 to $30) | Six-person YC company; AWS and Latitude.sh; Mac host unstated |
+| Instabox | Linux (Firecracker, x86_64); macOS 26 with Xcode in a VM on a whole leased Mac (M2, M2 Pro, M4, M4 Pro); Windows listed but not launched | Public REST API (OpenAPI), CLI with an agent runner, TS and Python SDKs; launched 2026-10-14, Pro skips the waitlist | Linux: no cap on paid plans, pause keeps memory, free disk snapshots. Mac: no pause, 24 h minimum lease | Public or token-gated port URLs; SSH gateway | Likely on paid Linux (untested); macOS unknown | $0.034/h; Mac $0.45 to $1.25/h with a 24 h minimum ($10.80 to $30) | Six-person YC company; AWS and Latitude.sh; Mac host unstated |
 | Darkbloom | Linux (arm64) and experimental macOS VMs on Macs owned by individuals. No Windows | Experimental, invite-only; CLI sent by hand; no documented REST API or SDK | 24 h max per boot; idle stop ignores work inside; no snapshots | No inbound ports or preview URLs; SSH through the CLI | Unverified, and it would hold credentials Darkbloom says to keep out | $0.192/h; Mac $0.35 to $0.90/h, per second | No confidentiality claimed against the Mac's owner; Darkbloom can decrypt workspaces |
 | Modal | Linux only (gVisor or KVM VMs, x86-64) | Platform GA; Python SDK stable, JS and Go SDKs Beta | 24 h max lifetime; no pause; filesystem snapshots (memory snapshots Alpha) | Public tunnels or token-gated Connect Tokens; no managed SSH | Yes, through bb's official Modal plugin (experimental) | about $0.48/h reserved, less when bursting; $0 plan with $30 credit | Capacity rented from large clouds; shared hosts; SOC 2 Type II |
 | Vercel Sandbox | Linux only (Firecracker, x86-64) | GA since 2026-01-30; TS and Python SDKs, CLI | 24 h max on Pro (45 min on Hobby); no idle stop; filesystem snapshots | Public, unauthenticated URLs (up to 15 ports); no OpenSSH | Likely (untested); daemon restarts every session | $0.22/h at 10% CPU to $0.68/h at 100%; $20/month Pro | Vercel's platform on AWS bare metal; Firecracker microVMs; broad compliance |
@@ -1292,8 +1296,8 @@ Mixing them would force the 24-hour Mac lease onto five-minute captures, and put
 
 **Two runners per provider.**
 
-- **Task chats** (bb enrollment) work wherever a provider gives a lifecycle and an executor: bb installs its daemon and runs Claude Code or Codex as a bb chat ([bb Modal plugin README](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/README.md)). They need bb Connect, and they put bb machine credentials in the sandbox, plus the bb server's `gh` token, which reaches every repo that login can reach ([git-credentials.ts](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/services/machines/git-credentials.ts)). So the plugin's trust rules keep them to repos you trust ([src/service.ts:1466](../../src/service.ts#L1466)).
-- **Headless tasks**, the default, need an agent runner on each provider: boat's today; Instabox's `instabox agent prompt|events|steer|interrupt` next (CLI only, with resumable conversations) ([Instabox CLI](https://instabox.sh/docs/reference/cli.md)); a generic exec-based runner for the rest (Part A). Until a provider has one, untrusted repos and users without bb Connect stay on boat.
+- **Task chats** (bb enrollment) work wherever a provider gives a lifecycle and an executor: bb installs its daemon and runs Claude Code or Codex as a bb chat ([bb Modal plugin README](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/README.md)). They need bb Connect, and they put bb machine credentials in the sandbox, plus the bb server's `gh` token, which reaches every repo that login can reach ([git-credentials.ts](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/services/machines/git-credentials.ts)). So the plugin's trust rules keep them to repos you trust, unless the user confirms a task chat for an untrusted one ([src/service.ts:1466](../../src/service.ts#L1466)).
+- **Headless tasks**, the default, need an agent runner on each provider: boat's today; Instabox's `instabox agent prompt|events|steer|interrupt` next (CLI only, with resumable conversations) ([Instabox CLI](https://instabox.sh/docs/reference/cli.md)); a generic exec-based runner for the rest (Part A). Until a provider has one, untrusted repos (unless the user confirms a task chat) and users without bb Connect stay on boat.
 - **The plugin's own steps** (checkout with the push guard, the evidence uploader, size checks, previews) still need exec, a preview path and a GitHub credential from the provider, as Part A lists. On machines another plugin or the user creates (bb's Modal provider, a Mac enrolled by hand), they would have to run through bb's terminals or host APIs (feasibility untested).
 
 **Where the code lives.** Follow the layout bb uses for its Modal backend ([bb providers](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/providers/README.md)): vendor calls in one folder per provider, everything else provider-neutral.
@@ -1311,8 +1315,9 @@ src/providers/
   instabox/         REST client, CLI runner adapter, Mac lease handling
   scaleway/         optional: whole-Mac leases through Scaleway's API
   vercel/           SDK adapter
-  bb-provider/      adapter over another plugin's bb machine provider
-                    (bb's modal-sandbox) and over existing bb machines
+  bb-provider/      chat-only machines: another plugin's bb machine provider
+                    (bb's modal-sandbox) and existing bb machines; not a full
+                    SandboxProvider (no exec, limits or sizes without a host entry)
 src/capture/
   types.ts          CaptureTarget, CaptureRequest, CaptureResult
   github-actions.ts workflow in the project's own repo
@@ -1334,8 +1339,8 @@ An alternative for the Linux vendors: contribute Instabox or Vercel backends to 
 
 ### Tiers, quotas and the start queue
 
-- **Model tiers and agent quotas don't change.** They describe Claude and Codex subscriptions, not sandboxes, and the audit found them provider-independent ([src/limits.ts](../../src/limits.ts), [src/quota.ts](../../src/quota.ts)).
-- **Plan limits become a CapacityReport per provider:** concurrency in its own unit (sandboxes, vCPUs or memory), start windows, budget, the auto-stop cap and the sizes on offer. boat's `limits` maps onto it directly. Providers without a limits API get plugin-side limits: **Sandboxes at once** per provider, plus an optional monthly spend cap computed from the provider's price table.
+- **Model tiers and agent quotas don't change.** They describe Claude and Codex subscriptions, not sandboxes, and the audit found them provider-independent ([src/limits.ts](../../src/limits.ts), [src/quota.ts](../../src/quota.ts)). Only the model-id and effort mapping in `src/tiers.ts` moves into each runner.
+- **Plan limits become a CapacityReport per provider:** concurrency in its own unit (sandboxes, vCPUs or memory), start windows, the auto-stop cap and included hours, with sizes from `sizes()` (Part A). boat's `limits` maps onto it directly. Providers without a limits API get plugin-side limits: **Sandboxes at once** per provider, plus an optional monthly spend cap computed from the provider's price table.
 - **Make room, then queue.** Today a full account first makes room: with **Make room at your sandbox limit** on (the default), the plugin stops the least recently used idle sandbox, and the task fails only when nothing can be stopped or boat's start limits are used up ([src/service.ts](../../src/service.ts#L817), [settings](../settings.md)). The start queue itself waits only when agents are at their usage limit ([src/start-queue.ts](../../src/start-queue.ts)). With several providers and scarce Macs: make room per provider lane, never count a Mac lease inside its paid minimum as room, and queue instead of failing.
 - **Mac leases are a pool of one, per user.** When the provider bills 24 hours at a time, the plugin keeps one lease, runs queued Mac tasks and captures on it until the lease ends, and stops it then unless work is waiting. It never shares a lease across users, for the licensing reason above.
 
@@ -1343,26 +1348,26 @@ An alternative for the Linux vendors: contribute Instabox or Vercel backends to 
 
 | Phase | What | Why this order | Needs the owner |
 |---|---|---|---|
-| 0 | Decisions and accounts: capture backends, Mac budget, a Mac provider account, naming and the id scheme. Enroll a rented or owned Mac by hand in bb and use bb's own chats on it now. File a bb issue asking for a Windows bootstrap path for plugin machine providers | Accounts gate Phases 2 to 4; Phase 1 needs none. bb wants an issue before a pull request | Yes: all of it |
-| 1 | Extract the provider interface with boat.dev as the only implementation | Every later phase needs it; no behavior change, so it is safe to ship alone | Review only |
+| 0 | Decisions and accounts: capture backends, Mac budget, a Mac provider account, and the id scheme for new providers (the display name can be decided any time). Enroll a rented or owned Mac by hand in bb and use bb's own chats on it now. File a bb issue asking for a Windows bootstrap path for plugin machine providers | Accounts gate Phases 2 to 4; Phase 1 needs none. bb wants an issue before a pull request | Yes: all of it |
+| 1 | 1a: extract the provider interface with boat.dev as the only implementation. 1b: the audit fixes that change behavior (idempotent creates, a start queue that waits for capacity, the hooks path) | Every later phase needs it. 1a changes no behavior, so it is safe to ship alone; 1b ships separately | Review only |
 | 2 | Cross-platform capture (test targets): a held Mac and GitHub Actions first, then a grid | Solves the Safari and Windows testing need at cents per run, with no new Mac lease and only a preview link and upload links on other boxes; doesn't depend on Phase 1 and can overlap it | Merge a capture workflow into each site repo's default branch; let the plugin's `gh` login dispatch workflows; a grid account if wanted |
-| 3a | Plugin tasks on an existing bb machine: an owned Mac, or one rented by the month | The fastest way to run the plugin's tasks on a Mac: no provider API work, and bb already supports macOS hosts | Enroll the Mac |
+| 3a | Plugin tasks on an existing bb machine: an owned Mac, or one rented by the month | No provider API work, and bb already supports macOS hosts. But the plugin's checkout, hook, Ship and evidence steps need a plugin host entry there, or Mac tasks run in bb's own checkout without them | Enroll the Mac, with auto-login on so bb's LaunchAgent can register |
 | 3b | One Mac API adapter (Instabox or Scaleway), plus Instabox's agent runner for headless tasks | Lets the plugin start and stop leases itself; Instabox's Linux side also checks the interface on a second vendor | Provider account; vendor answers |
-| 4 | Modal (through bb's own provider) and Vercel Sandbox | Requested by a user, but Linux-only, so they add choice rather than new capability | Modal and Vercel accounts for testing |
+| 4 | Modal (through bb's own provider) and Vercel Sandbox | A plugin user asked for them, but they are Linux-only, so they add choice rather than new capability | Modal and Vercel accounts for testing |
 | 5 | Windows workspaces | Blocked by bb and by the plugin's POSIX assumptions, not by supply: Daytona, Orgo, Windows 365 for Agents, EC2 and Azure sell Windows machines with APIs, but none of the five does | Provider choice; bb support |
 
 **This order puts the second use case first.** The brief makes Mac and iOS work the priority. Capture still comes first because it is cheap, low-risk and works with the plugin as it is, while Mac agent work can start at once in bb's own chats on a Mac enrolled by hand (Phase 0). Swap Phases 2 and 3a if routing the plugin's own tasks to a Mac matters more.
 
-**Phase 1: extract the interface.** Split `src/boat-api.ts` and `src/boat.ts` into a boat adapter and neutral modules. Add a state normalizer, the CapacityReport, the shell abstraction and provider-scoped ids, and generalize the bb machine registration in the shape of bb's `SandboxBackend`. Fix the audit issues that would otherwise multiply with each provider: idempotent creates, a start queue that waits for capacity, and the hooks path. The existing tests keep passing against the fake boat CLI, and a second fake provider tests the neutral code. Part A has the sizes and the invasive spots.
+**Phase 1: extract the interface.** Split `src/boat-api.ts` and `src/boat.ts` into a boat adapter and neutral modules. Add a state normalizer, the CapacityReport, the shell abstraction and provider-scoped ids, and generalize the bb machine registration in the shape of bb's `SandboxBackend`. Then, as a separate step because they change behavior, fix the audit issues that would otherwise multiply with each provider: idempotent creates, a start queue that waits for capacity, and the hooks path. The existing tests keep passing against the fake boat CLI, and a second fake provider tests the neutral code. Part A has the sizes and the invasive spots.
 
 **Phase 2: cross-platform capture.** A `capture` tool for task chats and orchestrators, plus plugin-started captures for headless tasks, with results as evidence links. Details are in [Test targets in the plugin](#test-targets-in-the-plugin). It answers the most concrete need (Safari rendering of scroll-driven and 3D CSS, Windows fonts and scrollbars) for far less money and risk than Mac workspaces.
 
-**Phase 3: Mac agent workspaces.** Start with an existing machine: bb can enroll a Mac by hand with `bb machine create --provider manual` ([bb machines guide](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/templates/src/templates/bb-guide-machines.md#L372-L392)). The plugin then routes Mac tasks there as task chats, using bb's existing-machine selection ([environment-provider types](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/server-contract/src/api/shared.ts#L126-L140)). Manual machines never idle-suspend and can't be suspended or resumed, so an hourly lease enrolled by hand bills until someone deletes it; this step suits owned or monthly Macs. Then add one Mac API adapter so the plugin can start and stop leases itself:
+**Phase 3: Mac agent workspaces.** Start with an existing machine: bb can enroll a Mac by hand with `bb machine create --provider manual` ([bb machines guide](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/templates/src/templates/bb-guide-machines.md#L372-L392)). The plugin then routes Mac tasks there as task chats, using bb's existing-machine selection ([environment-provider types](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/server-contract/src/api/shared.ts#L126-L140)). Manual machines never idle-suspend and can't be suspended or resumed, so an hourly lease enrolled by hand bills until someone deletes it; this step suits owned or monthly Macs. The plugin can't run commands on a machine it didn't create, so its own steps (the per-task checkout, the protected-branch hook, Ship and the evidence uploader) need a plugin host entry, reached through `bb.hosts.experimental_client` ([backend-contract.ts](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/plugin-sdk/src/backend-contract.ts#L2139-L2147); experimental). Without one, Mac tasks run in bb's own project checkout without those steps. bb's macOS installer also registers a LaunchAgent, which needs a logged-in GUI session: turn on auto-login (FileVault off), or set `BB_INSTALL_SKIP_SERVICE=1` and restart the daemon after reboots ([install-machine.sh](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/apps/server/src/assets/install-machine.sh#L1047-L1118)). Then add one Mac API adapter so the plugin can start and stop leases itself:
 
 - **Instabox:** macOS 26 with Xcode in a VM, Linux on the same account, and an agent runner. But Mac support is days old, and Xcode, Simulator and signing details are undocumented ([Instabox section](#instabox)).
 - **Scaleway:** whole Mac minis with VNC and SSH, a public API and a 24-hour minimum it can enforce with automatic deletion ([FAQ](https://github.com/scaleway/docs-content/blob/main/pages/apple-silicon/faq.mdx), [API docs](https://github.com/scaleway/docs-content/tree/main/pages/apple-silicon/api-cli)). It is cheaper, but Paris-only and not researched in depth here.
 
-**Phase 4: Modal and Vercel.** For Modal, drive bb's own `modal-sandbox` machine provider through `hosts.experimental_create` instead of writing a Modal client ([bb Modal plugin README](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/README.md)). The user installs bb's official Modal plugin. That path is chat-only, so trusted repos only, with no boat-style preview links, plan limits or usage; if users want more, port Modal into the plugin's own adapter later. For Vercel, write an adapter on `@vercel/sandbox`, with a token-checking proxy for previews, because its URLs are public ([Vercel section](#vercel-sandbox)).
+**Phase 4: Modal and Vercel.** For Modal, drive bb's own `modal-sandbox` machine provider through `hosts.experimental_create` instead of writing a Modal client ([bb Modal plugin README](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/plugins/environment-modal-sandbox/README.md)). The user installs bb's official Modal plugin. That path is chat-only, so trusted repos unless the user confirms, with no boat-style preview links, plan limits or usage, and the plugin can't run its own steps there without a host entry; if users want more, port Modal into the plugin's own adapter later. For Vercel, write an adapter on `@vercel/sandbox`, with a token-checking proxy for previews, because its URLs are public ([Vercel section](#vercel-sandbox)).
 
 **Phase 5: Windows.** Start when bb can enroll Windows hosts from a provider plugin and the user picks a Windows provider. Meanwhile, a Windows VM or PC can be enrolled by hand with bb's PowerShell command (bb's native Windows host is alpha) ([bb machines guide](https://github.com/get-bb/bb/blob/de34f3492e4c69ade967e7b9b1345c9e8d62b03d/packages/templates/src/templates/bb-guide-machines.md#L372-L392)), and Windows stays a capture target.
 
@@ -1372,16 +1377,17 @@ An alternative for the Linux vendors: contribute Instabox or Vercel backends to 
 
 **Need vendor contact or an account** (the research rules allowed neither):
 
-- **Instabox:** Xcode and Simulator versions on the Mac image; whether signing, the keychain, Screen Recording and `safaridriver` work in headless sessions; whether ports, Secrets and the agent runner work on macOS; where the Macs are hosted, and when the sub-processor list will name them; whether Apple was notified under Section 3A and how lessees accept Apple's terms; whether the half-size mode (two VMs per Mac) fits Section 3D; whether a new Pro signup gets access at once; whether bb's daemon stays connected under idle pause and Org Secrets; Windows edition, sizes, price and date; whether its SOC 2 report covers Instabox.
+- **Instabox:** Xcode and Simulator versions on the Mac image; whether signing, the keychain, Screen Recording and `safaridriver` work in headless sessions; whether ports, Secrets and the agent runner work on macOS; where the Macs are hosted, and when the sub-processor list will name them; whether Apple was notified under Section 3A and how lessees accept Apple's terms; whether the half-size mode (two VMs per Mac) fits Section 3D; whether a new Pro signup gets access at once; whether bb's daemon stays connected under idle pause and Org Secrets, and whether its LaunchAgent can register on the Mac VMs (is a GUI session logged in?); how long a macOS create takes; whether Mac lease charges draw on the plan credit; Windows edition, sizes, price and date; whether its SOC 2 report covers Instabox.
 - **Scaleway:** macOS versions and Xcode on its Mac minis, stock, VAT for the owner's location, and how mature its Apple silicon API is.
 - **Darkbloom:** any written Apple arrangement; whether customers can restrict sandboxes to Darkbloom-owned Macs; a GA date and service level.
-- **Modal:** snapshot storage price; JS SDK stability plans.
-- **Vercel:** whether project-scoped tokens cover every Sandbox call; whether bb's daemon runs and restarts each session.
+- **Modal:** whether this plugin may drive bb's `modal-sandbox` provider through `hosts.experimental_create` and reuse its settings (Phase 4 depends on it); snapshot storage price; maximum CPU and memory per sandbox; JS SDK stability plans.
+- **Vercel:** whether project-scoped tokens cover every Sandbox call; whether bb's daemon runs and restarts each session; whether Sandbox is in the SOC 2 and HIPAA scope; how long command output is kept.
+- **Daytona:** whether Windows sandboxes still need Tier 3; how mature its macOS sandboxes and SDK are.
 - **GitHub:** whether Safari screen video records on hosted macOS runners; whether headed Edge and Chrome render, with scrollbars, on `windows-2025`; whether a throwaway bb machine on a macOS runner fits the Actions terms.
 - **Grids:** whether logs and session videos keep the preview token, and for how long; whether Sauce Labs' self-serve plans include current macOS; which BrowserStack plan covers Playwright on real iPhones.
 - **Azure:** Playwright Workspaces' Windows edition, `msedge` and `chrome` channels, and headed mode.
 - **boat.dev:** SOC 2 timeline; any plans for macOS or Windows; a token rotation that doesn't leave the port open in between.
-- **bb:** whether provider plugins will get a Windows bootstrap path and a service mode for the Windows daemon.
+- **bb:** whether provider plugins will get a Windows bootstrap path and a service mode for the Windows daemon; whether a plugin may enroll a Windows box as a manual machine with the PowerShell command bb prints (inferred possible).
 
 **Need the owner:**
 
