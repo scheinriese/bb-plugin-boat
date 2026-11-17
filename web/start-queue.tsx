@@ -6,11 +6,58 @@ import { AgentLogo } from "./ui";
 import { toast } from "sonner";
 import { useCloudAgentsNavigation, useInterval, useRelay } from "./hooks";
 import { resetTimeText } from "@/lib/reset-time";
+import { cn } from "@/lib/utils";
+import { claimQueuedStartReveal, onQueuedStartReveal, queuedRowClickId, revealQueuedStart } from "./start-queue-reveal";
 import "./ship-interaction.css";
 
 export function registerStartQueueUi(app: PluginAppBuilder): void {
   app.slots.pendingInteraction({id: PAID_START_RENDERER_ID, component: PaidStartInteraction});
   app.slots.messageDirective({id: "boat-start-queue", component: QueuedStartCard});
+  // A sidebar row for a queued start opens the chat that requested it; its
+  // card there then scrolls into view (start-queue-reveal.ts).
+  app.contentScripts.register({id: "queued-start-reveal", mount(context) {
+    document.addEventListener("click", event => {
+      const id = queuedRowClickId(event);
+      if (id) revealQueuedStart(id);
+    }, {capture: true, signal: context.signal});
+  }});
+}
+
+/** Scrolls this card into view and rings it briefly when one of its requests is opened from elsewhere. */
+function useQueuedStartReveal(ids: readonly string[], onReveal?: (id: string) => void) {
+  const ref = useRef<HTMLElement>(null);
+  const [revealed, setRevealed] = useState<string | null>(null);
+  const key = ids.join(" ");
+  useEffect(() => {
+    const attempt = () => {
+      const element = ref.current;
+      if (!element) return;
+      const id = claimQueuedStartReveal(key.split(" "));
+      if (!id) return;
+      scrollIntoChat(element);
+      setRevealed(id);
+      onReveal?.(id);
+    };
+    attempt();
+    return onQueuedStartReveal(attempt);
+  }, [key]);
+  useEffect(() => {
+    if (!revealed) return;
+    const timer = window.setTimeout(() => setRevealed(null), 2400);
+    return () => window.clearTimeout(timer);
+  }, [revealed]);
+  return { ref, revealed };
+}
+
+function scrollIntoChat(element: HTMLElement) {
+  const behavior = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  const scroll = () => { if (element.isConnected) element.scrollIntoView({block: "center", behavior}); };
+  requestAnimationFrame(scroll);
+  // A chat that just opened may still settle its own scroll position.
+  window.setTimeout(() => {
+    const box = element.getBoundingClientRect();
+    if (box.bottom < 0 || box.top > window.innerHeight) scroll();
+  }, 400);
 }
 
 export function useQueuedStarts(threadId?:string) {
@@ -88,6 +135,7 @@ function QueuedStartGroup({initial}:{initial:QueuedStartDto}) {
   const request=requests.find(item=>item.id===selected)??requests[0];
   const resetProvider=(item:QueuedStartDto)=>item.requestedProvider??relay?.agents.find(agent=>agent.resetsAt===item.resetsAt)?.provider??null;
   const [busy,setBusy]=useState(false);const [error,setError]=useState<string|null>(null);
+  const reveal=useQueuedStartReveal([initial.id,...(query.data?.requests??[]).filter(item=>item.id!==initial.id&&(item.state==="waiting"||item.state==="dispatching")).map(item=>item.id)],id=>{if(requests.some(item=>item.id===id))setSelected(id);});
   useInterval(()=>{if(document.visibilityState==="visible"&&!query.isFetching)void query.refetch();},5000);
   async function act(item:QueuedStartDto,action:"paid"|"cancel") {
     if(busy)return;setBusy(true);setError(null);
@@ -96,10 +144,10 @@ function QueuedStartGroup({initial}:{initial:QueuedStartDto}) {
     finally{setBusy(false);}
   }
   if(!requests.length)return <QueuedStartReceipt request={initial}/>;
-  return <section className="boat-ui my-2 -ml-2 flex w-[calc(100%+16px)] max-w-[720px] flex-col gap-2.5 rounded-[10px] border border-border bg-card px-3.5 py-3 text-[13px] leading-5 sm:ml-0 sm:w-[calc(100%+8px)]" aria-label="Waiting for a reset">
+  return <section ref={reveal.ref} data-boat-start-queue-id={initial.id} className={cn("boat-ui my-2 -ml-2 flex w-[calc(100%+16px)] max-w-[720px] flex-col gap-2.5 rounded-[10px] border border-border bg-card px-3.5 py-3 text-[13px] leading-5 transition-shadow duration-500 sm:ml-0 sm:w-[calc(100%+8px)]",reveal.revealed&&"ring-2 ring-ring")} aria-label="Waiting for a reset">
     <header className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-medium text-[color:var(--boat-heading)]">Waiting for a reset</h3><span className="text-xs leading-4 text-[#FC8C45]">{relay?.agents.filter(item=>item.usedPercent!==null).map(item=>`${item.provider==="codex"?"Codex":"Claude"} ${Math.round(item.usedPercent!)}%`).join(" · ")}</span></header>
     {initial.state!=="waiting"&&initial.state!=="dispatching"&&<p role="status" className="text-xs leading-4 text-muted-foreground">{initial.title}: {initial.state==="started"?"started":initial.message}</p>}
-    {requests.map(item=><div key={item.id} className="space-y-1 border-t border-border py-1.5"><div className="group relative flex items-center gap-2.5"><AgentLogo provider={resetProvider(item)??"claude"} className="size-3"/><span className="min-w-0 flex-1 text-[color:var(--boat-label)]">{item.title}</span><span className="text-xs leading-4 text-muted-foreground group-hover:opacity-0 group-focus-within:opacity-0">{resetTimeText(item.resetsAt)?`starts ${resetTimeText(item.resetsAt)} · ${resetProvider(item)==="codex"?"Codex ":resetProvider(item)==="claude"?"Claude ":""}reset`:"waiting for usage to reset"}</span><button type="button" aria-label={`Cancel ${item.title}`} title="Cancel request" disabled={busy} onClick={()=>void act(item,"cancel")} className="absolute right-0 text-xs text-muted-foreground opacity-0 hover:underline focus:opacity-100 group-hover:opacity-100">Cancel</button></div>{item.message.startsWith("Paid start stopped.")&&<p role="status" className="pl-[22px] text-xs leading-4 text-[#FC8C45]">{item.message}</p>}</div>)}
+    {requests.map(item=><div key={item.id} className={cn("space-y-1 border-t border-border py-1.5 transition-colors duration-500",reveal.revealed===item.id&&requests.length>1&&"bg-[var(--boat-active)]")}><div className="group relative flex items-center gap-2.5"><AgentLogo provider={resetProvider(item)??"claude"} className="size-3"/><span className="min-w-0 flex-1 text-[color:var(--boat-label)]">{item.title}</span><span className="text-xs leading-4 text-muted-foreground group-hover:opacity-0 group-focus-within:opacity-0">{resetTimeText(item.resetsAt)?`starts ${resetTimeText(item.resetsAt)} · ${resetProvider(item)==="codex"?"Codex ":resetProvider(item)==="claude"?"Claude ":""}reset`:"waiting for usage to reset"}</span><button type="button" aria-label={`Cancel ${item.title}`} title="Cancel request" disabled={busy} onClick={()=>void act(item,"cancel")} className="absolute right-0 text-xs text-muted-foreground opacity-0 hover:underline focus:opacity-100 group-hover:opacity-100">Cancel</button></div>{item.message.startsWith("Paid start stopped.")&&<p role="status" className="pl-[22px] text-xs leading-4 text-[#FC8C45]">{item.message}</p>}</div>)}
     <footer className="flex flex-wrap items-center gap-2"><Button variant="outline" size="sm" disabled={busy||!request} onClick={()=>request&&void act(request,"paid")} className="text-[#FC8C45]">Start now on paid usage…</Button>{requests.length>1&&<><label className="sr-only" htmlFor={`queued-choice-${initial.id}`}>Task to start before reset</label><select id={`queued-choice-${initial.id}`} value={request?.id} onChange={event=>setSelected(event.target.value)} disabled={busy} className="h-7 max-w-[140px] rounded-md border border-border bg-background px-2 text-xs">{requests.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}</select></>}<a href="/settings/plugins/boat" className="ml-auto text-xs leading-4 text-muted-foreground hover:underline focus-visible:ring-1 focus-visible:ring-ring">Change in Settings › Usage limits</a></footer>
     {error&&<p role="alert" className="text-xs text-destructive">{error}</p>}
   </section>;
@@ -111,6 +159,7 @@ export function QueuedStartReceipt({request,loading=false}:{request:QueuedStartD
   const [provider,setProvider]=useState<"claude"|"codex">(request?.requestedProvider??"claude");
   const {openTask}=useCloudAgentsNavigation();
   useEffect(()=>setProvider(request?.requestedProvider??"claude"),[request?.id,request?.requestedProvider]);
+  const reveal=useQueuedStartReveal(request?[request.id]:[]);
   const [busy,setBusy]=useState(false);const [error,setError]=useState<string|null>(null);
   async function act(action:"cancel"|"paid") {
     if(!request||busy)return;setBusy(true);setError(null);
@@ -120,7 +169,7 @@ export function QueuedStartReceipt({request,loading=false}:{request:QueuedStartD
   }
   if(!request)return <p className="boat-ui my-2 text-xs text-muted-foreground">{loading?"Checking the queued request…":"This queued request is no longer available."}</p>;
   const waiting=request.state==="waiting";
-  return <section className="boat-ui my-2 max-w-[720px] rounded-[10px] border border-border bg-card p-3.5 text-[13px] leading-5" aria-label="Queued cloud task">
+  return <section ref={reveal.ref} data-boat-start-queue-id={request.id} className={cn("boat-ui my-2 max-w-[720px] rounded-[10px] border border-border bg-card p-3.5 text-[13px] leading-5 transition-shadow duration-500",reveal.revealed&&"ring-2 ring-ring")} aria-label="Queued cloud task">
     <p className="font-medium">{request.title}</p><p className="text-muted-foreground" role="status">{request.state==="started"?"Started. Follow the task for progress.":request.message}</p>
     {waiting&&<><p className="mt-1 text-xs text-muted-foreground">No sandbox has started.{resetTimeText(request.resetsAt)?` Next reset ${resetTimeText(request.resetsAt)}.`:""}</p>{request.threadId===null&&<p className="mt-1 text-xs text-muted-foreground">Starting before the reset needs a request made from a chat, where you can confirm potential extra usage.</p>}<div className="mt-3 flex flex-wrap items-center gap-2"><label className="sr-only" htmlFor={`paid-provider-${request.id}`}>Provider for a potential paid start</label><select id={`paid-provider-${request.id}`} value={provider} onChange={event=>setProvider(event.target.value as "claude"|"codex")} disabled={busy||request.threadId===null} className="h-7 rounded-md border border-border bg-background px-2 text-xs"><option value="claude">Claude</option><option value="codex">Codex</option></select><Button type="button" size="sm" variant="outline" disabled={busy||request.threadId===null} onClick={()=>void act("paid")}>Start before reset…</Button><Button type="button" size="sm" variant="ghost" disabled={busy} onClick={()=>void act("cancel")}>Cancel request</Button></div></>}
     {request.state==="started"&&request.taskId&&<Button size="sm" variant="outline" className="mt-2" onClick={()=>openTask(request.taskId!)}>Open task</Button>}

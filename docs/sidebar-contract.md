@@ -138,3 +138,18 @@ no mutation method. Queue projection reads never transition a request, provision
 a sandbox, start a provider, send a message, or change a task. Internal input
 briefs, project settings, digests and errors are excluded from the DTO. A queue
 read failure preserves the ordinary sidebar and marks its response truncated.
+
+### Opening a waiting request
+
+A waiting request has no chat of its own, and bb's navigation opens a chat but
+not one of its messages (`toThread(threadId, {split})`, SDK 0.6.146). Boat
+therefore brings the request's card into view itself. Its content script
+watches for a plain left click on a link with an `href` inside an element
+marked `data-queued-start-id="<id>"` and `data-queued-start-state="waiting"` or
+`"dispatching"`. That is how Workbench's row is marked today. For the next 10
+seconds, the live `::boat-start-queue` card listing that request scrolls into
+view and is outlined briefly once it renders. In a group card, that request is
+selected for **Start now on paid usage…**. The consumer still navigates to
+`sourceThreadId` itself. Nothing is sent, started or changed. A card that bb
+hasn't rendered, such as one far up a long chat, stays where it is; the chat's
+context row still says how many requests wait.
