@@ -262,9 +262,56 @@ export type NextStep =
   | { kind: "wait"; agent: null; wanted: Provider; until: string | null };
 
 /**
- * What a task started now with no agent named would do, from the checks a
- * start makes (BoatService.prepareTask, then assertSubscriptionRoom): the
- * same agentForWork and automaticPaidClaude, never a separate guess.
+ * The agent a start picks (BoatService.prepareTask): with switching, the one
+ * agentForWork finds room on; without, the default unless no agent has room.
+ * null: no agent has room, nor authorized paid Claude.
+ */
+export function startAgent(wanted: Provider, quotas: Quotas, relay: RelaySettings, agents: AgentChoice, canSwitch: boolean): Provider | null {
+  const pick = agentForWork(wanted, quotas, relay, agents);
+  return pick === null ? null : canSwitch ? pick : wanted;
+}
+
+/** A start checks subscription room at all: to avoid paid extra usage, or for the paid Claude fallback. */
+export function checksSubscription(settings: Pick<NewWorkSettings, "avoidExtraUsage" | "relay">): boolean {
+  return settings.avoidExtraUsage || settings.relay.paidClaudeFallback === true;
+}
+
+/**
+ * room: included allowance (or nothing to check); paid: an authorized
+ * automatic paid Claude start; wait: near its limit; unconfirmed: the paid
+ * fallback is on, but there's no reading, the agent isn't connected, or the
+ * saved policy changed since.
+ */
+export type SubscriptionRoom = "room" | "paid" | "wait" | "unconfirmed";
+
+/**
+ * The subscription check a start makes on its agent. BoatService.
+ * assertSubscriptionRoom reads fresh usage and the saved settings, then asks
+ * this; the usage view's next step asks it too, so they can't disagree.
+ * `current`: the saved settings now (default: `settings`). `runner` "boat"
+ * (headless) needs the same-account opt-in for paid Claude.
+ */
+export function subscriptionRoom(
+  provider: Provider,
+  quotas: Quotas,
+  settings: Omit<NewWorkSettings, "implementProvider">,
+  options: { runner?: string | null; current?: Omit<NewWorkSettings, "implementProvider" | "avoidExtraUsage">; now?: number } = {},
+): SubscriptionRoom {
+  if (!checksSubscription(settings)) return "room";
+  const reading = quotas.get(provider);
+  if (settings.relay.paidClaudeFallback) {
+    const current = options.current ?? settings;
+    if (!reading || current.relay.paidClaudeFallback !== true || current.relay.paidClaudeHeadless !== settings.relay.paidClaudeHeadless || current.relay.switchAtPercent !== settings.relay.switchAtPercent || current.agents !== settings.agents || current.notConnectedAgents.includes(provider)) return "unconfirmed";
+  }
+  if (provider === "claude" && (options.runner !== "boat" || settings.relay.paidClaudeHeadless === true) && automaticPaidClaude(quotas, settings.relay, settings.agents, options.now) && !settings.notConnectedAgents.includes(provider)) return "paid";
+  if (reading && reading.usedPercent >= settings.relay.switchAtPercent) return "wait";
+  return "room";
+}
+
+/**
+ * What a task started now with no agent named would do, from a bb chat:
+ * the pick a start makes (startAgent), then its subscription check
+ * (subscriptionRoom). Nothing here decides on its own.
  */
 export function nextForNewWork(quotas: Quotas, settings: NewWorkSettings, now = Date.now()): NextStep {
   const relay = effectiveRelay(settings.relay, settings.agents);
@@ -275,16 +322,15 @@ export function nextForNewWork(quotas: Quotas, settings: NewWorkSettings, now = 
   const wait: NextStep = { kind: "wait", agent: null, wanted, until: earliestReset(quotas, blocking) };
   let agent = wanted;
   if (relay.enabled || settings.avoidExtraUsage) {
-    const pick = agentForWork(wanted, quotas, relay, settings.agents);
+    const pick = startAgent(wanted, quotas, relay, settings.agents, relay.enabled);
     if (pick === null && settings.avoidExtraUsage) return wait;
-    if (relay.enabled && pick !== null) agent = pick;
+    if (pick !== null) agent = pick;
   }
+  const room = subscriptionRoom(agent, quotas, settings, { now });
+  if (room === "paid") return { kind: "paid", agent, wanted, until: null };
+  if (room !== "room") return wait;
+  // Nothing checks the subscription: it starts even past the limit.
   const reading = quotas.get(agent);
-  if (settings.avoidExtraUsage || relay.paidClaudeFallback) {
-    if (relay.paidClaudeFallback && (reading === undefined || settings.notConnectedAgents.includes(agent))) return wait;
-    if (agent === "claude" && automaticPaidClaude(quotas, relay, settings.agents, now) && !settings.notConnectedAgents.includes("claude")) return { kind: "paid", agent, wanted, until: null };
-    if (reading !== undefined && reading.usedPercent >= relay.switchAtPercent) return wait;
-  }
   if (reading !== undefined && reading.usedPercent >= relay.switchAtPercent) return { kind: "over", agent, wanted, until: null };
   return { kind: agent === wanted ? "room" : "switch", agent, wanted, until: null };
 }

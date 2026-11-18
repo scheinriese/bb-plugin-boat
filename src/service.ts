@@ -73,7 +73,7 @@ import {
 import type { ChatRunner, ChatWhere, ComposerRequest } from "./chat.ts";
 import type { WorkspaceInfo } from "./briefs.ts";
 import type { QuotaReader } from "./quota.ts";
-import { AGENT_NAME, agentForWork, automaticPaidClaude, effectiveRelay, onlyAgent, otherAgent, type AgentChoice, type RelaySettings } from "./relay.ts";
+import { AGENT_NAME, agentForWork, checksSubscription, effectiveRelay, onlyAgent, otherAgent, startAgent, subscriptionRoom, type AgentChoice, type RelaySettings } from "./relay.ts";
 import type { ConnectCheck } from "./connect.ts";
 import { renderBoatTranscript, transcriptDir, transcriptPath } from "./transcript.ts";
 import type { PreflightInput } from "./setup.ts";
@@ -1064,22 +1064,24 @@ export class BoatService {
   /** Automatic/public work cannot turn an explicit agent/model into paid approval. */
   async assertSubscriptionRoom(provider: Provider, options: { settings?: BoatSettings; signal?: AbortSignal; runner?: Runner } = {}): Promise<boolean> {
     const settings = options.settings ?? await this.settings();
-    if (!settings.avoidExtraUsage && !settings.relay.paidClaudeFallback) return false;
+    if (!checksSubscription(settings)) return false;
     if (!this.hooks.quotas) {
       if (settings.relay.paidClaudeFallback) throw new TaskError("Current agent usage is unavailable. Automatic paid work will wait.", "agents_at_limit");
       return false;
     }
     const quotas = await this.hooks.quotas.read(options.signal, { fresh: true }).catch(() => new Map());
     options.signal?.throwIfAborted(); this.hooks.lifecycle.throwIfAborted();
-    const reading = quotas.get(provider);
+    // With the paid fallback, the saved policy must still be the one this start was checked with.
+    let current: BoatSettings | undefined;
     if (settings.relay.paidClaudeFallback) {
-      const current = await this.settings();
+      current = await this.settings();
       options.signal?.throwIfAborted(); this.hooks.lifecycle.throwIfAborted();
-      if (!reading || current.relay.paidClaudeFallback !== true || current.relay.paidClaudeHeadless !== settings.relay.paidClaudeHeadless || current.relay.switchAtPercent !== settings.relay.switchAtPercent || current.agents !== settings.agents || current.notConnectedAgents.includes(provider)) throw new TaskError("Current usage or the saved fallback policy could not be confirmed. This work will wait.", "agents_at_limit");
     }
-    if (provider === "claude" && (options.runner !== "boat" || settings.relay.paidClaudeHeadless === true) && automaticPaidClaude(quotas, settings.relay, settings.agents) && !settings.notConnectedAgents.includes(provider)) return true;
-    if (reading && reading.usedPercent >= settings.relay.switchAtPercent) throw new TaskError(`${AGENT_NAME[provider]} is near its usage limit. This work will wait for a reset.`, "agents_at_limit");
-    return false;
+    // The decision itself is shared with the usage view's next step (relay.ts).
+    const room = subscriptionRoom(provider, quotas, settings, { runner: options.runner, ...(current ? { current } : {}) });
+    if (room === "unconfirmed") throw new TaskError("Current usage or the saved fallback policy could not be confirmed. This work will wait.", "agents_at_limit");
+    if (room === "wait") throw new TaskError(`${AGENT_NAME[provider]} is near its usage limit. This work will wait for a reset.`, "agents_at_limit");
+    return room === "paid";
   }
 
   private async prepareTask(input: StartTaskInput): Promise<{ task: Task; run: () => Promise<Task> }> {
@@ -1146,12 +1148,7 @@ export class BoatService {
     if ((!namesAgent || agentNote !== null) && this.hooks.quotas && (relay.enabled || reviewWithRoom || settings.avoidExtraUsage)) {
       const quotas = await this.hooks.quotas.read().catch(() => new Map());
       // With the relay off, the default agent stays; only "both out" still stops new work.
-      const pick =
-        relay.enabled || reviewWithRoom
-          ? agentForWork(provider, quotas, relay, settings.agents)
-          : agentForWork(provider, quotas, relay, settings.agents) === null
-            ? null
-            : provider;
+      const pick = startAgent(provider, quotas, relay, settings.agents, relay.enabled || reviewWithRoom);
       if (pick === null && settings.avoidExtraUsage) {
         throw only !== null
           ? new TaskError(

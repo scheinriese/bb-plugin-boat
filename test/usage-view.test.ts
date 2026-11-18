@@ -11,10 +11,11 @@ import plugin from "../server.ts";
 import type { UsageViewDto } from "../contract.ts";
 import { USAGE_STALE_MS } from "../contract-usage.ts";
 import { readPoolUsage, type AgentQuota, type Quotas } from "../src/quota.ts";
-import { nextForNewWork, PAID_USAGE_EVIDENCE_MS, type NewWorkSettings } from "../src/relay.ts";
+import { nextForNewWork, PAID_USAGE_EVIDENCE_MS, subscriptionRoom, type NewWorkSettings } from "../src/relay.ts";
 import { refreshErrorText, refreshReplyError } from "../src/rpc-usage.ts";
 import { accountStatus, agentFact, creditsRow, dayTime, isStale, nextStepLine, resetLabel, windowTone } from "../web/usage-logic.ts";
-import { createTestHost } from "./fakes.ts";
+import { TaskError, type BoatSettings } from "../src/service.ts";
+import { createTestHost, makeService } from "./fakes.ts";
 
 const MIN = 60_000;
 const WEEK = 7 * 24 * 60;
@@ -420,6 +421,67 @@ test("next step through the RPC: paid Claude from a fresh Pooler reading, then b
   assert.equal(after.next.kind, "wait");
   assert.equal(after.next.until, new Date(RESET).toISOString());
   assert.match(nextStepLine(after), /^Both are at their limits · paid Claude is blocked · work waits until /);
+});
+
+test("the next-step line and a real start agree: same pick, same subscription check, same wait", async () => {
+  const fresh = { allowed: true, status: "allowed" as const, observedAt: Date.now() - MIN, pool: "on" as const };
+  const old = { ...fresh, observedAt: Date.now() - PAID_USAGE_EVIDENCE_MS - MIN };
+  const blocked = { allowed: false, status: "rejected" as const, observedAt: Date.now() - MIN, pool: "on" as const };
+  const readings: [string, Quotas][] = [
+    ["room", usage(40, 99)],
+    ["claude out", usage(100, 12)],
+    ["codex out", usage(12, 100)],
+    ["both out", usage(100, 95)],
+    ["both out, fresh paid", usage(100, 99, fresh)],
+    ["both out, old paid", usage(100, 99, old)],
+    ["both out, blocked paid", usage(100, 99, blocked)],
+    ["claude unknown", usage(null, 95)],
+    ["codex unknown", usage(95, null)],
+  ];
+  const policies: [string, Partial<BoatSettings>][] = [
+    ["switching", {}],
+    ["switching off", { relay: { ...BASE.relay, enabled: false } }],
+    ["extra usage allowed", { avoidExtraUsage: false }],
+    ["extra usage allowed, switching off", { avoidExtraUsage: false, relay: { ...BASE.relay, enabled: false } }],
+    ["paid fallback", { relay: { ...BASE.relay, paidClaudeFallback: true, paidClaudeHeadless: true } }],
+    ["paid fallback, extra usage allowed", { avoidExtraUsage: false, relay: { ...BASE.relay, paidClaudeFallback: true, paidClaudeHeadless: true } }],
+    ["codex first", { implementProvider: "codex" }],
+    ["codex first, paid fallback", { implementProvider: "codex", relay: { ...BASE.relay, paidClaudeFallback: true, paidClaudeHeadless: true } }],
+    ["only claude", { agents: "claude" }],
+    ["only codex, paid fallback", { agents: "codex", relay: { ...BASE.relay, paidClaudeFallback: true, paidClaudeHeadless: true } }],
+  ];
+  const brief = { title: "Header", role: "implement" as const, brief: "Do it.", repo: "acme/web", orchestratorThreadId: "thr_orch" };
+  let compared = 0;
+  const kinds = new Set<string>();
+  for (const [readingName, quotas] of readings) {
+    for (const [policyName, policy] of policies) {
+      const env = makeService({ quotas, settings: policy });
+      const settings = await env.service.settings();
+      const next = nextForNewWork(quotas, settings);
+      kinds.add(next.kind);
+      let paid = false;
+      // The guard the start queue puts on every new start (src/start-queue.ts).
+      const start = env.service.launchTask(
+        { ...brief, subscriptionGuard: { async check(provider, checked, runner) { paid = await env.service.assertSubscriptionRoom(provider, { settings: checked, runner }); }, assertCurrent() {} } },
+        5_000,
+      );
+      const label = `${readingName} · ${policyName}: next ${next.kind} ${next.agent}`;
+      if (next.kind === "wait") {
+        await assert.rejects(start, (error: unknown) => error instanceof TaskError && error.code === "agents_at_limit", label);
+      } else {
+        const { task } = await start;
+        assert.equal(task.provider, next.agent, label);
+        assert.equal(paid, next.kind === "paid", label);
+      }
+      compared++;
+    }
+  }
+  assert.equal(compared, readings.length * policies.length);
+  assert.deepEqual([...kinds].sort(), ["over", "paid", "room", "switch", "wait"], "every outcome is compared");
+  // A headless start without the same-account opt-in waits where a chat gets paid Claude; the line says so.
+  const settings = { ...BASE, relay: { ...BASE.relay, paidClaudeFallback: true } };
+  assert.equal(subscriptionRoom("claude", usage(100, 99, fresh), settings), "paid");
+  assert.equal(subscriptionRoom("claude", usage(100, 99, fresh), settings, { runner: "boat" }), "wait");
 });
 
 // ------------------------------------------------------------------ wording
