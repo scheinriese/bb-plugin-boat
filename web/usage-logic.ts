@@ -87,7 +87,13 @@ export function agentFact(agent: AgentRow | undefined, provider: Provider): stri
 }
 
 /** Why automatic paid Claude doesn't start now (the fallback is on, and it isn't available). */
-function paidClaudeHeld(view: UsageViewDto): string {
+function paidClaudeHeld(view: UsageViewDto, now: number): string {
+  // A refused turn holds paid Claude even with a fresh "allowed" reading.
+  const hold = view.agents.find((agent) => agent.provider === "claude")?.limitHitUntil ?? null;
+  if (hold !== null && hold > now) {
+    const until = dayTime(new Date(hold).toISOString(), now);
+    return `paid Claude is on hold${until ? ` until ${until}` : ""} (a Claude turn hit its limit)`;
+  }
   const extra = view.claudeExtraUsage;
   if (extra.pool === "off") return "paid Claude is unknown (Account Pooler off)";
   if (extra.pool === "not-routing") return "paid Claude is unknown (Account Pooler isn’t routing Claude)";
@@ -119,7 +125,7 @@ export function nextStepLine(view: UsageViewDto, now = Date.now()): string {
     case "wait": {
       const when = next.until === null ? null : dayTime(next.until, now);
       const parts = [lead];
-      if (both && view.paidClaudeFallback && view.onlyAgent !== "codex") parts.push(paidClaudeHeld(view));
+      if (both && view.paidClaudeFallback && view.onlyAgent !== "codex") parts.push(paidClaudeHeld(view, now));
       else if (!both && !next.switching && view.onlyAgent === null) parts.push("switching is off");
       parts.push(when === null ? "work waits for a reset" : `work waits until ${when}`);
       return parts.join(" · ");

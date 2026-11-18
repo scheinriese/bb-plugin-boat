@@ -56,6 +56,7 @@ export function usageView({ quotas, pool, settings, now }: { quotas: Quotas; poo
         window: quota?.window ?? null,
         resetsAt: quota?.resetsAt ?? null,
         source: quota === undefined ? null : sourceOf(quota),
+        limitHitUntil: quota?.blockedUntil ?? null,
       };
     }),
     onlyAgent: only,

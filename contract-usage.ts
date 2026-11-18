@@ -80,6 +80,11 @@ export const usageViewSchema = z.object({
       resetsAt: z.string().nullable(),
       /** pool: the Account Pooler; login: this computer's own login; limit-hit: a failed turn. */
       source: z.enum(["pool", "login", "limit-hit"]).nullable(),
+      /**
+       * A failed turn hit this agent's limit: it counts as full, and
+       * automatic paid Claude waits, until then (epoch ms; null: no hold).
+       */
+      limitHitUntil: z.number().nullable(),
     }),
   ),
   /** The one agent the user has, or null with both. */

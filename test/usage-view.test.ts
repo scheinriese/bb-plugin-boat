@@ -10,9 +10,9 @@ import { fileURLToPath } from "node:url";
 import plugin from "../server.ts";
 import type { UsageViewDto } from "../contract.ts";
 import { USAGE_STALE_MS } from "../contract-usage.ts";
-import { readPoolUsage, type AgentQuota, type Quotas } from "../src/quota.ts";
+import { applyLimitFlags, readPoolUsage, type AgentQuota, type Quotas } from "../src/quota.ts";
 import { nextForNewWork, PAID_USAGE_EVIDENCE_MS, subscriptionRoom, type NewWorkSettings } from "../src/relay.ts";
-import { refreshErrorText, refreshReplyError } from "../src/rpc-usage.ts";
+import { refreshErrorText, refreshReplyError, usageView } from "../src/rpc-usage.ts";
 import { accountStatus, agentFact, creditsRow, dayTime, isStale, nextStepLine, resetLabel, windowTone } from "../web/usage-logic.ts";
 import { TaskError, type BoatSettings } from "../src/service.ts";
 import { createTestHost, makeService } from "./fakes.ts";
@@ -336,7 +336,7 @@ function viewOf(quotas: Quotas, settings: NewWorkSettings, extra: Partial<UsageV
     pool: "on",
     routing: { claude: true, codex: true },
     accounts: [],
-    agents: (["claude", "codex"] as const).map((provider) => ({ provider, usedPercent: quotas.get(provider)?.usedPercent ?? null, window: quotas.get(provider)?.window ?? null, resetsAt: quotas.get(provider)?.resetsAt ?? null, source: "pool" as const })),
+    agents: (["claude", "codex"] as const).map((provider) => ({ provider, usedPercent: quotas.get(provider)?.usedPercent ?? null, window: quotas.get(provider)?.window ?? null, resetsAt: quotas.get(provider)?.resetsAt ?? null, source: "pool" as const, limitHitUntil: quotas.get(provider)?.blockedUntil ?? null })),
     onlyAgent: null,
     switchAtPercent: settings.relay.switchAtPercent,
     paidClaudeFallback: settings.relay.paidClaudeFallback === true,
@@ -394,6 +394,28 @@ test("next step: both at their limits, so work waits until the first reset", () 
   assert.match(nextStepLine(viewOf(blocked, paid, { claudeExtraUsage: { status: "unknown", observedAt: null, pool: "off" } })), /paid Claude is unknown \(Account Pooler off\)/);
   // No reset time known.
   assert.equal(nextStepLine(viewOf(usage(100, 95), BASE, { next: { kind: "wait", agent: null, wanted: "claude", until: null, switching: true } })), "Both are at their limits · work waits for a reset");
+});
+
+test("next step: a refused Claude turn holds paid Claude even with a fresh allowed reading, and the line says until when", () => {
+  const paid = { ...BASE, relay: { ...BASE.relay, paidClaudeFallback: true, paidClaudeHeadless: true } };
+  const fresh = { allowed: true, status: "allowed" as const, observedAt: Date.now() - MIN, pool: "on" as const };
+  const hold = Date.now() + 45 * MIN;
+  const now = Date.now();
+  // The real reading is at its limit (it keeps its window and source), and a failed turn added the hold.
+  const reading = usage(100, 99, fresh);
+  reading.set("claude", { ...reading.get("claude")!, source: "account-pool" });
+  const quotas = applyLimitFlags(reading, { claude: hold });
+  const pool = { pool: "on" as const, routing: { claude: true, codex: true }, accounts: [], claudeExtraUsage: fresh };
+  const view = usageView({ quotas, pool, settings: paid, now });
+  assert.equal(view.next.kind, "wait");
+  assert.equal(view.paidClaudeAvailable, false);
+  assert.deepEqual(view.agents.map((agent) => [agent.provider, agent.source, agent.limitHitUntil]), [["claude", "pool", hold], ["codex", null, null]]);
+  assert.deepEqual(view.claudeExtraUsage, { status: "allowed", observedAt: fresh.observedAt, pool: "on" });
+  const until = dayTime(new Date(hold).toISOString(), now);
+  assert.equal(nextStepLine(view, now), `Both are at their limits · paid Claude is on hold until ${until} (a Claude turn hit its limit) · work waits until ${dayTime(new Date(RESET).toISOString(), now)}`);
+  assert.doesNotMatch(nextStepLine(view, now), /newer check/);
+  // Once the hold is over, the reading's own state speaks again.
+  assert.match(nextStepLine({ ...view, agents: view.agents.map((agent) => ({ ...agent, limitHitUntil: agent.provider === "claude" ? now - MIN : null })) }, now), /paid Claude needs a newer check/);
 });
 
 test("next step: with paid extra usage not avoided, work still starts past a limit; with one agent, only its own reset", () => {
@@ -489,9 +511,9 @@ test("the next-step line and a real start agree: same pick, same subscription ch
 test("usage wording: agent facts, reset times in local time", () => {
   const now = Date.parse("2026-11-17T12:00:00Z");
   assert.equal(agentFact(undefined, "codex"), "Codex's usage is unknown");
-  assert.equal(agentFact({ provider: "claude", usedPercent: 100, window: "Usage limit (hit)", resetsAt: null, source: "limit-hit" }, "claude"), "Claude hit its usage limit");
-  assert.equal(agentFact({ provider: "claude", usedPercent: 103, window: "5-hour limit", resetsAt: null, source: "pool" }, "claude"), "Claude is at its 5-hour limit");
-  assert.equal(agentFact({ provider: "codex", usedPercent: 98.6, window: "Weekly limit", resetsAt: null, source: "pool" }, "codex"), "Codex is at 99%");
+  assert.equal(agentFact({ provider: "claude", usedPercent: 100, window: "Usage limit (hit)", resetsAt: null, source: "limit-hit", limitHitUntil: null }, "claude"), "Claude hit its usage limit");
+  assert.equal(agentFact({ provider: "claude", usedPercent: 103, window: "5-hour limit", resetsAt: null, source: "pool", limitHitUntil: null }, "claude"), "Claude is at its 5-hour limit");
+  assert.equal(agentFact({ provider: "codex", usedPercent: 98.6, window: "Weekly limit", resetsAt: null, source: "pool", limitHitUntil: null }, "codex"), "Codex is at 99%");
   const reset = "2026-11-19T01:00:00Z";
   const date = new Date(reset);
   assert.equal(resetLabel(reset, now), `resets ${date.toLocaleDateString([], { weekday: "short" })} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
