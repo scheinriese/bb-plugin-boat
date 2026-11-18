@@ -211,12 +211,13 @@ function CreditsRow({ credits, now }: { credits: NonNullable<UsageAccountDto["cr
 }
 
 /** The agent-wide reading Boat goes by when the Pooler doesn't route this agent. */
-function LoginReading({ view, provider, now }: { view: UsageViewDto; provider: Provider; now: number }) {
+function LoginReading({ view, provider, now, named = false }: { view: UsageViewDto; provider: Provider; now: number; named?: boolean }) {
   const agent = view.agents.find((entry) => entry.provider === provider);
   if (agent === undefined || agent.usedPercent === null) return <p className="text-xs leading-4 text-muted-foreground">No usage reading for {PROVIDER_SHORT[provider]}</p>;
+  const window = agent.window ?? "Usage limit";
   return (
     <LimitBar
-      label={agent.window ?? "Usage limit"}
+      label={named ? `${PROVIDER_SHORT[provider]} ${window.toLowerCase()}` : window}
       usedPercent={agent.usedPercent}
       tone={windowTone({ usedPercent: agent.usedPercent, atLimit: agent.usedPercent >= 100 }, view.switchAtPercent)}
       detail={resetLabel(agent.resetsAt, now)}
@@ -261,7 +262,7 @@ function PoolOff({ view, providers, now }: { view: UsageViewDto; providers: Prov
           <div key={provider} className="flex items-center gap-2">
             <AgentLogo provider={provider} className="size-3.5" />
             <div className="min-w-0 flex-1">
-              <LoginReading view={view} provider={provider} now={now} />
+              <LoginReading view={view} provider={provider} now={now} named />
             </div>
           </div>
         ))}

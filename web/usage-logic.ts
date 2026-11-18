@@ -92,7 +92,7 @@ function paidClaudeHeld(view: UsageViewDto): string {
   if (extra.pool === "off") return "paid Claude is unknown (Account Pooler off)";
   if (extra.pool === "not-routing") return "paid Claude is unknown (Account Pooler isn’t routing Claude)";
   if (extra.status === "rejected") return "paid Claude is blocked";
-  if (extra.status === "disabled") return "paid Claude is off for this account";
+  if (extra.status === "disabled") return "paid Claude is off";
   if (extra.status === "allowed") return "paid Claude needs a newer check";
   return "paid Claude is unknown";
 }

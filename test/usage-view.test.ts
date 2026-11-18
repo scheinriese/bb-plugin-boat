@@ -377,7 +377,7 @@ test("next step: both at their limits, so work waits until the first reset", () 
   const blocked = usage(100, 95, { allowed: false, status: "rejected", observedAt: Date.now() - MIN, pool: "on" });
   assert.equal(nextForNewWork(blocked, paid).kind, "wait");
   assert.equal(nextStepLine(viewOf(blocked, paid, { claudeExtraUsage: { status: "rejected", observedAt: Date.now() - MIN, pool: "on" } })), `Both are at their limits · paid Claude is blocked · work waits until ${when}`);
-  assert.match(nextStepLine(viewOf(blocked, paid, { claudeExtraUsage: { status: "disabled", observedAt: null, pool: "on" } })), /paid Claude is off for this account/);
+  assert.match(nextStepLine(viewOf(blocked, paid, { claudeExtraUsage: { status: "disabled", observedAt: null, pool: "on" } })), /· paid Claude is off · /);
   assert.match(nextStepLine(viewOf(blocked, paid, { claudeExtraUsage: { status: "unknown", observedAt: null, pool: "off" } })), /paid Claude is unknown \(Account Pooler off\)/);
   // No reset time known.
   assert.equal(nextStepLine(viewOf(usage(100, 95), BASE, { next: { kind: "wait", agent: null, wanted: "claude", until: null, switching: true } })), "Both are at their limits · work waits for a reset");
