@@ -9,6 +9,10 @@ export type MachineType = (typeof MACHINE_TYPE_VALUES)[number];
 
 /** The nav panel's `path`; `toPluginPanel` takes it. */
 export const PANEL_PATH = "cloud-agents";
+/** Boat's settings, at the usage view (Settings › Usage limits): the compact usage signals link here. */
+export const USAGE_SETTINGS_HREF = "/settings/plugins/boat#usage";
+/** The Account Pooler's own settings, where accounts are added, signed in, ordered and routed. */
+export const POOLER_SETTINGS_HREF = "/settings/plugins/account-pool";
 
 /** Task ids the server mints (`t_` + hex). Used to validate untrusted input. */
 export const TASK_ID_PATTERN = /^t_[0-9a-f]{4,16}$/;

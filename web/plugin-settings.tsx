@@ -21,6 +21,7 @@ import { SetupChecklist } from "./setup";
 import { BackupSettings } from "./backup-settings";
 import { EVERYDAY_SETTING_COPY, groupedSettings, notificationSettingPatch, setupNeedsWork, setupTestPassed } from "./v1-settings-logic";
 import { useSettingsFrameTweak } from "./workarounds/settings-frame";
+import { UsageLimitsSection } from "./usage-limits";
 import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, focusNeighbour, showError } from "./ui";
 
 type SettingValue = string | number | boolean;
@@ -552,6 +553,8 @@ function DesktopBoatSettings() {
   const master = query.data?.settings.find((row) => row.key === "pushNotifications")?.value === true;
   return <div className="boat-settings space-y-[22px] text-[13px] leading-[18px]">
     <SetupChecklist />
+    {/* First, so the usage links (homepage, thread chip, a waiting start) land on it. */}
+    <UsageLimitsSection />
     <Loading error={query.error} rows={query.data?.settings.length ?? 0} />
     {grouped.groups.map((group) => <section key={group.title} aria-label={group.title} className={cn("space-y-2", dimmed && "opacity-35")}>
       <h3 className="text-[13px] font-medium leading-[18px] text-[color:var(--boat-group-heading)]">{group.title}</h3>
