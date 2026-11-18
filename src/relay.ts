@@ -242,6 +242,61 @@ export function agentWithRoom(wanted: Provider, quotas: Quotas, switchAtPercent:
   return null;
 }
 
+/** The settings a start checks (BoatSettings' fields of the same names). */
+export interface NewWorkSettings {
+  relay: RelaySettings;
+  agents: AgentChoice;
+  avoidExtraUsage: boolean;
+  /** Agent for tasks. */
+  implementProvider: Provider;
+  notConnectedAgents: readonly Provider[];
+}
+
+/**
+ * Where new work goes now: room on the default agent, a switch to the other
+ * one, paid Claude, a wait for a reset (`until`: the earliest reset that
+ * frees an agent), or over a limit (nothing holds it back).
+ */
+export type NextStep =
+  | { kind: "room" | "switch" | "paid" | "over"; agent: Provider; wanted: Provider; until: null }
+  | { kind: "wait"; agent: null; wanted: Provider; until: string | null };
+
+/**
+ * What a task started now with no agent named would do, from the checks a
+ * start makes (BoatService.prepareTask, then assertSubscriptionRoom): the
+ * same agentForWork and automaticPaidClaude, never a separate guess.
+ */
+export function nextForNewWork(quotas: Quotas, settings: NewWorkSettings, now = Date.now()): NextStep {
+  const relay = effectiveRelay(settings.relay, settings.agents);
+  const only = onlyAgent(settings.agents);
+  const wanted = only ?? settings.implementProvider;
+  // With switching on (and both agents), either agent's reset frees work.
+  const blocking: Provider[] = only !== null ? [only] : relay.enabled ? [wanted, otherAgent(wanted)] : [wanted];
+  const wait: NextStep = { kind: "wait", agent: null, wanted, until: earliestReset(quotas, blocking) };
+  let agent = wanted;
+  if (relay.enabled || settings.avoidExtraUsage) {
+    const pick = agentForWork(wanted, quotas, relay, settings.agents);
+    if (pick === null && settings.avoidExtraUsage) return wait;
+    if (relay.enabled && pick !== null) agent = pick;
+  }
+  const reading = quotas.get(agent);
+  if (settings.avoidExtraUsage || relay.paidClaudeFallback) {
+    if (relay.paidClaudeFallback && (reading === undefined || settings.notConnectedAgents.includes(agent))) return wait;
+    if (agent === "claude" && automaticPaidClaude(quotas, relay, settings.agents, now) && !settings.notConnectedAgents.includes("claude")) return { kind: "paid", agent, wanted, until: null };
+    if (reading !== undefined && reading.usedPercent >= relay.switchAtPercent) return wait;
+  }
+  if (reading !== undefined && reading.usedPercent >= relay.switchAtPercent) return { kind: "over", agent, wanted, until: null };
+  return { kind: agent === wanted ? "room" : "switch", agent, wanted, until: null };
+}
+
+/** The earliest known reset of these agents' binding windows (ISO), or null. */
+function earliestReset(quotas: Quotas, providers: readonly Provider[]): string | null {
+  const times = providers
+    .map((provider) => Date.parse(quotas.get(provider)?.resetsAt ?? ""))
+    .filter((at) => Number.isFinite(at));
+  return times.length > 0 ? new Date(Math.min(...times)).toISOString() : null;
+}
+
 /** What the relay is doing for an orchestrator, in a few words (null: nothing). */
 export function relayNote(state: RelayState | null, decision: RelayDecision, now = Date.now()): string | null {
   if (state?.phase === "handoff-requested") return `writing a handoff note for ${AGENT_NAME[state.to]}`;
