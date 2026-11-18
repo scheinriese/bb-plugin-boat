@@ -78,7 +78,7 @@ function fakeCallRpc(pool: FakePool) {
       }
       if (method === "provider-usage.v1.getResource") {
         const found = accounts.find((entry) => entry.id === input?.resourceId);
-        const windows = (found?.limitWindows ?? []).map((window) => ({ label: window.windowMinutes === WEEK ? "Weekly limit" : "5-hour limit", usedPercent: window.utilization * 100, resetsAt: new Date(window.resetAt).toISOString(), model: null }));
+        const windows = (found?.limitWindows ?? []).map((window) => ({ label: window.windowMinutes === WEEK ? "Weekly limit" : "5-hour limit", usedPercent: Math.round(window.utilization * 100), resetsAt: new Date(window.resetAt).toISOString(), model: null }));
         return { usage: { status: "ok", windows } };
       }
       if (method === "account.refreshUsage") return pool.refresh ? await pool.refresh(input!.accountId!) : { account: accounts.find((entry) => entry.id === input?.accountId) ?? null };
@@ -217,6 +217,17 @@ test("a rejected window is at its limit; spend control turns credits off for the
   assert.equal(spend!.credits?.status, "disabled");
   assert.equal(creditsRow(spend!.credits!, now).status, "Off for this account");
   assert.equal(creditsRow(ok!.credits!, now).status, "Available");
+});
+
+test("account bars round like the relay's reading, so 99.5% is at the limit in both", async (t) => {
+  const host = await usageHost(t, { accounts: [account("c-edge", "claude", { utilization: 0.995 }), account("c-under", "claude", { utilization: 0.994 }), account("x", "codex", { utilization: 0.995 })] });
+  const view = await host.usage();
+  const weekly = (id: string) => view.accounts.find((entry) => entry.id === id)!.windows.find((window) => window.label === "Weekly limit")!;
+  assert.deepEqual([weekly("c-edge").usedPercent, weekly("c-edge").atLimit], [100, true]);
+  assert.deepEqual([weekly("c-under").usedPercent, weekly("c-under").atLimit], [99, false]);
+  // The relay's own Codex number (provider-usage, which the Pooler rounds) says the same as the bar.
+  assert.equal(view.agents.find((agent) => agent.provider === "codex")!.usedPercent, weekly("x").usedPercent);
+  assert.equal(view.agents.find((agent) => agent.provider === "claude")!.usedPercent, 99, "the freest Claude account");
 });
 
 test("status.get is parsed defensively: wrong types read as null, an account without an id is skipped, unknown fields ignored", async () => {

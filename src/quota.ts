@@ -337,7 +337,8 @@ function instant(value: number | string | null | undefined): string | null {
 }
 
 function toWindow(window: z.infer<typeof poolWindowSchema>, label: string, model: string | null): AccountWindow {
-  const usedPercent = typeof window.utilization === "number" ? window.utilization * 100 : null;
+  // Rounded like the Pooler's provider-usage reading the relay goes by, so a bar and the next step agree on "at its limit".
+  const usedPercent = typeof window.utilization === "number" ? Math.round(window.utilization * 100) : null;
   return {
     label,
     model,
