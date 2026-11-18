@@ -707,6 +707,31 @@ costs no tokens. When any chat on this bb fails on a usage limit, that agent
 counts as full until the limit resets. `bb boat relay status` shows each
 agent's usage.
 
+**Settings › Usage limits**, at the top of Boat's settings, says which agent
+can run now, and why:
+
+- One line on where new work goes, from the same checks a start makes:
+  "Codex is at 99% · Claude is at its weekly limit · paid Claude is
+  available, so new work goes to Claude", or "Both are at their limits ·
+  work waits until Thu 01:00".
+- Each account in the Account Pooler, with a bar for every limit (model-only
+  ones such as Fable are labelled; they don't stop the agent) and when it
+  resets, in your local time. Claude accounts add their extra usage:
+  available, blocked, off for this account, or unknown, with when the Pooler
+  checked. Boat never sees a money amount.
+- A reading older than about ten minutes shows as stale. **Account Pooler
+  off** and **Not routing Claude** are states of their own, with the reading
+  from this computer's own login when there is one.
+- **Refresh** asks the Pooler for new readings of each account it uses
+  (only when you press it) and says in plain words which ones failed.
+  Accounts are managed in the Account Pooler's own settings; the section
+  links there.
+
+The usage numbers on the homepage, the thread's usage chip and a waiting
+start's **Change in Settings › Usage limits** link open this section. Boat
+only reads from the Account Pooler: it never touches its logins or changes
+its accounts or routing.
+
 ## Model presets
 
 A task can run with a model preset: Light, Review, Build, Deep or Frontier

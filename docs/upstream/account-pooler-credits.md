@@ -13,3 +13,6 @@ clearer:
 Until then Boat shows the Pooler's verdict and when it was taken, e.g.
 "Claude extra usage: blocked · last checked 14:02 by the Account Pooler",
 "available", or "unknown (Account Pooler off)". Boat never sees a balance.
+
+Settings › Usage limits shows the same status per Claude account, with a
+place for an amount ("$40 / $100") once the Pooler passes one on.
