@@ -707,8 +707,8 @@ costs no tokens. When any chat on this bb fails on a usage limit, that agent
 counts as full until the limit resets. `bb boat relay status` shows each
 agent's usage.
 
-**Settings › Usage limits**, at the top of Boat's settings, says which agent
-can run now, and why:
+**Settings › Usage limits**, at the top of Boat's settings (and on the
+mobile settings page), says which agent can run now, and why:
 
 - One line on where new work goes, from the same checks a start makes:
   "Codex is at 99% · Claude is at its weekly limit · paid Claude is
@@ -723,7 +723,8 @@ can run now, and why:
   off** and **Not routing Claude** are states of their own, with the reading
   from this computer's own login when there is one.
 - **Refresh** asks the Pooler for new readings of each account it uses
-  (only when you press it) and says in plain words which ones failed.
+  (only when you press it) and says in plain words which ones failed,
+  including an account the Pooler no longer has.
   Accounts are managed in the Account Pooler's own settings; the section
   links there.
 
