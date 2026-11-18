@@ -348,7 +348,8 @@ function toWindow(window: z.infer<typeof poolWindowSchema>, label: string, model
   };
 }
 
-function errorText(error: unknown): string | null {
+/** The Pooler's error for an account (a string or { message }), or null when there is none. */
+export function poolErrorText(error: unknown): string | null {
   if (typeof error === "string") return error.trim() || null;
   if (error !== null && typeof error === "object" && typeof (error as { message?: unknown }).message === "string") return (error as { message: string }).message.trim() || null;
   return null;
@@ -378,7 +379,7 @@ function accountUsage(account: PoolAccount): PoolAccountUsage | null {
     extraUsage: accountExtraUsage(account),
     observedAt: times.length > 0 ? Math.max(...times) : null,
     heldUntil: account.heldUntil ?? null,
-    error: errorText(account.error),
+    error: poolErrorText(account.error),
   };
 }
 

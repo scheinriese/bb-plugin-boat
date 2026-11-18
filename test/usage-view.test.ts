@@ -12,7 +12,7 @@ import type { UsageViewDto } from "../contract.ts";
 import { USAGE_STALE_MS } from "../contract-usage.ts";
 import { readPoolUsage, type AgentQuota, type Quotas } from "../src/quota.ts";
 import { nextForNewWork, PAID_USAGE_EVIDENCE_MS, type NewWorkSettings } from "../src/relay.ts";
-import { refreshErrorText } from "../src/rpc-usage.ts";
+import { refreshErrorText, refreshReplyError } from "../src/rpc-usage.ts";
 import { accountStatus, agentFact, creditsRow, dayTime, isStale, nextStepLine, resetLabel, windowTone } from "../web/usage-logic.ts";
 import { createTestHost } from "./fakes.ts";
 
@@ -54,7 +54,7 @@ interface FakePool {
   off?: boolean;
   routing?: { claude: boolean; codex: boolean };
   accounts?: ReturnType<typeof account>[];
-  /** account.refreshUsage, per account (default: { ok: true }). */
+  /** account.refreshUsage, per account (default: the Pooler's reply, { account: <its status> }). */
   refresh?: (accountId: string) => unknown;
   /** This computer's own logins (bb's provider-claude-code and provider-codex), percent used. */
   login?: { claude?: number; codex?: number };
@@ -80,7 +80,7 @@ function fakeCallRpc(pool: FakePool) {
         const windows = (found?.limitWindows ?? []).map((window) => ({ label: window.windowMinutes === WEEK ? "Weekly limit" : "5-hour limit", usedPercent: window.utilization * 100, resetsAt: new Date(window.resetAt).toISOString(), model: null }));
         return { usage: { status: "ok", windows } };
       }
-      if (method === "account.refreshUsage") return pool.refresh ? await pool.refresh(input!.accountId!) : { ok: true };
+      if (method === "account.refreshUsage") return pool.refresh ? await pool.refresh(input!.accountId!) : { account: accounts.find((entry) => entry.id === input?.accountId) ?? null };
       throw new Error(`unknown method ${method}`);
     }
     const login = pluginId === "provider-claude-code" ? pool.login?.claude : pluginId === "provider-codex" ? pool.login?.codex : undefined;
@@ -258,16 +258,22 @@ test("Refresh: account.refreshUsage for each account the Pooler uses, then a new
     accounts: [
       account("c-ok", "claude"),
       account("c-expired", "claude"),
+      account("c-gone", "claude"),
       account("c-busy", "claude"),
       account("c-slow", "claude"),
+      account("c-odd", "claude"),
       account("c-off", "claude", { enabled: false }),
     ],
     login: { codex: 15 },
+    // bb 0.49.0: { account: AccountStatus | null }. A failed refresh comes back with the account's error.
     refresh: (id) => {
-      if (id === "c-expired") throw new Error("Refresh token was rejected (401)");
-      if (id === "c-busy") return { ok: false, error: "Usage endpoint answered 429" };
+      const status = pool.accounts!.find((entry) => entry.id === id)!;
+      if (id === "c-expired") return { account: { ...status, error: "usage request failed: 401" } };
+      if (id === "c-gone") return { account: null };
+      if (id === "c-busy") throw new Error("Usage endpoint answered 429");
       if (id === "c-slow") throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
-      return { ok: true };
+      if (id === "c-odd") return "done";
+      return { account: { ...status, error: null } };
     },
   };
   const host = await usageHost(t, pool);
@@ -276,17 +282,23 @@ test("Refresh: account.refreshUsage for each account the Pooler uses, then a new
   host.calls.length = 0;
   const { errors } = await host.refresh();
   // Enabled accounts only; never another write method.
-  assert.deepEqual(host.calls.filter((call) => call.method === "account.refreshUsage").map((call) => call.input?.accountId), ["c-ok", "c-expired", "c-busy", "c-slow"]);
+  assert.deepEqual(host.calls.filter((call) => call.method === "account.refreshUsage").map((call) => call.input?.accountId), ["c-ok", "c-expired", "c-gone", "c-busy", "c-slow", "c-odd"]);
   for (const method of poolMethods(host.calls)) assert.ok(READ_ONLY.has(method) || method === "account.refreshUsage", `called ${method}`);
   assert.deepEqual(errors, [
-    { accountId: "c-expired", name: "c-expired@example.com", message: "Refresh token was rejected (401)" },
+    { accountId: "c-expired", name: "c-expired@example.com", message: "usage request failed: 401" },
+    { accountId: "c-gone", name: "c-gone@example.com", message: "The Account Pooler no longer has this account." },
     { accountId: "c-busy", name: "c-busy@example.com", message: "Usage endpoint answered 429" },
     { accountId: "c-slow", name: "c-slow@example.com", message: "The Account Pooler didn't answer in time." },
+    { accountId: "c-odd", name: "c-odd@example.com", message: "The Account Pooler's answer couldn't be read." },
   ]);
   // Then read again: the Pooler's accounts without asking twice, this computer's Codex login refreshed.
   const reads = host.calls.filter((call) => call.method === "provider-usage.v1.getResource");
   assert.ok(reads.length > 0);
   for (const call of reads) assert.equal(call.input?.refresh, call.pluginId !== "account-pool", `${call.pluginId} refresh`);
+  // An error as { message }, a blank one, and success.
+  assert.equal(refreshReplyError({ account: { id: "a", error: { message: "token expired" } } }), "token expired");
+  assert.equal(refreshReplyError({ account: { id: "a", error: "  " } }), null);
+  assert.equal(refreshReplyError({ account: { id: "a" } }), null);
 });
 
 test("Refresh with the Pooler off re-reads this computer's logins and asks the Pooler for nothing", async (t) => {

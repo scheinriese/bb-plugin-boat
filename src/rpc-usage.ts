@@ -6,7 +6,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { TAGS, type UsageViewDto } from "../contract.ts";
-import { extraUsageDto, readPoolUsage, type AgentQuota, type QuotaReader, type Quotas } from "./quota.ts";
+import { extraUsageDto, poolErrorText, readPoolUsage, type AgentQuota, type QuotaReader, type Quotas } from "./quota.ts";
 import { automaticPaidClaude, effectiveRelay, nextForNewWork, onlyAgent, type NewWorkSettings } from "./relay.ts";
 import type { Runtime } from "./runtime.ts";
 import { PROVIDERS } from "./store.ts";
@@ -79,12 +79,19 @@ export function refreshErrorText(error: unknown): string {
   return text.slice(0, 300) || "The Account Pooler couldn't refresh it.";
 }
 
-/** An answer that says it failed ({ ok: false, error }), in plain words; null when it didn't. */
-function refusedText(value: unknown): string | null {
-  if (value === null || typeof value !== "object" || (value as { ok?: unknown }).ok !== false) return null;
-  const error = (value as { error?: unknown }).error;
-  const text = typeof error === "string" ? error : typeof (error as { message?: unknown } | null)?.message === "string" ? (error as { message: string }).message : "";
-  return text.trim().slice(0, 300) || "The Account Pooler couldn't refresh it.";
+/**
+ * account.refreshUsage's reply (bb 0.49.0): the account's status after the
+ * refresh, or null when the Pooler doesn't have the account. A failed
+ * refresh usually doesn't throw: it comes back with the account's error.
+ */
+const refreshReplySchema = z.object({ account: z.object({ error: z.unknown().optional() }).passthrough().nullable() }).passthrough();
+
+/** What a refresh reply says went wrong, in plain words; null when it worked. */
+export function refreshReplyError(value: unknown): string | null {
+  const reply = refreshReplySchema.safeParse(value);
+  if (!reply.success) return "The Account Pooler's answer couldn't be read.";
+  if (reply.data.account === null) return "The Account Pooler no longer has this account.";
+  return poolErrorText(reply.data.account.error)?.slice(0, 300) ?? null;
 }
 
 /**
@@ -109,7 +116,7 @@ export async function refreshUsage(bb: BbPluginApi, quotas: QuotaReader | null):
       ),
     );
     results.forEach((result, index) => {
-      const message = result.status === "rejected" ? refreshErrorText(result.reason) : refusedText(result.value);
+      const message = result.status === "rejected" ? refreshErrorText(result.reason) : refreshReplyError(result.value);
       if (message !== null) errors.push({ accountId: accounts[index]!.id, name: accounts[index]!.name, message });
     });
   }
