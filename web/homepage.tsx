@@ -17,6 +17,7 @@ import { claudeExtraUsageLine } from "./relay-logic";
 import { ResizeDialog } from "./sandbox-size";
 import { AgentLogo } from "./ui";
 import { CancelQueuedStartButton, useQueuedStarts } from "./start-queue";
+import { UsageLink } from "./usage-limits";
 import { nativeCoordinators } from "./coordinators-logic";
 import { NativeCoordinatorRow, NativeCounts } from "./native-coordinators";
 
@@ -48,13 +49,12 @@ export function HomepageCard(_props: PluginHomepageSectionProps) {
   const firstRun = board !== undefined && orchestratorData !== undefined && !orchestrators.length && !native.length && !decisions.length && !tasks.length && !board.done.length && !queued.length;
   const projectName = (task?: TaskDto) => task ? (projects.find(project => project.id === task.projectId) ?? projects.find(project => project.repos[0]?.repo === task.repo) ?? projects.find(project => project.repos.some(repo => repo.repo === task.repo)))?.name ?? "" : "";
   const fill = (text: string) => { composer.insert(text, {at:"end", block:true}); composer.focus(); };
-  const meta = [
-    overview?.cap != null ? `${overview.activeSandboxes} of ${overview.cap} sandboxes` : null,
-    ...(relay?.agents ?? []).flatMap(agent => agent.usedPercent === null ? [] : [`${agent.provider === "codex" ? "Codex" : "Claude"} ${Math.round(agent.usedPercent)}%`]),
-  ].filter(Boolean).join(" · ");
+  const sandboxes = overview?.cap != null ? `${overview.activeSandboxes} of ${overview.cap} sandboxes` : null;
+  // The usage part opens Settings › Usage limits: which agent can run now, and why.
+  const usage = (relay?.agents ?? []).flatMap(agent => agent.usedPercent === null ? [] : [`${agent.provider === "codex" ? "Codex" : "Claude"} ${Math.round(agent.usedPercent)}%`]).join(" · ");
   return <section className="boat-ui relative" aria-label="Cloud agents">
     {relay?.paidClaudeFallback&&<p role="status" className="mb-3 text-xs leading-5 text-muted-foreground">{relay.paidClaudeAvailable ? "Included allowances are near their limits. Automatic Claude extra usage is available; Claude’s billing controls apply." : `Included allowances first · ${claudeExtraUsageLine(relay.claudeExtraUsage,false)} · Claude’s billing controls apply`}</p>}
-    <span className="mb-2 block text-xs leading-4 text-[color:var(--boat-faint)] sm:absolute sm:-top-8 sm:right-0 sm:mb-0 sm:text-right">{firstRun ? "All set · nothing running" : meta}</span>
+    <span className="mb-2 block text-xs leading-4 text-[color:var(--boat-faint)] sm:absolute sm:-top-8 sm:right-0 sm:mb-0 sm:text-right">{firstRun ? "All set · nothing running" : <>{sandboxes}{sandboxes && usage ? " · " : null}{usage ? <UsageLink>{usage}</UsageLink> : null}</>}</span>
     {firstRun ? <div className="grid gap-[10px] sm:grid-cols-3">
       {[
         {icon:"Cloud", title:"Try a one-off task", detail:"Fills the box above with a small task; runs in its own sandbox.", action:"Try it", act:()=>fill("Check this repository runs: install dependencies, build it, and run the tests. Report what works and what needs fixing; don't change any code.")},

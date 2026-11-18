@@ -25,6 +25,7 @@ import { rpcContract, type DecisionDto, type TaskDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { claudeExtraUsageLine } from "./relay-logic";
+import { UsageLink } from "./usage-limits";
 import { cn } from "@/lib/utils";
 import { Board } from "./board";
 import {
@@ -111,20 +112,20 @@ export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentP
   const currentAgent=relay?.orchestrators.find(row=>row.threadId===threadId)?.provider;
   const usage=relay?.agents.find(agent=>agent.provider===currentAgent);
   if(queued.length){
-    return <span className="boat-ui ml-auto hidden text-[12px] text-[#FC8C45] md:inline">{relay?.agents.filter(agent=>agent.usedPercent!==null).map(agent=>`${agent.provider==='claude'?'Claude':'Codex'} ${Math.round(agent.usedPercent!)}%`).join(' · ')||'Running work continues'}</span>;
+    return <UsageLink className="boat-ui ml-auto hidden text-[12px] text-[#FC8C45] md:inline">{relay?.agents.filter(agent=>agent.usedPercent!==null).map(agent=>`${agent.provider==='claude'?'Claude':'Codex'} ${Math.round(agent.usedPercent!)}%`).join(' · ')||'Running work continues'}</UsageLink>;
   }
   if((own?.provider??currentAgent)==='claude'&&relay?.paidClaudeAvailable)
-    return <span className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title="Included allowances are near their limits. Automatic Claude extra usage is authorized; Claude's billing controls apply. Boat cannot read your money balance."><AgentLogo provider="claude" className="size-3"/>Claude extra usage available</span>;
+    return <UsageLink className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title="Included allowances are near their limits. Automatic Claude extra usage is authorized; Claude's billing controls apply. Boat cannot read your money balance."><AgentLogo provider="claude" className="size-3"/>Claude extra usage available</UsageLink>;
   if((own?.provider??currentAgent)==='claude'&&relay?.paidClaudeFallback&&usage?.provider==='claude'&&usage.usedPercent!==null&&usage.usedPercent>=relay.switchAtPercent){
     const line=claudeExtraUsageLine(relay.claudeExtraUsage,false);
-    return <span className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex" title={`${line}. Boat sees only allowed or blocked, never a balance or spending cap.`}><AgentLogo provider="claude" className="size-3"/>{line.replace(/^Claude extra usage: /,'Claude extra usage ').replace(' by the Account Pooler','')}</span>;
+    return <UsageLink className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex" title={`${line}. Boat sees only allowed or blocked, never a balance or spending cap.`}><AgentLogo provider="claude" className="size-3"/>{line.replace(/^Claude extra usage: /,'Claude extra usage ').replace(' by the Account Pooler','')}</UsageLink>;
   }
   if(!own&&relay?.enabled&&currentAgent){
     const preferredUsage=relay.agents.find(agent=>agent.provider===relay.preferred);
     if(currentAgent!==relay.preferred&&preferredUsage?.usedPercent!==null&&preferredUsage?.usedPercent!==undefined&&preferredUsage.usedPercent>=relay.switchAtPercent)
-      return <span className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex"><AgentLogo provider={currentAgent} className="size-3"/>On {currentAgent==='claude'?'Claude':'Codex'} · back to {relay.preferred==='claude'?'Claude':'Codex'} after its reset</span>;
+      return <UsageLink className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex"><AgentLogo provider={currentAgent} className="size-3"/>On {currentAgent==='claude'?'Claude':'Codex'} · back to {relay.preferred==='claude'?'Claude':'Codex'} after its reset</UsageLink>;
     if(usage?.usedPercent!==null&&usage?.usedPercent!==undefined&&usage.usedPercent>=Math.max(0,relay.switchAtPercent-10))
-      return <span className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex"><AgentLogo provider={currentAgent} className="size-3"/>{currentAgent==='claude'?'Claude':'Codex'} <span className="text-[#FC8C45]">{Math.round(usage.usedPercent)}%</span> · switches to {currentAgent==='claude'?'Codex':'Claude'} at {relay.switchAtPercent}%</span>;
+      return <UsageLink className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex"><AgentLogo provider={currentAgent} className="size-3"/>{currentAgent==='claude'?'Claude':'Codex'} <span className="text-[#FC8C45]">{Math.round(usage.usedPercent)}%</span> · switches to {currentAgent==='claude'?'Codex':'Claude'} at {relay.switchAtPercent}%</UsageLink>;
   }
   if(!own&&(data?.ready.length??0)>0&&setup?.plan)return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{setup.plan.activeSandboxes}{setup.plan.maxActiveSandboxes!==null?' of '+setup.plan.maxActiveSandboxes:''} sandboxes{usage?.usedPercent!==null&&usage?.usedPercent!==undefined?` · ${usage.provider==='claude'?'Claude':'Codex'} ${Math.round(usage.usedPercent)}%`:''}</span>;
   if((data?.needsYou.length??0)>0)return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{decisionTask?.provider==='claude'?'Claude':decisionTask?.provider==='codex'?'Codex':'The agent'} waits in its sandbox; nothing is lost</span>;
