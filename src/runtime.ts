@@ -126,6 +126,8 @@ export interface Runtime {
   isHandingOver(threadId: string): Promise<boolean>;
   /** bb's thread.idle for any chat: the relay keeps a requested handoff note. */
   relayIdle(threadId: string, text: string | null, at: number | null): Promise<void>;
+  /** Each agent's usage, as the relay reads it (null in tests that don't wire it). */
+  quotas: QuotaReader | null;
   /** Usage per agent and what the relay would do for each orchestrator. */
   relayStatus(): Promise<{ quotas: Quotas; orchestrators: { threadId: string; title: string | null; provider: Provider | null; decision: RelayDecision; state: RelayState | null }[] }>;
   /** bb Connect's status (cloud orchestrators and worker chats need it). */
@@ -950,6 +952,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     relayTick,
     relaySwitch: (threadId, to, options) => exclusive(() => relaySwitch(threadId, to, options)),
     relayStatus,
+    quotas: deps.quotas ?? null,
     isHandingOver,
     relayIdle,
     chatApproval,

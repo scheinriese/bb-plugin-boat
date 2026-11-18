@@ -32,6 +32,7 @@ import { SETTING_SECTIONS } from "./settings.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import { HIDDEN_EVENT_KINDS } from "./memory.ts";
 import { sizeHandlers } from "./rpc-size.ts";
+import { usageHandlers } from "./rpc-usage.ts";
 import { currentChanges } from "./ship-approval.ts";
 import { shipRpcContract } from "../contract-ship.ts";
 import { createShipInteractions, parseShipSnapshot, shipSnapshotScript } from "./ship-interaction.ts";
@@ -375,6 +376,7 @@ export function registerRpc(runtime: Runtime): void {
     })(),
     // Sandbox sizes and memory (src/rpc-size.ts).
     ...sizeHandlers(runtime, refuse),
+    ...usageHandlers(runtime),
     overview: async () => {
       const settings = await service.settings();
       const only = onlyAgent(settings.agents);
