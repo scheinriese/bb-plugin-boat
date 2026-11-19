@@ -145,7 +145,7 @@ test("boat.dev is the only provider and the default: projects, tasks and sandbox
   assert.equal(registry.get("boat"), boat);
   assert.equal(registry.get("other"), null);
   assert.equal(registry.forProject(null), boat);
-  assert.equal(registry.forProject({ sandboxProvider: "other" }), boat, "a provider that isn't enabled: the default");
+  assert.equal(registry.forProject({ sandboxProvider: "other" }).id, "other", "a provider that isn't enabled: never another one");
   assert.equal(registry.forTask({}), boat, "a task from before the column");
   assert.equal(registry.forTask({ sandboxProvider: "boat" }), boat);
   assert.equal(registry.forSandbox("bx_abc123"), boat);
@@ -154,6 +154,28 @@ test("boat.dev is the only provider and the default: projects, tasks and sandbox
   assert.equal(registry.forMachine("manual"), null);
   assert.equal(registry.forMachine(null), null);
   assert.throws(() => createProviderRegistry([]), /No sandbox provider/);
+});
+
+test("unknown or disabled providers fail closed for every async member, with inert sync members", async () => {
+  const { calls, client } = recordingClient();
+  const registry = createProviderRegistry([createBoatProvider(client)]);
+  const unavailable = registry.forTask({ sandboxProvider: "mac" });
+  assert.equal(registry.forProject({ sandboxProvider: "mac" }), unavailable);
+  assert.equal(registry.get("mac"), null);
+  assert.equal(unavailable.machine, undefined);
+  assert.equal(unavailable.executor, undefined);
+  assert.equal(unavailable.links, undefined);
+  assert.deepEqual(unavailable.sizes, []);
+  assert.equal(unavailable.idPattern.test("mac_42"), false);
+  for (const [member, call] of Object.entries(unavailable)) {
+    if (typeof call !== "function") continue;
+    // Call first, outside assert.rejects: it must return a rejected promise, not throw synchronously.
+    const result = call();
+    assert.ok(result instanceof Promise, member);
+    await assert.rejects(result, (error: unknown) => error instanceof ProviderError && error.code === "provider_unavailable", member);
+  }
+  assert.deepEqual(calls, [], "no fallbacks to boat.dev");
+  assert.equal(registry.forProject({ sandboxProvider: "" }).id, "", "an explicit unknown id isn't the default");
 });
 
 test("the service takes a registry, or the boat client alone", () => {
@@ -307,6 +329,34 @@ test("tasks keep their sandbox provider; older tasks read as before, on boat.dev
   store.insert(taskRecord({ id: "t_other", sandboxProvider: "other" }));
   assert.equal(store.get("t_other")!.sandboxProvider, "other");
   assert.equal(store.update("t_new", { sandboxProvider: "other" })!.sandboxProvider, "other");
+});
+
+test("a task on a provider that isn't enabled is left alone: nothing goes to boat.dev, and it isn't failed", async () => {
+  const { calls, client } = recordingClient();
+  const store = memoryStore();
+  const registry = createProviderRegistry([createBoatProvider(client)]);
+  const service = new BoatService(registry, store, hooks());
+  // A running headless task another version recorded on a provider this one doesn't have.
+  store.insert(taskRecord({ id: "t_mac", sandboxId: "mac_42", conversationId: "c_42", sandboxProvider: "mac" }));
+  await service.sweep();
+  const task = store.get("t_mac")!;
+  assert.equal(task.status, "running", "not marked failed as a disappeared sandbox");
+  assert.equal(task.error, null);
+  assert.ok(!calls.some((call) => call.includes("mac_42")), "nothing about mac_42 reaches boat.dev");
+  // Its calls refuse with a provider error, and its sandbox id resolves through the task, not by its shape.
+  await assert.rejects(service.interruptTask("t_mac"), (error: unknown) => error instanceof ProviderError && error.code === "provider_unavailable");
+  assert.equal(service.sandboxProvider("mac_42").id, "mac");
+  const preview = store.upsertPreview({ taskId: "t_mac", sandboxId: "mac_42", port: 3000, path: "/", command: null, url: "https://preview.example", title: "Mac preview", health: "unknown" });
+  await assert.rejects(service.wakePreview(preview.id), (error: unknown) => error instanceof ProviderError && error.code === "provider_unavailable");
+  assert.equal(store.preview(preview.id)!.expiredAt, null, "an unavailable provider doesn't mean the preview is gone");
+  // Even a boat-shaped id and a closed task keep their recorded provider.
+  store.insert(taskRecord({ id: "t_mac_closed", status: "done", sandboxId: "bx_foreign", sandboxProvider: "mac" }));
+  assert.equal(service.sandboxProvider("bx_foreign").id, "mac");
+  assert.equal(registry.forTask(task), registry.forTask({ sandboxProvider: "mac" }), "one unavailable provider per id");
+  assert.equal(registry.forTask(task).idPattern.test("mac_42"), false);
+  // A sandbox no task recorded still goes by its id: boat.dev, as before.
+  assert.equal(service.sandboxProvider("bx_typed").id, "boat");
+  assert.deepEqual(calls.filter((call) => call.includes("mac_42")), []);
 });
 
 test("a task's sandbox calls go to the provider its record names", async () => {

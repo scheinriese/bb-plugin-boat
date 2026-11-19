@@ -780,7 +780,7 @@ export class BoatService {
     this.store = store;
     this.hooks = hooks;
     this.sizes = new SandboxSizes({
-      sandboxProviders: this.sandboxProviders,
+      sandboxProvider: (sandboxId) => this.sandboxProvider(sandboxId),
       store,
       hooks,
       settings: () => this.settings(),
@@ -808,9 +808,15 @@ export class BoatService {
     return this.sandboxProviders.default;
   }
 
-  /** The provider a task's sandbox is on, or that a sandbox id belongs to (today always boat.dev). */
-  private sandboxProvider(of: Pick<Task, "sandboxProvider"> | string): SandboxProvider {
-    return typeof of === "string" ? this.sandboxProviders.forSandbox(of) : this.sandboxProviders.forTask(of);
+  /**
+   * The provider a task's sandbox is on, or a sandbox id's: the one its tasks
+   * recorded, else (a sandbox no task has, typed by the user) by the id's
+   * shape. Today always boat.dev; a provider that isn't enabled refuses.
+   */
+  sandboxProvider(of: Pick<Task, "sandboxProvider"> | string): SandboxProvider {
+    if (typeof of !== "string") return this.sandboxProviders.forTask(of);
+    const recorded = this.store.sandboxProviderOf(of);
+    return recorded === null ? this.sandboxProviders.forSandbox(of) : this.sandboxProviders.forTask({ sandboxProvider: recorded });
   }
 
   private withSlotLock<T>(fn: () => Promise<T>): Promise<T> {

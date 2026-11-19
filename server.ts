@@ -376,7 +376,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   // A chat's queue, failed turn and retries, and the machine it runs on (the paid resume and `bb boat sandbox wake`).
   const resumeThreads = bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(), { error: (line) => bb.log.error(line) });
-  const machineReader = bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await sandboxProviders.forSandbox(sandboxId).findInfo(sandboxId))?.state ?? null);
+  const machineReader = bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await service.sandboxProvider(sandboxId).findInfo(sandboxId))?.state ?? null);
   // Chats stopped at a usage limit continue once paid Claude is available (its own timer, below).
   const paidResume = createPaidResume({
     threads: resumeThreads,
@@ -462,7 +462,7 @@ export default async function plugin(bb: BbPluginApi) {
     kv: bb.storage.kv,
     // The server's own bb-app version: what its machines run (bb's setup installs the server's build).
     serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
-    prefetch: (sandboxId, request, signal) => prefetchBbFiles(sandboxProviders.forSandbox(sandboxId), sandboxId, request, { signal, log: (line) => bb.log.info(line) }),
+    prefetch: (sandboxId, request, signal) => prefetchBbFiles(service.sandboxProvider(sandboxId), sandboxId, request, { signal, log: (line) => bb.log.info(line) }),
     tell: (sandboxId, text) => {
       const tasks = store.liveSandboxTasks(sandboxId);
       for (const task of tasks) store.addEvent(task.id, WAKE_EVENT, text);

@@ -714,6 +714,12 @@ export class TaskStore {
     return rows.map((row) => ({ queuedMessageId: row.queued_message_id, threadId: row.thread_id, createdAt: Date.parse(row.at) || 0 }));
   }
 
+  /** The sandbox provider its newest task recorded for a sandbox (null: no task has it). */
+  sandboxProviderOf(sandboxId: string): string | null {
+    const row = this.db().prepare(`SELECT sandbox_provider FROM tasks WHERE sandbox_id = ? ORDER BY updated_at DESC LIMIT 1`).get(sandboxId) as { sandbox_provider?: unknown } | undefined;
+    return typeof row?.sandbox_provider === "string" ? row.sandbox_provider : null;
+  }
+
   liveSandboxTasks(sandboxId: string): Task[] {
     return (
       this.db()

@@ -281,14 +281,14 @@ export function buildCli(runtime: Runtime) {
             if (repo !== null) {
               const always = alwaysProtectedBranches((await service.settings()).extraProtectedBranches);
               try {
-                checkout = await service.sandboxProviders.forSandbox(sandbox.id).prepareRepo(
+                checkout = await service.sandboxProvider(sandbox.id).prepareRepo(
                   sandbox.id,
                   repo,
                   branch ? { kind: "new-branch", branch, base } : { kind: "default-branch", base },
                   { signal: ctx.signal, protect: protectedBranches(null, [base, ...service.projectBaseBranches([repo])], always), alwaysProtect: always },
                 );
               } catch (error) {
-                await service.sandboxProviders.forSandbox(sandbox.id).delete(sandbox.id).catch(() => undefined);
+                await service.sandboxProvider(sandbox.id).delete(sandbox.id).catch(() => undefined);
                 throw error;
               }
             }
@@ -313,7 +313,7 @@ export function buildCli(runtime: Runtime) {
         options: { json },
         async run({ positionals, options }, ctx) {
           return guard(async () => {
-            const sandbox = await service.sandboxProviders.forSandbox(positionals.id).info(positionals.id, ctx.signal);
+            const sandbox = await service.sandboxProvider(positionals.id).info(positionals.id, ctx.signal);
             const tasks = service.store.list({ limit: 1000 }).filter((task) => task.sandboxId === sandbox.id);
             return out({ sandbox, tasks }, options.json, () =>
               [
@@ -515,7 +515,7 @@ export function buildCli(runtime: Runtime) {
               passthrough.length === 1
                 ? passthrough[0]!
                 : passthrough.map((part) => `'${part.replace(/'/g, `'\\''`)}'`).join(" ");
-            const result = await service.sandboxProviders.forSandbox(positionals.id).exec(positionals.id, command, {
+            const result = await service.sandboxProvider(positionals.id).exec(positionals.id, command, {
               timeoutMs: options.timeout,
               signal: ctx.signal,
             });

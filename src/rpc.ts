@@ -812,14 +812,14 @@ export function registerRpc(runtime: Runtime): void {
         if (repo !== null) {
           const always = alwaysProtectedBranches((await service.settings()).extraProtectedBranches);
           try {
-            await service.sandboxProviders.forSandbox(sandbox.id).prepareRepo(
+            await service.sandboxProvider(sandbox.id).prepareRepo(
               sandbox.id,
               repo,
               branch ? { kind: "new-branch", branch, base: null } : { kind: "default-branch" },
               { protect: protectedBranches(null, service.projectBaseBranches([repo]), always), alwaysProtect: always },
             );
           } catch (error) {
-            await service.sandboxProviders.forSandbox(sandbox.id).delete(sandbox.id).catch(() => undefined);
+            await service.sandboxProvider(sandbox.id).delete(sandbox.id).catch(() => undefined);
             throw error;
           }
         }
