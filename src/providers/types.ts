@@ -119,6 +119,14 @@ export interface CapacityReport {
   checkoutRequired: boolean;
   /** The plan's cap on a sandbox's auto-stop, in hours (null: none). */
   autoStopCapHours: number | null;
+  /** Included starts left this minute (null: not said). */
+  startsLeftThisMinute?: number | null;
+  /** The plan has no start limit. */
+  startsUnlimited?: boolean | null;
+  /** The provider's paid extra starts are on (boat: "keep going", `boat billing extra-starts`); the plugin never turns them on. */
+  extraStartsEnabled?: boolean | null;
+  /** What the next start costs, in dollars (0: included; null: not said). */
+  nextStartDollars?: number | null;
 }
 
 /** The plan's included hours this period (null: the provider doesn't say). */

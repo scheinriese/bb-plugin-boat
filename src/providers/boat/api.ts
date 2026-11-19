@@ -1,13 +1,60 @@
-import { parseSandboxUsage, parseUsagePlan } from "../../usage.ts";
+import { parseSandboxUsage, parseUsagePlan } from "./usage.ts";
 // Typed boat operations built on the CLI wrapper. All JSON shapes were
 // observed from boat CLI 1.0.89; every accessor tolerates missing fields.
 import { randomUUID } from "node:crypto";
 import { BoatCli, BoatError, bool, num, rec, str, type JsonRecord } from "./cli.ts";
 import { codeSpan } from "../../literal.ts";
-import type { Provider } from "../../store.ts";
+import { shellQuote } from "../shell.ts";
+import {
+  ACTIVE_STATES,
+  MACHINE_TYPES,
+  autoStopHours,
+  type AiProxyState,
+  type CapacityReport,
+  type ChatEvent,
+  type CheckoutMode,
+  type Conversation,
+  type Dispatch,
+  type EnvironmentInfo,
+  type HostedPort,
+  type MachineType,
+  type PrepareOptions,
+  type PreparedRepo,
+  type ProcessSample,
+  type PromptOptions,
+  type SandboxInfo,
+  type SandboxProcess,
+  type SavedSnapshot,
+  type ShipConflict,
+  type ShipResult,
+  type ShipTarget,
+} from "../types.ts";
 
-export const MACHINE_TYPES = ["small", "default", "large", "xlarge"] as const;
-export type MachineType = (typeof MACHINE_TYPES)[number];
+// The shapes boat's answers are read into live in ../types.ts (every
+// provider shares them); boat code and its tests keep using these names.
+export { ACTIVE_STATES, MACHINE_TYPES, autoStopHours, shellQuote };
+export type {
+  AiProxyState,
+  ChatEvent,
+  CheckoutMode,
+  Conversation,
+  Dispatch,
+  EnvironmentInfo,
+  HostedPort,
+  MachineType,
+  PrepareOptions,
+  PreparedRepo,
+  ProcessSample,
+  SandboxProcess,
+  SavedSnapshot,
+  ShipConflict,
+  ShipResult,
+  ShipTarget,
+};
+/** A sandbox as `boat info` and `boat list` report it. */
+export type Sandbox = SandboxInfo;
+/** `boat limits`, read. */
+export type Limits = CapacityReport;
 
 /**
  * The trial's auto-stop cap when boat says it's the trial but not the cap
@@ -47,12 +94,6 @@ export function autoStopCapFromLimits(raw: JsonRecord): number | null {
   return str(raw.accessTier) === "trial" ? TRIAL_AUTO_STOP_HOURS : null;
 }
 
-/** Hours a new sandbox runs before boat stops it: the Hard stop setting, within the plan's cap (null: none known). */
-export function autoStopHours(settingHours: number, capHours: number | null, floor = 0.25): number {
-  const hours = Math.max(floor, settingHours);
-  return capHours === null ? hours : Math.min(hours, capHours);
-}
-
 /**
  * Run a boat call that sets an auto-stop. When boat refuses it as over the
  * plan's cap (trial_auto_stop_required: `boat limits` couldn't be read
@@ -68,72 +109,6 @@ export async function withinAutoStopCap<T>(ttlSeconds: number, run: (ttlSeconds:
     if (capped >= ttlSeconds) throw error;
     return run(capped);
   }
-}
-
-/** States boat counts against the active-sandbox limit. */
-export const ACTIVE_STATES = new Set(["provisioned", "cloning", "ready", "idle", "running"]);
-
-export interface Sandbox {
-  id: string;
-  name: string | null;
-  state: string;
-  health: string | null;
-  url: string | null;
-  desktopUrl: string | null;
-  environment: string | null;
-  createdAt: string | null;
-  archiveAfter: string | null;
-  stoppedAt: string | null;
-  setupStatus: string | null;
-  error: string | null;
-  /** Its size, when boat's JSON says (not verified that it does; the memory probe is what counts). */
-  machineType?: MachineType | null;
-}
-
-export interface Limits {
-  tier: string | null;
-  summary: string | null;
-  activeSandboxes: number;
-  maxActiveSandboxes: number | null;
-  startsLeftToday: number | null;
-  startsLeftThisHour: number | null;
-  canStart: boolean;
-  blockedReason: string | null;
-  /** The account has no plan yet (boat asks for a checkout first). */
-  checkoutRequired: boolean;
-  /** The plan's cap on a sandbox's auto-stop, in hours (null: none). */
-  autoStopCapHours: number | null;
-  /** Included starts left this minute (null: not said). */
-  startsLeftThisMinute?: number | null;
-  /** boat says the plan has no start limit. */
-  startsUnlimited?: boolean | null;
-  /** boat's paid extra starts ("keep going", `boat billing extra-starts`) are on; the plugin never turns them on. */
-  extraStartsEnabled?: boolean | null;
-  /** What the next start costs, in dollars (0: included; null: not said). */
-  nextStartDollars?: number | null;
-}
-
-/** One process in `boat ps` (fields as boat names them; unknown ones null). */
-export interface SandboxProcess {
-  pid: number | null;
-  /** The full command line. */
-  command: string;
-  cpuPercent: number | null;
-  memoryMb: number | null;
-  /** The boat command it belongs to (cmd_…), if boat says. */
-  commandId: string | null;
-  parentPid?: number | null;
-  startedAt?: string | null;
-  /** The user it runs as ("root", "user"). */
-  user?: string | null;
-}
-
-/** `boat ps`: the sandbox's processes, live or (stopped) its last stored sample. */
-export interface ProcessSample {
-  /** False: boat shows its last stored sample (the sandbox is stopped, or its agent is older); null: boat didn't say. */
-  live: boolean | null;
-  sampledAt: string | null;
-  processes: SandboxProcess[];
 }
 
 /** At least this much CPU: the process is computing (a build, tests), not idling (a dev server, a watcher). */
@@ -212,35 +187,6 @@ export function parseProcessSample(records: JsonRecord[]): ProcessSample {
   return { live: bool(body.live), sampledAt: str(body.sampledAt), processes };
 }
 
-export interface Conversation {
-  id: string;
-  running: boolean;
-  harness: string | null;
-  model: string | null;
-  prompts: number;
-  lastPromptAt: string | null;
-  lastPromptPreview: string | null;
-}
-
-export interface ChatEvent {
-  type: string;
-  /** The prompt run this event belongs to (`promptId` from `boat prompt`). */
-  promptId: string | null;
-  conversationId: string | null;
-  status: string | null;
-  content: string | null;
-  /** Failure reason on a failed prompt event. */
-  error: string | null;
-  timestamp: number | null;
-  tools: string[];
-}
-
-export interface Dispatch {
-  conversationId: string;
-  promptId: string | null;
-  model: string | null;
-}
-
 export function toSandbox(raw: JsonRecord): Sandbox {
   const id = str(raw.id);
   if (id === null) throw new BoatError("boat returned a sandbox without an id", { code: "boat_bad_output" });
@@ -316,71 +262,6 @@ function safePositional(text: string): string {
   return /^\s*-/.test(text) ? `\u200b${text}` : text;
 }
 
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-export type CheckoutMode =
-  | { kind: "new-branch"; branch: string; base: string | null }
-  | { kind: "existing-branch"; branch: string }
-  | { kind: "pull-request"; pr: string }
-  /** Check out the base branch itself (read-only use: context repos, reviews). */
-  | { kind: "default-branch"; base?: string | null };
-
-export interface PrepareOptions {
-  signal?: AbortSignal;
-  /** Subfolder of ~/work for this checkout (one per task, so tasks sharing a sandbox never share a working tree). */
-  workDir?: string | null;
-  /** Branches a pre-push hook refuses to push to from this checkout (base branches). */
-  protect?: readonly string[];
-  /** Branches refused from every checkout in the sandbox (default: main and master). */
-  alwaysProtect?: readonly string[];
-  /**
-   * Use the copy the boat environment already cloned into ~/<repo name>
-   * (setup script and dependencies done) when it's there. Only for a sandbox
-   * the task has to itself.
-   */
-  useEnvironmentCheckout?: boolean;
-  /**
-   * The project ships after the user approves: the worker only commits, and
-   * the pre-push hook refuses every push from this checkout (the plugin's
-   * ship step pushes with --no-verify).
-   */
-  noPush?: boolean;
-  /** The sandbox's boat environment (named in error hints). */
-  environment?: string | null;
-}
-
-/** A boat environment, as the plugin shows it: secret NAMES only, never values. */
-export interface EnvironmentInfo {
-  name: string;
-  secretNames: string[];
-  secretFiles: string[];
-  /** Repos the environment clones, with the permission boat's GitHub access has. */
-  repos: { repo: string; permission: string | null; baseBranch: string | null }[];
-  /** What sandboxes really get (boat's effective.* toggles; "Safe for third parties" turns them off). */
-  passGithub: boolean | null;
-  passSecrets: boolean | null;
-  passAgentsCredentials: boolean | null;
-  /** boat credentials: the in-sandbox boat CLI login, for the whole account. */
-  passSandboxCredentials: boolean | null;
-  /** With "Safe for third parties": AI logins still go in, as proxy placeholders. */
-  proxyAiCredentials: boolean | null;
-  safeForThirdParties: boolean | null;
-}
-
-/**
- * The account's AI credentials proxy, a paid boat add-on: on, sandboxes get
- * placeholder AI keys and real keys never enter them.
- */
-export interface AiProxyState {
-  /** null: couldn't tell. */
-  enabled: boolean | null;
-  /** What it costs, as boat prices it (null: not reported). */
-  dailyDollars: number | null;
-  dollarsPer1000Requests: number | null;
-}
-
 /**
  * `boat ai proxy --json` (no state given: it only shows), e.g.
  * `{"enabled":false,"pricing":{"dailyDollars":1,"dollarsPer1000Requests":1},…}`
@@ -406,47 +287,6 @@ export function aiProxyPrice(state: Pick<AiProxyState, "dailyDollars" | "dollars
     state.dollarsPer1000Requests !== null ? `${money(state.dollarsPer1000Requests)} per 1,000 requests` : null,
   ].filter((part): part is string => part !== null);
   return parts.length === 0 ? null : `about ${parts.join(" plus ")}`;
-}
-
-/** A sandbox port on a stable HTTPS URL (`boat host`); a private one carries its token in the query. */
-export interface HostedPort {
-  url: string;
-  port: number;
-  title: string | null;
-  isProtected: boolean;
-}
-
-/** A saved snapshot (`boat snapshot <id> <name>`), what `boat new --from` starts from. */
-export interface SavedSnapshot {
-  name: string;
-  sizeBytes: number | null;
-  createdAt: string | null;
-  sourceSandboxId: string | null;
-  status: string | null;
-  type: string | null;
-}
-
-/** One repo the ship step pushes: its checkout and the branch it lands on. */
-export interface ShipTarget {
-  path: string;
-  baseBranch: string;
-}
-
-export interface ShipResult {
-  /** Repos whose commits landed, with the new head and how many commits. */
-  shipped: { path: string; baseBranch: string; sha: string; commits: number }[];
-}
-
-/** What a ship's rebase stopped on (the ship script's conflict detail). */
-export interface ShipConflict {
-  /** The task's head commit and the base commit the rebase ran onto (null: not printed). */
-  head: string | null;
-  base: string | null;
-  /** The conflicting files (at most 10) and how many more there were. */
-  files: string[];
-  moreFiles: number;
-  /** Up to 3 base commits since the task's fork point that changed those files. */
-  commits: { sha: string; subject: string }[];
 }
 
 /** Conflicting files the ship script lists. */
@@ -553,16 +393,6 @@ ${chainSnippet(hook)}
 fi
 exit 0
 `;
-}
-
-export interface PreparedRepo {
-  path: string;
-  branch: string | null;
-  baseBranch: string | null;
-  /** What the sandbox's GitHub login may do there (null: couldn't tell). */
-  canPush?: boolean | null;
-  /** When the sandbox's GitHub token expires (ISO), if GitHub said. */
-  githubExpiresAt?: string | null;
 }
 
 /** The sandbox's GitHub login and a repo: one line the prepare script prints, and how to fix it. */
@@ -1330,16 +1160,7 @@ printf '%s\n' "$OUT" | tr -d '\r' | grep -i '^github-authentication-token-expira
    * Send a prompt to a coding agent in the sandbox and return as soon as boat
    * has queued it. The agent keeps working after the local CLI exits.
    */
-  async prompt(options: {
-    sandboxId: string;
-    prompt: string;
-    /** Always explicit: without it boat uses the dashboard default harness. */
-    provider: Provider;
-    model?: string | null;
-    reasoningEffort?: string | null;
-    conversationId?: string | null;
-    signal?: AbortSignal;
-  }): Promise<Dispatch> {
+  async prompt(options: PromptOptions): Promise<Dispatch> {
     // boat creates a conversation under an unknown id passed to --resume, so
     // new conversations get an id we choose: known before dispatch, and a
     // retry cannot fork a second conversation.
