@@ -910,6 +910,106 @@ test("the set-aside after a failed fetch checks once more right before the stop:
   assert.equal(existsSync(join(box.data, "npm")), false);
 });
 
+/** Something happens on the sandbox while the install script copies and checks the download (once, right after gzip tests it). */
+function duringCopy(box: ReturnType<typeof sandboxHome>, script: string): void {
+  const gzip = execFileSync("bash", ["-c", "command -v gzip"], { encoding: "utf8" }).trim();
+  writeFileSync(join(box.fake, "copy-hook"), script);
+  writeFileSync(join(box.root, "bin", "gzip"), `#!/bin/bash\n"${gzip}" "$@"; rc=$?\n[ -f "${box.fake}/copy-hook" ] && { bash "${box.fake}/copy-hook"; rm -f "${box.fake}/copy-hook"; }\nexit $rc\n`);
+  chmodSync(join(box.root, "bin", "gzip"), 0o755);
+}
+
+const npmDirs = (box: ReturnType<typeof sandboxHome>) => readdirSync(box.data).filter((name) => /^npm\./.test(name));
+
+test("the download's install script reads the old install again right before the stop, and its rollback goes by that reading", LINUX_ONLY, (t) => {
+  // Intact at the look (0.49.0), updated in place by bb while Boat copies the download (0.50.0): a
+  // failed install keeps that one and starts it again. On the look's reading its version "changed
+  // under it", and it went aside.
+  const box = sandboxHome(t);
+  duringCopy(box, repair(box, "0.50.0"));
+  assert.deepEqual(parseInstall(box.run(installScript({ dataDir: box.data, unit: box.unit, node: null, version: "0.50.1", from: "0.49.0" }), { FAKE_NPM_FAIL: "ENOTFOUND" })), { kind: "fail", reason: "npm", detail: "ENOTFOUND", old: "intact" });
+  assert.equal(box.version(), "0.50.0");
+  assert.equal(readFileSync(join(box.fake, "active"), "utf8").trim(), "active");
+  assert.deepEqual(npmDirs(box), []);
+  // Broken at the look (its bin missing), repaired meanwhile: kept, started again, and said so.
+  const fixed = sandboxHome(t, { bin: false });
+  duringCopy(fixed, repair(fixed, "0.49.0"));
+  const broken = { dataDir: fixed.data, unit: fixed.unit, node: null, version: "0.50.1", from: "0.49.0", broken: true, brokenBy: "files" as const };
+  assert.deepEqual(parseInstall(fixed.run(installScript(broken), { FAKE_NPM_FAIL: "ENOTFOUND" })), { kind: "fail", reason: "npm", detail: "ENOTFOUND", old: "repaired" });
+  assert.equal(fixed.version(), "0.49.0");
+  assert.ok(existsSync(join(fixed.data, "npm", "bin", "bb-app")));
+  assert.equal(readFileSync(join(fixed.fake, "active"), "utf8").trim(), "active");
+  assert.deepEqual(npmDirs(fixed), [], "nothing moved aside");
+  // Still broken right before the stop: aside after a failed install, as before.
+  const still = sandboxHome(t, { bin: false });
+  assert.equal((parseInstall(still.run(installScript({ ...broken, dataDir: still.data, unit: still.unit }), { FAKE_NPM_FAIL: "ENOTFOUND" })) as { old: string }).old, "set-aside");
+  assert.equal(npmDirs(still).filter((name) => name.startsWith("npm.broken-")).length, 1);
+  // Updated in place to the download's own version meanwhile: nothing stopped or installed.
+  const current = sandboxHome(t);
+  duringCopy(current, repair(current, "0.50.1"));
+  assert.deepEqual(parseInstall(current.run(installScript({ dataDir: current.data, unit: current.unit, node: null, version: "0.50.1", from: "0.49.0" }))), { kind: "current", version: "0.50.1" });
+  assert.equal(current.log().includes("systemctl --user stop"), false);
+  assert.equal(current.log().includes("npm install"), false);
+  // Broken only by a module it couldn't load (its files complete): its service tells. Still failing
+  // right before the stop: aside after a failed install; running again: nothing stopped.
+  const module = sandboxHome(t, { installed: "0.50.1" });
+  module.set("active", "activating\n");
+  const byService = { dataDir: module.data, unit: module.unit, node: null, version: "0.50.1", from: "0.50.1", broken: true, brokenBy: "service" as const };
+  assert.deepEqual(parseInstall(module.run(installScript(byService), { FAKE_NPM_FAIL: "ENOTFOUND" })), { kind: "fail", reason: "npm", detail: "ENOTFOUND", old: "set-aside" });
+  const up = sandboxHome(t, { installed: "0.50.1" });
+  assert.deepEqual(parseInstall(up.run(installScript({ ...byService, dataDir: up.data, unit: up.unit }), { FAKE_NPM_FAIL: "ENOTFOUND" })), { kind: "current", version: "0.50.1" });
+  assert.equal(up.log().includes("systemctl --user stop"), false);
+});
+
+test("a repair or an in-place update between the look and the stop, with a download there: Boat acts on the install as it is right before the stop", LINUX_ONLY, async (t) => {
+  // Broken at the look, repaired during the prefetch (complete, 0.49.0), then the install fails:
+  // the rollback keeps the repaired install and starts bb's service again.
+  const box = sandboxHome(t, { bin: false });
+  const { update, told } = realUpdater(box, { FAKE_NPM_FAIL: "ENOTFOUND" }, { proc: join(box.root, "proc"), prefetch: () => box.run(repair(box, "0.49.0")) });
+  const failed = (await update(prep({ hostId: HOST }))) as { kind: string; text: string };
+  assert.equal(failed.kind, "failed");
+  assert.match(failed.text, /: npm install failed \(ENOTFOUND\)\. Meanwhile bb's install there became complete again, so Boat kept it; bb's own setup goes ahead\./);
+  assert.deepEqual(told, [failed.text]);
+  assert.equal(box.version(), "0.49.0");
+  assert.equal(readFileSync(join(box.fake, "active"), "utf8").trim(), "active", "bb's service runs again");
+  assert.deepEqual(npmDirs(box), [], "nothing moved aside");
+  // bb updated itself in place to the server's version during the prefetch: nothing stopped or installed.
+  const inPlace = sandboxHome(t);
+  const second = realUpdater(inPlace, {}, { proc: join(inPlace.root, "proc"), prefetch: () => inPlace.run(repair(inPlace, "0.50.1")) });
+  assert.deepEqual(await second.update(prep({ hostId: HOST })), { kind: "none", why: "bb 0.50.1 is installed" });
+  assert.deepEqual(second.told, []);
+  assert.equal(inPlace.log().includes("systemctl --user stop"), false);
+  assert.equal(inPlace.log().includes("npm install"), false);
+  assert.equal(readFileSync(join(inPlace.fake, "active"), "utf8").trim(), "active");
+  assert.deepEqual(npmDirs(inPlace), []);
+  // Still broken right before the stop, and the install fails: aside, as before.
+  const still = sandboxHome(t, { bin: false });
+  const third = realUpdater(still, { FAKE_NPM_FAIL: "ENOTFOUND" }, { proc: join(still.root, "proc"), prefetch: () => undefined });
+  assert.match(((await third.update(prep({ hostId: HOST }))) as { text: string }).text, /bb's install there was already broken, so Boat moved it aside and bb's own setup installs it again/);
+  assert.equal(existsSync(join(still.data, "npm")), false);
+  assert.equal(npmDirs(still).filter((name) => name.startsWith("npm.broken-")).length, 1);
+  // bb's own update starts during the prefetch: the install script backs off before the stop, Boat
+  // waits for it (never stops it), then looks again and finds the server's version there.
+  const busy = sandboxHome(t);
+  let at = Date.parse("2026-11-19T02:00:00Z");
+  const waits: number[] = [];
+  const fourth = realUpdater(busy, {}, {
+    proc: join(busy.root, "proc"),
+    now: () => at,
+    prefetch: () => busy.set("ps", `   4242 Sl     20 npm install -g --prefix ${busy.data}/npm ${busy.data}/host-package-download/bb-app.tgz\n`),
+    sleep: async (ms) => {
+      waits.push(ms);
+      at += ms;
+      rmSync(join(busy.fake, "ps"), { force: true });
+      busy.run(repair(busy, "0.50.1"));
+    },
+  });
+  assert.deepEqual(await fourth.update(prep({ hostId: HOST })), { kind: "none", why: "bb 0.50.1 is installed" });
+  assert.deepEqual(waits, [10_000]);
+  assert.equal(busy.log().includes("systemctl --user stop"), false);
+  assert.equal(busy.log().includes("npm install"), false);
+  assert.deepEqual(npmDirs(busy), []);
+});
+
 test("backoffs of sandboxes long gone are dropped, and a removed machine's goes at once", async () => {
   let at = Date.parse("2026-11-19T02:00:00Z");
   const kv = kvStore();
