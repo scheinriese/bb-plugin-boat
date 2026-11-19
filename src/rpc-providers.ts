@@ -48,8 +48,8 @@ export const PROVIDER_CATALOG: readonly CatalogEntry[] = [
     id: "instabox",
     label: "Instabox",
     kind: "cloud",
-    // Instabox's list prices, as the approved design states them; the provider's own words replace these once it's here.
-    summary: "Linux microVMs billed per second. Mac VMs lease for at least 24 h: M2 $10.80, M4 $18 a day.",
+    // No amounts here: prices come only from the provider itself (pricing).
+    summary: "Linux microVMs billed per second.",
     systems: [
       { os: "linux", label: "Linux", note: null },
       { os: "macos", label: "Mac", note: null },
@@ -57,7 +57,7 @@ export const PROVIDER_CATALOG: readonly CatalogEntry[] = [
     ],
     apiKey: true,
   },
-  { id: "your-mac", label: "Your Mac", kind: "own-mac", summary: `$0, on your own Mac. ${NO_MACS}`, systems: [], apiKey: false, unsupported: NO_MACS },
+  { id: "your-mac", label: "Your Mac", kind: "own-mac", summary: `Agents on your own Mac, enrolled in bb. ${NO_MACS}`, systems: [], apiKey: false, unsupported: NO_MACS },
   {
     id: "monthly-mac",
     label: "Monthly Mac",
@@ -96,6 +96,15 @@ export type BoatReading = Pick<BoatFacts, "cli" | "account" | "plan"> | null;
 /** How each enabled provider other than boat.dev answers (connected, or what's wrong). */
 export type Connections = ReadonlyMap<string, SandboxProviderDto["connection"]>;
 
+/** Each enabled provider's prices as it states them (absent: it doesn't say). */
+export type Prices = ReadonlyMap<string, string>;
+
+/** The systems a provider can start sandboxes on now (null: the provider isn't here). */
+function implementedSystems(provider: SandboxProvider | null): readonly string[] {
+  if (provider === null) return [];
+  return provider.caps.systems ?? [provider.caps.os];
+}
+
 function hoursText(hours: number): string {
   return hours.toLocaleString("en-US", { maximumFractionDigits: hours < 10 ? 1 : 0 });
 }
@@ -117,14 +126,16 @@ function boatRow(provider: SandboxProvider, reading: BoatReading, isDefault: boo
     connection: connected ? "connected" : "not-connected",
     meta: null,
     summary: summary.filter(Boolean).join(" · "),
+    pricing: null,
     systems: [],
     apiKey: null,
     status: null,
   };
 }
 
-function catalogRow(entry: CatalogEntry, provider: SandboxProvider | null, connection: SandboxProviderDto["connection"], isDefault: boolean): SandboxProviderDto {
+function catalogRow(entry: CatalogEntry, provider: SandboxProvider | null, connection: SandboxProviderDto["connection"], isDefault: boolean, pricing: string | null): SandboxProviderDto {
   const available = entry.unsupported === undefined;
+  const implemented = implementedSystems(provider);
   return {
     id: entry.id,
     label: providerLabel(entry.id, provider),
@@ -135,7 +146,13 @@ function catalogRow(entry: CatalogEntry, provider: SandboxProvider | null, conne
     connection,
     meta: entry.kind === "monthly-mac" ? "none yet" : null,
     summary: entry.summary,
-    systems: entry.systems.map((system) => ({ ...system, ready: connection === "connected" && system.note === null })),
+    pricing,
+    // Ready only where this version can start sandboxes; a system the provider is here without says so.
+    systems: entry.systems.map((system) => {
+      const here = implemented.includes(system.os);
+      const note = system.note ?? (provider !== null && !here ? "coming next" : null);
+      return { ...system, note, ready: connection === "connected" && here && note === null };
+    }),
     // No setting holds the key until the provider is here: the row says so instead of pointing at nothing.
     apiKey: entry.apiKey ? { setting: provider === null ? null : `${entry.label} API key` } : null,
     status: available ? null : "Not available yet",
@@ -170,6 +187,7 @@ export function providersView(input: {
   registry: ProviderRegistry;
   boat: BoatReading;
   connections?: Connections;
+  prices?: Prices;
   projects: readonly BoatProject[];
 }): SandboxProvidersResultDto {
   const { registry } = input;
@@ -184,13 +202,13 @@ export function providersView(input: {
       continue;
     }
     const connection = provider === null ? (entry.apiKey ? "key-missing" : "not-connected") : (input.connections?.get(entry.id) ?? "not-connected");
-    rows.push(catalogRow(entry, provider, connection, defaultId === entry.id));
+    rows.push(catalogRow(entry, provider, connection, defaultId === entry.id, input.prices?.get(entry.id) ?? null));
   }
   // A provider the catalog doesn't know yet still gets its row.
   for (const provider of registry.enabled) {
     if (seen.has(provider.id)) continue;
     const entry: CatalogEntry = { id: provider.id, label: provider.displayName, kind: "cloud", summary: provider.caps.os === "macos" ? "Mac" : "Linux", systems: [], apiKey: false };
-    rows.push(catalogRow(entry, provider, input.connections?.get(provider.id) ?? "not-connected", defaultId === provider.id));
+    rows.push(catalogRow(entry, provider, input.connections?.get(provider.id) ?? "not-connected", defaultId === provider.id, input.prices?.get(provider.id) ?? null));
   }
   rows.sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
 
@@ -213,39 +231,52 @@ const CONNECTION_TTL_MS = 60_000;
 
 export function providerHandlers(runtime: Runtime) {
   const { service, bb } = runtime;
-  let checked: { at: number; connections: Map<string, SandboxProviderDto["connection"]> } | null = null;
+  let checked: { at: number; connections: Connections; prices: Prices } | null = null;
 
-  /** Ask each enabled provider other than boat.dev for its plan: an answer means connected. */
-  async function connections(): Promise<Connections> {
-    if (checked !== null && Date.now() - checked.at < CONNECTION_TTL_MS) return checked.connections;
-    const others = service.sandboxProviders.enabled.filter((provider) => provider.id !== "boat");
+  /** Ask each enabled provider other than boat.dev for its plan (an answer means connected) and its prices. */
+  async function others(): Promise<{ connections: Connections; prices: Prices }> {
+    if (checked !== null && Date.now() - checked.at < CONNECTION_TTL_MS) return checked;
+    const providers = service.sandboxProviders.enabled.filter((provider) => provider.id !== "boat");
     const results = await Promise.all(
-      others.map(async (provider) => {
+      providers.map(async (provider) => {
+        const signal = AbortSignal.timeout(10_000);
+        let connection: SandboxProviderDto["connection"];
         try {
-          await provider.capacity(AbortSignal.timeout(10_000));
-          return [provider.id, "connected"] as const;
+          await provider.capacity(signal);
+          connection = "connected";
         } catch (error) {
           const code = (error as { code?: unknown } | null)?.code;
-          return [provider.id, code === "key_missing" ? "key-missing" : "not-connected"] as const;
+          connection = code === "key_missing" ? "key-missing" : "not-connected";
         }
+        const pricing = connection === "connected" && provider.pricing ? await provider.pricing(signal).catch(() => null) : null;
+        return { id: provider.id, connection, pricing };
       }),
     );
-    checked = { at: Date.now(), connections: new Map(results) };
-    return checked.connections;
+    checked = {
+      at: Date.now(),
+      connections: new Map(results.map((entry) => [entry.id, entry.connection])),
+      prices: new Map(results.flatMap((entry) => (entry.pricing ? [[entry.id, entry.pricing] as const] : []))),
+    };
+    return checked;
   }
 
   async function view(): Promise<SandboxProvidersResultDto> {
     const reading = runtime.setup ? (runtime.setup.peek()?.facts ?? (await runtime.setup.reading().catch(() => null))) : null;
-    return providersView({ registry: service.sandboxProviders, boat: reading, connections: await connections(), projects: runtime.projects.list() });
+    const { connections, prices } = await others();
+    return providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, projects: runtime.projects.list() });
   }
 
   return {
     sandboxProviders: () => view(),
 
     setProjectRunsOn: async ({ projectId, provider }: { projectId: string; provider: string }) => {
-      const project = runtime.projects.get(projectId);
-      if (project === null) throw new experimental_PluginRpcRefusal({ code: "not_found", message: `No project "${projectId}".` });
+      const missing = () => new experimental_PluginRpcRefusal({ code: "not_found", message: `No project "${projectId}".` });
+      if (runtime.projects.get(projectId) === null) throw missing();
       const current = await view();
+      // The checks above wait on providers: read the project again, so an edit
+      // or a deletion made meanwhile stands, and change only its provider.
+      const project = runtime.projects.get(projectId);
+      if (project === null) throw missing();
       const option = current.options.find((entry) => entry.provider === provider);
       if (option === undefined) throw new experimental_PluginRpcRefusal({ code: "invalid", message: `"${provider}" isn't a sandbox provider Boat knows.` });
       // Moving off a pick that's no longer available is fine; moving onto one isn't.

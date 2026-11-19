@@ -46,9 +46,9 @@ export type RunsOnDto = z.infer<typeof runsOnSchema>;
 export const providerSystemSchema = z.object({
   os: z.enum(["linux", "macos", "windows"]),
   label: z.string(),
-  /** Usable with this provider now (the chip gets a check). */
+  /** Usable with this provider now: connected, and Boat can start sandboxes there (the chip gets a check). */
   ready: z.boolean(),
-  /** Why it can't be, when the provider doesn't offer it yet ("not launched yet"; a dashed chip). Null: it's only not connected. */
+  /** Why it can't be ("not launched yet", "coming next"; a dashed chip). Null: it's only not connected. */
   note: z.string().nullable(),
 });
 export type ProviderSystemDto = z.infer<typeof providerSystemSchema>;
@@ -67,8 +67,10 @@ export const sandboxProviderSchema = z.object({
   connection: z.enum(PROVIDER_CONNECTION_VALUES),
   /** After the name: its machine ("MacBook Pro M3 · bb machine") or "none yet" (null: nothing). */
   meta: z.string().nullable(),
-  /** Under the name: the plan and what's left, its prices, or why it's greyed out. */
+  /** Under the name: the plan and what's left, what it offers, or why it's greyed out. Never amounts: those are in pricing. */
   summary: z.string(),
+  /** Its prices, as the provider itself states them (null: it doesn't say; Boat never makes them up). */
+  pricing: z.string().nullable(),
   /** The systems it offers (empty: it doesn't list them). */
   systems: z.array(providerSystemSchema),
   /**

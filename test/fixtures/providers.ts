@@ -17,13 +17,18 @@ export const BOAT_CONNECTED: SandboxProviderDto = {
   connection: "connected",
   meta: null,
   summary: "Linux · Standard plan · 475 h left this month",
+  pricing: null,
   systems: [],
   apiKey: null,
   status: null,
 };
 
-const INSTABOX_SUMMARY = "Linux microVMs billed per second. Mac VMs lease for at least 24 h: M2 $10.80, M4 $18 a day.";
+/** Plain words: production has no amounts. */
+const INSTABOX_SUMMARY = "Linux microVMs billed per second.";
+/** As a connected Instabox provider might state its prices (test and scene data only). */
+const INSTABOX_PRICING = "Mac VMs lease for at least 24 h: M2 $10.80, M4 $18 a day.";
 
+/** Connected, Linux only: Mac leases aren't in this version, so Mac reads "coming next". */
 export const INSTABOX_CONNECTED: SandboxProviderDto = {
   id: "instabox",
   label: "Instabox",
@@ -34,13 +39,20 @@ export const INSTABOX_CONNECTED: SandboxProviderDto = {
   connection: "connected",
   meta: null,
   summary: INSTABOX_SUMMARY,
+  pricing: INSTABOX_PRICING,
   systems: [
     { os: "linux", label: "Linux", ready: true, note: null },
-    { os: "macos", label: "Mac", ready: true, note: null },
+    { os: "macos", label: "Mac", ready: false, note: "coming next" },
     { os: "windows", label: "Windows", ready: false, note: "not launched yet" },
   ],
   apiKey: { setting: "Instabox API key" },
   status: null,
+};
+
+/** Connected once Mac leases exist (the design's state): both systems ready. */
+export const INSTABOX_WITH_MAC: SandboxProviderDto = {
+  ...INSTABOX_CONNECTED,
+  systems: INSTABOX_CONNECTED.systems.map((system) => (system.os === "macos" ? { ...system, ready: true, note: null } : system)),
 };
 
 /** As main shows it today: no Instabox provider yet, so no key and no setting for one. */
@@ -48,7 +60,8 @@ export const INSTABOX_NOT_CONNECTED: SandboxProviderDto = {
   ...INSTABOX_CONNECTED,
   enabled: false,
   connection: "key-missing",
-  systems: INSTABOX_CONNECTED.systems.map((system) => ({ ...system, ready: false })),
+  pricing: null,
+  systems: INSTABOX_CONNECTED.systems.map((system) => ({ ...system, ready: false, note: system.os === "windows" ? system.note : null })),
   apiKey: { setting: null },
 };
 
@@ -61,7 +74,8 @@ export const YOUR_MAC_DISABLED: SandboxProviderDto = {
   enabled: false,
   connection: "not-connected",
   meta: null,
-  summary: "$0, on your own Mac. Boat can't run agents on a Mac yet.",
+  summary: "Agents on your own Mac, enrolled in bb. Boat can't run agents on a Mac yet.",
+  pricing: null,
   systems: [],
   apiKey: null,
   status: "Not available yet",
@@ -77,6 +91,7 @@ export const MONTHLY_MAC_DISABLED: SandboxProviderDto = {
   connection: "not-connected",
   meta: "none yet",
   summary: "A Mac you rent by the month and enroll in bb. Boat can't run agents on a Mac yet.",
+  pricing: null,
   systems: [],
   apiKey: null,
   status: "Not available yet",

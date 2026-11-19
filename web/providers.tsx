@@ -153,7 +153,7 @@ function ProviderRow({ provider }: { provider: SandboxProviderDto }) {
           {provider.meta ? <span className="text-xs leading-4 text-[color:var(--boat-faint)]">{provider.meta}</span> : null}
           {mac ? <StatusText provider={provider} className="ml-1" /> : null}
         </div>
-        <p className="mt-0.5 text-xs leading-[17px] text-muted-foreground">{provider.summary}</p>
+        <p className="mt-0.5 text-xs leading-[17px] text-muted-foreground">{provider.pricing ? `${provider.summary} ${provider.pricing}` : provider.summary}</p>
         <SystemChips provider={provider} />
         <KeyLine provider={provider} />
       </div>

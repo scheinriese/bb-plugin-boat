@@ -16,7 +16,7 @@ import { projectSchema, runsOnSchema, sandboxProvidersResultSchema, taskSchema, 
 import { ProjectStore } from "../src/projects.ts";
 import { createProviderRegistry, unavailableProvider } from "../src/providers/registry.ts";
 import type { SandboxProvider } from "../src/providers/types.ts";
-import { providerHandlers, providersView, runsOnOf, type BoatReading } from "../src/rpc-providers.ts";
+import { PROVIDER_CATALOG, providerHandlers, providersView, runsOnOf, type BoatReading } from "../src/rpc-providers.ts";
 import type { Runtime } from "../src/runtime.ts";
 import { TaskStore } from "../src/store.ts";
 import { chipProvider, keyHint, keyLine, providerGlyph, providerStatus, readyProvidersText, runsOnGlyph, runsOnLine, runsOnMachine } from "../web/providers-logic.ts";
@@ -104,13 +104,21 @@ test("boat.dev signed out, or not checked yet, reads as not connected", () => {
   assert.equal(unknown.providers[0]!.summary, "Linux · not checked yet");
 });
 
-test("an enabled Instabox: connected with its systems ready, and a project's pick", () => {
+test("an enabled Linux-only Instabox: Linux ready, Mac coming next, its own prices, and a project's pick", () => {
   const projects = projectStore();
   projects.save(STOREFRONT);
   projects.save({ ...API, sandboxProvider: "instabox" });
   projects.save({ id: "docs", name: "Docs", repos: [{ repo: "acme/docs", baseBranch: "main" }] });
-  const view = providersView({ registry: createProviderRegistry([BOAT, INSTABOX]), boat: SIGNED_IN, connections: new Map([["instabox", "connected"]]), projects: projects.list() });
+  const prices = new Map([["instabox", fixtures.INSTABOX_CONNECTED.pricing!]]);
+  const view = providersView({ registry: createProviderRegistry([BOAT, INSTABOX]), boat: SIGNED_IN, connections: new Map([["instabox", "connected"]]), prices, projects: projects.list() });
   assert.deepEqual(view, fixtures.PROVIDERS_CONNECTED);
+  const mac = view.providers.find((row) => row.id === "instabox")!.systems.find((system) => system.os === "macos")!;
+  assert.deepEqual([mac.ready, mac.note], [false, "coming next"], "connecting a Linux-only provider never advertises Mac");
+
+  // Once the provider says it starts Mac sandboxes, Mac is ready too.
+  const withMac = { ...INSTABOX, caps: { ...INSTABOX.caps, systems: ["linux", "macos"] as const } };
+  const later = providersView({ registry: createProviderRegistry([BOAT, withMac]), boat: SIGNED_IN, connections: new Map([["instabox", "connected"]]), prices, projects: [] });
+  assert.deepEqual(later.providers.find((row) => row.id === "instabox"), fixtures.INSTABOX_WITH_MAC);
 
   const missingKey = providersView({ registry: createProviderRegistry([BOAT, INSTABOX]), boat: SIGNED_IN, connections: new Map([["instabox", "key-missing"]]), projects: [] });
   const instabox = missingKey.providers.find((row) => row.id === "instabox")!;
@@ -127,6 +135,30 @@ test("a provider the catalog doesn't know still gets a row, and an unknown pick 
   assert.equal(view.providers.at(-1)!.label, "Vercel");
   assert.deepEqual(view.options.at(-1), { provider: "modal", label: "modal", disabledReason: "Not available in this version" });
   assert.equal(view.projects[0]!.provider, "modal");
+});
+
+test("no amounts reach Settings unless a provider states them", () => {
+  assert.doesNotMatch(JSON.stringify(PROVIDER_CATALOG), /\$\s?\d|€\s?\d/);
+  const view = providersView({ registry: createProviderRegistry([BOAT, INSTABOX]), boat: SIGNED_IN, connections: new Map([["instabox", "connected"]]), projects: [] });
+  assert.doesNotMatch(JSON.stringify(view), /\$\s?\d|€\s?\d/);
+  assert.equal(view.providers.find((row) => row.id === "instabox")!.pricing, null);
+  assert.equal(providersView({ registry: createProviderRegistry([BOAT]), boat: SIGNED_IN, projects: [] }).providers.every((row) => row.pricing === null), true);
+});
+
+test("prices come from the provider, and only while it's connected", async () => {
+  let up = true;
+  const instabox: SandboxProvider = {
+    ...INSTABOX,
+    capacity: async () => {
+      if (!up) throw Object.assign(new Error("no key"), { code: "key_missing" });
+      return {} as never;
+    },
+    pricing: async () => "M2 $10.80 a day",
+  };
+  const { runtime } = fakeRuntime(createProviderRegistry([BOAT, instabox]));
+  assert.equal((await providerHandlers(runtime).sandboxProviders()).providers.find((row) => row.id === "instabox")!.pricing, "M2 $10.80 a day");
+  up = false;
+  assert.equal((await providerHandlers(runtime).sandboxProviders()).providers.find((row) => row.id === "instabox")!.pricing, null);
 });
 
 // ------------------------------------------------------------------ a project's pick
@@ -192,6 +224,52 @@ test("setProjectRunsOn moves a project onto a connected provider and back off on
   const later = providerHandlers(runtime);
   assert.equal((await later.sandboxProviders()).providers.find((row) => row.id === "instabox")!.connection, "key-missing");
   assert.equal((await later.setProjectRunsOn({ projectId: "storefront", provider: "boat" })).chosen, false);
+});
+
+/** An Instabox whose connection check waits until the test lets it go. */
+function gatedInstabox() {
+  let release: () => void = () => undefined;
+  let entered: () => void = () => undefined;
+  const checking = new Promise<void>((resolve) => (entered = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const provider: SandboxProvider = {
+    ...INSTABOX,
+    capacity: async () => {
+      entered();
+      await gate;
+      return {} as never;
+    },
+  };
+  return { provider, checking, release: () => release() };
+}
+
+test("setProjectRunsOn keeps an edit made while the providers were checked, and changes only the provider", async () => {
+  const instabox = gatedInstabox();
+  const { runtime, projects } = fakeRuntime(createProviderRegistry([BOAT, instabox.provider]));
+  projects.save(STOREFRONT);
+  const pending = providerHandlers(runtime).setProjectRunsOn({ projectId: "storefront", provider: "instabox" });
+  await instabox.checking;
+  projects.save({ ...projects.get("storefront")!, instructions: "Run the e2e tests too.", name: "Storefront web" });
+  instabox.release();
+  const saved = await pending;
+  assert.equal(saved.provider, "instabox");
+  const project = projects.get("storefront")!;
+  assert.equal(project.instructions, "Run the e2e tests too.", "the edit made meanwhile stands");
+  assert.equal(project.name, "Storefront web");
+  assert.equal(project.sandboxProvider, "instabox");
+});
+
+test("setProjectRunsOn doesn't bring back a project deleted while the providers were checked", async () => {
+  const instabox = gatedInstabox();
+  const { runtime, projects, changes } = fakeRuntime(createProviderRegistry([BOAT, instabox.provider]));
+  projects.save(STOREFRONT);
+  const pending = providerHandlers(runtime).setProjectRunsOn({ projectId: "storefront", provider: "instabox" });
+  await instabox.checking;
+  projects.delete("storefront");
+  instabox.release();
+  await assert.rejects(pending, /No project "storefront"/);
+  assert.equal(projects.get("storefront"), null);
+  assert.equal(changes(), 0);
 });
 
 // ------------------------------------------------------------------ where a task runs
