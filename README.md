@@ -331,17 +331,22 @@ bb plugin install "$(pwd)"        # path install
 bb plugin dev                     # rebuild and reload on save
 ```
 
-Layout: `server.ts` wires everything. `src/boat.ts` runs the boat CLI and
-`src/boat-api.ts` types its JSON. `src/setup.ts` holds the setup checks
-(`bb boat doctor`, the checklist, the checks before a sandbox).
-`src/service.ts` owns tasks, capacity, dispatch and the monitor.
+Layout: `server.ts` wires everything. `src/providers/` is the sandbox
+provider layer: `types.ts` is the interface the rest of the plugin uses,
+`registry.ts` says which provider each project and task uses, and
+`machine.ts` registers a provider's sandboxes as bb machines. boat.dev, the
+only provider so far, lives in `src/providers/boat/`: `cli.ts` runs the boat
+CLI, `api.ts` types its JSON, `provider.ts` implements the interface,
+`setup.ts` holds the setup checks (`bb boat doctor`, the checklist, the
+checks before a sandbox), and `fixtures/` has the fake boat CLI the tests
+use. `src/service.ts` owns tasks, capacity, dispatch and the monitor.
 `src/settings.ts` declares both kinds of settings, `src/settings-store.ts`
 merges them, and `src/config.ts` backs them up. `src/cli.ts`, `src/tools.ts`
-and `src/rpc.ts` are the CLI, agent tools and UI RPC. `src/machine.ts` is
-the Boat sandbox machine provider. `app.tsx` and `web/` are the UI
-(`web/entry-points.tsx` adds the send menu, side panel and header actions).
-`skills/` teach agents, and `assets/evidence-upload.mjs` is the built-in
-uploader.
+and `src/rpc.ts` are the CLI, agent tools and UI RPC. `app.tsx` and `web/`
+are the UI (`web/entry-points.tsx` adds the send menu, side panel and header
+actions). `skills/` teach agents, and `assets/evidence-upload.mjs` is the
+built-in uploader. Capture targets (short-lived browsers that screenshot a
+preview on another OS) will be a separate, smaller layer in `src/capture/`.
 
 Automated tests use a fake boat CLI. They do not verify a real paid sandbox
 run. Merge and Ship use explicit in-thread confirmations with fresh source
