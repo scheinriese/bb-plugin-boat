@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import type Database from "better-sqlite3";
-import { MacLeaseLedger, LEASE_DAY_MS, MAC_LEASE_BILLING_MIGRATIONS } from "../src/mac-leases.ts";
+import { MacLeaseLedger, LEASE_DAY_MS } from "../src/mac-leases.ts";
 import { TaskStore } from "../src/store.ts";
 import { macRunsOnBatch } from "../src/mac-lease-view.ts";
 import { runsOnNote } from "../web/providers-logic.ts";
@@ -47,12 +47,13 @@ test("early deletion keeps the minimum and provider-specific minimum/rate/curren
   near(total.costs.EUR!,20+2/120);
   near(total.leaseDays,1+2+30*1000/LEASE_DAY_MS);
 });
-test("restart reconcile never extends paid time and warning is once per minimum", () => {
+test("restart reconcile never extends paid time and reminders are spaced by 24 hours", () => {
   const {ledger,db}=fixture(); const lease=record(ledger);ledger.attach(lease.id,"t_1",4,8192,at);
   const restarted=new MacLeaseLedger(() => db as unknown as Database.Database);
   restarted.reconcile("instabox",new Set(["m_1"]),at+3*LEASE_DAY_MS);
   assert.equal(restarted.held()[0]!.paidUntil,lease.paidUntil);
-  assert.equal(restarted.warn(lease.id),true);assert.equal(ledger.warn(lease.id),false);
+  assert.equal(restarted.warn(lease.id,at),true);assert.equal(ledger.warn(lease.id,at+1),false);
+  assert.equal(restarted.warn(lease.id,at+LEASE_DAY_MS-1,true),false);assert.equal(ledger.warn(lease.id,at+LEASE_DAY_MS,true),true);
   restarted.reconcile("boat",new Set(),at+3*LEASE_DAY_MS);assert.equal(ledger.held().length,1);
   restarted.reconcile("instabox",new Set(),at+3*LEASE_DAY_MS);assert.equal(ledger.list()[0]!.endReason,"deleted");
 });
@@ -73,13 +74,12 @@ test("scheduled release is durable and missing machines end at the scheduled ins
   assert.equal(ledger.list()[0]!.endedAt,lease.paidUntil);
   near(ledger.between(at,Infinity,at+2*LEASE_DAY_MS).costs.USD!,10.8);
 });
-test("legacy migrations recover original minimum and hourly rate without moving existing migration indexes", () => {
-  const db=new DatabaseSync(":memory:");
-  const all=TaskStore.migrations();for(const sql of all.slice(0,-MAC_LEASE_BILLING_MIGRATIONS.length))db.exec(sql);
-  db.prepare("INSERT INTO mac_leases VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run("instabox:1","instabox","m_1","m2",new Date(at).toISOString(),new Date(at+3*LEASE_DAY_MS).toISOString(),10.8,"USD",8,16384,null,null,null);
-  for(const sql of MAC_LEASE_BILLING_MIGRATIONS)db.exec(sql);
-  const ledger=new MacLeaseLedger(()=>db as unknown as Database.Database);
-  assert.equal(ledger.held()[0]!.paidUntil,new Date(at+LEASE_DAY_MS).toISOString());near(ledger.held()[0]!.hourPrice,0.45);
+test("unpublished lease schema creates billing, keep, reminder and attachment indexes directly", () => {
+  const {db}=fixture();
+  const columns=(db.prepare("PRAGMA table_info(mac_leases)").all() as {name:string}[]).map(row=>row.name);
+  for(const name of ["minimum_cost","hour_price","kept","release_at","notice_at"])assert.ok(columns.includes(name));
+  assert.ok(!columns.includes("day_price"));
+  assert.ok(!TaskStore.migrations().some(sql=>/ALTER TABLE mac_leases|UPDATE mac_leases/.test(sql)));
   assert.equal((db.prepare("PRAGMA index_info(mac_lease_tasks_task)").get() as {name:string}).name,"task_id");
 });
 test("Mac lines batch their reads and format local instants with singular lease-day", () => {
@@ -122,6 +122,7 @@ test("Scaleway bills its minimum plus begun hours, split across UTC months with 
   near(ledger.between(start,Infinity,start+hour).costs.EUR!,2.64);
   near(ledger.between(start,Infinity,minimumEnd).costs.EUR!,2.64);
   near(ledger.between(start,Infinity,minimumEnd+1).costs.EUR!,2.75);
+  near(ledger.cost(lease,minimumEnd+1),2.75);
   near(ledger.between(start,Infinity,minimumEnd+hour).costs.EUR!,2.75);
   near(ledger.between(start,Infinity,minimumEnd+hour+1).costs.EUR!,2.86);
   const boundary=Date.UTC(2026,11,1);

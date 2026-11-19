@@ -1,3 +1,4 @@
+import { PROVIDER_NAMES } from "../src/providers/types";
 import { formatLeaseDays } from "./mac-usage-logic";
 import type { MacUsageDto } from "../contract-providers";
 
@@ -21,7 +22,7 @@ export function ThisMonthUsage({ mac, plan, active, cap, idleMinutes, boatError 
   active?: number; cap?: number | null; idleMinutes?: number; boatError?: boolean;
 }) {
   const held = mac?.held[0];
-  const providers = [...new Set(mac?.held.map(lease => lease.provider === "scaleway" ? "Scaleway" : "Instabox") ?? [])];
+  const providers = [...new Set(mac?.held.map(lease => lease.provider ? PROVIDER_NAMES[lease.provider as keyof typeof PROVIDER_NAMES] ?? lease.provider : "Instabox") ?? [])];
   const used = plan?.hoursTotal != null && plan.hoursRemaining != null ? Math.max(0,plan.hoursTotal-plan.hoursRemaining) : null;
   const now = new Date();
   const month = now.toLocaleDateString(undefined,{ month:"short", timeZone:"UTC" });

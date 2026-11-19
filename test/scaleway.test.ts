@@ -12,9 +12,11 @@ import { createProviderRegistry, unavailableProvider } from "../src/providers/re
 import { BoatService } from "../src/service.ts";
 import { defineProviderSecrets } from "../src/provider-settings.ts";
 import { SECRET_SETTINGS } from "../src/settings.ts";
-import { providersView } from "../src/rpc-providers.ts";
+import { providersView, providerHandlers } from "../src/rpc-providers.ts";
+import { normalizeProject, toOrchestratorProject } from "../src/projects.ts";
 import { macRunsOn } from "../src/mac-lease-view.ts";
 import type { SandboxProvider } from "../src/providers/types.ts";
+const macTaskProject = () => ({ ...toOrchestratorProject(normalizeProject({id:"mac",name:"Mac app",repos:[{repo:"acme/mac",baseBranch:"main"}]})), repos: [] });
 const projectId = "10000000-0000-4000-8000-000000000001";
 const serverId = "20000000-0000-4000-8000-000000000001";
 const keyId = "30000000-0000-4000-8000-000000000001";
@@ -120,11 +122,11 @@ async function routing(preferred:string, options:{disabled?:string; fail?:string
   const store=memoryStore(),chat=new FakeChat(),boat=new FakeBoat(),creates:string[]=[];
   const providers=["instabox","scaleway"].map(id=>{
     const inert=unavailableProvider(id);
-    const p:SandboxProvider={...inert,displayName:id==="instabox"?"Instabox":"Scaleway",caps:{...inert.caps,os:"macos",bbEnrollment:true},machine:{id:`${id}-sandbox`} as never,exec:async()=>({exitCode:0,stdout:"",stderr:""}),findInfo:async sid=>({id:sid,state:"idle",system:"macos"} as never),macModels:async()=>[{minimumHours:24,id:"M1-M",label:"M1-M",cpus:8,memoryMiB:16384,minimumCost:10,hourPrice:10/24,currency:"EUR"}],list:async()=>{if(options.listFail===id)throw new Error("List unavailable");return options.held===id?[{id:`${id}_held`,state:"idle"} as never]:[];},capacity:async()=>({canStart:true,activeSandboxes:0,maxActiveSandboxes:4} as never),create:async()=>{creates.push(id);if(options.fail===id)throw Object.assign(new Error("No Mac free"),{code:options.ambiguous?"creation_unknown":"at_capacity"}); const start=Date.now();store.macLeases.record({id:`${id}:lease`,provider:id,machineId:`${id}_new`,size:"M1-M",startedAt:new Date(start).toISOString(),paidUntil:new Date(start+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"EUR",cpus:8,memoryMiB:16384});return {id:`${id}_new`,state:"idle",system:"macos"} as never;},info:async id=>({id,state:"idle",system:"macos"} as never)};
+    const p:SandboxProvider={...inert,displayName:id==="instabox"?"Instabox":"Scaleway",caps:{...inert.caps,os:"macos",bbEnrollment:true,headlessAgentRunner:id!=="scaleway"},sizes:[{id:"default",label:"Standard",cpus:id==="scaleway"?2:4,memoryGb:id==="scaleway"?4:8}],machine:{id:`${id}-sandbox`} as never,exec:async()=>({exitCode:0,stdout:"",stderr:""}),findInfo:async sid=>({id:sid,state:"idle",system:"macos"} as never),macModels:async()=>[{minimumHours:24,id:"M1-M",label:"M1-M",cpus:8,memoryMiB:16384,minimumCost:10,hourPrice:10/24,currency:"EUR"}],list:async()=>{if(options.listFail===id)throw new Error("List unavailable");return options.held===id?[{id:`${id}_held`,state:"idle"} as never]:[];},capacity:async()=>({canStart:true,activeSandboxes:0,maxActiveSandboxes:4} as never),create:async()=>{creates.push(id);if(options.fail===id)throw Object.assign(new Error("No Mac free"),{code:options.ambiguous?"creation_unknown":"at_capacity"}); const start=Date.now();store.macLeases.record({id:`${id}:lease`,provider:id,machineId:`${id}_new`,size:"M1-M",startedAt:new Date(start).toISOString(),paidUntil:new Date(start+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"EUR",cpus:8,memoryMiB:16384});return {id:`${id}_new`,state:"idle",system:"macos"} as never;},info:async id=>({id,state:"idle",system:"macos"} as never)};
     return p;
   });
   const registry=createProviderRegistry([createBoatProvider(boat as never),...providers],{isEnabled:p=>p.id!==options.disabled});
-  const service=new BoatService(registry,store,{settings:async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:""}),chat,lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+  const service=new BoatService(registry,store,{projects:()=>[{id:"mac",name:"Mac app",repos:[],machineType:null,sandboxProvider:preferred,sandboxSystem:"macos"}],settings:async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:""}),chat,lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
   const initial=await service.startTask({title:"Mac",role:"custom",brief:"Check tools",provider:"codex",runner:"boat"});
   const task=store.update(initial.id,{sandboxProvider:preferred,sandboxSystem:"macos",runner:"chat",sandboxId:null})!;
   if(options.held)store.macLeases.record({id:`${options.held}:held`,provider:options.held,machineId:`${options.held}_held`,size:"M1-M",startedAt:new Date().toISOString(),paidUntil:new Date(Date.now()+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"EUR",cpus:8,memoryMiB:16384});
@@ -146,14 +148,39 @@ test("Scaleway settings, Runs on and task lease lines use existing UI contracts"
   const boat=unavailableProvider("boat"),scw=unavailableProvider("scaleway");const registry=createProviderRegistry([boat,{...scw,caps:{...scw.caps,os:"macos",systems:["macos"]}}]);
   const view=providersView({registry,boat:null,connections:new Map([["scaleway","connected"]]),projects:[]});const row=view.providers.find(r=>r.id==="scaleway")!;
   assert.equal(row.apiKey?.setting,"Scaleway secret key");assert.equal(row.systems[0]?.ready,true);assert.equal(view.options.find(o=>o.provider==="scaleway")?.disabledReason,null);
+  assert.deepEqual(view.options.find(o=>o.provider==="scaleway-macos"),{provider:"scaleway-macos",label:"Scaleway · Mac",disabledReason:null});
   const f=await routing("scaleway",{held:"scaleway"});assert.equal(macRunsOn(f.store.macLeases,"scaleway_held",[])?.label,"Scaleway");
 });
 
-test("a dispatched Mac task reaches a Scaleway bb chat when Instabox is unconfigured",async()=>{
-  const f=await routing("instabox",{disabled:"instabox"});
-  const task=await f.service.startTask({title:"Mac task",brief:"Check Xcode",role:"custom",sandboxSystem:"macos",runner:"chat"});
-  assert.equal(task.status,"running",task.error??""); assert.equal(task.sandboxProvider,"scaleway");
-  assert.equal(task.sandboxId,"scaleway_new"); assert.equal(f.chat.spawns.at(-1)?.where.kind,"machine");
+for (const preferred of ["instabox", "scaleway"]) for (const unavailable of ["disabled", "fail"] as const) test(`dispatched Mac task falls back from ${preferred} when ${unavailable} through provider capabilities`,async()=>{
+  const f=await routing(preferred,{[unavailable]:preferred});
+  const chosen=preferred==="instabox"?"scaleway":"instabox";
+  const task=await f.service.startTask({title:"Mac task",brief:"Check Xcode",role:"custom",runner:"chat",project:macTaskProject()});
+  assert.equal(task.status,"running",task.error??""); assert.equal(task.sandboxProvider,chosen);
+  assert.equal(task.sandboxSystem,"macos"); assert.equal(task.sandboxId,`${chosen}_new`);
+  assert.equal(f.chat.spawns.at(-1)?.where.kind,"machine");
+  assert.equal((await f.service.sandboxProvider(task).info(task.sandboxId!)).system,"macos");
+  const lease=f.store.macLeases.held(task.sandboxId!)[0]!;
+  const reservation=f.store.macLeases.tasks(lease.id).find(t=>t.taskId===task.id)!;
+  assert.deepEqual([reservation.cpus,reservation.memoryMiB],chosen==="scaleway"?[2,4096]:[4,8192]);
+  assert.ok(f.store.events(task.id).some(e=>/fallback/.test(e.text)));
+  assert.deepEqual(f.creates,unavailable==="disabled"?[chosen]:[preferred,chosen]);
+});
+
+test("Instabox unconfigured dispatch reaches the Scaleway adapter API, SSH bootstrap and bb task chat",async t=>{
+  const f=await fixture(t);
+  const inert=unavailableProvider("instabox");
+  const instabox={...inert,caps:{...inert.caps,systems:["linux","macos"] as const},macModels:async()=>{assert.fail("unconfigured provider must not be queried");}};
+  const registry=createProviderRegistry([createBoatProvider(new FakeBoat() as never),instabox,f.provider],{isEnabled:p=>p.id!=="instabox"});
+  const chat=new FakeChat();
+  const service=new BoatService(registry,f.store,{projects:()=>[{id:"mac",name:"Mac app",repos:[],machineType:null,sandboxProvider:"instabox",sandboxSystem:"macos"}],settings:async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:""}),chat,lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+  const task=await service.startTask({title:"Mac task",brief:"Check Xcode",role:"custom",runner:"chat",project:macTaskProject()});
+  assert.equal(task.status,"running",task.error??"");assert.equal(task.sandboxProvider,"scaleway");
+  assert.equal((await f.provider.info(task.sandboxId!)).system,"macos");
+  assert.equal(f.calls.filter(c=>c.method==="POST"&&c.path.endsWith("/servers")).length,1);
+  assert.ok(f.ssh.some(request=>request.stdin===BOOTSTRAP));
+  assert.equal(chat.spawns.at(-1)?.where.kind,"machine");
+  assert.equal(f.store.macLeases.held(task.sandboxId!)[0]?.billingIncrementSeconds,3600);
   assert.ok(f.store.events(task.id).some(e=>/fallback/.test(e.text)));
 });
 
@@ -203,4 +230,21 @@ test("shared hand-back releases an empty Scaleway Mac after its minimum with the
   await service.processMacLeases();assert.equal(f.servers().length,0);
   assert.equal(f.store.macLeases.list()[0]?.endReason,"handed back");
   assert.equal(f.store.macLeases.list()[0]?.machineId,sandbox.id);assert.deepEqual(await f.keys.records(),[]);
+});
+
+test("a provider that requires bb chats is skipped before renting for a headless Mac task",async()=>{
+  const f=await routing("scaleway");const task=f.store.update(f.task.id,{runner:"boat"})!;
+  await f.seam.createMacFor(task,"default",new AbortController().signal);
+  assert.deepEqual(f.creates,["instabox"]);
+});
+
+test("Scaleway Runs on saves through the generalized provider Mac option",async()=>{
+  const f=await routing("scaleway");
+  let project=normalizeProject({id:"mac",name:"Mac app",repos:[{repo:"acme/mac",baseBranch:"main"}]});
+  const projects={get:(id:string)=>id===project.id?project:null,list:()=>[project],save:(input:Parameters<typeof normalizeProject>[0])=>{project=normalizeProject(input,project);return project;}};
+  const handlers=providerHandlers({service:f.service,projects,bb:{rpc:{experimental_invalidate:()=>{}}},changed:()=>{}} as unknown as import("../src/runtime.ts").Runtime);
+  const saved=await handlers.setProjectRunsOn({projectId:"mac",provider:"scaleway-macos"});
+  assert.equal(project.sandboxProvider,"scaleway");assert.equal(project.sandboxSystem,"macos");assert.equal(saved.provider,"scaleway-macos");
+  await handlers.setProjectRunsOn({projectId:"mac",provider:"scaleway"});
+  assert.equal(project.sandboxSystem,"macos","Mac-only providers retain their system when selected by their plain id");
 });

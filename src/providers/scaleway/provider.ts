@@ -58,7 +58,7 @@ git config --global core.hooksPath "$HOME/.boat-hooks"
 export function createScalewayProvider(options: { api: ScalewayApi; keys: ScalewayKeys; ledger: MacLeaseLedger; ssh?: SshExec; pollMs?: number; readyTimeoutMs?: number }): SandboxProvider {
   const { api, keys, ledger } = options;
   const ssh = options.ssh ?? sshExec;
-  const caps: SandboxProvider["caps"] = { os: "macos", systems: [], shell: "bash", homeDir: posix.join("/", "Users", "m1"), execMaxSeconds: 3600, stopKeepsDisk: true, retentionAfterStopSeconds: null, environments: false, autoStop: null, agentBusyState: false, previews: "token-link", bbEnrollment: true, concurrencyUnit: "kept-sandboxes" };
+  const caps: SandboxProvider["caps"] = { os: "macos", systems: [], shell: "bash", homeDir: posix.join("/", "Users", "m1"), execMaxSeconds: 3600, stopKeepsDisk: true, retentionAfterStopSeconds: null, environments: false, autoStop: null, agentBusyState: false, previews: "token-link", bbEnrollment: true, headlessAgentRunner: false, concurrencyUnit: "kept-sandboxes" };
   const unsupported = async (): Promise<never> => { throw fail("Scaleway Macs run tasks as bb chats. This operation is not available.", "unsupported"); };
   async function models(signal?: AbortSignal, stockOnly = false): Promise<MacModel[]> {
     caps.systems = [];

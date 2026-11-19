@@ -785,7 +785,7 @@ test("empty Mac schedules hand-back at the minimum, then releases idempotently",
   assert.equal(store.macLeases.list()[0]!.endReason,"handed back");
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,1);
 });
-test("idle open tasks get one paid-time heads-up across restarts; running and unpushed tasks are never deleted",async t=>{
+test("idle open tasks get recurring paid-time heads-ups across restarts; running work is never deleted",async t=>{
   const {start,service,store,notices,box}=await macEnv(t);
   const task=await start({orchestratorThreadId:"thread_1"});
   const lease=store.macLeases.held()[0]!;const until=Date.parse(lease.paidUntil);
@@ -800,7 +800,8 @@ test("idle open tasks get one paid-time heads-up across restarts; running and un
   await restarted.processMacLeases(until-26*60000);
   assert.equal(notices.length,1);
   await restarted.processMacLeases(until+24*3600000-28*60000);
-  assert.equal(notices.length,1);
+  assert.equal(notices.length,2);
+  assert.match(notices[1]!,/paid time ended.*compute cost/);
   assert.equal(store.macLeases.held()[0]!.paidUntil,lease.paidUntil);
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
 });
@@ -981,4 +982,66 @@ test("task collection RPCs batch lease reads and task detail retains unrelated l
   await harness.callRpc("tasksByThread",{keys:["orch_a","orch_b"]});assert.equal(snapshots,2);
   const detail=await harness.callRpc("task",{id:second.id}) as {task:{runsOn:RunsOnDto}};
   assert.equal(detail.task.runsOn.sharedTasks,1);assert.match(detail.task.runsOn.detail!,new RegExp(first.title));
+});
+
+async function macPushChat(t: {after(fn:()=>unknown):void}, deleteOnClose=true) {
+  const {FakeChat}=await import("./fakes.ts");const chat=new FakeChat();
+  const repos:import("../src/sandbox-repos.ts").RepoSteps={
+    prepareRepo:async(_provider,_id,_repo,_checkout,opts)=>({path:`/work/${opts?.workDir}/web`,branch:"task",baseBranch:"main",canPush:true}),
+    githubLogin:async()=>({valid:true,expiresAt:null}),ship:async()=>({shipped:[]}),
+  };
+  const env=await macEnv(t,{chat,repos,settings:async()=>defaultSettings({deleteSandboxOnClose:deleteOnClose,maxActiveSandboxes:0,workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:""})});
+  const exec=env.box.provider.exec;
+  env.box.provider.exec=async(id,script,opts)=>script.includes("BOAT_AHEAD")?{exitCode:0,stdout:"BOAT_AHEAD 3 dirty\n",stderr:""}:exec(id,script,opts);
+  const task=await env.start({repo:"acme/web",runner:"chat",confirmUntrustedChat:["acme/web"],orchestratorThreadId:"orch"});
+  env.store.update(task.id,{status:"idle",delivery:"push",unshipped:4});
+  return {...env,chat,task};
+}
+test("archiving a Mac chat preserves its unshipped work and marks the lease kept",async t=>{
+  const {chat,task,service,store,box}=await macPushChat(t);
+  await chat.archive(task.threadId!);await service.syncChatThread(task.threadId!,{kind:"archived"});
+  assert.equal(store.get(task.id)!.status,"cancelled");
+  const lease=store.macLeases.held()[0]!;assert.equal(lease.kept,true);
+  await service.processMacLeases(Date.parse(lease.paidUntil)+86400000);
+  assert.equal(box.state().machines[task.sandboxId!].state,"running");
+  assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
+});
+test("hand-back checks closed tasks in attachment history even without a prior keep flag",async t=>{
+  const {chat,task,service,store,box}=await macPushChat(t);
+  await chat.archive(task.threadId!);store.update(task.id,{status:"cancelled"});
+  const lease=store.macLeases.held()[0]!;assert.equal(lease.kept,false);
+  await service.processMacLeases(Date.parse(lease.paidUntil)+1);
+  assert.equal(store.macLeases.held()[0]!.kept,true);
+  assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
+});
+test("keep-on-close setting releases a clean Mac instead of permanently exempting it",async t=>{
+  const {start,service,store,box}=await macEnv(t,{settings:async()=>defaultSettings({maxActiveSandboxes:0,deleteSandboxOnClose:false})});
+  const task=await start();await service.closeTask(task.id);
+  const lease=store.macLeases.held()[0]!;assert.equal(lease.kept,false);
+  await service.processMacLeases(Date.parse(lease.paidUntil)+1);
+  assert.equal(store.macLeases.held().length,0);
+  assert.equal(box.state().machines[task.sandboxId!].state,"deleted");
+});
+test("setting preserves unshipped Mac work with daily cost reminders across restarts",async t=>{
+  const {chat,task,service,store,notices,box}=await macPushChat(t,false);
+  chat.finish(task.threadId!,"done");await service.closeTask(task.id);
+  const lease=store.macLeases.held()[0]!;assert.equal(lease.kept,true);
+  const end=Date.parse(lease.paidUntil);
+  await service.processMacLeases(end+1);assert.equal(notices.length,1);
+  assert.match(notices[0]!,/Mac lease is kept; compute cost \$10\.80/);
+  const restarted=new BoatService(service.sandboxProviders,store,hooks({tell:async(_thread:string,text:string)=>{notices.push(text)}}).hooks);
+  await restarted.processMacLeases(end+23*3600000);assert.equal(notices.length,1);
+  await restarted.processMacLeases(end+86400000+1);assert.equal(notices.length,2);
+  await restarted.processMacLeases(end+7*86400000);assert.equal(notices.length,3);
+  assert.match(notices[2]!,/compute cost \$86\.40/);
+  await restarted.processMacLeases(end+7*86400000+60000);assert.equal(notices.length,3);
+  assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
+});
+test("stopped Mac leases end at stoppedAt rather than the later list time",async t=>{
+  const {start,store,box}=await macEnv(t);const task=await start();
+  const lease=store.macLeases.held()[0]!,stoppedAt=new Date(Date.parse(lease.paidUntil)+3600000).toISOString();
+  const state=box.state();state.machines[task.sandboxId!].state="stopped";state.machines[task.sandboxId!].updatedAt=stoppedAt;delete state.machines[task.sandboxId!].lease;
+  box.setState({machines:state.machines});await box.provider.list({all:true});
+  assert.equal(store.macLeases.list()[0]!.endedAt,stoppedAt);
+  assert.ok(Math.abs(store.macLeases.between(0,Infinity,Date.parse(stoppedAt)+86400000).costs.USD!-(lease.minimumCost+lease.hourPrice))<1e-8);
 });

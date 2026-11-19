@@ -131,6 +131,8 @@ export interface SandboxCapabilities {
   previews: "token-link";
   /** bb can run its daemon there (task chats and cloud orchestrators). */
   bbEnrollment: boolean;
+  /** False when agents run only through enrolled bb task chats. Default: true. */
+  headlessAgentRunner?: boolean;
   /**
    * What the account's limit on sandboxes counts: "sandboxes" the ones up
    * (a stop frees a slot: the plugin may make room by stopping an idle one);
@@ -653,4 +655,17 @@ export interface SandboxProvider extends ProviderAccount, SandboxLifecycle, Sand
   machineHooks?(context: MachineHookContext): MachineHooks;
   /** Its words for the plugin's repo steps (absent: neutral words, ProviderError). */
   readonly repoWords?: RepoWords;
+}
+
+/** Implemented Mac hosting, with live model checks performed before dispatch. */
+export function canHostMac(provider: Pick<SandboxProvider, "macModels" | "caps">): boolean {
+  return typeof provider.macModels === "function" || (provider.caps.systems ?? [provider.caps.os]).includes("macos");
+}
+
+/** Task reservations use this provider's published size aliases, independently
+ * of the whole machine/model selected for a newly created Mac. */
+export function macTaskResources(provider: Pick<SandboxProvider, "sizes" | "displayName">, type: MachineType): { vcpus: number; memMiB: number } {
+  const size = provider.sizes.find(size => size.id === type);
+  if (!size || !Number.isFinite(size.cpus) || size.cpus <= 0 || !Number.isFinite(size.memoryGb) || size.memoryGb <= 0) throw new ProviderError(`${provider.displayName} does not provide resource reservations for ${type}.`, { code: "size_unavailable" });
+  return { vcpus: size.cpus, memMiB: Math.ceil(size.memoryGb*1024) };
 }

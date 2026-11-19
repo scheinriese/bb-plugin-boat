@@ -1572,7 +1572,7 @@ export function buildCli(runtime: Runtime) {
                 ...(instructions !== undefined ? { instructions: instructions.trim() === "none" ? "" : instructions } : {}),
                 ...(options.size !== undefined ? { machineType: options.size === "none" ? null : (options.size as MachineType) } : {}),
                 ...(options["paid-claude"] !== undefined ? { neverPaidClaude: options["paid-claude"] === "never" } : {}),
-                ...(options["runs-on"] !== undefined ? { sandboxProvider: options["runs-on"] as ProviderId, sandboxSystem: options["runs-on"] === "scaleway" ? "macos" : "linux" } : {}),
+                ...(options["runs-on"] !== undefined ? { sandboxProvider: options["runs-on"] as ProviderId, sandboxSystem: service.sandboxProviders.all.find(provider => provider.id === options["runs-on"])?.caps.os ?? "linux" } : {}),
               });
             } catch (error) {
               throw new PluginCliError(error instanceof Error ? error.message : String(error), { code: "invalid_value" });
@@ -1655,7 +1655,7 @@ export function buildCli(runtime: Runtime) {
             if (!(PROVIDER_IDS as readonly string[]).includes(provider)) {
               throw new PluginCliError(`"${positionals.provider}" isn't a sandbox provider.`, { code: "invalid_value", hint: `Use one of: ${PROVIDER_IDS.join(", ")}.` });
             }
-            const saved = runtime.projects.save({ ...project, sandboxProvider: provider as ProviderId, sandboxSystem: provider === "scaleway" ? "macos" : "linux" });
+            const saved = runtime.projects.save({ ...project, sandboxProvider: provider as ProviderId, sandboxSystem: service.sandboxProviders.all.find(candidate => candidate.id === provider)?.caps.os ?? "linux" });
             runtime.changed();
             const off = service.sandboxProviders.get(provider) === null;
             return out({ project: saved.id, runsOn: saved.sandboxProvider ?? DEFAULT_PROVIDER_ID, enabled: !off }, options.json, () =>
