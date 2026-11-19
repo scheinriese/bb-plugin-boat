@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Wake Boat sandboxes gently: at most 2 a minute account-wide, with a doubling pause after a failed wake, on every path that resumes one.
+- Turn off Ubuntu's login message scripts over boat's exec API before bb's SSH setup; one could hang on a file not restored yet, so SSH sessions never started.
+- Tell why a sandbox didn't wake (boat.dev still restoring its disk, a refused restore, a stuck SSH session, SSH unreachable) on bb's machine card and the sandbox's tasks. Retry later by itself (2 to 16 minutes), and after 5 failures put it under Needs you.
+- Back off stopping and deleting a sandbox after boat.dev fails one.
+
 ## 0.2.8
 
 - Recover transient npm dependency fetch failures while installing bb on a Boat sandbox: up to three attempts on the same allocation, with 30s/60s backoff, cancellation and the original setup deadline.
