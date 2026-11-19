@@ -390,9 +390,6 @@ export function installScript(input: { dataDir: string; unit: string | null; nod
     // The node and npm bb's service runs on.
     'if [ -n "$N" ] && [ -x "$N" ]; then PATH="${N%/*}:$PATH"; export PATH; fi',
     "command -v npm >/dev/null 2>&1 || fail no-npm",
-    // bb's own update started since the look: never stopped half way (Boat waits, then looks again).
-    'B1=$(timeout 5 ps -eo pid=,stat=,args= 2>/dev/null | while read -r pid stat args; do case "$stat" in Z*) ;; *) case "$args" in *"$I"*) mine "$args" "$pid" && echo "$pid" ;; esac ;; esac; done | head -n 1)',
-    '[ -n "$B1" ] && { say busy "$B1"; exit 0; }',
     // A copy first: bb's service deletes its download when its own update ends.
     'timeout "$(cap 120)" cp -- "$T" "$W/bb-app.tgz" 2>/dev/null || fail copy',
     'timeout "$(cap 60)" gzip -t -- "$W/bb-app.tgz" 2>/dev/null || fail corrupt',
@@ -400,6 +397,10 @@ export function installScript(input: { dataDir: string; unit: string | null; nod
     '[ "$GOT" = "$V" ] || fail version "${GOT:-unreadable}"',
     // A half-made install from an earlier try: renamed aside (no reads), deleted later.
     'if [ -e "$D/npm.new" ] || [ -L "$D/npm.new" ]; then mv -- "$D/npm.new" "$D/npm.trash-$(date +%s)-$$" || fail leftover; fi',
+    // bb's own update started since the look (even during the copy and checks above): never
+    // stopped half way (Boat waits, then looks again). Right before the stop, nothing between.
+    'B1=$(timeout 5 ps -eo pid=,stat=,args= 2>/dev/null | while read -r pid stat args; do case "$stat" in Z*) ;; *) case "$args" in *"$I"*) mine "$args" "$pid" && echo "$pid" ;; esac ;; esac; done | head -n 1)',
+    '[ -n "$B1" ] && { say busy "$B1"; exit 0; }',
     // Stop bb's service.
     'if [ -n "$U" ]; then',
     '  timeout "$(cap 45)" systemctl --user stop "$U" >/dev/null 2>&1',

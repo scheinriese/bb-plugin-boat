@@ -331,6 +331,18 @@ test("bb's own in-place update running right now (an S-state npm install) is nev
   assert.deepEqual(result, { kind: "busy", pid: "4242" });
   assert.equal(box.log().includes("systemctl --user stop"), false);
   assert.equal(box.log().includes("npm install"), false);
+  // Started during Boat's copy and checks (here: while gzip tests the download): still caught,
+  // since the check runs right before the stop. The old order checked before the copy and missed it.
+  rmSync(join(box.fake, "ps"));
+  const gzip = execFileSync("bash", ["-c", "command -v gzip"], { encoding: "utf8" }).trim();
+  writeFileSync(join(box.root, "bin", "gzip"), `#!/bin/bash\n"${gzip}" "$@"; rc=$?\nprintf '%s\\n' "   4242 Sl     20 npm install -g --prefix ${box.data}/npm ${box.data}/host-package-download/bb-app.tgz" > "${box.fake}/ps"\nexit $rc\n`);
+  chmodSync(join(box.root, "bin", "gzip"), 0o755);
+  const late = parseInstall(box.run(installScript({ dataDir: box.data, unit: box.unit, node: null, version: "0.50.1", from: "0.49.0", proc })));
+  assert.deepEqual(late, { kind: "busy", pid: "4242" });
+  assert.equal(box.log().includes("systemctl --user stop"), false, "nothing stopped");
+  assert.equal(box.log().includes("npm install"), false);
+  assert.equal(box.version(), "0.49.0");
+  rmSync(join(box.root, "bin", "gzip"));
   // Found by the unit it runs in, too (its arguments may not name the folder).
   box.set("ps", "   4243 Sl     20 npm install\n");
   mkdirSync(join(proc, "4243"), { recursive: true });
