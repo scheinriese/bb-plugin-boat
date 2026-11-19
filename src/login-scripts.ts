@@ -11,7 +11,7 @@
 // Idempotent and cheap: one `boat exec` that changes nothing when the scripts
 // are already off, then never again for that sandbox while the plugin runs.
 // It never fails a wake: without sudo it says so and bb's setup goes ahead.
-import type { BoatApi } from "./providers/boat/api.ts";
+import type { SandboxProvider } from "./providers/types.ts";
 
 /**
  * Plain `bash -c` (a login shell would read ~/.profile, which may not be
@@ -51,7 +51,7 @@ export function parseQuietLogin(stdout: string): QuietLogin {
  * off (once per sandbox per plugin load), and reports what it found.
  */
 export function createLoginQuieter(
-  boat: Pick<BoatApi, "exec">,
+  boat: Pick<SandboxProvider, "exec">,
   log: (line: string) => void = () => undefined,
 ): (sandboxId: string, signal?: AbortSignal) => Promise<QuietLogin> {
   const done = new Set<string>();

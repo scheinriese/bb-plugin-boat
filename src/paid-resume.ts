@@ -34,7 +34,7 @@
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { ACTIVE_STATES } from "./providers/boat/api.ts";
+import { ACTIVE_STATES } from "./providers/types.ts";
 import type { MachineState } from "./chat.ts";
 import { USAGE_LIMIT_TEXT } from "./limits.ts";
 import type { BoatProject } from "./projects.ts";

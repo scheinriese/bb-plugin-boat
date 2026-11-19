@@ -287,7 +287,7 @@ export default async function plugin(bb: BbPluginApi) {
   const wakes = createWakeGuard({
     pacer: wakePacer,
     kv: bb.storage.kv,
-    boat,
+    boat: sandboxProviders.default,
     store,
     orchestratorOn: async (hostId) => {
       const current = store.orchestratorThreadIds().current;
@@ -378,7 +378,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   // A chat's queue, failed turn and retries, and the machine it runs on (the paid resume and `bb boat sandbox wake`).
   const resumeThreads = bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(), { error: (line) => bb.log.error(line) });
-  const machineReader = bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await boat.findInfo(sandboxId))?.state ?? null);
+  const machineReader = bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await sandboxProviders.forSandbox(sandboxId).findInfo(sandboxId))?.state ?? null);
   // Chats stopped at a usage limit continue once paid Claude is available (its own timer, below).
   const paidResume = createPaidResume({
     threads: resumeThreads,
@@ -460,11 +460,11 @@ export default async function plugin(bb: BbPluginApi) {
   bb.cli.register(buildCli(runtime));
   // Before bb's setup on a resumed sandbox: read bb's files first, and update bb there in a fresh prefix.
   const prepareHost = createBbUpdater({
-    boat,
+    boat: sandboxProviders.default,
     kv: bb.storage.kv,
     // The server's own bb-app version: what its machines run (bb's setup installs the server's build).
     serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
-    prefetch: (sandboxId, request, signal) => prefetchBbFiles(boat, sandboxId, request, { signal, log: (line) => bb.log.info(line) }),
+    prefetch: (sandboxId, request, signal) => prefetchBbFiles(sandboxProviders.forSandbox(sandboxId), sandboxId, request, { signal, log: (line) => bb.log.info(line) }),
     tell: (sandboxId, text) => {
       const tasks = store.liveSandboxTasks(sandboxId);
       for (const task of tasks) store.addEvent(task.id, WAKE_EVENT, text);
@@ -477,7 +477,7 @@ export default async function plugin(bb: BbPluginApi) {
   // A stuck sandbox and its chat back in one go, composed from the wake pacer and guard, the login
   // scripts, bb's safe update and the chat retries above (src/sandbox-wake.ts).
   sandboxWaker = createSandboxWaker({
-    boat,
+    boat: sandboxProviders.default,
     kv: bb.storage.kv,
     // A wake runs under the plugin's lifetime, not the CLI's request: the call waits 90 s, then it goes on.
     lifecycle: lifecycle.signal,
@@ -490,7 +490,7 @@ export default async function plugin(bb: BbPluginApi) {
     bringUp: (sandboxId, signal, wake) => service.bringUp(sandboxId, signal, wake),
     pacer: wakePacer,
     guard: wakes,
-    quietLogins: createLoginQuieter(boat, (line) => bb.log.warn(line)),
+    quietLogins: createLoginQuieter(sandboxProviders.default, (line) => bb.log.warn(line)),
     updateBb: prepareHost,
     serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
     tasks: {

@@ -133,7 +133,7 @@ function world(options: WorldOptions = {}) {
     async findInfo(id: string) {
       return sandboxes.get(id) ?? null;
     },
-    async limits(): Promise<Limits> {
+    async capacity(): Promise<Limits> {
       if (options.limits === null) throw new Error("boat didn't answer");
       return { ...LIMITS, ...options.limits };
     },

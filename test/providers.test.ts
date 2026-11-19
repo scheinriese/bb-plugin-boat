@@ -48,7 +48,10 @@ function recordingClient() {
     findInfo: answer("findInfo", SANDBOX),
     create: answer("create", SANDBOX),
     delete: answer("delete", undefined),
-    stop: answer("stop", undefined),
+    stop: answer("stop", { status: "pending", stopId: "stop_1", forced: null }),
+    stopStatus: answer("stopStatus", { status: "completed", stopId: "stop_1", forced: null }),
+    fork: answer("fork", { id: "bx_2" }),
+    lastSnapshotAt: answer("lastSnapshotAt", "2026-11-18T00:00:00.000Z"),
     resume: answer("resume", undefined),
     extend: answer("extend", {}),
     exec: answer("exec", { exitCode: 0, stdout: "", stderr: "" }),
@@ -179,10 +182,15 @@ test("each boat provider member makes the boat call the plugin made before", asy
   await boat.create({ name: "bb machine k1", type: "small", environment: null, ttlSeconds: 3600, gitGuard: false });
   await boat.delete("bx_1", signal);
   await boat.stop("bx_1");
+  await boat.stop("bx_1", signal, { force: true });
+  await boat.stopStatus("bx_1", "stop_1", signal);
+  await boat.fork("bx_1", { noSnapshots: true, ttlSeconds: 600, signal });
+  await boat.lastSnapshotAt("bx_1", signal);
   await boat.resume("bx_1", { ttlSeconds: 3600, type: "xlarge", signal });
   await boat.resume("bx_1", { ttlSeconds: 3600, signal });
   assert.deepEqual(await boat.extend("bx_1", 1800, signal), { ttlSeconds: 1800 });
   await boat.exec("bx_1", "ls", { timeoutMs: 5000, signal });
+  await boat.exec("bx_1", "ls", { timeoutMs: 5000, signal, login: false });
   await boat.execDetached("bx_1", "sleep 1", signal);
   await boat.processes("bx_1", signal);
   await boat.prepareRepo("bx_1", "acme/web", { kind: "default-branch" }, { workDir: "t_1" });
@@ -212,10 +220,15 @@ test("each boat provider member makes the boat call the plugin made before", asy
     ["create", { name: "bb machine k1", type: "small", environment: null, from: null, env: {}, ttlSeconds: 3600, signal: undefined }],
     ["delete", "bx_1", signal],
     ["stop", "bx_1", undefined, undefined],
+    ["stop", "bx_1", signal, { force: true }],
+    ["stopStatus", "bx_1", "stop_1", signal],
+    ["fork", "bx_1", { noSnapshots: true, ttlSeconds: 600, signal }],
+    ["lastSnapshotAt", "bx_1", signal],
     ["resume", "bx_1", 3600, signal, "xlarge"],
     ["resume", "bx_1", 3600, signal, undefined],
     ["extend", "bx_1", ["--ttl", "1800"], signal],
     ["exec", "bx_1", "ls", { timeoutMs: 5000, signal }],
+    ["exec", "bx_1", "ls", { timeoutMs: 5000, signal, login: false }],
     ["execDetached", "bx_1", "sleep 1", signal],
     ["processes", "bx_1", signal],
     ["prepareRepo", "bx_1", "acme/web", { kind: "default-branch" }, { workDir: "t_1" }],

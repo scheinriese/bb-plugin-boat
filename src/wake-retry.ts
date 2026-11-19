@@ -17,7 +17,7 @@
 //   wakes, or on stops boat refused), it moves the sandbox to a new node, or
 //   asks first when anything there could be lost (src/node-move.ts).
 import type { ThreadRow } from "./activity.ts";
-import { ACTIVE_STATES, type BoatApi, type StopReport } from "./providers/boat/api.ts";
+import { ACTIVE_STATES, type SandboxProvider, type StopReport } from "./providers/types.ts";
 import { clockTime } from "./format.ts";
 import type { TaskStore } from "./store.ts";
 import { resizeRefused, tooLargeQuestion } from "./disk-trim.ts";
@@ -182,7 +182,8 @@ export interface WakeGuard {
 export interface WakeGuardDeps {
   pacer: WakePacer;
   kv: { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void> };
-  boat: Pick<BoatApi, "findInfo" | "exec"> & MoveBoat;
+  /** The sandbox provider (boat.dev; the key keeps its old name). */
+  boat: Pick<SandboxProvider, "findInfo" | "exec"> & MoveBoat;
   store: Pick<TaskStore, "liveSandboxTasks" | "addEvent" | "addDecision" | "orchestrators">;
   /** The orchestrator chat that runs on this bb machine, if one does. */
   orchestratorOn?(hostId: string): Promise<string | null>;
