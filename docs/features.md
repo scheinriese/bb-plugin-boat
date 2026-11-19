@@ -309,7 +309,9 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   plugin turns off Ubuntu's login message scripts (`/etc/update-motd.d`)
   over boat's exec API, once per sandbox. Right after a wake, one of them
   can hang on a file that isn't restored yet, and SSH sessions then never
-  start.
+  start. Only the folder changes: its scripts lose their execute bit, and
+  links in it (such as `50-landscape-sysinfo`) get a `.disabled` suffix,
+  so the files they point to are left alone.
 - **A failed wake in plain words.** The plugin looks at the sandbox over
   boat's exec API (no SSH): files that fail with "Input/output error",
   lazyfs's `HYDRATOR FAILED` or "hydration in progress" in the journal,
@@ -325,18 +327,30 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   failures it stops and puts it under Needs you for the orchestrator,
   with the sandbox and boat.dev's error. `bb boat sandbox resume <id>`
   tries again at once.
-- **Off a node that keeps failing.** When the node keeps failing the same
-  file (the same hydrator failure for more than 15 minutes, or 5 attempts
-  or more), or boat refuses a plain stop because it can't snapshot the
-  disk, the plugin checks the snapshot with a short-lived test fork (never
-  snapshotted, deleted right after) and then moves the sandbox to a new
-  node: `boat stop --force`, which keeps the last completed snapshot, then
-  a resume. That drops what was written since the snapshot, so it does
-  this itself only for an orchestrator's or a plain bb machine's sandbox,
-  or when no task there is mid-turn or has unpushed commits or uncommitted
-  changes. Otherwise it's under Needs you, with the commands and the time
-  of the last completed snapshot. If the test fork can't read the files
-  either, nothing is forced: the snapshot itself is the problem.
+- **bb's daemon broken by an update.** An `npm install` left as a zombie,
+  the daemon's unit stuck "deactivating", or a module it can't load: the
+  machine says so, and Needs you has the repair by hand (reinstall bb's
+  downloaded package into a fresh folder, swap it in, restart the unit).
+- **Off a node that keeps failing.** Once the plugin itself has seen the
+  same hydrator failure at least 3 times over more than 15 minutes (on
+  wakes, or on stops boat refused), it moves the sandbox to a new node.
+  lazyfs's own attempt count doesn't count: an outage across boat.dev
+  shows high counts everywhere.
+  - First it checks that nothing there could be lost: no task or chat
+    mid-turn or with background work running, and every git checkout in
+    the sandbox has no unpushed commits on any branch, no changes (untracked
+    files included) and no stashes.
+  - It also checks the snapshot with a short-lived test fork (never
+    snapshotted, deleted right after). A fork that can't tell is tried
+    again once; then, like any unsafe case, it goes under Needs you with
+    the commands and the time of the last completed snapshot. If the fork
+    can't read the files either, the snapshot itself is the problem.
+  - Then a plain `boat stop`, which takes a fresh snapshot. The plugin
+    follows that stop (`boat stop --status`, never a second stop) and uses
+    `boat stop --force`, which keeps only the last completed snapshot, only
+    once boat says the stop failed or the sandbox stayed up. A stop still
+    pending after 20 minutes goes under Needs you. Then a resume puts it on
+    a new node.
 - **Teardown backs off too.** After boat.dev fails to stop or delete a
   sandbox, bb's retries in between fail at once, without asking boat.dev
   again (30 seconds, doubling up to 15 minutes).
