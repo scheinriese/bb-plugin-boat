@@ -2,7 +2,8 @@
 // changed in the task's work since (the turn that resolved the conflict).
 // The user's earlier OK never covers the new commits; these texts say why
 // a second approval is needed and show what to look at.
-import { fileList, shellQuote } from "./providers/boat/api.ts";
+import { fileList } from "./providers/boat/api.ts";
+import { shellQuote } from "./providers/shell.ts";
 import { clipChars, codeBlock, codeSpan, plainBlock, plainLine } from "./literal.ts";
 import type { ShipApproval, SinceApproval, Task } from "./store.ts";
 
