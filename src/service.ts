@@ -6,29 +6,27 @@ import { getPullRequest, pullRequestNumber } from "./github.ts";
 // layers over this class.
 import { BUILTIN_CONFIG_NAMES, evidenceInstallScript, evidenceLinks, installSummary, parseEvidenceSource, parseInstallResult, type EvidenceSource } from "./evidence.ts";
 import { randomUUID } from "node:crypto";
+import { assertBranch, busyProcesses, finalResponse, normalizeRepo, programName, promptStatus } from "./providers/boat/api.ts";
 import {
   ACTIVE_STATES,
-  BoatApi,
-  assertBranch,
-  finalResponse,
-  normalizeRepo,
-  promptStatus,
+  ProviderError,
+  autoStopHours,
+  isNotFound,
+  type CapacityReport as Limits,
   type CheckoutMode,
-  type Limits,
   type MachineType,
   type PreparedRepo,
-  type Sandbox,
+  type SandboxInfo as Sandbox,
+  type SandboxProvider,
   type ShipConflict,
   type ShipResult,
   type EnvironmentInfo,
-  busyProcesses,
-  programName,
-  shellQuote,
-} from "./providers/boat/api.ts";
+} from "./providers/types.ts";
+import { providerRegistry, type ProviderRegistry, type ProviderSource } from "./providers/registry.ts";
+import { shellQuote } from "./providers/shell.ts";
 import { checkPreview, previewLink, previewView, type PreviewView } from "./previews.ts";
 import { KEEP_LIMIT_MS, describeWork, hasWork } from "./activity.ts";
-import { BOAT_GIT_ENV, aiProxyPrice, autoStopHours, withinAutoStopCap, type AiProxyState } from "./providers/boat/api.ts";
-import { BoatError } from "./providers/boat/cli.ts";
+import { aiProxyPrice, type AiProxyState } from "./providers/boat/api.ts";
 import { bootstrapFailureMessage, retryableBootstrap } from "./bootstrap.ts";
 import { alwaysProtectedBranches, protectedBranches, type OrchestratorProject, type ProjectRepo } from "./projects.ts";
 import {
@@ -378,7 +376,7 @@ function clip(text: string, max: number): string {
  * snapshots (the trial). null: not a snapshot problem.
  */
 export function snapshotError(error: unknown, name: string | null): TaskError | null {
-  if (!(error instanceof BoatError)) return null;
+  if (!(error instanceof ProviderError)) return null;
   const text = `${error.code ?? ""} ${error.message}`;
   if (error.code === "snapshot_not_found" || (name !== null && /snapshot/i.test(text) && /not found|no saved snapshot/i.test(text))) {
     return new TaskError(
@@ -769,18 +767,20 @@ export class BoatService {
   /** Follow-ups being sent, per task: a move refuses while one runs, and the other way round. */
   private readonly sending = new Map<string, number>();
 
-  readonly boat: BoatApi;
+  /** Which sandbox provider each project's new work and each task's sandbox use (src/providers/registry.ts). */
+  readonly sandboxProviders: ProviderRegistry;
   readonly store: TaskStore;
   private readonly hooks: ServiceHooks;
   /** Sandbox sizes and memory (src/sandbox-size.ts). */
   readonly sizes: SandboxSizes;
 
-  constructor(boat: BoatApi, store: TaskStore, hooks: ServiceHooks) {
-    this.boat = boat;
+  /** `providers`: the registry, or the boat client alone (boat.dev, the only provider so far). */
+  constructor(providers: ProviderSource, store: TaskStore, hooks: ServiceHooks) {
+    this.sandboxProviders = providerRegistry(providers);
     this.store = store;
     this.hooks = hooks;
     this.sizes = new SandboxSizes({
-      boat,
+      sandboxProviders: this.sandboxProviders,
       store,
       hooks,
       settings: () => this.settings(),
@@ -798,6 +798,19 @@ export class BoatService {
 
   settings(): Promise<BoatSettings> {
     return this.hooks.settings();
+  }
+
+  /**
+   * The default provider, under the name it had before there were providers
+   * (tests stub its members). Ask `sandboxProviders` for a task's or a project's.
+   */
+  get boat(): SandboxProvider {
+    return this.sandboxProviders.default;
+  }
+
+  /** The provider a task's sandbox is on, or that a sandbox id belongs to (today always boat.dev). */
+  private sandboxProvider(of: Pick<Task, "sandboxProvider"> | string): SandboxProvider {
+    return typeof of === "string" ? this.sandboxProviders.forSandbox(of) : this.sandboxProviders.forTask(of);
   }
 
   private withSlotLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -828,9 +841,10 @@ export class BoatService {
     free: number | null;
   }> {
     const settings = await this.settings();
+    const sandboxProvider = forSandbox === undefined ? this.sandboxProviders.default : this.sandboxProvider(forSandbox);
     const [limits, sandboxes] = await Promise.all([
-      this.boat.limits(signal).catch(() => null),
-      this.boat.list({ signal }),
+      sandboxProvider.capacity(signal).catch(() => null),
+      sandboxProvider.list({ signal }),
     ]);
     const active = sandboxes.filter((sandbox) => ACTIVE_STATES.has(sandbox.state));
     const planCap = limits?.maxActiveSandboxes ?? null;
@@ -911,7 +925,7 @@ export class BoatService {
         } else {
           // Inside the slot lock: a shorter trim, so creates and resumes wait at most 20 s for it.
           await this.trimBeforeStop(victim.sandbox.id, signal, victim.sandbox.state, SLOT_TRIM_TIMEOUT_MS);
-          await this.boat.stop(victim.sandbox.id, signal);
+          await this.sandboxProvider(victim.sandbox.id).stop(victim.sandbox.id, signal);
           this.hooks.sandboxStopped?.(victim.sandbox.id);
         }
         for (const task of victim.tasks) {
@@ -941,43 +955,45 @@ export class BoatService {
     snapshot?: string | null;
     /** Route git through the base-branch push guard (worker sandboxes). */
     gitGuard?: boolean;
+    /** Where it goes (default: the default provider). */
+    sandboxProvider?: SandboxProvider;
     signal?: AbortSignal;
   }): Promise<Sandbox> {
     const settings = await this.settings();
+    const sandboxProvider = options.sandboxProvider ?? this.sandboxProviders.default;
     const environment = options.environment || settings.environment || null;
     // Signed in, with a plan that can start one: a broken setup costs no start.
     await this.hooks.preflight?.({ newSandbox: true, environment });
-    if (environment !== null) await this.assertEnvironment(environment, options.signal);
+    if (environment !== null) await this.assertEnvironment(sandboxProvider, environment, options.signal);
     return this.withSlotLock(async () => {
       const { limits } = await this.ensureSlot(options.signal);
-      const create = (ttl: number) =>
-        this.boat.create({
-          name: options.name,
-          type: options.type ?? settings.machineType,
-          environment,
-          from: options.snapshot ?? null,
-          // git uses the plugin's hooks (base-branch guard) whatever the repo configures.
-          env: options.gitGuard === false ? {} : BOAT_GIT_ENV,
-          ttlSeconds: ttl,
-          signal: options.signal,
-        });
       // Snapshot errors in plain words, only when a snapshot was asked for.
       const plain = (error: unknown) => (options.snapshot ? snapshotError(error, options.snapshot) : null) ?? error;
       try {
-        return await withinAutoStopCap(ttlSeconds(settings, limits), create);
+        return await sandboxProvider.create({
+          name: options.name,
+          type: options.type ?? settings.machineType,
+          environment,
+          snapshot: options.snapshot ?? null,
+          // git uses the plugin's hooks (base-branch guard) whatever the repo configures.
+          gitGuard: options.gitGuard !== false,
+          // Over the plan's auto-stop cap, the provider tries once more at the cap.
+          ttlSeconds: ttlSeconds(settings, limits),
+          signal: options.signal,
+        });
       } catch (error) {
         throw plain(error);
       }
     });
   }
 
-  private environmentCache: { at: number; names: string[] } | null = null;
+  private environmentCache: { at: number; provider: string; names: string[] } | null = null;
 
   /** Fail early, with a fix, when a project's boat environment doesn't exist. */
-  private async assertEnvironment(name: string, signal?: AbortSignal): Promise<void> {
-    if (this.environmentCache === null || Date.now() - this.environmentCache.at > 60_000) {
+  private async assertEnvironment(sandboxProvider: SandboxProvider, name: string, signal?: AbortSignal): Promise<void> {
+    if (this.environmentCache === null || this.environmentCache.provider !== sandboxProvider.id || Date.now() - this.environmentCache.at > 60_000) {
       try {
-        this.environmentCache = { at: Date.now(), names: await this.boat.environments(signal) };
+        this.environmentCache = { at: Date.now(), provider: sandboxProvider.id, names: await sandboxProvider.environments(signal) };
       } catch {
         return; // Let `boat new` report it.
       }
@@ -996,7 +1012,7 @@ export class BoatService {
    * files freed (src/disk-trim.ts). At most a minute; it never fails the stop.
    */
   private async trimBeforeStop(sandboxId: string, signal?: AbortSignal, state?: string, timeoutMs?: number): Promise<void> {
-    await trimFreedBlocks(this.boat, sandboxId, { signal, ...(state === undefined ? {} : { state }), ...(timeoutMs === undefined ? {} : { timeoutMs }), log: (line) => this.hooks.log.debug?.(line) });
+    await trimFreedBlocks(this.sandboxProvider(sandboxId), sandboxId, { signal, ...(state === undefined ? {} : { state }), ...(timeoutMs === undefined ? {} : { timeoutMs }), log: (line) => this.hooks.log.debug?.(line) });
   }
 
   /**
@@ -1019,10 +1035,11 @@ export class BoatService {
       throw new TaskError(`Boat is moving sandbox ${sandboxId} to a new boat.dev node: its node keeps failing its disk.`, "sandbox_moving", "Try again once it's back, in a few minutes (or see Needs you).");
     }
     const deadline = Date.now() + TRANSITION_WAIT_MS;
+    const sandboxProvider = this.sandboxProvider(sandboxId);
     // The wake slot, taken once before the slot lock (a wait there would hold up creates).
     let permit: WakePermit | null = given ?? null;
     for (;;) {
-      const sandbox = await this.boat.findInfo(sandboxId, signal);
+      const sandbox = await sandboxProvider.findInfo(sandboxId, signal);
       if (sandbox === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
       this.observedSandboxStates.set(sandboxId, sandbox.state);
       if (ACTIVE_STATES.has(sandbox.state)) return sandbox;
@@ -1031,7 +1048,7 @@ export class BoatService {
         if (permit === null && this.hooks.wakes !== undefined) permit = await this.hooks.wakes.pacer.acquire({ signal, ids: wakeIds({ sandboxId }) });
         const owned = given === undefined ? permit : null;
         const resumed = await this.withSlotLock(async () => {
-          const current = await this.boat.findInfo(sandboxId, signal);
+          const current = await sandboxProvider.findInfo(sandboxId, signal);
           if (current === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
           if (ACTIVE_STATES.has(current.state)) return current;
           if (!resumable(current)) return null;
@@ -1039,7 +1056,7 @@ export class BoatService {
           // A move to another size resumes onto it, whoever resumes (sizes).
           const type = this.sizes.pendingType(sandboxId);
           try {
-            await withinAutoStopCap(ttlSeconds(await this.settings(), limits), (ttl) => this.boat.resume(sandboxId, ttl, signal, type));
+            await sandboxProvider.resume(sandboxId, { ttlSeconds: ttlSeconds(await this.settings(), limits), type, signal });
           } catch (error) {
             if (type !== null) this.sizes.resumeFailed(sandboxId, error);
             if (signal?.aborted !== true) await owned?.failed();
@@ -1048,7 +1065,7 @@ export class BoatService {
           }
           await owned?.succeeded();
           this.store.resetPreviewHealthForSandbox(sandboxId);
-          return (await this.boat.findInfo(sandboxId, signal)) ?? current;
+          return (await sandboxProvider.findInfo(sandboxId, signal)) ?? current;
         });
         if (resumed !== null) return resumed;
         continue;
@@ -1073,10 +1090,10 @@ export class BoatService {
     const others = this.store.liveSandboxTasks(sandboxId).filter((task) => task.id !== exceptTaskId);
     if (others.length > 0) return "kept";
     try {
-      await this.boat.delete(sandboxId, signal);
+      await this.sandboxProvider(sandboxId).delete(sandboxId, signal);
       return "deleted";
     } catch (error) {
-      if (error instanceof BoatError && (error.code === "not_found" || error.status === 404)) return "gone";
+      if (isNotFound(error)) return "gone";
       throw error;
     }
   }
@@ -1589,10 +1606,10 @@ export class BoatService {
     sandboxId: string,
     repo: string,
     checkout: CheckoutMode,
-    options: Parameters<BoatApi["prepareRepo"]>[3],
+    options: Parameters<SandboxProvider["prepareRepo"]>[3],
   ): Promise<PreparedRepo> {
     try {
-      const prepared = await this.boat.prepareRepo(sandboxId, repo, checkout, options);
+      const prepared = await this.sandboxProvider(sandboxId).prepareRepo(sandboxId, repo, checkout, options);
       if (prepared.canPush !== undefined && prepared.canPush !== null) {
         this.store.setRepoAccess(repo, prepared.canPush ? "write" : "read", null);
         this.store.addEvent(taskId, "access", `GitHub access to ${repo}: ${prepared.canPush ? "can push" : "read only"}`);
@@ -1600,7 +1617,7 @@ export class BoatService {
       if (prepared.githubExpiresAt) this.store.addEvent(taskId, "github-token", prepared.githubExpiresAt);
       return prepared;
     } catch (error) {
-      if (error instanceof BoatError && (error.code === "repo_access" || error.code === "github_token_expired")) {
+      if (error instanceof ProviderError && (error.code === "repo_access" || error.code === "github_token_expired")) {
         this.store.setRepoAccess(repo, error.code === "repo_access" ? "none" : "expired", error.message);
         throw new TaskError(error.message, error.code);
       }
@@ -1627,13 +1644,13 @@ export class BoatService {
     if (Date.parse(recorded) - Date.now() > 45 * 60_000) return;
     // Ask the sandbox (boat may have given it a fresh login). A stopped one is
     // woken first when the work is about to run there anyway.
-    let sandbox = await this.boat.findInfo(task.sandboxId, options.signal).catch(() => null);
+    let sandbox = await this.sandboxProvider(task).findInfo(task.sandboxId, options.signal).catch(() => null);
     if (sandbox === null) return;
     if (!ACTIVE_STATES.has(sandbox.state)) {
       if (!options.resume) return;
       sandbox = await this.resumeSandbox(task.sandboxId, options.signal);
     }
-    const login = await this.boat.githubLogin(task.sandboxId, options.signal).catch(() => ({ valid: null, expiresAt: null }));
+    const login = await this.sandboxProvider(task).githubLogin(task.sandboxId, options.signal).catch(() => ({ valid: null, expiresAt: null }));
     if (login.expiresAt) this.store.addEvent(task.id, "github-token", login.expiresAt);
     const expiresAt = login.expiresAt ?? recorded;
     const expired = login.valid === false || (login.valid !== true && Date.parse(expiresAt) <= Date.now()) || Date.parse(expiresAt) - Date.now() < 10 * 60_000;
@@ -1675,7 +1692,7 @@ export class BoatService {
       const script = await this.hooks.evidence!.script(source, signal);
       // The bundled uploader's variables are known; a custom script's are its own.
       const checkNames = source.kind === "builtin" ? BUILTIN_CONFIG_NAMES : [];
-      const result = await this.boat.exec(sandboxId, evidenceInstallScript(script, checkNames), { timeoutMs: 120_000, signal });
+      const result = await this.sandboxProvider(sandboxId).exec(sandboxId, evidenceInstallScript(script, checkNames), { timeoutMs: 120_000, signal });
       const parsed = parseInstallResult(result.stdout, checkNames);
       if (result.exitCode !== 0 || parsed === null) {
         const detail = `${result.stderr}\n${result.stdout}`.trim().split("\n").slice(-3).join(" ");
@@ -1741,6 +1758,7 @@ export class BoatService {
           type: sizing.type,
           environment: task.environment,
           snapshot: task.snapshot,
+          sandboxProvider: this.sandboxProvider(task),
           signal,
         });
         createdSandbox = sandbox.id;
@@ -1849,7 +1867,7 @@ export class BoatService {
       if (input.nativeReview) {
         await input.nativeReview.beforeDispatch(id); stillWanted();
         // Verify only the new review sandbox; never probe or reprepare core's checkout.
-        const head = await this.boat.exec(sandbox.id, `GIT_OPTIONAL_LOCKS=0 git -C ${shellQuote(task.repoPath!)} rev-parse --verify HEAD | sed 's/^/BOAT_NATIVE_REVIEW_HEAD /'`, { timeoutMs: 10_000, signal });
+        const head = await this.sandboxProvider(task).exec(sandbox.id, `GIT_OPTIONAL_LOCKS=0 git -C ${shellQuote(task.repoPath!)} rev-parse --verify HEAD | sed 's/^/BOAT_NATIVE_REVIEW_HEAD /'`, { timeoutMs: 10_000, signal });
         if (head.exitCode !== 0 || head.stdout.trim() !== `BOAT_NATIVE_REVIEW_HEAD ${input.nativeReview.source.head}`) throw new TaskError("The review checkout does not match the recorded pull request HEAD.", "review_source_changed");
         stillWanted();
       }
@@ -1905,7 +1923,7 @@ export class BoatService {
       const conversationId = randomUUID();
       task = this.store.update(id, { conversationId }) ?? task;
       stillWanted();
-      const dispatch = await this.boat.prompt({
+      const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: sandbox.id,
         conversationId,
         prompt,
@@ -1924,7 +1942,7 @@ export class BoatService {
       });
       if (running === null) {
         // Closed while the prompt was in flight: stop the agent we just started.
-        await this.boat.interrupt(sandbox.id, dispatch.conversationId).catch(() => undefined);
+        await this.sandboxProvider(task).interrupt(sandbox.id, dispatch.conversationId).catch(() => undefined);
         throw new DispatchCancelled();
       }
       this.store.addEvent(
@@ -2372,7 +2390,7 @@ export class BoatService {
         );
       }
       if (isChat) await this.hooks.chat!.send(task.threadId!, message, { steer: true });
-      else await this.boat.steer(task.sandboxId!, task.conversationId!, message, options.signal);
+      else await this.sandboxProvider(task).steer(task.sandboxId!, task.conversationId!, message, options.signal);
       this.store.addEvent(task.id, "steered", clip(message, 2000));
       this.hooks.changed([task.id]);
       return this.store.get(task.id) ?? task;
@@ -2467,7 +2485,7 @@ export class BoatService {
       // Now that the sandbox is up, its login can be asked directly.
       if (needsGithub) await this.assertGithubLogin(task, { signal: options.signal });
       const note = await this.resumeNoteFor(task.id);
-      const dispatch = await this.boat.prompt({
+      const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
         // A new agent on a Deep task gets the working mode for its own tools.
@@ -2508,7 +2526,7 @@ export class BoatService {
         { promptId: task.promptId },
       );
       if (updated === null) {
-        await this.boat.interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
+        await this.sandboxProvider(task).interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       }
       this.sizes.noteSent(task.id); // sizes
@@ -2607,7 +2625,7 @@ export class BoatService {
       this.sizes.assertCanFollowup(task); // sizes
       await this.ensureRunning(task.sandboxId!, options.signal);
       const note = await this.resumeNoteFor(task.id);
-      const dispatch = await this.boat.prompt({
+      const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
         prompt: this.withNote(note, composeEvidencePrompt(task.role, message, "boat")),
@@ -2618,7 +2636,7 @@ export class BoatService {
       });
       const updated = this.store.transition(task.id, ["idle", "failed"], { ...running, promptId: dispatch.promptId });
       if (updated === null) {
-        await this.boat.interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
+        await this.sandboxProvider(task).interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       }
       this.noteSent(task.id, note);
@@ -3044,7 +3062,7 @@ export class BoatService {
   environmentInfo(name: string, signal?: AbortSignal): Promise<EnvironmentInfo> {
     const hit = this.environmentCacheByName.get(name);
     if (hit && Date.now() - hit.at < (hit.ok ? 5 * 60_000 : 60_000)) return hit.info;
-    const entry = { at: Date.now(), info: this.boat.environmentInfo(name, signal), ok: true };
+    const entry = { at: Date.now(), info: this.sandboxProviders.default.environmentInfo(name, signal), ok: true };
     entry.info.catch(() => {
       entry.ok = false;
     });
@@ -3058,7 +3076,7 @@ export class BoatService {
   private aiProxy(signal?: AbortSignal): Promise<AiProxyState | null> {
     const hit = this.aiProxyCache;
     if (hit && Date.now() - hit.at < (hit.known ? 5 * 60_000 : 60_000)) return hit.value;
-    const entry = { at: Date.now(), value: this.boat.aiProxy(signal).catch(() => null), known: true };
+    const entry = { at: Date.now(), value: this.sandboxProviders.default.aiProxy(signal).catch(() => null), known: true };
     void entry.value.then((value) => {
       entry.known = value !== null && value.enabled !== null;
     });
@@ -3080,7 +3098,7 @@ export class BoatService {
     const accountProxy = this.aiProxy(signal);
     try {
       // No environment named: boat uses its default one.
-      if (environment === null) environment = await this.boat.defaultEnvironment(signal);
+      if (environment === null) environment = await this.sandboxProviders.default.defaultEnvironment(signal);
       if (environment !== null) info = await this.environmentInfo(environment, signal);
       else error = "boat has no default environment";
     } catch (failure) {
@@ -3129,7 +3147,7 @@ export class BoatService {
       );
     }
     try {
-      const saved = await this.boat.snapshot(sandboxId, name, signal);
+      const saved = await this.sandboxProvider(sandboxId).snapshot(sandboxId, name, signal);
       const checks = this.store.sandboxTasks(sandboxId).filter(task => task.runner === "boat" && task.role === "custom" && task.reason === `Project snapshot check: ${task.boatProject}`);
       for (const task of checks) this.store.addEvent(task.id, "snapshot-saved", `Saved snapshot ${saved.name}`);
       if (checks.length) this.hooks.changed(checks.map(task => task.id));
@@ -3141,7 +3159,7 @@ export class BoatService {
 
   async snapshots(signal?: AbortSignal) {
     try {
-      return await this.boat.snapshots(signal);
+      return await this.sandboxProviders.default.snapshots(signal);
     } catch (error) {
       throw snapshotError(error, null) ?? error;
     }
@@ -3170,11 +3188,12 @@ export class BoatService {
     // Asked for explicitly: the sandbox's retry plan starts over (src/wake-retry.ts).
     if (action === "resume" && options.keepPlan !== true) await this.hooks.wakes?.forget(sandboxId);
     if (hostId === null) {
+      const sandboxProvider = this.sandboxProvider(sandboxId);
       if (action === "stop") {
         await this.trimBeforeStop(sandboxId, signal);
-        await this.boat.stop(sandboxId, signal);
-      } else if (action === "resume") await this.pacedResume(sandboxId, () => withinAutoStopCap(ttlSeconds, (ttl) => this.boat.resume(sandboxId, ttl, signal)), signal);
-      else await this.boat.delete(sandboxId, signal);
+        await sandboxProvider.stop(sandboxId, signal);
+      } else if (action === "resume") await this.pacedResume(sandboxId, () => sandboxProvider.resume(sandboxId, { ttlSeconds, signal }), signal);
+      else await sandboxProvider.delete(sandboxId, signal);
       this.observedSandboxStates.set(sandboxId, action === "stop" ? "stopped" : action === "resume" ? "running" : "deleted");
       return;
     }
@@ -3326,7 +3345,7 @@ export class BoatService {
       if (task.sandboxId === null || task.conversationId === null) {
         throw new TaskError(`Task ${task.id} has no running conversation.`, "task_not_dispatched");
       }
-      await this.boat.interrupt(task.sandboxId, task.conversationId, signal);
+      await this.sandboxProvider(task).interrupt(task.sandboxId, task.conversationId, signal);
     }
     return task;
   }
@@ -3576,7 +3595,7 @@ export class BoatService {
     if (hidden !== null) return { ...base, offered: false, blocked: plain(hidden) };
     let blocked = this.moveBlockerNow(task) ?? (await this.connectBlocker());
     if (blocked !== null) return { ...base, offered: !MOVE_NEVER.has(blocked.code), blocked: plain(blocked) };
-    const sandbox = await this.boat.findInfo(task.sandboxId!, signal).catch(() => undefined);
+    const sandbox = await this.sandboxProvider(task).findInfo(task.sandboxId!, signal).catch(() => undefined);
     blocked = this.sandboxBlocker(task, sandbox);
     let hasMachine = false;
     if (blocked === null) {
@@ -3693,7 +3712,7 @@ export class BoatService {
     };
     try {
       // 1. Checks that ask boat and bb.
-      const sandbox = await this.boat.findInfo(sandboxId, signal);
+      const sandbox = await this.sandboxProvider(initial).findInfo(sandboxId, signal);
       const gone = this.sandboxBlocker(initial, sandbox);
       if (gone !== null) throw gone;
       await this.hooks.preflight?.({ agent: initial.provider, runner: "chat", environment: initial.environment, newSandbox: false });
@@ -3719,8 +3738,8 @@ export class BoatService {
         this.store.resetPreviewHealthForSandbox(sandboxId);
       }
       await this.extendSandbox(sandboxId, signal);
-      const conversation = (await this.boat.conversations(sandboxId, signal)).find((entry) => entry.id === conversationId);
-      const events = await this.boat.events(sandboxId, conversationId, signal);
+      const conversation = (await this.sandboxProvider(initial).conversations(sandboxId, signal)).find((entry) => entry.id === conversationId);
+      const events = await this.sandboxProvider(initial).events(sandboxId, conversationId, signal);
       const turn = promptStatus(events, initial.promptId);
       // A turn cut off by a stopped sandbox stays unfinished in boat's log: it's over once boat doesn't run it.
       const cutOff = initial.status === "idle" && (initial.error ?? "").startsWith(CUT_OFF_ERROR);
@@ -3858,8 +3877,8 @@ export class BoatService {
       this.settling.delete(id);
       this.chatTurnSeen.delete(id);
       // Two agents never share the checkout: stop the headless one if anything restarted it.
-      const still = (await this.boat.conversations(sandboxId).catch(() => [])).find((entry) => entry.id === conversationId);
-      if (still?.running) await this.boat.interrupt(sandboxId, conversationId).catch(() => undefined);
+      const still = (await this.sandboxProvider(initial).conversations(sandboxId).catch(() => [])).find((entry) => entry.id === conversationId);
+      if (still?.running) await this.sandboxProvider(initial).interrupt(sandboxId, conversationId).catch(() => undefined);
       // From now on, removing the machine deletes the sandbox like any task chat's.
       const settle = attached?.key ?? (reusedOwn !== null ? machine?.key : null) ?? protectedKey;
       if (settle) await chat.settleMachine(settle).catch((error) => this.hooks.log.warn(`settle ${settle}: ${errorText(error)}`));
@@ -3904,8 +3923,9 @@ export class BoatService {
   /** Keep a sandbox from stopping during a move (boat's auto-stop); never fatal. */
   private async extendSandbox(sandboxId: string, signal: AbortSignal): Promise<void> {
     try {
-      const limits = await this.boat.limits(signal).catch(() => null);
-      await withinAutoStopCap(ttlSeconds(await this.settings(), limits), (ttl) => this.boat.extend(sandboxId, ["--ttl", String(ttl)], signal));
+      const sandboxProvider = this.sandboxProvider(sandboxId);
+      const limits = await sandboxProvider.capacity(signal).catch(() => null);
+      await sandboxProvider.extend(sandboxId, ttlSeconds(await this.settings(), limits), signal);
     } catch (error) {
       this.hooks.log.warn(`extend ${sandboxId}: ${errorText(error)}`);
     }
@@ -3966,7 +3986,7 @@ export class BoatService {
         task.delivery === "push" && task.role !== "review" && task.sandboxId !== null && task.turns > 0 && task.unshipped !== 0 && !this.shippedSinceLastTurn(task),
     );
     if (candidates.length === 0) return;
-    const sandboxes = new Map((await this.boat.list({ all: true, signal: this.hooks.lifecycle })).map((sandbox) => [sandbox.id, sandbox]));
+    const sandboxes = new Map((await this.sandboxProviders.default.list({ all: true, signal: this.hooks.lifecycle })).map((sandbox) => [sandbox.id, sandbox]));
     for (const task of candidates) {
       const sandbox = sandboxes.get(task.sandboxId!);
       const stoppedAt = sandbox?.stoppedAt ? Date.parse(sandbox.stoppedAt) : NaN;
@@ -3996,7 +4016,7 @@ export class BoatService {
     // Synchronously, before the first await: no notice can go out without the link.
     this.hostingPreviews.add(task.id);
     try {
-      const hosted = await this.boat.host(task.sandboxId, spec.port, task.title, this.hooks.lifecycle);
+      const hosted = await this.sandboxProvider(task).host(task.sandboxId, spec.port, task.title, this.hooks.lifecycle);
       let health = await this.checkPreviewLink(previewLink(hosted.url, spec.path), true);
       // The worker's server didn't survive its turn, or blocks boat's host name: start it again once.
       if ((health === "down" || health === "blocked") && spec.command !== null && task.repoPath !== null) {
@@ -4057,7 +4077,7 @@ export class BoatService {
    * run the worker's command from the checkout, detached.
    */
   private async startPreviewServer(sandboxId: string, repoPath: string, port: number, command: string): Promise<void> {
-    await this.boat.execDetached(sandboxId, previewStartScript(repoPath, port, command), this.hooks.lifecycle);
+    await this.sandboxProvider(sandboxId).execDetached(sandboxId, previewStartScript(repoPath, port, command), this.hooks.lifecycle);
   }
 
   /** Previews with their state; refreshes stale checks of live ones. */
@@ -4068,7 +4088,7 @@ export class BoatService {
     let known = false;
     try {
       // --all: stopped sandboxes too (their previews are sleeping, not gone).
-      for (const sandbox of await this.boat.list({ all: true, signal: this.hooks.lifecycle })) sandboxes.set(sandbox.id, sandbox);
+      for (const sandbox of await this.sandboxProviders.default.list({ all: true, signal: this.hooks.lifecycle })) sandboxes.set(sandbox.id, sandbox);
       known = true;
     } catch (error) {
       this.hooks.log.warn(`previews: ${errorText(error)}`);
@@ -4080,7 +4100,7 @@ export class BoatService {
       if (!known) lookup.set(preview.sandboxId, undefined);
       else if (sandboxes.has(preview.sandboxId)) lookup.set(preview.sandboxId, sandboxes.get(preview.sandboxId));
       else if (preview.expiredAt !== null) lookup.set(preview.sandboxId, null);
-      else lookup.set(preview.sandboxId, await this.boat.findInfo(preview.sandboxId, this.hooks.lifecycle).catch(() => undefined));
+      else lookup.set(preview.sandboxId, await this.sandboxProvider(preview.sandboxId).findInfo(preview.sandboxId, this.hooks.lifecycle).catch(() => undefined));
     }
     const view = (preview: Preview) => previewView(preview, this.store.get(preview.taskId), lookup.get(preview.sandboxId));
     const views = rows.map(view);
@@ -4124,7 +4144,7 @@ export class BoatService {
       this.suspendedHosts.add(hostId);
     } else {
       await this.trimBeforeStop(sandboxId, signal);
-      await this.boat.stop(sandboxId, signal);
+      await this.sandboxProvider(sandboxId).stop(sandboxId, signal);
     }
     this.observedSandboxStates.set(sandboxId, "stopped");
   }
@@ -4148,7 +4168,7 @@ export class BoatService {
     // Held for the whole wake: no idle stop or room-making stop in between.
     const release = this.claim(preview.sandboxId);
     try {
-      const sandbox = await this.boat.findInfo(preview.sandboxId, signal);
+      const sandbox = await this.sandboxProvider(preview.sandboxId).findInfo(preview.sandboxId, signal);
       if (sandbox === null) {
         this.store.expirePreviewsForSandbox(preview.sandboxId);
         throw new TaskError(`Preview ${preview.id}'s sandbox is gone.`, "preview_expired");
@@ -4159,14 +4179,14 @@ export class BoatService {
       if (health !== "up" && preview.command !== null && task.repoPath !== null) {
         await this.startPreviewServer(preview.sandboxId, task.repoPath, preview.port, preview.command);
       }
-      const hosted = await this.boat.host(preview.sandboxId, preview.port, preview.title, signal);
+      const hosted = await this.sandboxProvider(preview.sandboxId).host(preview.sandboxId, preview.port, preview.title, signal);
       if (health !== "up") health = await this.waitForPreview(previewLink(hosted.url, preview.path), 45_000);
       this.store.setPreviewHealth(preview.id, health, hosted.url);
       this.store.addEvent(task.id, "preview", `Woke preview ${preview.id}${health === "up" ? "" : " (the server isn't answering yet)"}`);
       // The idle timer starts again from the wake.
       this.store.update(task.id, {});
       this.hooks.changed([task.id]);
-      return previewView(this.store.preview(preview.id)!, task, await this.boat.findInfo(preview.sandboxId, signal));
+      return previewView(this.store.preview(preview.id)!, task, await this.sandboxProvider(preview.sandboxId).findInfo(preview.sandboxId, signal));
     } finally {
       release();
     }
@@ -4175,7 +4195,7 @@ export class BoatService {
   private async waitForSandbox(sandboxId: string, signal?: AbortSignal): Promise<Sandbox> {
     const deadline = Date.now() + TRANSITION_WAIT_MS;
     for (;;) {
-      const sandbox = await this.boat.findInfo(sandboxId, signal);
+      const sandbox = await this.sandboxProvider(sandboxId).findInfo(sandboxId, signal);
       if (sandbox === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
       if (ACTIVE_STATES.has(sandbox.state)) return sandbox;
       if (Date.now() >= deadline || signal?.aborted) throw new TaskError(`Sandbox ${sandboxId} is still ${sandbox.state}.`, "sandbox_unavailable");
@@ -4191,17 +4211,16 @@ export class BoatService {
     const { preview, task } = this.mustGetPreview(id);
     if (!Number.isFinite(hours) || hours <= 0 || hours > 24) throw new TaskError("Extend by 1 to 24 hours.", "invalid_value");
     this.sizes.assertSandboxNotResizing(preview.sandboxId); // sizes
-    const limits = await this.boat.limits(signal).catch(() => null);
+    const sandboxProvider = this.sandboxProvider(preview.sandboxId);
+    const limits = await sandboxProvider.capacity(signal).catch(() => null);
     const wanted = Math.round(Math.min(hours, limits?.autoStopCapHours ?? hours) * 3600);
-    const ttl = await withinAutoStopCap(wanted, async (seconds) => {
-      await this.boat.extend(preview.sandboxId, ["--ttl", String(seconds)], signal);
-      return seconds;
-    });
+    // Over the plan's cap, the provider sets the cap it names instead.
+    const { ttlSeconds: ttl } = await sandboxProvider.extend(preview.sandboxId, wanted, signal);
     const set = Math.round((ttl / 3600) * 100) / 100;
     const capped = set < hours ? ` (your plan's auto-stop cap)` : "";
     this.store.addEvent(task.id, "preview", `Extended preview ${preview.id}'s sandbox to ${set} more ${set === 1 ? "hour" : "hours"}${capped}`);
     this.hooks.changed([task.id]);
-    return { ...previewView(preview, task, await this.boat.findInfo(preview.sandboxId, signal)), hours: set };
+    return { ...previewView(preview, task, await sandboxProvider.findInfo(preview.sandboxId, signal)), hours: set };
   }
 
   /** Stop a preview's sandbox (Wake brings it back; the link stays the same). */
@@ -4219,7 +4238,7 @@ export class BoatService {
     this.store.setPreviewHealth(preview.id, "unknown");
     this.store.addEvent(task.id, "preview", `Stopped preview ${preview.id}'s sandbox`);
     this.hooks.changed([task.id]);
-    return previewView(this.store.preview(preview.id)!, task, await this.boat.findInfo(preview.sandboxId, signal));
+    return previewView(this.store.preview(preview.id)!, task, await this.sandboxProvider(preview.sandboxId).findInfo(preview.sandboxId, signal));
   }
 
   /** The task's newest preview link that isn't expired (for cards and notices). */
@@ -4318,7 +4337,7 @@ export class BoatService {
     let result: ShipResult;
     try {
       const hostId = this.hooks.chat === undefined ? null : this.store.hostForSandbox(task.sandboxId);
-      const sandbox = await this.boat.findInfo(task.sandboxId, options.signal);
+      const sandbox = await this.sandboxProvider(task).findInfo(task.sandboxId, options.signal);
       if (sandbox === null) throw new TaskError(`Task ${task.id}'s sandbox is gone, and its unshipped commits with it.`, "sandbox_gone");
       if (!ACTIVE_STATES.has(sandbox.state)) {
         if (hostId !== null) {
@@ -4334,7 +4353,7 @@ export class BoatService {
       await options.beforeShip?.(this.store.get(task.id) ?? task, this.shipTargets(task));
       try {
         // Base commits another task of this plugin shipped are named with it.
-        result = await this.boat.ship(task.sandboxId, this.shipTargets(task), options.signal, (sha) => this.store.shippedBy(sha, task.id));
+        result = await this.sandboxProvider(task).ship(task.sandboxId, this.shipTargets(task), options.signal, (sha) => this.store.shippedBy(sha, task.id));
       } catch (error) {
         // Repos that landed before a later one failed are recorded as shipped.
         const partial = (error as { shipped?: ShipResult["shipped"] }).shipped ?? [];
@@ -4345,7 +4364,7 @@ export class BoatService {
             `Shipped ${partial.map((entry) => `${entry.commits} commit${entry.commits === 1 ? "" : "s"} to ${entry.baseBranch} (${entry.sha.slice(0, 7)})`).join(", ")} before it stopped; the rest is still unshipped`,
           );
         }
-        if (error instanceof BoatError) {
+        if (error instanceof ProviderError) {
           const conflict = (error as { conflict?: (ShipConflict & { path: string; baseBranch: string }) | null }).conflict ?? null;
           if (error.code === "ship_conflict") this.noteShipConflict(task, error.message, conflict);
           throw new TaskError(error.message, error.code ?? "ship_failed");
@@ -4379,7 +4398,7 @@ export class BoatService {
     if (task.status !== "cancelled" || task.runner !== "chat" || !task.threadId || !task.sandboxId || !this.hooks.chat) throw new TaskError("Only a cancelled task chat with its original sandbox can be reopened.","task_not_reopenable");
     const state = await this.hooks.chat.state(task.threadId);
     if (!state || state.archived || state.status !== "idle" || !state.environmentId || state.queued > 0 || state.backgroundAgents > 0 || (state.workflows ?? 0) > 0) throw new TaskError("The original task chat must have an idle, available workspace before it can be reopened.","task_not_reopenable");
-    await this.boat.info(task.sandboxId);
+    await this.sandboxProvider(task).info(task.sandboxId);
     const reopened = this.store.transition(task.id,["cancelled"],{status:"idle",environmentId:state.environmentId,readyAt:null,readyNote:null,error:null,shipApproval:null});
     if (!reopened) throw new TaskError("The task changed while its workspace was checked.","task_changed");
     this.store.addEvent(task.id,"reopened","Reopened the existing task and checkout at the user's explicit request. No agent turn or sandbox was started.");
@@ -4425,7 +4444,7 @@ export class BoatService {
     if (task.status === "running" && task.runner === "chat" && task.threadId && this.hooks.chat) {
       await this.hooks.chat.stop(task.threadId).catch(() => undefined);
     } else if (task.status === "running" && task.sandboxId && task.conversationId) {
-      await this.boat.interrupt(task.sandboxId, task.conversationId, options.signal).catch(() => undefined);
+      await this.sandboxProvider(task).interrupt(task.sandboxId, task.conversationId, options.signal).catch(() => undefined);
     }
     this.store.addEvent(task.id, status, status === "done" ? "Closed" : "Cancelled");
     let sandbox: "deleted" | "kept" | "gone" | "none" = "none";
@@ -4459,7 +4478,7 @@ export class BoatService {
     }
     // A kept sandbox may get other tasks: the moved task's old conversation goes.
     if (sandbox === "kept" && sandboxId !== null && this.store.latestEvent(task.id, "moved-to-chat") !== null) {
-      await this.boat
+      await this.sandboxProvider(task)
         .exec(sandboxId, `rm -rf ${shellQuote(transcriptDir(task.id))}`, { timeoutMs: 30_000, signal: options.signal })
         .catch((error) => this.hooks.log.warn(`remove transcript ${task.id}: ${errorText(error)}`));
     }
@@ -4481,7 +4500,7 @@ export class BoatService {
     const targets = this.shipTargets(task);
     if (task.sandboxId === null || targets.length === 0) return 0;
     try {
-      const sandbox = known ?? (await this.boat.findInfo(task.sandboxId, signal));
+      const sandbox = known ?? (await this.sandboxProvider(task).findInfo(task.sandboxId, signal));
       if (sandbox === null) return 0;
       if (!ACTIVE_STATES.has(sandbox.state)) return null;
       // Per repo: commits not on its base, plus 1 when files aren't committed (untracked too).
@@ -4491,7 +4510,7 @@ export class BoatService {
             `cd ${shellQuote(target.path)} 2>/dev/null && echo "BOAT_AHEAD $(git rev-list --count ${shellQuote(`origin/${target.baseBranch}`)}..HEAD 2>/dev/null || echo x) $([ -z "$(git status --porcelain 2>/dev/null)" ] && echo clean || echo dirty)" || echo "BOAT_AHEAD x x"`,
         )
         .join("\n");
-      const result = await this.boat.exec(task.sandboxId, script, { timeoutMs: 30_000, signal });
+      const result = await this.sandboxProvider(task).exec(task.sandboxId, script, { timeoutMs: 30_000, signal });
       const rows = [...result.stdout.matchAll(/BOAT_AHEAD (\S+) (\S+)/g)];
       if (rows.length !== targets.length) return null;
       let total = 0;
@@ -4573,10 +4592,10 @@ export class BoatService {
       let changes: SinceApproval;
       try {
         if (task.sandboxId === null) throw new Error("the task has no sandbox");
-        const sandbox = known ?? (await this.boat.findInfo(task.sandboxId, this.hooks.lifecycle));
+        const sandbox = known ?? (await this.sandboxProvider(task).findInfo(task.sandboxId, this.hooks.lifecycle));
         if (sandbox === null) throw new Error("its sandbox is gone");
         if (!ACTIVE_STATES.has(sandbox.state)) throw new Error(`its sandbox is ${sandbox.state}`);
-        const result = await this.boat.exec(task.sandboxId, sinceApprovalScript(approval), { timeoutMs: 60_000, signal: this.hooks.lifecycle });
+        const result = await this.sandboxProvider(task).exec(task.sandboxId, sinceApprovalScript(approval), { timeoutMs: 60_000, signal: this.hooks.lifecycle });
         changes = parseSinceApproval(result.stdout, task.turns);
       } catch (error) {
         changes = { turns: task.turns, via: "none", text: clip(errorText(error), 300), omitted: 0 };
@@ -4707,7 +4726,7 @@ export class BoatService {
     const sandboxes = new Map<string, Sandbox>();
     if (running.length > 0 || settings.stopIdleAfterMinutes > 0) {
       try {
-        for (const sandbox of await this.boat.list({ all: true, signal: this.hooks.lifecycle })) {
+        for (const sandbox of await this.sandboxProviders.default.list({ all: true, signal: this.hooks.lifecycle })) {
           sandboxes.set(sandbox.id, sandbox);
           this.observedSandboxStates.set(sandbox.id, sandbox.state);
         }
@@ -4732,7 +4751,7 @@ export class BoatService {
         // `boat list` is paged; ask about this one directly before giving up.
         // Only a real 404 (null) counts as gone; other errors retry next sweep.
         try {
-          sandbox = (await this.boat.findInfo(sandboxId, this.hooks.lifecycle)) ?? undefined;
+          sandbox = (await this.sandboxProvider(sandboxId).findInfo(sandboxId, this.hooks.lifecycle)) ?? undefined;
         } catch (error) {
           this.hooks.log.warn(`sweep: info ${sandboxId}: ${errorText(error)}`);
           continue;
@@ -4758,7 +4777,7 @@ export class BoatService {
       }
       let conversations;
       try {
-        conversations = await this.boat.conversations(sandboxId, this.hooks.lifecycle);
+        conversations = await this.sandboxProvider(sandboxId).conversations(sandboxId, this.hooks.lifecycle);
       } catch (error) {
         this.hooks.log.warn(`sweep: conversations ${sandboxId}: ${errorText(error)}`);
         continue;
@@ -5007,7 +5026,7 @@ export class BoatService {
     if (task.sandboxId === null || task.conversationId === null) return false;
     let events;
     try {
-      events = await this.boat.events(task.sandboxId, task.conversationId, this.hooks.lifecycle);
+      events = await this.sandboxProvider(task).events(task.sandboxId, task.conversationId, this.hooks.lifecycle);
     } catch (error) {
       this.hooks.log.warn(`sweep: events ${task.id}: ${errorText(error)}`);
       return false;
@@ -5126,7 +5145,7 @@ export class BoatService {
     const release = this.claim(task.sandboxId);
     try {
       await this.ensureRunning(task.sandboxId, this.hooks.lifecycle);
-      const dispatch = await this.boat.prompt({
+      const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: task.sandboxId,
         conversationId: task.conversationId,
         provider: next,
@@ -5142,7 +5161,7 @@ export class BoatService {
         { promptId: task.promptId },
       );
       if (updated === null) {
-        await this.boat.interrupt(task.sandboxId, task.conversationId).catch(() => undefined);
+        await this.sandboxProvider(task).interrupt(task.sandboxId, task.conversationId).catch(() => undefined);
         return null;
       }
       this.store.addEvent(
@@ -5214,7 +5233,7 @@ export class BoatService {
   async processesBusy(sandboxId: string, now = Date.now()): Promise<Computing> {
     const cached = this.processChecks.get(sandboxId);
     if (cached !== undefined && now - cached.at < PROCESS_CHECK_MS) return cached.verdict;
-    const sample = await this.boat.processes(sandboxId, this.hooks.lifecycle).catch(() => null);
+    const sample = await this.sandboxProvider(sandboxId).processes(sandboxId, this.hooks.lifecycle).catch(() => null);
     const busy = [...new Set(busyProcesses(sample).map((entry) => programName(entry.command)))];
     const again = cached !== undefined && now - cached.at < 4 * PROCESS_CHECK_MS && busy.some((name) => cached.busy.includes(name));
     const verdict: Computing = busy.length === 0 ? "no" : again ? "busy" : "maybe";
@@ -5348,7 +5367,7 @@ export class BoatService {
       this.backgroundSince.delete(sandboxId);
       try {
         await this.trimBeforeStop(sandboxId, this.hooks.lifecycle, sandboxes.get(sandboxId)?.state);
-        await this.boat.stop(sandboxId, this.hooks.lifecycle);
+        await this.sandboxProvider(sandboxId).stop(sandboxId, this.hooks.lifecycle);
         const hours = Math.round(KEEP_LIMIT_MS / 3_600_000);
         for (const entry of tasks) {
           this.store.addEvent(

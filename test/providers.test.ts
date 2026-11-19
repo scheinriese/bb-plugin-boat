@@ -6,16 +6,16 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import type Database from "better-sqlite3";
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
-import { DEFAULT_PROVIDER_ID, createProviderRegistry } from "../src/providers/registry.ts";
+import { DEFAULT_PROVIDER_ID, createProviderRegistry, providerRegistry } from "../src/providers/registry.ts";
 import { ProviderError, isNotFound, type MachineSpec, type SandboxInfo, type SandboxProvider } from "../src/providers/types.ts";
 import { MACHINE_PROVIDER_ID, createBoatProvider } from "../src/providers/boat/provider.ts";
 import { BOAT_GIT_ENV, type BoatApi } from "../src/providers/boat/api.ts";
 import { BoatError } from "../src/providers/boat/cli.ts";
 import { explainBoatError } from "../src/providers/boat/words.ts";
 import { registerSandboxMachine } from "../src/providers/machine.ts";
-import type { BoatService } from "../src/service.ts";
+import { BoatService } from "../src/service.ts";
 import { TaskStore, type Task } from "../src/store.ts";
-import { FakeBoat, defaultSettings } from "./fakes.ts";
+import { FakeBoat, defaultSettings, memoryStore } from "./fakes.ts";
 
 const SANDBOX: SandboxInfo = {
   id: "bx_1",
@@ -33,7 +33,6 @@ const SANDBOX: SandboxInfo = {
 };
 
 /** A boat client that records each call and answers it with a fixed value. */
-
 function recordingClient() {
   const calls: unknown[][] = [];
   const answer = (name: string, value: unknown) => (...args: unknown[]) => {
@@ -72,6 +71,16 @@ function recordingClient() {
     interrupt: answer("interrupt", undefined),
   };
   return { calls, client: client as unknown as BoatApi };
+}
+
+function hooks() {
+  return {
+    settings: async () => defaultSettings(),
+    lifecycle: new AbortController().signal,
+    changed: () => undefined,
+    notify: async () => undefined,
+    log: { info: () => undefined, warn: () => undefined },
+  };
 }
 
 function taskRecord(overrides: Partial<Task> = {}): Task {
@@ -142,6 +151,16 @@ test("boat.dev is the only provider and the default: projects, tasks and sandbox
   assert.equal(registry.forMachine("manual"), null);
   assert.equal(registry.forMachine(null), null);
   assert.throws(() => createProviderRegistry([]), /No sandbox provider/);
+});
+
+test("the service takes a registry, or the boat client alone", () => {
+  const fake = new FakeBoat();
+  assert.equal(providerRegistry(fake as unknown as BoatApi).default.id, "boat");
+  const registry = createProviderRegistry([createBoatProvider(fake as unknown as BoatApi)]);
+  assert.equal(providerRegistry(registry), registry);
+  const service = new BoatService(registry, memoryStore(), hooks());
+  assert.equal(service.sandboxProviders, registry);
+  assert.equal(service.boat, registry.default, "the old name is the default provider");
 });
 
 test("each boat provider member makes the boat call the plugin made before", async () => {
@@ -275,6 +294,30 @@ test("tasks keep their sandbox provider; older tasks read as before, on boat.dev
   store.insert(taskRecord({ id: "t_other", sandboxProvider: "other" }));
   assert.equal(store.get("t_other")!.sandboxProvider, "other");
   assert.equal(store.update("t_new", { sandboxProvider: "other" })!.sandboxProvider, "other");
+});
+
+test("a task's sandbox calls go to the provider its record names", async () => {
+  const { calls, client } = recordingClient();
+  const boat = createBoatProvider(client);
+  const interrupts: unknown[][] = [];
+  const other: SandboxProvider = {
+    ...createBoatProvider(new FakeBoat() as unknown as BoatApi),
+    id: "other",
+    displayName: "Other",
+    idPattern: /^ot_[a-z0-9]+$/,
+    machine: undefined,
+    interrupt: async (...args) => void interrupts.push(args),
+  };
+  const store = memoryStore();
+  const service = new BoatService(createProviderRegistry([boat, other]), store, hooks());
+  store.insert(taskRecord({ id: "t_other", sandboxId: "ot_1", conversationId: "c_9", sandboxProvider: "other" }));
+  store.insert(taskRecord({ id: "t_boat", sandboxId: "bx_7", conversationId: "c_7" }));
+  await service.interruptTask("t_other");
+  assert.deepEqual(interrupts, [["ot_1", "c_9", undefined]]);
+  assert.deepEqual(calls, []);
+  await service.interruptTask("t_boat");
+  assert.deepEqual(calls, [["interrupt", "bx_7", "c_7", undefined]], "a task from before the column is on boat.dev");
+  assert.equal(interrupts.length, 1);
 });
 
 test("any provider with bb enrollment registers as a bb machine provider, in its own words", async () => {

@@ -8,11 +8,14 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { TAGS } from "./contract.ts";
-import { BoatApi, parseBranchList, type MachineType } from "./src/providers/boat/api.ts";
+import { BoatApi, parseBranchList } from "./src/providers/boat/api.ts";
 import { BoatCli, resolveBoatBinary } from "./src/providers/boat/cli.ts";
 import { buildCli } from "./src/cli.ts";
 import { registerBoatMachine } from "./src/providers/boat/machine.ts";
+import { createBoatProvider } from "./src/providers/boat/provider.ts";
 import { createSandboxKeeper } from "./src/providers/boat/keeper.ts";
+import { createProviderRegistry } from "./src/providers/registry.ts";
+import type { MachineType } from "./src/providers/types.ts";
 import { createWatchdog, type QueuedRow, type Watchdog } from "./src/watchdog.ts";
 import { notificationText } from "./src/format.ts";
 import { DEFAULT_TASKS_BEFORE_ASKING, isOrchestratorMetadata, orchestratorInstructions, projectInstructions } from "./src/orchestrator.ts";
@@ -98,6 +101,8 @@ export default async function plugin(bb: BbPluginApi) {
   // boat CLI
   const cli = new BoatCli(async () => resolveBoatBinary((await settings.get()).boatPath));
   const boat = new BoatApi(cli);
+  // Sandbox providers: boat.dev, the only one so far (src/providers/registry.ts).
+  const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli })]);
   // Worker chats and cloud orchestrators need bb Connect.
   const connect = createConnectCheck(bb);
 
@@ -298,7 +303,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   const chatRunner = createChatRunner(bb);
-  const service = new BoatService(boat, store, {
+  const service = new BoatService(sandboxProviders, store, {
     wakes,
     settings: readSettings,
     lifecycle: lifecycle.signal,
@@ -718,7 +723,7 @@ export default async function plugin(bb: BbPluginApi) {
   // The watchdog: bb's record of Boat sandbox machines true to boat, chats
   // waiting on a stopped machine resumed, and a [boat] notice per incident.
   const watchdog = createWatchdog(bb, {
-    boat,
+    boat: sandboxProviders.default,
     store: service.store,
     kv: bb.storage.kv,
     // Its resumes take slots from the same wake pacer (it waits out the hold, never sets it).
