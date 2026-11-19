@@ -267,7 +267,10 @@ machine that's offline):
 - **Messages waiting on a stopped machine.** A suspended machine with a
   message waiting for it is resumed once the message has waited about a
   minute, if bb hasn't resumed it already. Messages held for later on purpose (a retry at a usage
-  limit's reset, a slot under bb's limits) don't count.
+  limit's reset, a slot under bb's limits) don't count. Each resume takes one
+  of the account's wakes. One that fails is tried again 3, 6, 12 … minutes
+  later, at most an hour apart, until the machine is back, and a machine that
+  keeps failing never holds the others.
 - **One `[boat] Watchdog:` message per incident** to the task's
   orchestrator, with what happened and what the plugin did:
   - a task's or orchestrator's sandbox stopped while background work was
@@ -426,7 +429,7 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   retries every chat the limit stopped within the same minute. A retry
   that would wake a Boat sandbox now waits for its machine's slot, 30
   seconds after the one before (2 a minute, the wake pace, and never
-  during the paid resume's or the watchdog's hold), with the time on the
+  during the hold after a wake the paid resume made failed), with the time on the
   queued message; every retry for the same machine goes in its slot. bb
   still owns and sends the retry. On bb 0.49, which
   asks the sending plugin first (`provider-retry.v1.consent`), the plugin

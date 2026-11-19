@@ -266,11 +266,10 @@ boat.dev's start limit or its storage can't take:
   was cut off, isn't tried again, as it may have reached the agent.
 - The chat's machine is checked first. One that is starting, stopping, being
   created or removed, offline or failed is left alone. Waking a suspended
-  machine or a stopped sandbox takes one of two wakes a minute, a budget the
-  watchdog's own resumes share (kept across restarts). It also waits while
-  the sandbox wake pacer, which every resume goes through (2 a minute
-  account-wide, and a pause after a failed wake), has no slot free, so the
-  two never add up to more than 2 wakes a minute. A machine bb couldn't
+  machine or a stopped sandbox takes a slot from the sandbox wake pacer that
+  every resume goes through (2 a minute account-wide, and a pause after a
+  failed wake, kept across restarts). The slot is kept for that machine, so
+  its resume doesn't take a second one. A machine bb couldn't
   start is left alone on its own (bb keeps that message until it starts
   again), never holding the others. Only when a wake the plugin made fails
   is no machine woken for 15 minutes: the call fails, or the machine fails to
@@ -278,10 +277,10 @@ boat.dev's start limit or its storage can't take:
   minutes, whether or not their chats are still waiting. A woken machine that
   stays active but never connects (a start that hangs instead of failing) is
   forgotten after those 15 minutes, without a hold. The watchdog's resumes
-  take from the same budget and wait out the hold, but a failed watchdog
-  resume doesn't set it: the watchdog tries that machine again on its own
-  every few minutes, and one machine that keeps failing never holds the
-  others.
+  take from the same pacer and wait out the hold, but a failed watchdog
+  resume doesn't set it: the watchdog tries that machine again on its own,
+  3, 6, 12 … minutes later and at most an hour apart until it's back, and one
+  machine that keeps failing never holds the others.
 
 A task records a `paid-resume` event. `bb boat relay check` (which also runs
 a check now) and the plugin log list each chat that continued, and an
