@@ -43,7 +43,7 @@ and [OpenAPI](https://api.instabox.sh/v1/openapi.json), checked 2026-11-19.
 ## Placement and hand-back
 
 The seam for eligible own Mac → enrolled monthly Mac precedes held day
-leases → new day lease. Only the latter two exist here. Held running Macs
+leases → new day lease. Only the latter two exist here. Held running Macs and stopped Macs still inside their minimum
 are tried first, including when a task requests a new workspace. Each task
 gets its own checkout and bb workspace. CPU/memory reservations of open
 tasks must fit the machine's live size; unknown reservations prevent reuse.

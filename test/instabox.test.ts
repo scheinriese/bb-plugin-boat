@@ -861,3 +861,17 @@ test("Mac task chats reuse a machine with separate checkout paths and workspaces
   assert.equal(chat.spawns[1]!.where.kind,"machine");
   assert.equal(chat.machines.length,1);
 });
+
+test("a stopped Mac still inside its held minimum is resumed before creating another lease",async t=>{
+  const {start,service,store,box}=await macEnv(t);
+  box.setState({maxMachines:1});
+  const first=await start();store.update(first.id,{status:"done"});
+  await box.provider.stop(first.sandboxId!);
+  const second=await start();
+  assert.equal(second.sandboxId,first.sandboxId);
+  assert.equal(second.status,"running",second.error??"");
+  assert.equal(store.macLeases.list().length,1);
+  assert.ok(box.state().calls.includes(`start ${first.sandboxId} --accept-24h-minimum --json`));
+  assert.equal(box.state().calls.filter((c:string)=>c.startsWith("create ")).length,1);
+  assert.equal((await service.sandboxProvider(second).info(second.sandboxId!)).state,"idle");
+});

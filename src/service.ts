@@ -2456,7 +2456,7 @@ export class BoatService {
     const need = INSTABOX_TASK_SPECS[type];
     for (const lease of this.store.macLeases.held()) {
       if (lease.provider !== provider.id || this.holdsSandbox(lease.machineId)) continue;
-      if (!machines.some(m => m.id === lease.machineId && m.state === "idle")) continue;
+      if (!machines.some(m => m.id === lease.machineId && (m.state === "idle" || m.state === "stopped"))) continue;
       if (parent?.sandboxId === lease.machineId && await this.sandboxWorkRuns(lease.machineId)) continue;
       const open = new Set(this.store.liveSandboxTasks(lease.machineId).map(t => t.id));
       const reservations = this.store.macLeases.tasks(lease.id).filter(t => open.has(t.taskId));
