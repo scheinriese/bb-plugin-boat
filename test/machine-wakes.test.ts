@@ -19,7 +19,7 @@ type Provider = {
 
 const HYDRATOR = "[lazyfs] [ERROR] HYDRATOR FAILED attempt 32 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";
 
-function setup(options: { maxWaitMs?: number } = {}) {
+function setup(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean } } = {}) {
   let at = Date.parse("2026-11-19T00:00:00Z");
   const sleeps: number[] = [];
   const pacer = new WakePacer({ now: () => at, sleep: async (ms) => { sleeps.push(ms); at += ms; }, ...(options.maxWaitMs === undefined ? {} : { maxWaitMs: options.maxWaitMs }) });
@@ -32,7 +32,7 @@ function setup(options: { maxWaitMs?: number } = {}) {
   };
   let wakes: ReturnType<typeof createWakeGuard> | null = null;
   const fake = makeService({ wakes: { pacer, forget: (sandboxId) => wakes!.forget(sandboxId) } });
-  wakes = createWakeGuard({ pacer, kv, boat: fake.boat as never, store: fake.store, now: () => at });
+  wakes = createWakeGuard({ pacer, kv, boat: fake.boat as never, store: fake.store, now: () => at, ...(options.moves ? { moves: options.moves } : {}) });
   // Room for every sandbox here: pacing is what's tested, not the plan's limit.
   fake.boat.limitsValue = { ...fake.boat.limitsValue, maxActiveSandboxes: 10 };
   // bb's setup there, in order with the plugin's own steps.
@@ -178,4 +178,31 @@ test("teardown backs off: bb's retries in between don't reach boat.dev", async (
   await new Promise((resolve) => setTimeout(resolve, 0));
   const other = await env.provider().create({ inputs: {}, key: "other", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
   assert.equal((await env.provider().remove({ resource: other.resource })).status, "removed");
+});
+
+test("a plain stop boat refuses on a disk it hasn't restored: Boat force-stops it, keeping the last snapshot, instead of hammering", async () => {
+  const env = setup({ moves: { forkCheck: false } });
+  const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
+  const resource = created.resource!;
+  env.boat.stopRefused = true;
+  env.boat.execResult = (script) => ({ exitCode: 0, stdout: script.includes("BOAT_DISK_END") ? `BOAT_HYDRATOR ${HYDRATOR.replace("attempt 32", "attempt 77")}\nBOAT_DISK_END\n` : "", stderr: "" });
+  await assert.rejects(env.provider().suspend(env.lifecycle(resource)), /^Error: boat\.dev failed to stop this sandbox \(it can't snapshot a disk it hasn't finished restoring; Boat moves it off its node, or asks first under Needs you\)\. Boat asks it again at \d\d:\d\d UTC\.$/);
+  const plan = (await env.wakes.scheduled(resource.sandboxId))!;
+  assert.deepEqual(plan.move, { state: "due", at: plan.lastAt, resume: false });
+  assert.equal(await env.wakes.tick(), resource.sandboxId);
+  for (let round = 0; round < 500 && (await env.wakes.scheduled(resource.sandboxId)) !== null; round++) await new Promise((resolve) => setImmediate(resolve));
+  // An orchestrator's sandbox, nothing to lose: stopped, keeping its last completed snapshot; its next wake starts it on a new node.
+  assert.ok(env.boat.calls.includes(`stop ${resource.sandboxId} --force`));
+  assert.equal(env.boat.sandboxes.get(resource.sandboxId)!.state, "stopped");
+  assert.equal(await env.wakes.scheduled(resource.sandboxId), null);
+});
+
+test("a refused stop with a healthy disk is only reported", async () => {
+  const env = setup({ moves: {} });
+  const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
+  env.boat.stopRefused = true;
+  env.boat.execResult = () => ({ exitCode: 0, stdout: "BOAT_DISK ok .profile\nBOAT_DISK_END\n", stderr: "" });
+  await assert.rejects(env.provider().suspend(env.lifecycle(created.resource)), /boat didn't stop it: it's still idle/);
+  assert.equal(await env.wakes.scheduled(created.resource!.sandboxId), null);
+  assert.ok(!env.boat.calls.some((call) => call.includes("--force")));
 });

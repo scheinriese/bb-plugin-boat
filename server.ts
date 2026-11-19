@@ -279,6 +279,8 @@ export default async function plugin(bb: BbPluginApi) {
     resumeHost: (hostId) => bb.sdk.hosts.experimental_resume({ hostId } as never),
     changed: () => changed(),
     log: (line) => bb.log.warn(line),
+    // A node that keeps failing a disk: move the sandbox (test fork first), or ask.
+    moves: { forkCheck: true },
   });
 
   const chatRunner = createChatRunner(bb);

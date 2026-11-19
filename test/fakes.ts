@@ -271,10 +271,30 @@ export class FakeBoat {
     this.calls.push(`delete ${id}`);
     this.sandboxes.delete(id);
   }
-  async stop(id: string): Promise<void> {
-    this.calls.push(`stop ${id}`);
+  /** boat answers a plain stop but leaves the sandbox up (it can't snapshot it); --force always stops. */
+  stopRefused = false;
+  async stop(id: string, _signal?: AbortSignal, options: { force?: boolean } = {}): Promise<{ status: string | null }> {
+    this.calls.push(`stop ${id}${options.force ? " --force" : ""}`);
     const sandbox = this.sandboxes.get(id);
+    if (this.stopRefused && !options.force) return { status: null };
     if (sandbox) sandbox.state = "stopped";
+    return { status: null };
+  }
+  /** Test forks made (`boat fork --no-snapshots --wait`), and how one fails. */
+  forks: { from: string; id: string; noSnapshots: boolean; ttlSeconds: number | null }[] = [];
+  forkError: Error | null = null;
+  /** When boat last completed a snapshot (`boat snapshots <id>`). */
+  lastSnapshot: string | null = "2026-11-19T00:41:00.000Z";
+  async fork(id: string, options: { noSnapshots?: boolean; ttlSeconds?: number } = {}): Promise<{ id: string }> {
+    this.calls.push(`fork ${id}`);
+    if (this.forkError) throw this.forkError;
+    counter += 1;
+    const fork = this.addSandbox(`bx_fork${counter}`, this.sandboxes.get(id)?.machineType ?? "default", "idle");
+    this.forks.push({ from: id, id: fork.id, noSnapshots: options.noSnapshots === true, ttlSeconds: options.ttlSeconds ?? null });
+    return { id: fork.id };
+  }
+  async lastSnapshotAt(): Promise<string | null> {
+    return this.lastSnapshot;
   }
   /** A resume waits for this. */
   resumeGate: Promise<void> | null = null;

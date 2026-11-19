@@ -126,7 +126,7 @@ export function registerBoatMachine(
     setupSettings?: () => Promise<SetupSettings>;
     connect?: ConnectCheck;
     /** Paced wakes, diagnosed failures and Boat's own retries (src/wake-retry.ts); absent: resumes go out at once. */
-    wakes?: Pick<WakeGuard, "machine">;
+    wakes?: Pick<WakeGuard, "machine"> & Partial<Pick<WakeGuard, "stopRefused">>;
     /** Turn off the login message scripts before bb's SSH setup (src/login-scripts.ts). */
     quietLogins?: (sandboxId: string, signal?: AbortSignal) => Promise<QuietLogin>;
   },
@@ -245,16 +245,29 @@ export function registerBoatMachine(
         return { status: "failed" as const, message: teardown.failed(`key:${key}`, "delete", error) };
       }
     },
-    async suspend({ resource }) {
+    async suspend({ resource, hostId }) {
       const { sandboxId } = resourceSchema.parse(resource);
       const held = teardown.held(sandboxId, "stop");
       if (held !== null) throw new Error(held);
+      let refused: string | null = null;
       try {
         const sandbox = await boat.findInfo(sandboxId);
         // Already stopped (for example by boat's auto-stop) is fine: the disk is kept.
-        if (sandbox !== null && ACTIVE_STATES.has(sandbox.state)) await boat.stop(sandboxId);
+        if (sandbox !== null && ACTIVE_STATES.has(sandbox.state)) {
+          const { status } = await boat.stop(sandboxId);
+          // boat may not stop it: it can't snapshot a disk it hasn't finished restoring.
+          if (status !== null && /^fail/i.test(status)) refused = `the stop is ${status}`;
+          else {
+            const after = await boat.findInfo(sandboxId);
+            if (after !== null && ACTIVE_STATES.has(after.state)) refused = `it's still ${after.state}`;
+          }
+        }
       } catch (error) {
         throw new Error(teardown.failed(sandboxId, "stop", error));
+      }
+      if (refused !== null) {
+        const moving = (await deps.wakes?.stopRefused?.(sandboxId, hostId ?? null).catch(() => false)) ?? false;
+        throw new Error(teardown.failed(sandboxId, "stop", new Error(moving ? "it can't snapshot a disk it hasn't finished restoring; Boat moves it off its node, or asks first under Needs you" : `boat didn't stop it: ${refused}`)));
       }
       teardown.succeeded(sandboxId, "stop");
       return { resource };
