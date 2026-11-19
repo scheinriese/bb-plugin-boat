@@ -7,7 +7,7 @@
 // posts a message into the dispatching thread when a worker finishes a turn.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { TAGS } from "./contract.ts";
+import { PROVIDERS_TAG, TAGS } from "./contract.ts";
 import { BoatApi, parseBranchList } from "./src/providers/boat/api.ts";
 import { BoatCli, resolveBoatBinary } from "./src/providers/boat/cli.ts";
 import { buildCli } from "./src/cli.ts";
@@ -202,7 +202,7 @@ export default async function plugin(bb: BbPluginApi) {
   let attentionNotifications: AttentionNotifications | null = null;
 
   function changed(): void {
-    bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings]);
+    bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings, PROVIDERS_TAG]);
     bb.realtime.publish(REALTIME_CHANNEL, null);
     void attentionNotifications?.flush();
   }

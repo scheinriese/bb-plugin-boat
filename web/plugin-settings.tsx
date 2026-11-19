@@ -3,7 +3,7 @@
 // (optional) and Advanced. Projects and Back up and restore have their own
 // files. Rows look and behave like bb's own settings list: switches and
 // selects save at once, text and numbers when you leave the field.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { experimental_useRpcMutation, experimental_useRpcQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { rpcContract, rpcErrorInfo, type SandboxSizeDto, type SettingDto } from "../contract";
@@ -22,6 +22,7 @@ import { BackupSettings } from "./backup-settings";
 import { EVERYDAY_SETTING_COPY, groupedSettings, notificationSettingPatch, setupNeedsWork, setupTestPassed } from "./v1-settings-logic";
 import { useSettingsFrameTweak } from "./workarounds/settings-frame";
 import { UsageLimitsSection } from "./usage-limits";
+import { SandboxProvidersSettings } from "./providers";
 import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, focusNeighbour, showError } from "./ui";
 
 type SettingValue = string | number | boolean;
@@ -556,13 +557,15 @@ function DesktopBoatSettings() {
     {/* First, so the usage links (homepage, thread chip, a waiting start) land on it. */}
     <UsageLimitsSection />
     <Loading error={query.error} rows={query.data?.settings.length ?? 0} />
-    {grouped.groups.map((group) => <section key={group.title} aria-label={group.title} className={cn("space-y-2", dimmed && "opacity-35")}>
+    {grouped.groups.map((group) => <Fragment key={group.title}><section aria-label={group.title} className={cn("space-y-2", dimmed && "opacity-35")}>
       <h3 className="text-[13px] font-medium leading-[18px] text-[color:var(--boat-group-heading)]">{group.title}</h3>
       <div className="divide-y divide-[color:var(--boat-divider)] overflow-hidden rounded-[10px] border border-[var(--boat-setting-border)] bg-card">
         {group.rows.map((row) => <EverydaySettingRow key={row.key} row={row} saver={saver} sizes={sizes} master={master} />)}
 
       </div>
-    </section>)}
+    </section>
+    {/* Sandbox providers and Runs on sit between Agents and Sandboxes & cost. */}
+    {group.title === "Agents" ? <SandboxProvidersSettings className={cn(dimmed && "opacity-35")} /> : null}</Fragment>)}
     <div className={cn("space-y-2", dimmed && "opacity-35")}>
     <div className="flex flex-wrap items-center gap-2.5 rounded-[10px] border border-[var(--boat-setting-border)] bg-card px-3.5 py-3">
       <div className="min-w-0 flex-1"><p className="text-[var(--boat-label)]">Projects</p><p className="mt-0.5 text-xs leading-[17px] text-muted-foreground">{projects.length ? `${projects.map((project) => project.name).join(", ")} · repos, how work lands, sizes, reviewers` : "Repos, how work lands, sizes, reviewers"}</p></div>

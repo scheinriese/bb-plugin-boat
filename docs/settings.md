@@ -1,8 +1,8 @@
 # Settings
 
 Settings → Plugins → Boat Cloud Agents. The plugin's setup checklist comes
-first, followed by **Agents**, **Sandboxes & cost**, **Orchestrators** and
-**Notifications**. **Advanced** is collapsed and holds the remaining choices,
+first, followed by **Agents**, **Sandbox providers**, **Runs on**,
+**Sandboxes & cost**, **Orchestrators** and **Notifications**. **Advanced** is collapsed and holds the remaining choices,
 model presets, protocol, and backup and restore. Projects has a link to the
 Cloud agents **Projects** page. Mobile settings show setup status, needs-you
 and ready counts, notifications and the paid-usage guard.
@@ -43,6 +43,16 @@ offers a test task. After setup it becomes a compact status line. It also
 warns when a worker environment passes boat credentials into sandboxes.
 
 **Agents** holds agent detection and the task/review agent defaults.
+**Sandbox providers** lists where sandboxes can run and whether each one is
+connected: boat.dev (the default, with its plan and hours left), Instabox (not
+in this version yet, so it shows as not connected, without a key), and your
+Mac and a monthly Mac (greyed out until Boat can run agents on a Mac). A
+provider that signs in with an API key keeps it in bb's secrets; Boat never
+sees the value. **Runs on** picks the provider for each project's new work;
+only connected providers can be picked, and tasks already running stay where
+they are. Task rows in the tasks-started card say where each task runs
+("boat.dev · Default"), task chips name the provider only when it isn't
+boat.dev, and Cloud agents › Sandboxes has a Runs on column.
 **Sandboxes & cost** holds the default size, capacity and idle-stop choices.
 **Orchestrators** holds coordination defaults. **Notifications** holds Needs
 you, Ready and the off-by-default Progress option. Everything else is under **Advanced**, including

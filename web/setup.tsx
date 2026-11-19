@@ -12,7 +12,8 @@ import { cn } from "@/lib/utils";
 import { PANEL_PATH, SIGN_IN_SUBPATH } from "./format";
 import { setupSummaryText, withBoatPath } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
-import { useCopy, useHosts, useInterval, useOverview, useProjects, useSettingRows, useSetup, useTask } from "./hooks";
+import { useCopy, useHosts, useInterval, useOverview, useProjects, useSandboxProviders, useSettingRows, useSetup, useTask } from "./hooks";
+import { readyProvidersText } from "./providers-logic";
 import { checkedAgo, setupNeedsWork, setupProgress, setupTestPassed } from "./v1-settings-logic";
 import { setupEvidence, setupDuration } from "./setup-evidence";
 import { EmptyBox, InlineAlert, RichText, showError } from "./ui";
@@ -506,6 +507,8 @@ export function SetupChecklist() {
   useInterval(() => setClock(Date.now()), test?.status === "running" || test?.status === "starting" ? 1000 : 60_000);
   const navigate = useBbNavigate();
   const actions = useSetupActions();
+  // With more than one provider ready, the All set line counts them instead of naming boat.dev's plan.
+  const providersReady = readyProvidersText(useSandboxProviders().data?.providers);
   const refresh = experimental_useRpcMutation({contract: rpcContract,method:"applySetupFix"});
   useInterval(() => { if (data && setupNeedsWork(data) && refresh.pendingInputs.length === 0) void refresh.mutate({action:"check-again"}).catch(() => undefined); }, data && setupNeedsWork(data) ? 5_000 : null);
   const signIn = useSignIn();
@@ -537,7 +540,7 @@ export function SetupChecklist() {
   }
   if (data.ok && testPassed && startedId !== null) return <div className="rounded-[10px] border border-success/25 bg-success/10 p-4 dark:border-[#23362A] dark:bg-[#16201A]"><div className="flex items-start gap-3"><Icon name="CircleCheck" className="mt-0.5 size-[30px] shrink-0 text-[#5BD08A]" aria-hidden /><div className="min-w-0 flex-1"><p className="text-[15px] font-semibold leading-5 text-success dark:text-[#BFEFD0]">All set. Your first cloud task passed.</p><p className="mt-0.5 text-xs leading-[17px] text-muted-foreground dark:text-[#7FA88C]">{receipt || "The sandbox and agent checks passed on a Small sandbox."}</p><div className="mt-3.5 flex flex-wrap items-center gap-2"><Button size="sm" className="h-[26px] bg-primary px-[11px] text-xs text-primary-foreground" onClick={()=>setAddingProject(true)}>Add your first project</Button><Button size="sm" variant="outline" className="h-[26px] px-[11px] text-xs" onClick={()=>{navigate.toCompose({initialPrompt:"Help me plan and coordinate work for this project.",focusPrompt:true});toast("Choose Start as orchestrator in the send menu");}}>Start an orchestrator</Button><span className="text-xs text-muted-foreground dark:text-[#7FA88C]">or ask any chat to use a cloud agent</span></div></div></div><NewProjectDialog open={addingProject} onOpenChange={setAddingProject} repo="" baseBranch="" /></div>;
   if (data.ok && testPassed) return <div className="flex flex-wrap items-center gap-2.5 rounded-[10px] border border-border bg-card px-3.5 py-2.5">
-    <span className="size-1.5 shrink-0 rounded-full bg-[#5BD08A]" aria-hidden /><span className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">All set</span><span className="min-w-0 flex-1 text-xs leading-4 text-muted-foreground">{[data.plan?.name ? `${data.plan.name} plan` : null, data.plan?.vmHoursRemaining !== null && data.plan?.vmHoursRemaining !== undefined ? `${data.plan.vmHoursRemaining.toLocaleString()} h left` : null, data.agents.effective === "both" ? "Claude and Codex" : data.agents.effective === "claude" ? "Claude" : "Codex", data.checks.some((check) => check.id === "github" && check.state === "ok") ? "GitHub" : null].filter(Boolean).join(" · ")}</span><span className="text-xs leading-4 text-[var(--boat-faint)]">checked {checkedAgo(data.checkedAt, clock)} · <CheckAgainButton quiet /></span>
+    <span className="size-1.5 shrink-0 rounded-full bg-[#5BD08A]" aria-hidden /><span className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">All set</span><span className="min-w-0 flex-1 text-xs leading-4 text-muted-foreground">{[...(providersReady ? [providersReady] : [data.plan?.name ? `${data.plan.name} plan` : null, data.plan?.vmHoursRemaining !== null && data.plan?.vmHoursRemaining !== undefined ? `${data.plan.vmHoursRemaining.toLocaleString()} h left` : null]), data.agents.effective === "both" ? "Claude and Codex" : data.agents.effective === "claude" ? "Claude" : "Codex", data.checks.some((check) => check.id === "github" && check.state === "ok") ? "GitHub" : null].filter(Boolean).join(" · ")}</span><span className="text-xs leading-4 text-[var(--boat-faint)]">checked {checkedAgo(data.checkedAt, clock)} · <CheckAgainButton quiet /></span>
   </div>;
   const first = complete.length === 0;
   const active = current?.id ?? "test";

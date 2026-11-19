@@ -32,6 +32,7 @@ import {
 import { ResizeDialog } from "./sandbox-size";
 import { AgentLogo, EmptyBox, InlineAlert, showError } from "./ui";
 import { sandboxFailure, sandboxPrimaryTask } from "./sandboxes-logic";
+import { runsOnMachine } from "./providers-logic";
 export { sandboxFailure } from "./sandboxes-logic";
 
 export type SandboxAction = "resume" | "stop" | "delete";
@@ -149,6 +150,22 @@ export function useSandboxTasks() {
   });
 }
 
+/**
+ * Where a sandbox runs: "boat.dev · Default" on one line, or with what it
+ * costs under it ("Instabox · Mac M2" / "24 h lease · $10.80"). Without the
+ * provider's words, the size as before.
+ */
+function RunsOnCell({ runsOn, size }: { runsOn: SandboxDto["runsOn"]; size: string | null }) {
+  if (runsOn === undefined) return <span className="text-[13px] leading-5 text-muted-foreground">{size}</span>;
+  if (runsOn.detail === null) return <span className="text-[13px] leading-5 text-muted-foreground">{runsOnMachine(runsOn, size)}</span>;
+  return (
+    <div>
+      <p className="text-[13px] leading-[18px] text-foreground dark:text-[#D2D2D2]">{runsOnMachine(runsOn, size)}</p>
+      <p className="text-xs leading-4 text-[color:var(--boat-faint)]">{runsOn.detail}</p>
+    </div>
+  );
+}
+
 export function SandboxTable() {
   const sandboxes = useSandboxes();
   const tasks = useSandboxTasks();
@@ -258,15 +275,15 @@ export function SandboxTable() {
                 <tr className="h-8 [&>th]:py-0">
                   <th
                     scope="col"
-                    className="w-[36.5%] px-[14px] pb-2 font-normal"
+                    className="w-[31%] px-[14px] pb-2 font-normal"
                   >
                     Chat
                   </th>
                   <th
                     scope="col"
-                    className="w-[11%] px-[14px] pb-2 font-normal"
+                    className="w-[170px] px-[14px] pb-2 font-normal"
                   >
-                    Size
+                    Runs on
                   </th>
                   <th
                     scope="col"
@@ -274,7 +291,7 @@ export function SandboxTable() {
                   >
                     State
                   </th>
-                  <th scope="col" className="px-[14px] pb-2 font-normal">
+                  <th scope="col" className="whitespace-nowrap px-[14px] pb-2 font-normal">
                     This week
                   </th>
                   <th
@@ -448,8 +465,8 @@ function SandboxTableRow({
           </div>
         </div>
       </th>
-      <td className="px-[14px] py-2 text-[13px] leading-5 text-muted-foreground">
-        {size}
+      <td className="px-[14px] py-2">
+        <RunsOnCell runsOn={sandbox.runsOn} size={size ?? null} />
       </td>
       <td className="px-[14px] py-1">
         <div className={cn("flex items-start gap-1.5", tone)}>
@@ -500,7 +517,7 @@ function SandboxTableRow({
           </div>
         </div>
       </td>
-      <td className="px-[14px] py-2 text-[13px] leading-5 tabular-nums text-muted-foreground">
+      <td className="whitespace-nowrap px-[14px] py-2 text-[13px] leading-5 tabular-nums text-muted-foreground">
         {typeof hours === "number" ? `${hours.toFixed(1)} h` : null}
       </td>
       <td className="py-2 pr-[14px]">

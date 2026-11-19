@@ -75,6 +75,12 @@ export interface SandboxInfo {
  */
 export interface SandboxCapabilities {
   os: "linux" | "macos";
+  /**
+   * The systems it can start sandboxes on now (absent: only `os`). Settings
+   * marks a system ready only when it's here, never because the provider's
+   * service offers it somewhere.
+   */
+  systems?: readonly ("linux" | "macos" | "windows")[];
   /** Every exec runs its script in this shell, as a login shell (`bash -lc`). */
   shell: "bash";
   /** The sandbox user's home folder: checkouts in ~/work, the plugin's git hooks. */
@@ -561,6 +567,11 @@ export interface AgentRunner {
 
 /** For later providers: not called yet. */
 export interface LaterMembers {
+  /**
+   * Its prices in one line, as the provider states them now ("M2 $10.80 a
+   * day"); null: it doesn't say. Settings shows amounts only from here.
+   */
+  pricing?(signal?: AbortSignal): Promise<string | null>;
   /** Copy a file out of a sandbox (capture runs' artifacts). */
   readFile?(sandboxId: string, path: string, signal?: AbortSignal): Promise<Uint8Array>;
   /** Where the user can look at a sandbox: the provider's console, a shell command, a desktop. */

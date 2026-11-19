@@ -38,6 +38,8 @@ import {
 import { AgentLogo, AgentBadge, OpenChatButton, PrLink, showError } from "./ui";
 import { ShipButton } from "./board";
 import { ResizeDialog } from "./sandbox-size";
+import { ChipProvider, RunsOnLine, RunsOnTooltip } from "./providers";
+import { chipProvider } from "./providers-logic";
 import { useSandboxPower } from "./sandbox-state";
 import { taskRecovery, type SandboxPower } from "./recovery-logic";
 import {
@@ -111,6 +113,8 @@ export function LiveTaskRow({ task,waiting=false,reviewer,reviewRound }: { task:
         >
           {task.title}
         </button>
+        {/* Where it runs: "boat.dev · Default", "Instabox · Mac M2 · lease ends Thu 14:00". */}
+        <RunsOnLine runsOn={task.runsOn} />
       </span>
       <span className={cn('shrink-0 text-[13px] leading-[18px] sm:text-[12px] sm:leading-4',waiting?'text-[#F0B135]':state.status==='ready'?'text-[#5BD08A]':'text-muted-foreground')}>{waiting?<><span className="sm:hidden">● </span>Needs you</>:state.status==='review'?<><span className="sm:hidden">{reviewer?reviewer+' ':''}reviewing</span><span className="hidden sm:inline">{reviewer??'Review'}{reviewRound&&reviewRound>1?` · ${reviewRound}${reviewRound===2?'nd':reviewRound===3?'rd':'th'} look`:' reviewing'}</span></>:state.status==='ready'?<><span className="sm:hidden">{task.prUrl?'PR '+prLabel(task.prUrl)+' · ':''}Ready</span><span className="hidden sm:inline">Ready{task.prUrl?' · PR '+prLabel(task.prUrl):''}</span></>:state.label}</span>
     </li>
@@ -185,15 +189,20 @@ export function TaskDirective(props: PluginMessageDirectiveProps) {
 }
 function TaskChip({ task }: { task: TaskDto }) {
   const { openTask } = useCloudAgentsNavigation();
+  // Off boat.dev only: the provider before the state, and where it runs on hover.
+  const elsewhere = task.runsOn && chipProvider(task.runsOn) !== null ? task.runsOn : null;
   return (
-    <button
-      onClick={() => openTask(task.id)}
-      className="mx-1 inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-secondary px-2 py-0.5 align-middle text-[12px] hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-    >
-      <AgentLogo provider={task.provider} />
-      <span className="hidden truncate sm:inline">{task.title}</span><span className="truncate sm:hidden">{task.compactTitle??task.title}</span>
-      <CardTaskState task={task} />
-    </button>
+    <RunsOnTooltip runsOn={elsewhere}>
+      <button
+        onClick={() => openTask(task.id)}
+        className="mx-1 inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-secondary px-2 py-0.5 align-middle text-[12px] hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <AgentLogo provider={task.provider} />
+        <span className="hidden truncate sm:inline">{task.title}</span><span className="truncate sm:hidden">{task.compactTitle??task.title}</span>
+        {elsewhere ? <ChipProvider runsOn={elsewhere} /> : null}
+        <CardTaskState task={task} />
+      </button>
+    </RunsOnTooltip>
   );
 }
 function ReviewCard({ task, round }: { task: TaskDetailDto; round?: number }) {

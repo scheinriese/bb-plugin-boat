@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Settings has a Sandbox providers section (boat.dev, Instabox, your Mac, a monthly Mac, each with its status) and a Runs on section with one dropdown per project. Only boat.dev can take work in this version: Instabox shows as not connected, and the Mac rows are greyed out.
+- Show where each task runs: a second line under each task in the tasks-started card ("boat.dev · Default"), the provider on a task chip when it isn't boat.dev (with the details on hover), and a Runs on column in Cloud agents › Sandboxes instead of Size.
 - Wake Boat sandboxes gently: at most 2 a minute account-wide, with a doubling pause after a failed wake, on every path that resumes one.
 - Turn off Ubuntu's login message scripts over boat's exec API before bb's SSH setup; one could hang on a file not restored yet, so SSH sessions never started.
 - Tell why a sandbox didn't wake (boat.dev still restoring its disk, a refused restore, a stuck SSH session, SSH unreachable) on bb's machine card and the sandbox's tasks. Retry later by itself (2 to 16 minutes), and after 5 failures put it under Needs you.
