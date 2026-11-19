@@ -98,6 +98,9 @@ switch (command) {
   case "whoami":
     print({ user: { login: "acme-dev" }, org: { id: "org_1", name: "acme", tier: state.tier, kind: "personal" } });
     break;
+  case "templates":
+    print({ templates: state.templates ?? [] });
+    break;
   case "usage": {
     const count = Object.values(state.machines).filter((entry) => entry.state !== "deleted").length;
     print({ machines: count, snapshots: state.snapshots.length, limits: { maxMachines: state.maxMachines, maxSnapshots: 0, unlimited: state.maxMachines === 0 ? ["maxMachines", "maxSnapshots"] : ["maxSnapshots"], ...(state.machineSpecs ? { machineSpecs: state.machineSpecs } : {}) }, org: { id: "org_1", name: "acme", tier: state.tier }, cost: { costUSD: 3.21, creditRemainingUSD: 16.79 } });
@@ -117,10 +120,15 @@ switch (command) {
     const count = Object.values(state.machines).filter((entry) => entry.state !== "deleted").length;
     if (count >= state.maxMachines && state.maxMachines > 0) fail(5, { code: "quota_exceeded", message: `your plan allows ${state.maxMachines} machines`, status: 402 });
     const id = `m_${String(state.next++).padStart(6, "0")}`;
-    const vcpus = Number(flag("--vcpus") ?? 4);
-    const memMiB = Number(flag("--mem-mib") ?? 8192);
+    const snapshot = state.snapshots.find(s => s.name === flag("--snapshot") || s.id === flag("--snapshot"));
+    const template = (state.templates ?? []).find(t => t.id === (flag("--template") ?? snapshot?.template?.id));
+    const model = template?.models?.find(m => flag("--model") ? m.name === flag("--model") : m.defaultSpec.vcpus === snapshot?.defaultSpec?.vcpus && m.defaultSpec.memMiB === snapshot?.defaultSpec?.memMiB);
+    if (template?.os === "macos" && !has("--accept-24h-minimum")) fail(1,{code:"minimum_lease_required",message:"24 h consent required",status:400});
+    const vcpus = Number(flag("--vcpus") ?? model?.defaultSpec?.vcpus ?? 4);
+    const memMiB = Number(flag("--mem-mib") ?? model?.defaultSpec?.memMiB ?? 8192);
     state.machines[id] = {
       id,
+      ...(template?.os === "macos" ? { template: {id:"macos"}, model:model.name, lease:{id:state.next,startedAt:now(),chargeUntil:new Date(Date.now()+86400000).toISOString(),hourUSD:model.minimumLease.hourUSD} } : {}),
       name: flag("--name"),
       state: "running",
       createdAt: now(),

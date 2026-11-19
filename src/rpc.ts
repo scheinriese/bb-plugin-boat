@@ -1,3 +1,4 @@
+import { macRunsOn } from "./mac-lease-view.ts";
 import { projectSnapshotHandlers } from "./project-snapshot.ts";
 import { readProjectCatalog, validateLocalProjectLink } from "./project-catalog.ts";
 import { fidelityHandlers } from "./rpc-fidelity.ts";
@@ -332,7 +333,7 @@ export function registerRpc(runtime: Runtime): void {
   };
   /** Where a task's sandbox runs (Settings › Sandbox providers words): "boat.dev · Default". */
   const runsOn = (task: Task): RunsOnDto =>
-    runsOnOf(
+    macRunsOn(service.store.macLeases, task.sandboxId, service.store.liveSandboxTasks(task.sandboxId ?? ""), task.id) ?? runsOnOf(
       service.sandboxProvider(task),
       task.sandboxId !== null && OPEN_STATUSES.includes(task.status) ? sizeOf(task.sandboxId, task) : null,
       service.sandboxProviders.default.id,
@@ -465,12 +466,18 @@ export function registerRpc(runtime: Runtime): void {
             const own = tasks.filter((task) => task.sandboxId === sandbox.id);
             const live = own.find((task) => OPEN_STATUSES.includes(task.status)) ?? null;
             const size = sandbox.machineType ?? (live === null ? null : sizeOf(sandbox.id, live));
-            return toSandboxDto(
+            const result = toSandboxDto(
               sandbox,
               own.map((task) => task.id),
               sandboxUses(sandbox.id, tasks, chats, orchestrators),
-              runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id),
+              macRunsOn(service.store.macLeases, sandbox.id, own) ?? runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id),
             );
+            if (result.runsOn?.os === "macos") {
+              const now = Date.now();
+              const monday = new Date(now); monday.setUTCHours(0,0,0,0); monday.setUTCDate(monday.getUTCDate()-(monday.getUTCDay()+6)%7);
+              return { ...result, leaseDaysThisWeek: service.store.macLeases.between(monday.getTime(),now+1,now,sandbox.id).leaseDays };
+            }
+            return result;
           }),
           error: listed.failed.length === 0 ? null : listed.failed.map((entry) => `${PROVIDER_NAMES[entry.provider as keyof typeof PROVIDER_NAMES] ?? entry.provider}: ${entry.error}`).join("; "),
         };
@@ -658,6 +665,7 @@ export function registerRpc(runtime: Runtime): void {
             // The user is the one clicking: their choice is the approval.
             userApproved: true,
             sandbox: input.sandbox || null,
+            sandboxSystem: input.sandboxSystem,
             machineType: (input.machineType as MachineType | null) ?? null,
             orchestratorThreadId: input.notifyThreadId,
             project: input.projectId ? await runtime.resolveProject({ kind: "boat", id: input.projectId }) : null,

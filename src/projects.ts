@@ -38,6 +38,7 @@ export const projectInputSchema = z.object({
   /** Chats of this project never continue on paid Claude after a usage limit; absent: unchanged. */
   neverPaidClaude: z.boolean().optional(),
   /** The sandbox provider for its new work (Settings › Runs on); null: the default; absent: unchanged. */
+  sandboxSystem: z.enum(["linux", "macos"]).optional(),
   sandboxProvider: z.string().trim().min(1).max(40).regex(/^[a-z0-9-]+$/, "Use a sandbox provider's id, like boat.").nullable().optional(),
 });
 export type ProjectInput = z.infer<typeof projectInputSchema>;
@@ -78,6 +79,7 @@ export interface BoatProject {
    * registry's forProject reads it). Absent: the default provider, boat.dev.
    */
   sandboxProvider?: string;
+  sandboxSystem?: "linux" | "macos";
   createdAt: string;
   updatedAt: string;
 }
@@ -144,6 +146,7 @@ export function normalizeProject(input: ProjectInput, existing?: BoatProject | n
     // Kept only when on, so older projects and their backups stay as they were.
     ...((parsed.neverPaidClaude ?? existing?.neverPaidClaude) === true ? { neverPaidClaude: true } : {}),
     // Likewise only when the project picked a provider of its own.
+    ...((parsed.sandboxSystem ?? existing?.sandboxSystem) === "macos" ? { sandboxSystem: "macos" as const } : {}),
     ...providerPick(parsed.sandboxProvider !== undefined ? parsed.sandboxProvider : existing?.sandboxProvider),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,

@@ -184,9 +184,9 @@ function routingLine(rows: readonly SandboxProviderDto[], defaultLabel: string):
 
 function projectRow(project: BoatProject, registry: ProviderRegistry): ProjectRunsOnDto {
   const provider = project.sandboxProvider ?? registry.default.id;
-  const os = registry.get(provider)?.caps.os ?? "linux";
+  const os = project.sandboxSystem ?? registry.get(provider)?.caps.os ?? "linux";
   const repo = project.repos[0]?.repo ?? project.name;
-  return { projectId: project.id, name: project.name, detail: `${repo} · ${os === "macos" ? "Mac" : "Linux"}`, provider, chosen: project.sandboxProvider !== undefined };
+  return { projectId: project.id, name: project.name, detail: `${repo} · ${os === "macos" ? "Mac" : "Linux"}`, provider: os === "macos" && provider === "instabox" ? "instabox-macos" : provider, chosen: project.sandboxProvider !== undefined };
 }
 
 /** Settings › Sandbox providers and Runs on, from the registry, boat.dev's reading and the projects. */
@@ -227,6 +227,8 @@ export function providersView(input: {
     // A monthly Mac is a choice once one is enrolled.
     .filter((row) => row.kind !== "monthly-mac" || (row.available && row.connection === "connected"))
     .map((row) => ({ provider: row.id, label: row.label, disabledReason: pickProblem(row) }));
+  const instabox = rows.find(row => row.id === "instabox");
+  if (instabox?.systems.some(system => system.os === "macos" && system.ready)) options.push({ provider: "instabox-macos", label: "Instabox · Mac", disabledReason: null });
   const projects = input.projects.map((project) => projectRow(project, registry));
   // A pick this version doesn't know (a backup from a newer one) still shows, greyed out.
   for (const project of projects) {
@@ -283,6 +285,7 @@ export function providerHandlers(runtime: Runtime) {
 
   return {
     sandboxProviders: () => view(),
+    macUsage: () => service.store.macLeases.summary(),
 
     setProjectRunsOn: async ({ projectId, provider }: { projectId: string; provider: string }) => {
       const missing = () => new experimental_PluginRpcRefusal({ code: "not_found", message: `No project "${projectId}".` });
@@ -298,7 +301,7 @@ export function providerHandlers(runtime: Runtime) {
       if (option.disabledReason !== null && provider !== project.sandboxProvider) {
         throw new experimental_PluginRpcRefusal({ code: "conflict", message: `${option.label} can't take new work: ${option.disabledReason.charAt(0).toLowerCase()}${option.disabledReason.slice(1)}.` });
       }
-      const saved = runtime.projects.save({ ...project, sandboxProvider: provider === service.sandboxProviders.default.id ? null : provider });
+      const saved = runtime.projects.save({ ...project, sandboxProvider: provider === "instabox-macos" ? "instabox" : provider === service.sandboxProviders.default.id ? null : provider, sandboxSystem: provider === "instabox-macos" ? "macos" : "linux" });
       runtime.changed();
       bb.rpc.experimental_invalidate([PROVIDERS_TAG]);
       return projectRow(saved, service.sandboxProviders);

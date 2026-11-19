@@ -43,7 +43,7 @@ interface FakeApi {
 }
 
 /** The fake CLI and API on one state file, and an Instabox provider on them. */
-async function instabox(t: { after(fn: () => unknown): void }, options: { key?: string | null; state?: Record<string, unknown> } = {}) {
+async function instabox(t: { after(fn: () => unknown): void }, options: { key?: string | null; state?: Record<string, unknown>; ledger?: import("../src/mac-leases.ts").MacLeaseLedger } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "instabox-"));
   const statePath = join(dir, "state.json");
   if (options.state) writeFileSync(statePath, JSON.stringify(options.state));
@@ -54,7 +54,7 @@ async function instabox(t: { after(fn: () => unknown): void }, options: { key?: 
   const key = options.key === undefined ? KEY : options.key;
   const cli = new InstaboxCli(async () => FAKE_CLI, async () => key);
   const rest = new InstaboxRest({ key: async () => key, baseUrl: () => api.url });
-  const provider = createInstaboxProvider(cli, rest);
+  const provider = createInstaboxProvider(cli, rest, { ledger: options.ledger });
   const state = () => (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {}) as Record<string, any>;
   const setState = (patch: Record<string, unknown>) => writeFileSync(statePath, JSON.stringify({ ...state(), ...patch }));
   return { cli, rest, provider, api, state, setState, statePath };
@@ -708,4 +708,156 @@ test("Instabox's own plan sizes apply to its machines; boat.dev's plan doesn't",
     return true;
   });
   assert.ok(!(env.box.state().calls as string[]).some((call) => call.startsWith("stop ")));
+});
+
+const MAC_TEMPLATES = [{ id: "macos", os: "macos", creatable: true, latest: true, models: [
+  {name:"m2",label:"M2",defaultSpec:{vcpus:8,memMiB:16384},minimumLease:{hours:24,hourUSD:0.45,minimumUSD:10.8}},
+  {name:"m4",label:"M4",defaultSpec:{vcpus:10,memMiB:24576},minimumLease:{hours:24,hourUSD:0.75,minimumUSD:18}},
+] }];
+async function macEnv(t: { after(fn: () => unknown): void }, overrides: Record<string,unknown> = {}) {
+  const store=memoryStore();
+  const box=await instabox(t,{ledger:store.macLeases,state:{templates:MAC_TEMPLATES,maxMachines:3}});
+  const fakeBoat=new FakeBoat();
+  const notices:string[]=[];
+  const registry=createProviderRegistry([createBoatProvider(fakeBoat as unknown as BoatApi),box.provider]);
+  const service=new BoatService(registry,store,hooks({tell:async (_id:string,text:string)=>{notices.push(text)},...overrides}).hooks);
+  const start=(extra:Partial<import("../src/service.ts").StartTaskInput>={})=>service.startTask({title:"Mac task",brief:"Check tools",role:"custom",sandboxSystem:"macos",...extra});
+  return {box,store,service,start,notices,fakeBoat};
+}
+test("Mac capability fails closed; prices and model sizes come from live templates",async t=>{
+  const {box}=await macEnv(t);
+  assert.deepEqual(box.provider.caps.systems,["linux"]);
+  assert.match((await box.provider.pricing!())!,/M2 \$10.80 a day/);
+  assert.deepEqual(box.provider.caps.systems,["linux","macos"]);
+  box.setState({tier:"free"});
+  assert.deepEqual(await box.provider.macModels!(),[]);
+  assert.deepEqual(box.provider.caps.systems,["linux"]);
+  await assert.rejects(box.provider.create({name:"mac",type:"default",system:"macos",ttlSeconds:3600,gitGuard:true}),/cannot create/);
+  box.setState({tier:"pro",templates:[]});
+  assert.deepEqual(await box.provider.macModels!(),[]);
+});
+test("Mac tasks share held leases as separate workspaces, full capacity creates a new lease, Linux stays Linux",async t=>{
+  const {start,box,store,service}=await macEnv(t);
+  const first=await start(); const second=await start(); const third=await start();
+  assert.equal(first.status,"running",first.error??"");
+  assert.equal(second.sandboxId,first.sandboxId,second.error??"");
+  assert.notEqual(third.sandboxId,first.sandboxId);
+  assert.equal(store.macLeases.held().length,2);
+  assert.equal(store.macLeases.tasks(store.macLeases.held(first.sandboxId!)[0]!.id).length,2);
+  assert.ok(box.state().calls.some((c:string)=>c.includes("--template macos --model m2 --accept-24h-minimum")));
+  const linux=await service.startTask({title:"Linux",brief:"Check",role:"custom"});
+  assert.equal(linux.sandboxProvider,undefined);
+  assert.notEqual(linux.sandboxId,first.sandboxId);
+});
+test("held Mac works at the provider machine limit; a full lease still respects Instabox capacity without stopping boat.dev",async t=>{
+  const {start,box,fakeBoat}=await macEnv(t);
+  box.setState({maxMachines:1});
+  const first=await start();const second=await start();
+  assert.equal(second.sandboxId,first.sandboxId);
+  await assert.rejects(start(),/plan allows|limit|room/i);
+  assert.equal(fakeBoat.sandboxes.size,0);
+  assert.equal(Object.keys(box.state().machines).length,1);
+});
+test("Mac review auto never joins its busy parent's workspace",async t=>{
+  const {start}=await macEnv(t);
+  const parent=await start();
+  const review=await start({role:"review",parentTaskId:parent.id,sandbox:"auto"});
+  assert.equal(review.status,"running",review.error??"");
+  assert.notEqual(review.sandboxId,parent.sandboxId);
+});
+test("empty Mac hand-back waits for the margin and is idempotent",async t=>{
+  const {start,service,store,box}=await macEnv(t);
+  const task=await start();
+  store.update(task.id,{status:"done"});
+  const lease=store.macLeases.held()[0]!;const until=Date.parse(lease.paidUntil);
+  await service.processMacLeases(until-31*60000);
+  assert.equal(store.macLeases.held().length,1);
+  await service.processMacLeases(until-29*60000);
+  await service.processMacLeases(until-28*60000);
+  assert.equal(store.macLeases.held().length,0);
+  assert.equal(store.macLeases.list()[0]!.endReason,"handed back");
+  assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,1);
+});
+test("idle open tasks get one heads-up per renewal across restarts; running and unpushed tasks are never deleted",async t=>{
+  const {start,service,store,notices,box}=await macEnv(t);
+  const task=await start({orchestratorThreadId:"thread_1"});
+  const lease=store.macLeases.held()[0]!;const until=Date.parse(lease.paidUntil);
+  await service.processMacLeases(until-29*60000);
+  assert.equal(notices.length,0,"active work renews silently");
+  store.update(task.id,{status:"idle",unshipped:4});
+  await service.processMacLeases(until-28*60000);
+  await service.processMacLeases(until-27*60000);
+  assert.equal(notices.length,1);
+  assert.match(notices[0]!,/^\[boat\] Mac lease renews at \d\d:\d\d UTC; tasks /);
+  const restarted=new BoatService(service.sandboxProviders,store,hooks({tell:async (_id:string,text:string)=>{notices.push(text)}}).hooks);
+  await restarted.processMacLeases(until-26*60000);
+  assert.equal(notices.length,1);
+  await restarted.processMacLeases(until+24*3600000-28*60000);
+  assert.equal(notices.length,2);
+  assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
+});
+test("hand-back rechecks task attachment after I/O",async t=>{
+  const {start,service,store,box}=await macEnv(t);
+  const task=await start();store.update(task.id,{status:"done"});
+  const lease=store.macLeases.held()[0]!;
+  const original=box.provider.findInfo;
+  box.provider.findInfo=async (...args)=>{const result=await original(...args);store.update(task.id,{status:"idle",unshipped:2});return result;};
+  await service.processMacLeases(Date.parse(lease.paidUntil)-29*60000);
+  assert.equal(store.macLeases.held().length,1);
+  assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
+});
+
+test("CLI and page resume TTL use the sandbox provider's cap, never boat.dev's cap",async t=>{
+  const { service,box }=await macEnv(t);
+  const {createTestHost}=await import("./fakes.ts");
+  const {registerRpc}=await import("../src/rpc.ts");
+  const {buildCli}=await import("../src/cli.ts");
+  const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:"/fake/boat"}});
+  t.after(()=>harness.lifecycle.dispose());
+  const asked:(string|undefined)[]=[]; const resumed:number[]=[];
+  const originalCapacity=service.capacity.bind(service);
+  service.capacity=async (signal,id,...rest)=>{
+    asked.push(id);
+    const result=await originalCapacity(signal,id,...rest);
+    return {...result,limits:result.limits?{...result.limits,autoStopCapHours:id?.startsWith("m_")?0.5:0.25}:null};
+  };
+  service.sandboxAction=async (_id,_action,ttl)=>{resumed.push(ttl);};
+  const runtime={bb,service,changed:()=>{},settings:{},projects:{}} as unknown as import("../src/runtime.ts").Runtime;
+  registerRpc(runtime);bb.cli.register(buildCli(runtime));
+  // A real fake-Instabox machine makes the provider resolution observable.
+  const sandbox=await box.provider.create({name:"resume-ttl",type:"default",ttlSeconds:3600,gitGuard:false});
+  const cli=await harness.runCli(["sandbox","resume",sandbox.id,"--json"]);
+  assert.equal(cli.exitCode,0,cli.stderr);
+  await harness.callRpc("sandboxAction",{id:sandbox.id,action:"resume"});
+  assert.deepEqual(asked,[sandbox.id,sandbox.id]);
+  assert.deepEqual(resumed,[1800,1800]);
+});
+
+test("Mac snapshots inherit their model and consent without conflicting template flags",async t=>{
+  const {box}=await macEnv(t);
+  box.setState({snapshots:[{id:"sn_mac",name:"mac-xcode",status:"ready",template:{id:"macos"},defaultSpec:{vcpus:8,memMiB:16384}}]});
+  const sandbox=await box.provider.create({name:"snapshot-mac",type:"default",system:"macos",snapshot:"mac-xcode",ttlSeconds:3600,gitGuard:true});
+  assert.equal(sandbox.system,"macos");
+  const call=box.state().calls.find((c:string)=>c.startsWith("create ")) as string;
+  assert.ok(call.includes("--snapshot mac-xcode"));assert.ok(call.includes("--accept-24h-minimum"));
+  assert.ok(!call.includes("--template"));assert.ok(!call.includes("--vcpus"));
+});
+
+test("Mac task chats reuse a machine with separate checkout paths and workspaces",async t=>{
+  const {FakeChat}=await import("./fakes.ts");
+  const chat=new FakeChat();
+  const repos:import("../src/sandbox-repos.ts").RepoSteps={
+    prepareRepo:async (_provider,_id,_repo,_checkout,opts)=>({path:`/work/${opts?.workDir}/web`,branch:"task-branch",baseBranch:"main",canPush:true}),
+    githubLogin:async ()=>({valid:true,expiresAt:null}),
+    ship:async ()=>({shipped:[]}),
+  };
+  const {start}=await macEnv(t,{chat,repos,settings:async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:""})});
+  const first=await start({repo:"acme/web",runner:"chat",confirmUntrustedChat:["acme/web"]});
+  const second=await start({repo:"acme/web",runner:"chat",confirmUntrustedChat:["acme/web"]});
+  assert.equal(first.status,"running",first.error??"");assert.equal(second.status,"running",second.error??"");
+  assert.equal(first.sandboxId,second.sandboxId);assert.equal(first.hostId,second.hostId);
+  assert.notEqual(first.repoPath,second.repoPath);
+  assert.notEqual(chat.spawns[0]!.environmentId,chat.spawns[1]!.environmentId);
+  assert.equal(chat.spawns[1]!.where.kind,"machine");
+  assert.equal(chat.machines.length,1);
 });

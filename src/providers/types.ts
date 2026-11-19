@@ -71,6 +71,8 @@ export interface SandboxInfo {
   setupStatus: string | null;
   error: string | null;
   /** Its size, when the provider says (not verified that boat.dev does; the memory probe is what counts). */
+  system?: "linux" | "macos";
+  mac?: { model: string; leaseId: string; startedAt: string; chargeUntil: string; dayPrice: number; cpus: number; memoryMiB: number };
   machineType?: MachineType | null;
 }
 
@@ -505,6 +507,7 @@ export interface MachineHookContext {
 // ------------------------------------------------------------------ the provider
 
 export interface CreateSandboxOptions {
+  system?: "linux" | "macos";
   name: string;
   type: MachineType;
   /** The provider environment to start from (null: the account's default). */
@@ -622,7 +625,9 @@ export interface AgentRunner {
 }
 
 /** For later providers: not called yet. */
+export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; dayPrice: number; currency: string }
 export interface LaterMembers {
+  macModels?(signal?: AbortSignal): Promise<MacModel[]>;
   /**
    * Its prices in one line, as the provider states them now ("M2 $10.80 a
    * day"); null: it doesn't say. Settings shows amounts only from here.

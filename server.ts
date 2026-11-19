@@ -113,7 +113,7 @@ export default async function plugin(bb: BbPluginApi) {
   const providerSecrets = await defineProviderSecrets(bb);
   const instaboxCli = new InstaboxCli(async () => resolveInstaboxBinary((await settings.get()).instaboxPath), () => providerSecrets.instaboxKey());
   const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
-  const instabox = createInstaboxProvider(instaboxCli, instaboxRest);
+  const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases });
   let instaboxOn = (await settings.get()).instaboxEnabled;
   // Sandbox providers: boat.dev, the default; Instabox while it's turned on and its key stored (src/providers/registry.ts).
   const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli }), instabox], {
@@ -171,6 +171,8 @@ export default async function plugin(bb: BbPluginApi) {
       sandboxTtlHours: values.sandboxTtlHours,
       maxActiveSandboxes: values.maxActiveSandboxes,
       stopIdleAfterMinutes: values.stopIdleAfterMinutes,
+      macHandBackMarginMinutes: values.macHandBackMarginMinutes,
+      macIdleNoticeMinutes: values.macIdleNoticeMinutes,
       freeSlotsWhenFull: values.freeSlotsWhenFull,
       deleteSandboxOnClose: values.deleteSandboxOnClose,
       reviewSandbox: values.reviewSandbox as BoatSettings["reviewSandbox"],
@@ -968,9 +970,10 @@ export default async function plugin(bb: BbPluginApi) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
         }
         // Instabox doesn't see a bb chat working: an activity lease keeps its machine awake meanwhile.
-        if (keepInstaboxAwake !== null && sandboxProviders.get(INSTABOX_PROVIDER_ID) !== null) {
+        if (sandboxProviders.get(INSTABOX_PROVIDER_ID) !== null) {
           try {
-            await keepInstaboxAwake();
+            await service.processMacLeases();
+            await keepInstaboxAwake?.();
           } catch (error) {
             bb.log.warn(`instabox keeper failed: ${error instanceof Error ? error.message : String(error)}`);
           }

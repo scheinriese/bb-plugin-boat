@@ -54,7 +54,14 @@ export function toSandbox(raw: JsonRecord): SandboxInfo {
   const spec = rec(raw.spec);
   const error = rec(raw.lastError);
   const metadata = rec(raw.metadata);
+  const lease = rec(raw.lease);
+  const mac = lease && str(lease.startedAt) && str(lease.chargeUntil) && num(lease.hourUSD) !== null ? {
+    model: str(metadata?.["boat-mac-model"]) ?? (str(rec(raw.template)?.id) === "macos" ? str(raw.model) : null) ?? str(raw.pool)?.replace(/^mac-/, "") ?? "mac",
+    leaseId: String(lease.id), startedAt: str(lease.startedAt)!, chargeUntil: str(lease.chargeUntil)!, dayPrice: num(lease.hourUSD)! * 24,
+    cpus: num(spec?.vcpus) ?? 0, memoryMiB: num(spec?.memMiB) ?? 0,
+  } : undefined;
   return {
+    ...(mac ? { system: "macos" as const, mac } : str(rec(raw.template)?.id) === "macos" ? { system: "macos" as const } : {}),
     id,
     name: str(raw.name),
     state: STATES[state] ?? state,

@@ -15,6 +15,8 @@ import { DEFAULT_EVIDENCE_UPLOADER, evidenceSourceProblem } from "./evidence.ts"
 /** Number ranges (bb's list shows only label and description; the plugin's own UI shows these). */
 export const NUMBER_RANGES = {
   maxActiveSandboxes: { min: 0, max: 1000, integer: true },
+  macHandBackMarginMinutes: { min: 1, max: 720, integer: true },
+  macIdleNoticeMinutes: { min: 1, max: 1440, integer: true },
   stopIdleAfterMinutes: { min: 0, max: 1440, integer: true },
   tasksBeforeAsking: { min: 0, max: 100, integer: true },
   relaySwitchAt: { min: 5, max: 100, integer: true },
@@ -415,6 +417,16 @@ export const PLUGIN_SETTINGS = {
     default: "",
   },
   // Sandbox providers (boat.dev is always on; projects choose where they run)
+  macHandBackMarginMinutes: {
+    section: "advanced", type: "number", label: "Mac hand-back margin (min)",
+    description: "Delete an empty day-lease Mac this long before its next day window. Open tasks always keep their Mac.",
+    experimental_schema: range("macHandBackMarginMinutes"), default: 30,
+  },
+  macIdleNoticeMinutes: {
+    section: "advanced", type: "number", label: "Mac idle heads-up after (min)",
+    description: "Before another Mac day window, tell the orchestrator when every open task has been idle this long.",
+    experimental_schema: range("macIdleNoticeMinutes"), default: 60,
+  },
   instaboxEnabled: {
     section: "advanced",
     type: "boolean",

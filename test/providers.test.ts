@@ -313,14 +313,15 @@ test("provider errors explain themselves; boat's in boat's words", () => {
 
 test("tasks keep their sandbox provider; older tasks read as before, on boat.dev", () => {
   const migrations = TaskStore.migrations();
-  // Appended last: an existing install has applied every earlier index.
-  assert.equal(migrations.at(-1), "ALTER TABLE tasks ADD COLUMN sandbox_provider TEXT NOT NULL DEFAULT 'boat'");
+  // An existing install has applied every index before this migration.
+  const providerMigration = migrations.indexOf("ALTER TABLE tasks ADD COLUMN sandbox_provider TEXT NOT NULL DEFAULT 'boat'");
+  assert.ok(providerMigration > 0);
   const db = new DatabaseSync(":memory:");
-  for (const statement of migrations.slice(0, -1)) db.exec(statement);
+  for (const statement of migrations.slice(0, providerMigration)) db.exec(statement);
   const store = new TaskStore(() => db as unknown as Database.Database);
   db.prepare("INSERT INTO tasks (id, title, role, status, provider, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("t_old", "Old task", "implement", "done", "claude", "Fix it", "2026-11-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z");
   const before = store.get("t_old")!;
-  db.exec(migrations.at(-1)!);
+  for (const statement of migrations.slice(providerMigration)) db.exec(statement);
   const old = store.get("t_old")!;
   assert.deepEqual(old, before, "a task from before the column reads exactly as it did");
   assert.equal("sandboxProvider" in old, false);
