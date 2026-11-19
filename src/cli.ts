@@ -27,6 +27,7 @@ import { EFFORTS, TIERS, type Tier } from "./tiers.ts";
 import { quotaLine } from "./quota.ts";
 import { AGENT_NAME, effectiveRelay, onlyAgent, otherAgent, relayNote } from "./relay.ts";
 import { SIZE_SPECS } from "./memory.ts";
+import { wakeText } from "./sandbox-wake.ts";
 import { resizeText } from "./sandbox-size.ts";
 import { doctorText, explainBoatError, testTaskInput, type SetupStatus } from "./setup.ts";
 import { ALL_SETTINGS, ORCHESTRATOR_EFFORTS, parseSettingText, type SettingKey } from "./settings.ts";
@@ -353,6 +354,31 @@ export function buildCli(runtime: Runtime) {
             await service.sandboxAction(positionals.id, "resume", ttl, ctx.signal);
             runtime.changed();
             return out({ ok: true }, options.json, () => `Resumed ${positionals.id}.`);
+          });
+        },
+      }),
+      "sandbox wake": cliCommand({
+        summary: "Bring a stuck sandbox and its chat back (a sandbox, task or chat id)",
+        description:
+          "For a chat or task stuck on \"Machine is paused\" or \"resuming\". Resumes the sandbox (paced, within the start limit), waits until it answers, and looks at it. A disk that's unreadable or stuck, or an npm zombie: it stops the sandbox with a plain stop and starts it again (boat.dev's fix); --force only when nothing there could be lost. Then it turns off the login message scripts, updates bb there safely if it's old or broken, restarts bb's service, resumes bb's machine and retries the chat. Exits 1 with \"Needs you\" when it stops for safety. A start may use one boat start; never a paid extra start without --allow-paid-start.",
+        positionals: [{ name: "id", description: "Sandbox id (bx_…), task id (t_…) or a chat's thread id", required: true }],
+        options: {
+          "dry-run": { type: "boolean", description: "Only look and print the plan; change nothing" },
+          "allow-paid-start": { type: "boolean", description: "Allow a paid extra start when no included boat start is left (only when the user agreed)" },
+          json,
+        },
+        async run({ positionals, options }, ctx) {
+          return guard(async () => {
+            const report = await runtime.wakeSandbox({
+              target: positionals.id,
+              dryRun: options["dry-run"] === true,
+              allowPaidStart: options["allow-paid-start"] === true,
+              ...(ctx.signal ? { signal: ctx.signal } : {}),
+            });
+            return {
+              exitCode: report.outcome === "needs-you" ? 1 : 0,
+              stdout: `${options.json ? JSON.stringify(report, null, 2) : wakeText(report)}\n`,
+            };
           });
         },
       }),

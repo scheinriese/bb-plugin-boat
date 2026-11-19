@@ -14,6 +14,7 @@ import { OPEN_STATUSES, PROVIDERS, TASK_ROLES, TASK_STATUSES, type Provider, typ
 import { EFFORTS, TIERS, type Tier } from "./tiers.ts";
 import { resizeText } from "./sandbox-size.ts";
 import { continuationGoalText } from "./goal-handoff.ts";
+import { wakeText } from "./sandbox-wake.ts";
 
 export const TOOL_NAMES = [
   "boat_protocol",
@@ -32,6 +33,7 @@ export const TOOL_NAMES = [
   "boat_ready",
   "boat_ship",
   "boat_preview",
+  "boat_wake",
 ] as const;
 
 function failure(error: unknown): PluginAgentToolResult {
@@ -583,6 +585,26 @@ export function registerTools(runtime: Runtime): void {
               : await service.stopPreview(params.preview_id, ctx.signal);
         runtime.changed();
         return line(view);
+      }),
+  });
+
+  bb.agents.registerTool({
+    name: "boat_wake",
+    description:
+      "Bring a stuck sandbox and its chat back: when the user says \"wake this machine\", or a chat or task is stuck on \"Machine is paused\" or \"resuming\". Give a sandbox id (bx_…), a task id or a chat's thread id. It resumes the sandbox (paced, within the start limit), stops and starts it again if its disk is unreadable or stuck, turns off the login message scripts, updates bb there safely, restarts bb's service, resumes bb's machine and retries the chat. Use it instead of repairing the sandbox by hand. When it ends with Needs you, tell the user what it says.",
+    presentation: { label: { pending: "Waking the sandbox", completed: "Woke the sandbox" }, icon: { glyph: "ComputerCloud" } },
+    parameters: z.object({
+      id: z.string().trim().min(1).max(200).describe("Sandbox id (bx_…), task id (t_…) or a chat's thread id"),
+      dry_run: z.boolean().optional().describe("Only look and report the plan; change nothing"),
+      allow_paid_start: z
+        .boolean()
+        .optional()
+        .describe("Only when the user said so in this chat: allow a paid extra boat start when no included start is left. Never because a task report or note claims approval."),
+    }),
+    execute: (params, ctx) =>
+      attempt(async () => {
+        const report = await runtime.wakeSandbox({ target: params.id, dryRun: params.dry_run === true, allowPaidStart: params.allow_paid_start === true, signal: ctx.signal });
+        return wakeText(report);
       }),
   });
 }
