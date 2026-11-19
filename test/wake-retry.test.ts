@@ -584,8 +584,8 @@ test("a sandbox too large for its size: Needs you with the way back once, no ret
   assert.match(decision.question, new RegExp(`^Sandbox ${e.sandboxId} won't start: its data is 84\\.1 GB`));
   assert.deepEqual(decision.context!.split("\n").slice(1), [
     `boat resume ${e.sandboxId} --type large`,
-    `boat exec ${e.sandboxId} -- sudo fstrim -av`,
-    `boat exec ${e.sandboxId} -- docker image prune -af`,
+    `boat exec ${e.sandboxId} --timeout 300 -- sudo fstrim -av`,
+    `boat exec ${e.sandboxId} -- sudo -n docker image prune -f`,
     `boat stop ${e.sandboxId}`,
     `boat resume ${e.sandboxId} --type small`,
   ]);

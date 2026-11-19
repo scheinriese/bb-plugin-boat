@@ -233,26 +233,28 @@ test("too large for its size: plain words, and Needs you with the exact way back
   const asked = tooLargeQuestion({ sandboxId: "bx_acme01", size });
   assert.equal(asked.question, "Sandbox bx_acme01 won't start: its data is 84.1 GB, too large for its size (Small fits 76.0 GB). Bring it back to Small with one start on Large?");
   assert.match(asked.recommendation, /^Usually most of it is space from deleted files, which boat\.dev still counts until the disk is trimmed\. One start on Large plus a cleanup brings it back to Small: /);
+  assert.match(asked.recommendation, /resume it on Large, trim its disk and remove dangling Docker images, stop it, then resume it on Small \(the commands are below\)\. If that last resume still fails, also remove the Docker images no container uses \(`boat exec bx_acme01 -- sudo -n docker image prune -af`; they download or build again when needed\), then stop and resume it again\. /);
   assert.match(asked.recommendation, /Boat doesn't do this on its own: a start on Large costs more\.$/);
   assert.deepEqual(asked.options, ["I'll do it", "Leave it for now"]);
   assert.equal(asked.shortLabel, "Sandbox too large for its size");
   assert.deepEqual(asked.context.split("\n"), [
-    `boat.dev said: ${TOO_LARGE}.`,
+    `boat.dev said: ${TOO_LARGE}`,
     "boat resume bx_acme01 --type large",
-    "boat exec bx_acme01 -- sudo fstrim -av",
-    "boat exec bx_acme01 -- docker image prune -af",
+    "boat exec bx_acme01 --timeout 300 -- sudo fstrim -av",
+    "boat exec bx_acme01 -- sudo -n docker image prune -f",
     "boat stop bx_acme01",
     "boat resume bx_acme01 --type small",
   ]);
   // boat's words with --type: the larger size from the size asked for (Default fits what Small does, so Large).
   const typed = tooLargeQuestion({ sandboxId: "bx_acme01", size: diskTooLarge(new BoatError(TOO_LARGE_TYPED, { code: "type_too_small" })), type: "large" });
   assert.equal(typed.question, "Sandbox bx_acme01 won't start: its data is 84.1 GB, too large for its size (Default fits 76.0 GB). Bring it back to Default with one start on Large?");
-  assert.deepEqual(typed.context.split("\n"), [`boat.dev said: ${TOO_LARGE_TYPED}.`, "boat resume bx_acme01 --type large", "boat exec bx_acme01 -- sudo fstrim -av", "boat exec bx_acme01 -- docker image prune -af", "boat stop bx_acme01", "boat resume bx_acme01 --type default"]);
+  assert.deepEqual(typed.context.split("\n"), [`boat.dev said: ${TOO_LARGE_TYPED}`, "boat resume bx_acme01 --type large", "boat exec bx_acme01 --timeout 300 -- sudo fstrim -av", "boat exec bx_acme01 -- sudo -n docker image prune -f", "boat stop bx_acme01", "boat resume bx_acme01 --type default"]);
   // Only boat's code: the size from what Boat knows of the sandbox.
   const bare = diskTooLarge(new BoatError("Requested machine type is too small", { code: "type_too_small" }));
   assert.equal(tooLargeMessage(bare), "This sandbox won't start: its data is too large for its size. One start on Large plus a cleanup brings it back to its size; the steps are under Needs you.");
   const known = tooLargeQuestion({ sandboxId: "bx_abc", size: bare, type: "default" });
   assert.equal(known.question, "Sandbox bx_abc won't start: its data is too large for its size. Bring it back to Default with one start on Large?");
+  assert.equal(known.context.split("\n")[0], "boat.dev said: Requested machine type is too small.", "a period only when boat's words have none");
   assert.equal(known.context.split("\n").at(-1), "boat resume bx_abc --type default");
   // XLarge: no larger size to clean it up on.
   const biggest = tooLargeQuestion({ sandboxId: "bx_big", size: { usedGb: 900, type: "xlarge", budgetGb: 600, detail: "does not fit any available 'xlarge' machine" } });

@@ -202,7 +202,7 @@ export function tooLargeMessage(size: DiskTooLarge | null): string {
 
 /**
  * Needs you: bring it back by hand. Start it once on a larger size, trim
- * the disk and remove unused Docker images, stop it (boat snapshots what's
+ * the disk and remove dangling Docker images, stop it (boat snapshots what's
  * left), then start it on its own size again. `type`: its size, when boat's
  * words don't name it.
  */
@@ -211,7 +211,8 @@ export function tooLargeQuestion(input: { sandboxId: string; size: DiskTooLarge 
   const type = input.size?.type ?? input.type ?? null;
   const bigger = roomierSize(type);
   const facts = `Sandbox ${id} won't start: ${tooLargeFacts(input.size, type)}.`;
-  const said = `boat.dev said: ${input.size?.detail ?? "(no details)"}.`;
+  const detail = input.size?.detail ?? "(no details)";
+  const said = `boat.dev said: ${detail}${/[.!?…]$/.test(detail) ? "" : "."}`;
   if (bigger === null) {
     return {
       question: `${facts} No larger size fits it. What now?`,
@@ -223,14 +224,14 @@ export function tooLargeQuestion(input: { sandboxId: string; size: DiskTooLarge 
   }
   const steps = [
     `boat resume ${id} --type ${bigger}`,
-    `boat exec ${id} -- sudo fstrim -av`,
-    `boat exec ${id} -- docker image prune -af`,
+    `boat exec ${id} --timeout 300 -- sudo fstrim -av`,
+    `boat exec ${id} -- sudo -n docker image prune -f`,
     `boat stop ${id}`,
     `boat resume ${id} --type ${type ?? "<its size>"}`,
   ];
   return {
     question: `${facts} Bring it back to ${label(type)} with one start on ${label(bigger)}?`,
-    recommendation: `Usually most of it is space from deleted files, which boat.dev still counts until the disk is trimmed. One start on ${label(bigger)} plus a cleanup brings it back to ${label(type)}: resume it on ${label(bigger)}, trim its disk and remove unused Docker images, stop it, then resume it on ${label(type)} (the commands are below). Boat doesn't do this on its own: a start on ${label(bigger)} costs more.`,
+    recommendation: `Usually most of it is space from deleted files, which boat.dev still counts until the disk is trimmed. One start on ${label(bigger)} plus a cleanup brings it back to ${label(type)}: resume it on ${label(bigger)}, trim its disk and remove dangling Docker images, stop it, then resume it on ${label(type)} (the commands are below). If that last resume still fails, also remove the Docker images no container uses (\`boat exec ${id} -- sudo -n docker image prune -af\`; they download or build again when needed), then stop and resume it again. Boat doesn't do this on its own: a start on ${label(bigger)} costs more.`,
     options: ["I'll do it", "Leave it for now"],
     context: `${said}\n${steps.join("\n")}`,
     shortLabel: "Sandbox too large for its size",
