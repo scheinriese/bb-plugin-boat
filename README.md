@@ -241,6 +241,13 @@ them into the grouped section.
 `bb boat config export | import` backs them up. All of them, with keys and
 defaults: [docs/settings.md](docs/settings.md).
 
+**Instabox (optional).** Projects can run on Instabox Linux machines instead
+of boat.dev: install its CLI, store your Instabox API key in bb's settings
+for the plugin, turn it on (`bb boat config set instaboxEnabled true`) and
+pick a project's provider (`bb boat config runs-on <project> instabox`).
+boat.dev stays the default. Steps and limits:
+[docs/settings.md](docs/settings.md#sandbox-providers).
+
 ## Upgrading from 0.1.x
 
 Back up your existing settings first:

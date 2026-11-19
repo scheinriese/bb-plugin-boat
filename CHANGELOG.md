@@ -2,8 +2,11 @@
 
 ## Unreleased
 
-- Settings has a Sandbox providers section (boat.dev, Instabox, your Mac, a monthly Mac, each with its status) and a Runs on section with one dropdown per project. Only boat.dev can take work in this version: Instabox shows as not connected, and the Mac rows are greyed out.
+- Settings has a Sandbox providers section (boat.dev, Instabox, your Mac, a monthly Mac, each with its status) and a Runs on section with one dropdown per project. boat.dev and, once turned on with its key stored, Instabox (Linux) can take work; the Mac rows are greyed out.
 - Show where each task runs: a second line under each task in the tasks-started card ("boat.dev · Default"), the provider on a task chip when it isn't boat.dev (with the details on hover), and a Runs on column in Cloud agents › Sandboxes instead of Size.
+- Run projects on Instabox Linux machines as a second sandbox provider, next to boat.dev (still the default). Turn it on with `bb boat config set instaboxEnabled true`, store your Instabox API key in bb's settings for the plugin (a secret setting), and pick where a project runs in Settings › Runs on, with `bb boat config runs-on <project> instabox` or with `bb boat project set <project> --runs-on instabox`. Headless tasks use Instabox's own agent runner; task chats install bb over Instabox's exec API, kept out of the machine's exec history, and an activity lease keeps the machine awake while a chat works. `bb boat doctor` checks Instabox when it's on, and `bb boat providers` shows each provider's state. With Instabox off or no key, its projects' new tasks refuse with what to do.
+- List sandboxes, previews, snapshots and usage across every enabled provider. One that can't be reached is named, and its sandboxes count as unknown, never gone.
+- Check out repos, check the GitHub login and ship over any provider's exec, and run boat.dev's login-script and disk-trim steps only on boat.dev.
 - Wake Boat sandboxes gently: at most 2 a minute account-wide, with a doubling pause after a failed wake, on every path that resumes one.
 - Turn off Ubuntu's login message scripts over boat's exec API before bb's SSH setup; one could hang on a file not restored yet, so SSH sessions never started.
 - Tell why a sandbox didn't wake (boat.dev still restoring its disk, a refused restore, a stuck SSH session, SSH unreachable) on bb's machine card and the sandbox's tasks. Retry later by itself (2 to 16 minutes), and after 5 failures put it under Needs you.

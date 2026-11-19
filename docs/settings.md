@@ -91,6 +91,8 @@ inherits the global setting; an explicit native task drawer choice wins.
 | Advanced | Where reviews run | `reviewSandbox` | `auto` (a new sandbox if there's room); `new`, `same` |
 | Advanced | Extra protected branches | `extraProtectedBranches` | empty |
 | Advanced | boat CLI location | `boatPath` | empty (finds `~/.ascii/bin/boat`, then `PATH`) |
+| Advanced | Instabox | `instaboxEnabled` | off (every project runs on boat.dev) |
+| Advanced | Instabox CLI location | `instaboxPath` | empty (finds `instabox` on `PATH`) |
 
 Each row in the plugin's settings has a short description. For example:
 
@@ -100,6 +102,31 @@ bb boat config set orchestratorEffort medium
 bb boat config set cloudOrchestratorFullAccess false
 bb boat config reset relaySwitchAt
 ```
+
+## Sandbox providers
+
+boat.dev is always on and the default. Instabox (Linux machines) is a second
+provider, off until you turn it on:
+
+1. Install its CLI where bb runs: `npm install -g instabox`.
+2. Create an API key: `instabox keys create --name bb`.
+3. Store the key in bb: Settings → Plugins → Boat Cloud Agents → **Instabox
+   API key**. bb keeps it as a secret setting (a 0600 file in its data
+   folder), never in the plugin's database, a backup, the page or a log.
+   Only the server reads it, to hand it to the CLI (`INSTABOX_API_KEY`) and
+   the API (`X-API-Key`).
+4. Turn Instabox on: `bb boat config set instaboxEnabled true`.
+5. Check it: `bb boat doctor` (or `bb boat providers`).
+6. Pick where each project runs: `bb boat config runs-on <project> instabox`
+   (or `bb boat project set <project> --runs-on instabox`). New tasks of that
+   project start there; tasks already started stay where they are.
+
+Task chats on Instabox (bb on the machine) are offered once the plugin
+reloads with Instabox on. Instabox pauses a machine that looks idle for 30
+minutes and doesn't count a bb chat as activity, so while a task chat works
+the plugin holds an activity lease on its machine. With Instabox off or no
+key stored, a project that runs there refuses new tasks with what to do, and
+nothing goes to boat.dev instead.
 
 **Agent for orchestrators** was "Main agent for orchestrators" under Usage
 limits; it kept its key, so backups still set it. What both orchestrator
