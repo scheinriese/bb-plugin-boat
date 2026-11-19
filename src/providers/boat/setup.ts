@@ -780,6 +780,8 @@ export interface PreflightInput {
   environment?: string | null;
   /** A new sandbox will be created: the plan must allow starts. */
   newSandbox?: boolean;
+  /** The sandbox's provider when it isn't boat.dev (its own checks apply instead of boat's). */
+  provider?: string;
 }
 
 export interface SetupProblem {

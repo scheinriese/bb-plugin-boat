@@ -22,6 +22,8 @@ export const DEFAULT_PROVIDER_ID = "boat";
 /** Every provider this plugin has an adapter for: where a project's work can run. */
 export const PROVIDER_IDS = ["boat", "instabox"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
+/** Their names in the plugin's words (a provider that isn't enabled is named too). */
+export const PROVIDER_NAMES: Record<ProviderId, string> = { boat: "boat.dev", instabox: "Instabox" };
 
 // ------------------------------------------------------------------ sizes and states
 

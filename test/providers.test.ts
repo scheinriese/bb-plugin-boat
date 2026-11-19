@@ -14,7 +14,8 @@ import { BoatError } from "../src/providers/boat/cli.ts";
 import { githubLogin, prepareRepo, ship, shipScript } from "../src/sandbox-repos.ts";
 import { explainBoatError } from "../src/providers/boat/words.ts";
 import { registerSandboxMachine } from "../src/providers/machine.ts";
-import { BoatService } from "../src/service.ts";
+import { BoatService, TaskError } from "../src/service.ts";
+import { normalizeProject, toOrchestratorProject } from "../src/projects.ts";
 import { TaskStore, type Task } from "../src/store.ts";
 import { FakeBoat, defaultSettings, memoryStore } from "./fakes.ts";
 
@@ -533,4 +534,118 @@ test("any provider with bb enrollment registers as a bb machine provider, in its
   assert.equal((await definition.remove({ resource: { sandboxId: "ot_1", key: "k1" } })).status, "removed");
   assert.deepEqual(deleted, ["ot_1"]);
   assert.equal((await definition.remove({ resource: { sandboxId: "ot_1", key: "k1" } })).status, "removed", "already gone counts as removed");
+});
+
+/** A second provider for the neutral code: boat's members on a FakeBoat, under its own id and sandbox ids. */
+function otherProvider(fake = new FakeBoat(), overrides: Partial<SandboxProvider> = {}): SandboxProvider {
+  return {
+    ...createBoatProvider(fake as unknown as BoatApi),
+    id: "instabox",
+    displayName: "Other",
+    idPattern: /^bx_/,
+    machine: undefined,
+    machineHooks: undefined,
+    caps: { ...createBoatProvider(fake as unknown as BoatApi).caps, environments: false, concurrencyUnit: "kept-sandboxes" },
+    ...overrides,
+  };
+}
+
+test("a new task runs where its project runs (Runs on): the stored project decides, its parent and a named sandbox come first", async () => {
+  const boatFake = new FakeBoat();
+  const otherFake = new FakeBoat();
+  otherFake.limitsValue = { ...otherFake.limitsValue, maxActiveSandboxes: 10 };
+  const boat = createBoatProvider(boatFake as unknown as BoatApi);
+  const other = otherProvider(otherFake);
+  const store = memoryStore();
+  const projects = [
+    { id: "web", name: "Web app", repos: [{ repo: "acme/web" }], machineType: null, sandboxProvider: "instabox" },
+    { id: "api", name: "API", repos: [{ repo: "acme/api" }], machineType: null },
+  ];
+  const service = new BoatService(createProviderRegistry([boat, other]), store, { ...hooks(), repos: { prepareRepo: async (_provider, id, repo) => ({ path: `/home/user/work/${repo.split("/")[1]}`, branch: "b", baseBranch: "main" }), githubLogin: async () => ({ valid: true, expiresAt: null }), ship: async () => ({ shipped: [] }) }, projects: () => projects });
+  const web = toOrchestratorProject(normalizeProject({ id: "web", name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }] }));
+  const { task } = await service.launchTask({ title: "On the other one", role: "implement", brief: "x", project: web }, 5_000);
+  assert.equal(task.sandboxProvider, "instabox");
+  assert.equal(otherFake.created.length, 1);
+  assert.equal(boatFake.created.length, 0);
+  // Orchestrator metadata can't move it: only the stored project counts (the repo's project here).
+  const { task: byRepo } = await service.launchTask({ title: "By repo", role: "implement", brief: "x", repo: "acme/web" }, 5_000);
+  assert.equal(byRepo.sandboxProvider, "instabox");
+  // A project that doesn't choose, and a repo in none: boat.dev, the record without the key as before.
+  const { task: onBoat } = await service.launchTask({ title: "Default", role: "implement", brief: "x", repo: "acme/api" }, 5_000);
+  assert.equal(onBoat.sandboxProvider, undefined);
+  assert.equal(boatFake.created.length, 1);
+  // A follow-up review in a new sandbox goes where its parent is.
+  const review = await service.launchTask({ title: "Review", role: "review", brief: "x", parentTaskId: task.id, sandbox: "new" }, 5_000);
+  assert.equal(review.task.sandboxProvider, "instabox");
+});
+
+test("a project on a provider that isn't on refuses its new task with what to do, and starts nothing elsewhere", async () => {
+  const boatFake = new FakeBoat();
+  const registry = createProviderRegistry([createBoatProvider(boatFake as unknown as BoatApi), otherProvider()], { isEnabled: () => false });
+  const projects = [{ id: "web", name: "Web app", repos: [{ repo: "acme/web" }], machineType: null, sandboxProvider: "instabox" }];
+  const service = new BoatService(registry, memoryStore(), { ...hooks(), projects: () => projects });
+  await assert.rejects(service.launchTask({ title: "x", role: "implement", brief: "x", repo: "acme/web" }, 5_000), (error: unknown) => {
+    assert.ok(error instanceof TaskError);
+    assert.equal(error.code, "provider_unavailable");
+    assert.match(error.message, /^Web app runs on Instabox, which isn't turned on, so its task can't start\.$/);
+    assert.match(error.hint ?? "", /bb boat config set instaboxEnabled true/);
+    return true;
+  });
+  assert.equal(boatFake.created.length, 0);
+});
+
+test("account-wide reads go over every enabled provider: one that fails leaves the others' in, and nothing reads as gone", async () => {
+  const boatFake = new FakeBoat();
+  const otherFake = new FakeBoat();
+  boatFake.addSandbox("bx_1", "default");
+  otherFake.addSandbox("bx_other", "small", "stopped");
+  let down = false;
+  const other = otherProvider(otherFake, {
+    list: async (options) => {
+      if (down) throw new ProviderError("upstream unavailable", { code: "host_unavailable", status: 503 });
+      return otherFake.list(options);
+    },
+    snapshots: async () => ({ snapshots: [{ name: "other-snap", sizeBytes: null, createdAt: null, sourceSandboxId: null, status: "ready", type: null }], included: null, used: null }),
+  });
+  const service = new BoatService(createProviderRegistry([createBoatProvider(boatFake as unknown as BoatApi), other]), memoryStore(), hooks());
+  const listed = await service.listSandboxes({ all: true });
+  assert.deepEqual(listed.sandboxes.map((sandbox) => [sandbox.id, sandbox.provider]), [["bx_1", "boat"], ["bx_other", "instabox"]]);
+  assert.deepEqual(listed.failed, []);
+  const snapshots = await service.snapshots();
+  assert.deepEqual(snapshots.snapshots.map((snapshot) => [snapshot.name, snapshot.provider]), [["other-snap", "instabox"]]);
+  down = true;
+  const partial = await service.listSandboxes({ all: true });
+  assert.deepEqual(partial.sandboxes.map((sandbox) => sandbox.id), ["bx_1"]);
+  assert.deepEqual(partial.failed, [{ provider: "instabox", error: "upstream unavailable" }]);
+  // With boat.dev alone, its failure is thrown as it always was.
+  boatFake.list = async () => {
+    throw new BoatError("boat is down", { code: "boat_failed" });
+  };
+  const alone = new BoatService(createProviderRegistry([createBoatProvider(boatFake as unknown as BoatApi)]), memoryStore(), hooks());
+  await assert.rejects(alone.listSandboxes(), /boat is down/);
+  // Every provider failing: the first error.
+  await assert.rejects(service.listSandboxes(), /boat is down/);
+});
+
+test("a provider whose stopped sandboxes still count makes no room by stopping one, and its projects have no environment", async () => {
+  const otherFake = new FakeBoat();
+  otherFake.limitsValue = { ...otherFake.limitsValue, activeSandboxes: 2, maxActiveSandboxes: 2, canStart: true };
+  otherFake.addSandbox("bx_idle", "default", "idle");
+  otherFake.addSandbox("bx_idle2", "default", "idle");
+  const other = otherProvider(otherFake);
+  const store = memoryStore();
+  store.insert(taskRecord({ id: "t_idle", status: "idle", sandboxId: "bx_idle", sandboxProvider: "instabox" }));
+  const service = new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi), other]), store, hooks());
+  await assert.rejects(service.createSandbox({ name: "x", sandboxProvider: other }), (error: unknown) => error instanceof TaskError && error.code === "boat_at_capacity" && !/boat billing/.test(error.hint ?? ""));
+  assert.ok(!otherFake.calls.some((call) => call.startsWith("stop")), "nothing stopped to make room");
+  // No named environments there: none is asked for, whatever the setting.
+  const created: unknown[] = [];
+  otherFake.limitsValue = { ...otherFake.limitsValue, activeSandboxes: 0, maxActiveSandboxes: 9 };
+  const realCreate = otherFake.create.bind(otherFake);
+  otherFake.create = async (options) => {
+    created.push(options.environment);
+    return realCreate(options);
+  };
+  await service.createSandbox({ name: "y", environment: "web", sandboxProvider: other });
+  assert.deepEqual(created, [null]);
 });
