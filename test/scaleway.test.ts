@@ -236,6 +236,30 @@ test("shared hand-back releases an empty Scaleway Mac after its minimum with the
   assert.equal(f.store.macLeases.list()[0]?.machineId,sandbox.id);assert.deepEqual(await f.keys.records(),[]);
 });
 
+test("Scaleway's no-op stop preserves unknown work without a permanent keep, then permits clean hand-back",async t=>{
+  const f=await fixture(t);const sandbox=await f.create();const chat=new FakeChat();
+  const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{settings:async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:"",deleteSandboxOnClose:false}),chat,lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+  const task=await service.startTask({title:"Mac task",brief:"Check tools",role:"custom",sandboxSystem:"macos",runner:"chat"});
+  assert.equal(task.status,"running",task.error??"");assert.equal(task.sandboxId,sandbox.id);
+  chat.finish(task.threadId!,"done");
+  f.store.update(task.id,{status:"idle",repo:"acme/mac",repoPath:"/work/mac",baseBranch:"main",delivery:"push",turns:1});
+  let clean=false;const exec=f.provider.exec;
+  f.provider.exec=async(id,script,options)=>script.includes("BOAT_AHEAD")?{exitCode:0,stdout:clean?"BOAT_AHEAD 0 clean\n":"BOAT_AHEAD x x\n",stderr:""}:exec(id,script,options);
+  await service.closeTask(task.id);
+  const lease=f.store.macLeases.held()[0]!;
+  assert.equal(lease.kept,false);assert.equal(f.store.macLeases.tasks(lease.id)[0]!.workOutcome,"unknown");
+  await f.provider.stop(sandbox.id);
+  assert.equal((await f.provider.info(sandbox.id)).state,"idle");
+  await f.provider.scheduleLeaseRelease!(sandbox.id,lease.paidUntil);f.store.macLeases.schedule(lease.id,lease.paidUntil);
+  await service.processMacLeases();
+  assert.equal(f.servers()[0]!.deletion_scheduled,false);
+  assert.equal(f.store.macLeases.held()[0]!.releaseAt,null);assert.equal(f.store.macLeases.held()[0]!.kept,false);
+  assert.ok(!f.calls.some(c=>c.method==="DELETE"&&c.path.includes("/servers/")));
+  clean=true;await service.processMacLeases();
+  assert.equal(f.store.macLeases.tasks(lease.id)[0]!.workOutcome,"clean");
+  assert.equal(f.store.macLeases.held().length,0);assert.equal(f.store.macLeases.list()[0]!.endReason,"handed back");
+});
+
 test("a provider that requires bb chats is skipped before renting for a headless Mac task",async()=>{
   const f=await routing("scaleway");const task=f.store.update(f.task.id,{runner:"boat"})!;
   await f.seam.createMacFor(task,"default",new AbortController().signal);

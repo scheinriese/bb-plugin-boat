@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import type Database from "better-sqlite3";
-import { MacLeaseLedger, LEASE_DAY_MS } from "../src/mac-leases.ts";
+import { MacLeaseLedger, LEASE_DAY_MS, MAC_LEASE_MIGRATIONS } from "../src/mac-leases.ts";
 import { TaskStore } from "../src/store.ts";
 import { macRunsOnBatch } from "../src/mac-lease-view.ts";
 import { runsOnNote } from "../web/providers-logic.ts";
@@ -74,12 +74,12 @@ test("scheduled release is durable and missing machines end at the scheduled ins
   assert.equal(ledger.list()[0]!.endedAt,lease.paidUntil);
   near(ledger.between(at,Infinity,at+2*LEASE_DAY_MS).costs.USD!,10.8);
 });
-test("unpublished lease schema creates billing, keep, reminder and attachment indexes directly", () => {
+test("base lease schema creates billing, keep, reminder and attachment indexes directly", () => {
   const {db}=fixture();
   const columns=(db.prepare("PRAGMA table_info(mac_leases)").all() as {name:string}[]).map(row=>row.name);
   for(const name of ["minimum_cost","hour_price","kept","release_at","notice_at","notice_text"])assert.ok(columns.includes(name));
   assert.ok(!columns.includes("day_price"));
-  assert.ok(!TaskStore.migrations().some(sql=>/ALTER TABLE mac_leases|UPDATE mac_leases/.test(sql)));
+  assert.ok(!MAC_LEASE_MIGRATIONS.some(sql=>/ALTER TABLE mac_leases|UPDATE mac_leases/.test(sql)));
   assert.equal((db.prepare("PRAGMA index_info(mac_lease_tasks_task)").get() as {name:string}).name,"task_id");
 });
 test("close outcomes and page notices persist together with the reminder throttle", () => {
@@ -143,4 +143,19 @@ test("Scaleway bills its minimum plus begun hours, split across UTC months with 
   ledger.end(lease.id,"handed back",minimumEnd+hour/2);
   near(ledger.between(start,Infinity,minimumEnd+20*LEASE_DAY_MS).costs.EUR!,2.75);
   assert.equal(ledger.list()[0]!.paidUntil,lease.paidUntil);
+});
+
+test("upgrading the main lease schema preserves existing Instabox billing",()=>{
+  const db=new DatabaseSync(":memory:");
+  const migrations=TaskStore.migrations();
+  for(const sql of migrations.slice(0,-1))db.exec(sql);
+  db.prepare(`INSERT INTO mac_leases (id,provider,machine_id,size,started_at,paid_until,minimum_cost,hour_price,currency,cpus,memory_mib)
+    VALUES ('instabox:existing','instabox','existing','m2',?,?,10.8,0.45,'USD',8,16384)`)
+    .run(new Date(at).toISOString(),new Date(at+LEASE_DAY_MS).toISOString());
+  db.exec(migrations.at(-1)!);
+  const ledger=new MacLeaseLedger(()=>db as unknown as Database.Database);
+  const lease=ledger.held()[0]!;
+  assert.equal(lease.billingIncrementSeconds,1);
+  near(ledger.cost(lease,at+25*hour+30*1000),10.8+0.45*(1+1/120));
+  assert.equal(lease.provider,"instabox");assert.equal(lease.kept,false);
 });

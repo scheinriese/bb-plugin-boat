@@ -3,9 +3,10 @@
 // The minimum end never advances locally.
 import type Database from "better-sqlite3";
 export const LEASE_DAY_MS = 24 * 60 * 60 * 1000;
-// This lease schema is unpublished: create its final shape directly.
+// Base schema from Instabox Mac leases. Append upgrades in TaskStore.migrations
+// after the existing task-system migration to preserve its ordering.
 export const MAC_LEASE_MIGRATIONS = [
-  `CREATE TABLE mac_leases (id TEXT PRIMARY KEY, provider TEXT NOT NULL, machine_id TEXT NOT NULL, size TEXT NOT NULL, started_at TEXT NOT NULL, paid_until TEXT NOT NULL, minimum_cost REAL NOT NULL, hour_price REAL NOT NULL, currency TEXT NOT NULL, cpus INTEGER NOT NULL, memory_mib INTEGER NOT NULL, ended_at TEXT, end_reason TEXT, notice_at TEXT, notice_text TEXT, kept INTEGER NOT NULL DEFAULT 0, release_at TEXT, billing_increment_seconds INTEGER NOT NULL DEFAULT 1)`,
+  `CREATE TABLE mac_leases (id TEXT PRIMARY KEY, provider TEXT NOT NULL, machine_id TEXT NOT NULL, size TEXT NOT NULL, started_at TEXT NOT NULL, paid_until TEXT NOT NULL, minimum_cost REAL NOT NULL, hour_price REAL NOT NULL, currency TEXT NOT NULL, cpus INTEGER NOT NULL, memory_mib INTEGER NOT NULL, ended_at TEXT, end_reason TEXT, notice_at TEXT, notice_text TEXT, kept INTEGER NOT NULL DEFAULT 0, release_at TEXT)`,
   `CREATE UNIQUE INDEX mac_leases_held ON mac_leases(provider, machine_id) WHERE ended_at IS NULL`,
   `CREATE TABLE mac_lease_tasks (lease_id TEXT NOT NULL REFERENCES mac_leases(id), task_id TEXT NOT NULL, attached_at TEXT NOT NULL, cpus INTEGER NOT NULL, memory_mib INTEGER NOT NULL, work_outcome TEXT, work_turns INTEGER, PRIMARY KEY(lease_id, task_id))`,
   `CREATE INDEX mac_lease_tasks_task ON mac_lease_tasks(task_id)`,

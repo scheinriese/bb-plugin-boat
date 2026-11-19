@@ -140,4 +140,6 @@ and running compute cost, rather than daily lease renewals.
 The same ledger also supports provider-supplied `billingIncrementSeconds`.
 Its default preserves Instabox's elapsed-time rate. Scaleway supplies 3600: a
 24-hour minimum plus each begun hour after it, split across UTC months. See
-[Scaleway setup and sources](scaleway-mac-leases.md).
+[Scaleway setup and sources](scaleway-mac-leases.md). The increment column is
+added after the existing main migrations, preserving held Instabox leases and
+their elapsed-time billing on upgrade.

@@ -546,7 +546,8 @@ export class TaskStore {
   }
 
   static migrations(): string[] {
-    return [...MIGRATIONS, ...MAC_LEASE_MIGRATIONS, `ALTER TABLE tasks ADD COLUMN sandbox_system TEXT NOT NULL DEFAULT 'linux'`];
+    return [...MIGRATIONS, ...MAC_LEASE_MIGRATIONS, `ALTER TABLE tasks ADD COLUMN sandbox_system TEXT NOT NULL DEFAULT 'linux'`,
+      `ALTER TABLE mac_leases ADD COLUMN billing_increment_seconds INTEGER NOT NULL DEFAULT 1`];
   }
 
   insert(task: Task): Task {
