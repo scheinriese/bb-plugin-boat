@@ -176,6 +176,22 @@ export interface ExplainedError {
   hint: string | null;
 }
 
+/** What a provider said of a stop (boat stop). */
+export interface StopReport {
+  /** pending, failing, completed, superseded (null: not said). */
+  status: string | null;
+  /** The stop's id, to ask after it (stopStatus). */
+  stopId: string | null;
+  /** A forced stop: whether the provider forced it (false: it's still pending instead). */
+  forced: boolean | null;
+  /**
+   * The provider's reason when it won't stop it (boat.dev: "Final snapshot
+   * failed; stop aborted to protect unsaved data …"), even while the status
+   * still reads pending. Non-null: refused. Absent or null: none given.
+   */
+  error?: string | null;
+}
+
 // ------------------------------------------------------------------ exec and processes
 
 export interface ExecResult {
@@ -461,8 +477,18 @@ export interface SandboxLifecycle {
   create(options: CreateSandboxOptions): Promise<SandboxInfo>;
   /** boat delete --yes */
   delete(sandboxId: string, signal?: AbortSignal): Promise<void>;
-  /** boat stop: keeps the disk and the agent's conversations. */
-  stop(sandboxId: string, signal?: AbortSignal): Promise<void>;
+  /**
+   * boat stop [--force]: keeps the disk and the agent's conversations, and
+   * says what became of the stop. force: stop even if the provider can't
+   * snapshot the disk (what was written since its last snapshot is lost).
+   */
+  stop(sandboxId: string, signal?: AbortSignal, options?: { force?: boolean }): Promise<StopReport>;
+  /** boat stop <id> --status <stop id>: an earlier stop's status (it never stops again). */
+  stopStatus(sandboxId: string, stopId: string, signal?: AbortSignal): Promise<StopReport>;
+  /** boat fork --wait: a new sandbox from this one's latest snapshot, up. */
+  fork(sandboxId: string, options?: { noSnapshots?: boolean; ttlSeconds?: number; signal?: AbortSignal }): Promise<{ id: string }>;
+  /** boat snapshots <id>: when its last snapshot completed (null: none, or not said). */
+  lastSnapshotAt(sandboxId: string, signal?: AbortSignal): Promise<string | null>;
   /** boat resume [--ttl] [--type] */
   resume(sandboxId: string, options: ResumeOptions): Promise<void>;
   /** boat extend --ttl: the auto-stop this many seconds from now; returns the seconds set (the plan's cap may lower them). */
@@ -471,8 +497,11 @@ export interface SandboxLifecycle {
 
 /** Commands in a sandbox, and what runs there. */
 export interface SandboxExec {
-  /** boat exec --timeout -- bash -lc <script> */
-  exec(sandboxId: string, script: string, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<ExecResult>;
+  /**
+   * boat exec --timeout -- bash -lc <script>. login false: a plain
+   * `bash -c` that never reads the login profile (it may not be restored yet).
+   */
+  exec(sandboxId: string, script: string, options?: { timeoutMs?: number; signal?: AbortSignal; login?: boolean }): Promise<ExecResult>;
   /** boat exec --detach -- bash -lc <script>: it outlives the call. */
   execDetached(sandboxId: string, script: string, signal?: AbortSignal): Promise<{ pid: number | null }>;
   /** boat ps: the sandbox's processes (its last stored sample when it's stopped). */

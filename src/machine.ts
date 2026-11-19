@@ -8,9 +8,8 @@
 // history`). While boat.dev is still restoring the disk, the setup would
 // also block on files not restored yet over exec; what helps is waiting
 // (src/wake-retry.ts) and keeping SSH logins from hanging (src/login-scripts.ts).
-import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
-import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { reviewerSchema } from "../contract-review.ts";
 import { ACTIVE_STATES, MACHINE_TYPES, type BoatApi, type MachineType, type StopReport } from "./providers/boat/api.ts";
@@ -25,6 +24,9 @@ import { TeardownBackoff } from "./teardown-backoff.ts";
 import type { HostPrep } from "./bb-update.ts";
 import { stopOutcome } from "./node-move.ts";
 import { trimFreedBlocks } from "./disk-trim.ts";
+import { sshExecutor } from "./providers/boat/ssh.ts";
+
+export { sshExecutor };
 
 export const MACHINE_PROVIDER_ID = "boat-sandbox";
 
@@ -58,64 +60,12 @@ const adoptedKey = (key: string) => `machineSandbox:${key}`;
  */
 export const keepSandboxKey = (key: string) => `machineKeep:${key}`;
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
 function machineName(key: string): string {
   return `bb machine ${key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24)}`;
 }
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Runs bootstrap commands over `boat ssh`, which streams output and keeps
- * stdin (enrollment secrets) out of boat's command history.
- */
-export function sshExecutor(cli: BoatCli, sandboxId: string): MachineExecutor {
-  return {
-    async exec({ command, stdin, timeoutMs, signal, onOutput }) {
-      signal.throwIfAborted();
-      const binary = await cli.binary();
-      signal.throwIfAborted();
-      // ssh hands the remote side one command string; quote each argv entry
-      // and run it in a login shell so the sandbox's node (nvm) is on PATH.
-      const remote = `bash -lc ${shellQuote(command.map(shellQuote).join(" "))}`;
-      return new Promise<{ exitCode: number }>((resolve, reject) => {
-        const child = spawn(binary, ["ssh", sandboxId, remote], {
-          env: { ...process.env, BOAT_NO_UPDATE: "1", NO_COLOR: "1" },
-          stdio: ["pipe", "pipe", "pipe"],
-        });
-        let settled = false;
-        const finish = (fn: () => void) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          signal.removeEventListener("abort", onAbort);
-          fn();
-        };
-        const timer = setTimeout(() => {
-          child.kill("SIGTERM");
-          finish(() => reject(new Error(`command timed out after ${Math.round(timeoutMs / 1000)}s`)));
-        }, timeoutMs);
-        const onAbort = () => {
-          child.kill("SIGTERM");
-          finish(() => reject(new Error("aborted")));
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-        child.stdout.setEncoding("utf8");
-        child.stderr.setEncoding("utf8");
-        child.stdout.on("data", (chunk: string) => onOutput(chunk));
-        child.stderr.on("data", (chunk: string) => onOutput(chunk));
-        child.on("error", (error) => finish(() => reject(error)));
-        child.on("close", (code) => finish(() => resolve({ exitCode: code ?? 1 })));
-        child.stdin.on("error", () => undefined);
-        child.stdin.end(stdin);
-      });
-    },
-  };
 }
 
 export function registerBoatMachine(

@@ -28,6 +28,7 @@ import {
   type ShipConflict,
   type ShipResult,
   type ShipTarget,
+  type StopReport,
 } from "../types.ts";
 
 // The shapes boat's answers are read into live in ../types.ts (every
@@ -50,6 +51,7 @@ export type {
   ShipConflict,
   ShipResult,
   ShipTarget,
+  StopReport,
 };
 /** A sandbox as `boat info` and `boat list` report it. */
 export type Sandbox = SandboxInfo;
@@ -615,19 +617,6 @@ export function conflictReason(baseBranch: string, conflict: ShipConflict, shipp
   const full = detail(3, 3);
   const where = full.length <= CONFLICT_DETAIL_MAX ? full : detail(1, 1);
   return `its commits conflict with the latest ${baseBranch}${where}. The task's agent must rebase and resolve them`;
-}
-
-/** What boat printed of a stop. */
-export interface StopReport {
-  status: string | null;
-  stopId: string | null;
-  forced: boolean | null;
-  /**
-   * boat's reason when it won't stop it (live: "Final snapshot failed; stop
-   * aborted to protect unsaved data …"), even while the status still reads
-   * pending. Non-null: refused. Absent or null: none given.
-   */
-  error?: string | null;
 }
 
 export function stopReport(records: JsonRecord[]): StopReport {
