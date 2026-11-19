@@ -1,5 +1,5 @@
 import { canHostMac, macTaskResources } from "./providers/types.ts";
-import type { MacLease } from "./mac-leases.ts";
+import type { MacLease, MacWorkOutcome } from "./mac-leases.ts";
 import { reviewerSchema, type Reviewer } from "../contract-review.ts";
 import { resolveReviewer, reviewGeneration, nativeReviewSourceSchema, type NativeReviewSource } from "./review-policy.ts";
 import { getPullRequest, pullRequestNumber } from "./github.ts";
@@ -1922,7 +1922,7 @@ export class BoatService {
             const need = macTaskResources(this.sandboxProvider(task), sizing.type);
             if (open.size > used.length || used.reduce((n,t) => n+t.cpus,0)+need.vcpus > lease.cpus || used.reduce((n,t) => n+t.memoryMiB,0)+need.memMiB > lease.memoryMiB) throw new TaskError("This Mac lease has no room for another task.", "sandbox_full");
           }
-          {
+          if (canHostMac(this.sandboxProvider(task))) {
             const current = await this.sandboxProvider(task).info(reuse, signal);
             if (current.system === "macos" && task.sandboxSystem !== "macos") throw new TaskError("Linux tasks cannot use a Mac sandbox.", "invalid_task");
           }
@@ -2494,28 +2494,49 @@ export class BoatService {
     }
   }
 
-  /** Attachment history includes archived/cancelled tasks whose checkout is
-   * still the only copy of their work. Status never authorizes deleting it. */
-  private async macLeaseHasUnshippedWork(lease: MacLease): Promise<boolean> {
-    for (const attached of this.store.macLeases.tasks(lease.id)) {
-      const task = this.store.get(attached.taskId);
-      if (task && await this.holdsUnshippedWork(task, this.hooks.lifecycle)) return true;
-    }
-    return false;
+  /** Closing records a conclusive result before finishedAt changes can hide a
+   * ship. An unavailable probe is temporary uncertainty, never a sticky keep. */
+  private async macCloseOutcome(task: Task, signal?: AbortSignal, discarded = false, shipped = this.shippedSinceLastTurn(task)): Promise<MacWorkOutcome> {
+    if (discarded) return "discarded";
+    if (shipped) return "shipped";
+    if (task.delivery !== "push" || task.role === "review" || task.turns === 0) return "clean";
+    const count = await this.unshippedCommits(task, signal);
+    return count === null ? "unknown" : count > 0 ? "unshipped" : "clean";
   }
 
-  private async macLeaseNotice(lease: MacLease, tasks: readonly Task[], now: number, kept: boolean): Promise<void> {
+  private async macLeaseWorkState(lease: MacLease): Promise<"resolved" | "unshipped" | "unknown"> {
+    let unknown = false;
+    for (const attached of this.store.macLeases.tasks(lease.id)) {
+      const task = this.store.get(attached.taskId);
+      if (!task) { unknown = true; continue; }
+      const closed = task.status === "done" || task.status === "cancelled";
+      let outcome = closed && attached.workTurns === task.turns ? attached.workOutcome : null;
+      if (!outcome || outcome === "unknown") {
+        outcome = await this.macCloseOutcome(task,this.hooks.lifecycle);
+        if (closed) this.store.macLeases.resolveTask(lease.id,task.id,outcome,task.turns);
+      }
+      if (outcome === "unshipped") return "unshipped";
+      if (outcome === "unknown") unknown = true;
+    }
+    return unknown ? "unknown" : "resolved";
+  }
+
+  private async macLeaseNotice(lease: MacLease, tasks: readonly Task[], now: number, kept: boolean | "unknown"): Promise<void> {
     const threads = [...new Set(tasks.map(t => t.orchestratorThreadId).filter((id): id is string => id !== null))];
     const pastMinimum = now >= Date.parse(lease.paidUntil);
-    if (!threads.length || !this.hooks.tell || !this.store.macLeases.warn(lease.id,now,pastMinimum)) return;
+    const pageNotice = !this.hooks.tell || tasks.length === 0 || tasks.some(task => task.orchestratorThreadId === null);
     const money = (amount: number) => new Intl.NumberFormat("en-US",{style:"currency",currency:lease.currency}).format(amount);
     const cost = money(this.store.macLeases.cost(lease,now));
     const rate = money(lease.hourPrice);
     const time = new Intl.DateTimeFormat(undefined,{hour:"2-digit",minute:"2-digit",timeZoneName:"short"}).format(new Date(lease.paidUntil));
-    const text = kept
+    const text = kept === "unknown"
+      ? `[boat] Mac unshipped work could not be checked; compute cost ${cost} so far; ${rate}/h after the minimum. Resume it to check its work before hand-back.`
+      : kept
       ? `[boat] Mac lease is kept; compute cost ${cost} so far; ${rate}/h billed per second after the minimum. Automatic hand-back is off; delete it manually when its work is safe.`
       : `[boat] Mac lease's paid time ${pastMinimum ? "ended" : "ends"} at ${time}; after that it bills per second while tasks ${tasks.map(t=>t.id).join(", ")} sit idle; compute cost ${cost} so far; close them to hand it back`;
-    for (const thread of threads) await this.hooks.tell(thread,text);
+    if (!this.store.macLeases.warn(lease.id,now,pastMinimum,pageNotice ? text : null)) return;
+    this.hooks.changed([]);
+    if (this.hooks.tell) for (const thread of threads) await this.hooks.tell(thread,text);
   }
 
   /** Provider-neutral minimum/rate policy. No local extension of paid time. */
@@ -2530,18 +2551,25 @@ export class BoatService {
         const machines = await provider.list({ all: true, signal: this.hooks.lifecycle });
         this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)), now);
         for (const lease of this.store.macLeases.held().filter(lease => lease.provider === provider.id)) {
-          const open = this.store.liveSandboxTasks(lease.machineId);
-          const unshipped = !lease.kept && open.length === 0 && await this.macLeaseHasUnshippedWork(lease);
-          if (unshipped || lease.kept) {
-            await this.keepMacLease(lease, this.hooks.lifecycle);
-            if (now >= Date.parse(lease.paidUntil)) {
-              const attached = this.store.macLeases.tasks(lease.id).flatMap(t => { const task=this.store.get(t.taskId); return task ? [task] : []; });
-              await this.macLeaseNotice(lease,attached,now,true);
-            }
-            continue;
-          }
           const minimumEnd = Date.parse(lease.paidUntil);
           if (now < minimumEnd-(settings.macHandBackMarginMinutes ?? 30)*60_000) continue;
+          const open = this.store.liveSandboxTasks(lease.machineId);
+          const attached = () => this.store.macLeases.tasks(lease.id).flatMap(t => { const task=this.store.get(t.taskId); return task ? [task] : []; });
+          const work = !lease.kept && !open.length ? await this.macLeaseWorkState(lease) : "resolved";
+          if (work === "unknown") {
+            if (lease.releaseAt) {
+              if (!provider.cancelLeaseRelease) continue;
+              await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
+              this.store.macLeases.schedule(lease.id,null);
+            }
+            if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,"unknown");
+            continue;
+          }
+          if (work === "unshipped" || lease.kept) {
+            await this.keepMacLease(lease, this.hooks.lifecycle);
+            if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,true);
+            continue;
+          }
           if (open.length) {
             const threshold = (settings.macIdleNoticeMinutes ?? 60)*60_000;
             if (open.every(t => t.status !== "running" && t.status !== "starting" && now-Date.parse(t.updatedAt) >= threshold) && !(await this.sandboxWorkRuns(lease.machineId))) {
@@ -2552,7 +2580,15 @@ export class BoatService {
           if (this.holdsSandbox(lease.machineId) || await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
           const current = await provider.findInfo(lease.machineId, this.hooks.lifecycle);
           if (await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
-          if (await this.macLeaseHasUnshippedWork(lease)) { await this.keepMacLease(lease,this.hooks.lifecycle); continue; }
+          const checked = await this.macLeaseWorkState(lease);
+          if (checked === "unshipped") { await this.keepMacLease(lease,this.hooks.lifecycle); continue; }
+          if (checked === "unknown") {
+            if (lease.releaseAt && provider.cancelLeaseRelease) {
+              await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
+              this.store.macLeases.schedule(lease.id,null);
+            }
+            continue;
+          }
           const latest = this.store.macLeases.held(lease.machineId).find(l => l.id === lease.id);
           // Re-read after I/O. Nothing awaits between this guard and release.
           if (this.store.liveSandboxTasks(lease.machineId).length || this.holdsSandbox(lease.machineId) || !latest || latest.kept) continue;
@@ -4792,6 +4828,12 @@ export class BoatService {
     idOrPrefix: string,
     options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal } = {},
   ): Promise<{ task: Task; sandbox: "deleted" | "kept" | "gone" | "none" }> {
+    const task = this.mustGet(idOrPrefix);
+    const mac = task.sandboxId !== null && this.store.macLeases.held(task.sandboxId).length > 0;
+    return mac ? this.withMacLock(() => this.closeTaskInner(idOrPrefix,options)) : this.closeTaskInner(idOrPrefix,options);
+  }
+
+  private async closeTaskInner(idOrPrefix: string, options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal }): Promise<{ task: Task; sandbox: "deleted" | "kept" | "gone" | "none" }> {
     const settings = await this.settings();
     let task = this.mustGet(idOrPrefix);
     this.sizes.assertNotResizing(task, "close"); // sizes
@@ -4813,15 +4855,10 @@ export class BoatService {
         "Ship it once the user approves (Ship on the overview, or boat_ship after their OK in chat), or ask the user whether to throw the work away.",
       );
     }
-    // The general keep-on-close setting must not rent an empty Mac forever.
-    // Only an explicit keep, or work preserved by the setting, exempts it.
-    const permanentMacKeep = keep && task.sandboxId !== null && this.store.macLeases.held(task.sandboxId).length > 0 && (options.keepSandbox === true || await this.holdsUnshippedWork(task, options.signal));
-    if (permanentMacKeep && task.sandboxId !== null) {
-      const sandboxId = task.sandboxId;
-      await this.withMacLock(async () => {
-        for (const lease of this.store.macLeases.held(sandboxId)) await this.keepMacLease(lease,options.signal);
-      });
-    }
+    const leases = task.sandboxId ? this.store.macLeases.held(task.sandboxId) : [];
+    const shippedBeforeClose = leases.length > 0 && this.shippedSinceLastTurn(task);
+    let permanentMacKeep = options.keepSandbox === true && leases.length > 0;
+    if (permanentMacKeep) for (const lease of leases) await this.keepMacLease(lease,options.signal);
     const updated = this.store.update(task.id, { status, finishedAt: new Date().toISOString(), shipApproval: null }) ?? task;
     // Stop an in-flight dispatch, then the running turn.
     this.dispatches.get(task.id)?.abort();
@@ -4829,6 +4866,13 @@ export class BoatService {
       await this.hooks.chat.stop(task.threadId).catch(() => undefined);
     } else if (task.status === "running" && task.sandboxId && task.conversationId) {
       await this.sandboxProvider(task).interrupt(task.sandboxId, task.conversationId, options.signal).catch(() => undefined);
+    }
+    if (leases.length) {
+      const outcome = await this.macCloseOutcome(task,options.signal,options.discard === true,shippedBeforeClose);
+      for (const lease of leases) {
+        this.store.macLeases.resolveTask(lease.id,task.id,outcome,task.turns);
+        if (outcome === "unshipped") { await this.keepMacLease(lease,options.signal); permanentMacKeep = true; }
+      }
     }
     this.store.addEvent(task.id, status, status === "done" ? "Closed" : "Cancelled");
     let sandbox: "deleted" | "kept" | "gone" | "none" = "none";
@@ -5234,14 +5278,28 @@ export class BoatService {
         await this.settleReview(task, parseReport(task.result!).verdict!);
         return false;
       }
+      const macLeases = task.sandboxId ? this.store.macLeases.held(task.sandboxId) : [];
+      if (macLeases.length) return this.withMacLock(async () => {
+        const current = this.store.get(task.id);
+        if (!current || !OPEN_STATUSES.includes(current.status)) return false;
+        const outcome = await this.macCloseOutcome(current,this.hooks.lifecycle);
+        const closed = this.store.transition(task.id,["running","idle","failed"],{status:"cancelled",finishedAt:nowIso,shipApproval:null});
+        if (!closed) return false;
+        for (const lease of macLeases) {
+          this.store.macLeases.resolveTask(lease.id,task.id,outcome,current.turns);
+          if (outcome === "unshipped") await this.keepMacLease(lease,this.hooks.lifecycle);
+        }
+        this.store.addEvent(task.id,"cancelled","The task chat was archived or deleted");
+        if (outcome === "unshipped") this.store.addEvent(task.id,"sandbox",`Kept sandbox ${closed.sandboxId}: it holds work that hasn't shipped. Delete it on the Cloud agents page to throw that away.`);
+        await this.releaseTaskSources(closed);
+        return true;
+      });
       // Archived or deleted by hand: the work there is over, and so is its machine.
       const closed = this.store.transition(task.id, ["running", "idle", "failed"], { status: "cancelled", finishedAt: nowIso, shipApproval: null });
       if (closed === null) return false;
       this.store.addEvent(task.id, "cancelled", "The task chat was archived or deleted");
       const settings = await this.settings();
-      const leases = closed.sandboxId ? this.store.macLeases.held(closed.sandboxId) : [];
-      if ((settings.deleteSandboxOnClose || leases.length) && await this.holdsUnshippedWork(closed)) {
-        if (leases.length) await this.withMacLock(async () => { for (const lease of leases) await this.keepMacLease(lease,this.hooks.lifecycle); });
+      if (settings.deleteSandboxOnClose && await this.holdsUnshippedWork(closed)) {
         this.store.addEvent(task.id, "sandbox", `Kept sandbox ${closed.sandboxId}: it holds work that hasn't shipped. Delete it on the Cloud agents page to throw that away.`);
       } else if (settings.deleteSandboxOnClose) {
         const removed = await this.removeMachineIfUnused(closed);

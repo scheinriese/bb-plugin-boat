@@ -1,3 +1,4 @@
+import { MacLeaseNotices } from "./mac-lease-notices";
 // Live events and measured usage; the demo seeds only the backend data.
 import { useMemo, useState } from "react";
 import {
@@ -57,6 +58,7 @@ const SURFACE =
 const countNumber = (n: number) =>
   n.toLocaleString(undefined, { maximumFractionDigits: 1 });
 export function Today() {
+  const macUsage = experimental_useRpcQuery({contract:rpcContract,method:"macUsage",input:null});
   const board = useBoard(null);
   const overview = useOverview();
   const setup = useSetup();
@@ -170,7 +172,7 @@ export function Today() {
   const hasWork = recent.length > 0 || open.length > 0 || native.length > 0;
   if (!data)
     return (
-      <div className="py-6">
+      <div className="py-6"><MacLeaseNotices notices={macUsage.data?.notices}/>
         {board.error ? (
           <InlineAlert>{board.error.message}</InlineAlert>
         ) : (
@@ -180,12 +182,12 @@ export function Today() {
     );
   if (setup.data?.ok === false && !hasWork)
     return (
-      <div className="py-6">
+      <div className="py-6"><MacLeaseNotices notices={macUsage.data?.notices}/>
         <SetupCard />
       </div>
     );
   return (
-    <div className="pb-10 pt-[14px]">
+    <div className="pb-10 pt-[14px]"><MacLeaseNotices notices={macUsage.data?.notices}/>
       <div
         className="mb-[18px] flex flex-wrap items-center gap-x-[14px] gap-y-1.5 text-[14px] leading-5 sm:mb-[30px] sm:gap-x-4 sm:gap-y-2 sm:leading-[18px] text-muted-foreground sm:text-[13px]"
         aria-label="Work counts"

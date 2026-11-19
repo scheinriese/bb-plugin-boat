@@ -1,3 +1,4 @@
+import { MacLeaseNotices } from "./mac-lease-notices";
 // The Cloud agents page, by state (logic.ts pageState):
 // A. setup needed: only the "Set up cloud agents" checklist;
 // B. ready, never used: status line, "Start your first task", step-up card;
@@ -8,7 +9,7 @@
 // Also one orchestrator's page ("orchestrator/<threadId>").
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { experimental_useRpcMutation, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { experimental_useRpcMutation, experimental_useRpcQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { rpcContract, type SandboxDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import {
@@ -56,6 +57,7 @@ const COLUMN = "mx-auto box-border w-full max-w-4xl px-4 pb-10 pt-3 md:px-5 md:p
 
 export function Overview({ autoSignIn = false }: { autoSignIn?: boolean }) {
   const navigate = useBbNavigate();
+  const macUsage = experimental_useRpcQuery({contract:rpcContract,method:"macUsage",input:null});
   const setup = useSetup();
   const board = useBoard(null);
   const orchestrators = useOrchestrators();
@@ -69,7 +71,7 @@ export function Overview({ autoSignIn = false }: { autoSignIn?: boolean }) {
   if (loading) {
     return (
       <div className={COLUMN}>
-        <EmptyBox>Loading…</EmptyBox>
+        <MacLeaseNotices notices={macUsage.data?.notices}/><EmptyBox>Loading…</EmptyBox>
       </div>
     );
   }
@@ -82,12 +84,12 @@ export function Overview({ autoSignIn = false }: { autoSignIn?: boolean }) {
   if (state === "setup") {
     return (
       <div className={cn(COLUMN, "space-y-6")}>
-        <SetupCard autoSignIn={autoSignIn} />
+        <MacLeaseNotices notices={macUsage.data?.notices}/><SetupCard autoSignIn={autoSignIn} />
       </div>
     );
   }
   return (
-    <div className={cn(COLUMN, "space-y-8")}>
+    <div className={cn(COLUMN, "space-y-8")}><MacLeaseNotices notices={macUsage.data?.notices}/>
       <div className="space-y-3">
         <StatusLine state={state} />
         {setupOk === false ? <SetupCard autoSignIn={autoSignIn} /> : <SetupWarnings />}

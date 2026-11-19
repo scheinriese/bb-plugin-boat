@@ -4,22 +4,23 @@ import type Database from "better-sqlite3";
 export const LEASE_DAY_MS = 24 * 60 * 60 * 1000;
 // This lease schema is unpublished: create its final shape directly.
 export const MAC_LEASE_MIGRATIONS = [
-  `CREATE TABLE mac_leases (id TEXT PRIMARY KEY, provider TEXT NOT NULL, machine_id TEXT NOT NULL, size TEXT NOT NULL, started_at TEXT NOT NULL, paid_until TEXT NOT NULL, minimum_cost REAL NOT NULL, hour_price REAL NOT NULL, currency TEXT NOT NULL, cpus INTEGER NOT NULL, memory_mib INTEGER NOT NULL, ended_at TEXT, end_reason TEXT, notice_at TEXT, kept INTEGER NOT NULL DEFAULT 0, release_at TEXT)`,
+  `CREATE TABLE mac_leases (id TEXT PRIMARY KEY, provider TEXT NOT NULL, machine_id TEXT NOT NULL, size TEXT NOT NULL, started_at TEXT NOT NULL, paid_until TEXT NOT NULL, minimum_cost REAL NOT NULL, hour_price REAL NOT NULL, currency TEXT NOT NULL, cpus INTEGER NOT NULL, memory_mib INTEGER NOT NULL, ended_at TEXT, end_reason TEXT, notice_at TEXT, notice_text TEXT, kept INTEGER NOT NULL DEFAULT 0, release_at TEXT)`,
   `CREATE UNIQUE INDEX mac_leases_held ON mac_leases(provider, machine_id) WHERE ended_at IS NULL`,
-  `CREATE TABLE mac_lease_tasks (lease_id TEXT NOT NULL REFERENCES mac_leases(id), task_id TEXT NOT NULL, attached_at TEXT NOT NULL, cpus INTEGER NOT NULL, memory_mib INTEGER NOT NULL, PRIMARY KEY(lease_id, task_id))`,
+  `CREATE TABLE mac_lease_tasks (lease_id TEXT NOT NULL REFERENCES mac_leases(id), task_id TEXT NOT NULL, attached_at TEXT NOT NULL, cpus INTEGER NOT NULL, memory_mib INTEGER NOT NULL, work_outcome TEXT, work_turns INTEGER, PRIMARY KEY(lease_id, task_id))`,
   `CREATE INDEX mac_lease_tasks_task ON mac_lease_tasks(task_id)`,
 ];
+export type MacWorkOutcome = "clean" | "shipped" | "discarded" | "unshipped" | "unknown";
 export interface MacLease {
   id: string; provider: string; machineId: string; size: string; startedAt: string; paidUntil: string;
   minimumCost: number; hourPrice: number; currency: string; cpus: number; memoryMiB: number;
-  endedAt: string | null; endReason: "handed back" | "deleted" | "failed" | null; noticeAt: string | null;
+  endedAt: string | null; endReason: "handed back" | "deleted" | "failed" | null; noticeAt: string | null; noticeText: string | null;
   kept: boolean; releaseAt: string | null;
 }
-export interface LeaseTask { leaseId: string; taskId: string; attachedAt: string; cpus: number; memoryMiB: number }
+export interface LeaseTask { leaseId: string; taskId: string; attachedAt: string; cpus: number; memoryMiB: number; workOutcome: MacWorkOutcome | null; workTurns: number | null }
 export interface MacLeaseSnapshot { leases: MacLease[]; tasks: LeaseTask[] }
 const iso = (at: number) => new Date(at).toISOString();
-const LEASE_COLUMNS = `id, provider, machine_id AS machineId, size, started_at AS startedAt, paid_until AS paidUntil, minimum_cost AS minimumCost, hour_price AS hourPrice, currency, cpus, memory_mib AS memoryMiB, ended_at AS endedAt, end_reason AS endReason, notice_at AS noticeAt, kept, release_at AS releaseAt`;
-const TASK_COLUMNS = `lease_id AS leaseId, task_id AS taskId, attached_at AS attachedAt, cpus, memory_mib AS memoryMiB`;
+const LEASE_COLUMNS = `id, provider, machine_id AS machineId, size, started_at AS startedAt, paid_until AS paidUntil, minimum_cost AS minimumCost, hour_price AS hourPrice, currency, cpus, memory_mib AS memoryMiB, ended_at AS endedAt, end_reason AS endReason, notice_at AS noticeAt, notice_text AS noticeText, kept, release_at AS releaseAt`;
+const TASK_COLUMNS = `lease_id AS leaseId, task_id AS taskId, attached_at AS attachedAt, cpus, memory_mib AS memoryMiB, work_outcome AS workOutcome, work_turns AS workTurns`;
 export class MacLeaseLedger {
   private readonly db: () => Database.Database;
   constructor(db: () => Database.Database) { this.db = db; }
@@ -30,7 +31,7 @@ export class MacLeaseLedger {
   held(machineId?: string): MacLease[] {
     return this.rows(`SELECT ${LEASE_COLUMNS} FROM mac_leases WHERE ended_at IS NULL${machineId === undefined ? "" : " AND machine_id=?"} ORDER BY started_at`, machineId === undefined ? [] : [machineId]);
   }
-  record(lease: Omit<MacLease, "endedAt" | "endReason" | "noticeAt" | "kept" | "releaseAt">): MacLease {
+  record(lease: Omit<MacLease, "endedAt" | "endReason" | "noticeAt" | "noticeText" | "kept" | "releaseAt">): MacLease {
     const start = Date.parse(lease.startedAt), until = Date.parse(lease.paidUntil);
     if (!Number.isFinite(start) || !Number.isFinite(until) || until <= start || !Number.isFinite(lease.minimumCost) || lease.minimumCost < 0 || !Number.isFinite(lease.hourPrice) || lease.hourPrice < 0) throw new Error("Invalid Mac lease billing terms");
     this.db().prepare(`INSERT INTO mac_leases (id,provider,machine_id,size,started_at,paid_until,minimum_cost,hour_price,currency,cpus,memory_mib)
@@ -46,7 +47,10 @@ export class MacLeaseLedger {
     return { leases: this.list(), tasks: this.db().prepare(`SELECT ${TASK_COLUMNS} FROM mac_lease_tasks ORDER BY attached_at,task_id`).all() as LeaseTask[] };
   }
   attach(id: string, taskId: string, cpus: number, memoryMiB: number, now = Date.now()): void {
-    this.db().prepare(`INSERT OR IGNORE INTO mac_lease_tasks VALUES (?,?,?,?,?)`).run(id, taskId, iso(now), cpus, memoryMiB);
+    this.db().prepare(`INSERT OR IGNORE INTO mac_lease_tasks (lease_id,task_id,attached_at,cpus,memory_mib) VALUES (?,?,?,?,?)`).run(id, taskId, iso(now), cpus, memoryMiB);
+  }
+  resolveTask(leaseId: string, taskId: string, outcome: MacWorkOutcome, turns: number): void {
+    this.db().prepare(`UPDATE mac_lease_tasks SET work_outcome=?,work_turns=? WHERE lease_id=? AND task_id=?`).run(outcome,turns,leaseId,taskId);
   }
   end(id: string, reason: NonNullable<MacLease["endReason"]>, now = Date.now()): void {
     this.db().prepare(`UPDATE mac_leases SET ended_at=?,end_reason=? WHERE id=? AND ended_at IS NULL`).run(iso(now), reason, id);
@@ -55,8 +59,8 @@ export class MacLeaseLedger {
   schedule(id: string, at: string | null): void { this.db().prepare(`UPDATE mac_leases SET release_at=? WHERE id=? AND ended_at IS NULL`).run(at,id); }
   /** A minimum-end heads-up, then at most one reminder per 24 h. Persist
    * before delivery so a restart cannot duplicate the same reminder. */
-  warn(id: string, now = Date.now(), repeat = false): boolean {
-    return this.db().prepare(`UPDATE mac_leases SET notice_at=? WHERE id=? AND ended_at IS NULL AND (notice_at IS NULL OR (?=1 AND notice_at<=?))`).run(iso(now),id,repeat ? 1 : 0,iso(now-LEASE_DAY_MS)).changes > 0;
+  warn(id: string, now = Date.now(), repeat = false, pageText: string | null = null): boolean {
+    return this.db().prepare(`UPDATE mac_leases SET notice_at=?,notice_text=COALESCE(?,notice_text) WHERE id=? AND ended_at IS NULL AND (notice_at IS NULL OR (?=1 AND notice_at<=?))`).run(iso(now),pageText,id,repeat ? 1 : 0,iso(now-LEASE_DAY_MS)).changes > 0;
   }
   cost(lease: MacLease, now = Date.now()): number {
     return lease.minimumCost + lease.hourPrice * Math.max(0,Math.min(now,lease.endedAt ? Date.parse(lease.endedAt) : now)-Date.parse(lease.paidUntil))/3_600_000;
@@ -87,6 +91,7 @@ export class MacLeaseLedger {
     const date = new Date(now), monthStart = Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1), monthEnd = Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1);
     // The month includes prepaid minimum time allocated to this month. Last
     // 30 days is a historical window ending now, excluding future paid time.
-    return { month: this.between(monthStart,monthEnd,now), rolling30: this.between(now-30*LEASE_DAY_MS,now,now), held: this.held() };
+    const providers = [...new Set(this.list().filter(lease => Date.parse(lease.startedAt)<monthEnd && Math.max(Date.parse(lease.paidUntil),lease.endedAt ? Date.parse(lease.endedAt) : now)>monthStart).map(lease=>lease.provider))];
+    return { month: this.between(monthStart,monthEnd,now), rolling30: this.between(now-30*LEASE_DAY_MS,now,now), held: this.held(), providers };
   }
 }

@@ -995,7 +995,7 @@ async function macPushChat(t: {after(fn:()=>unknown):void}, deleteOnClose=true) 
   env.box.provider.exec=async(id,script,opts)=>script.includes("BOAT_AHEAD")?{exitCode:0,stdout:"BOAT_AHEAD 3 dirty\n",stderr:""}:exec(id,script,opts);
   const task=await env.start({repo:"acme/web",runner:"chat",confirmUntrustedChat:["acme/web"],orchestratorThreadId:"orch"});
   env.store.update(task.id,{status:"idle",delivery:"push",unshipped:4});
-  return {...env,chat,task};
+  return {...env,chat,task,repos};
 }
 test("archiving a Mac chat preserves its unshipped work and marks the lease kept",async t=>{
   const {chat,task,service,store,box}=await macPushChat(t);
@@ -1044,4 +1044,95 @@ test("stopped Mac leases end at stoppedAt rather than the later list time",async
   box.setState({machines:state.machines});await box.provider.list({all:true});
   assert.equal(store.macLeases.list()[0]!.endedAt,stoppedAt);
   assert.ok(Math.abs(store.macLeases.between(0,Infinity,Date.parse(stoppedAt)+86400000).costs.USD!-(lease.minimumCost+lease.hourPrice))<1e-8);
+});
+
+function pauseMac(box: Awaited<ReturnType<typeof instabox>>, id: string) {
+  const state=box.state();state.machines[id].state="suspended";box.setState({machines:state.machines});
+}
+test("ship then close then pause resolves the Mac attachment instead of keeping it forever",async t=>{
+  const {chat,task,service,store,box,repos}=await macPushChat(t);
+  chat.finish(task.threadId!,"done");store.update(task.id,{finishedAt:new Date(Date.now()-1000).toISOString()});
+  repos.ship=async()=>({shipped:[{path:task.repoPath!,baseBranch:"main",sha:"abcdef123456",commits:1}]});
+  const shipped=await service.shipTask(task.id,{approval:"approved in test"});assert.equal(shipped.task.status,"done");
+  const event=store.latestEvent(task.id,"shipped")!;
+  store.update(task.id,{finishedAt:new Date(Date.parse(event.at)+1000).toISOString()});
+  const lease=store.macLeases.held()[0]!;assert.equal(store.macLeases.tasks(lease.id)[0]!.workOutcome,"shipped");
+  pauseMac(box,task.sandboxId!);await service.processMacLeases(Date.parse(lease.paidUntil)+1);
+  assert.equal(store.macLeases.list()[0]!.kept,false);assert.equal(store.macLeases.held().length,0);
+});
+test("clean push close then pause uses the recorded clean result for hand-back",async t=>{
+  const {chat,task,service,store,box}=await macPushChat(t);chat.finish(task.threadId!,"done");
+  const exec=box.provider.exec;let probes=0;
+  box.provider.exec=async(id,script,options)=>script.includes("BOAT_AHEAD")?(probes++,{exitCode:0,stdout:"BOAT_AHEAD 0 clean\n",stderr:""}):exec(id,script,options);
+  await service.closeTask(task.id);const lease=store.macLeases.held()[0]!;
+  assert.equal(store.macLeases.tasks(lease.id)[0]!.workOutcome,"clean");const before=probes;
+  pauseMac(box,task.sandboxId!);await service.processMacLeases(Date.parse(lease.paidUntil)+1);
+  assert.equal(probes,before);assert.equal(store.macLeases.list()[0]!.kept,false);assert.equal(store.macLeases.held().length,0);
+});
+test("discarded push work is resolved with deletion on close disabled and a paused Mac",async t=>{
+  const {chat,task,service,store,box,notices}=await macPushChat(t,false);chat.finish(task.threadId!,"done");
+  await service.closeTask(task.id,{discard:true});const lease=store.macLeases.held()[0]!;
+  assert.equal(lease.kept,false);assert.equal(store.macLeases.tasks(lease.id)[0]!.workOutcome,"discarded");
+  pauseMac(box,task.sandboxId!);await service.processMacLeases(Date.parse(lease.paidUntil)+1);
+  assert.equal(store.macLeases.held().length,0);assert.deepEqual(notices,[]);
+});
+test("paused confirmed unshipped work is still protected",async t=>{
+  const {chat,task,service,store,box}=await macPushChat(t,false);chat.finish(task.threadId!,"done");
+  await service.closeTask(task.id);const lease=store.macLeases.held()[0]!;
+  assert.equal(store.macLeases.tasks(lease.id)[0]!.workOutcome,"unshipped");
+  pauseMac(box,task.sandboxId!);await service.processMacLeases(Date.parse(lease.paidUntil)+1);
+  assert.equal(store.macLeases.held().length,1);assert.equal(store.macLeases.held()[0]!.kept,true);
+  assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
+});
+test("closing a paused push task records uncertainty without turning the keep setting into a permanent keep",async t=>{
+  const {chat,task,service,store,box,notices}=await macPushChat(t,false);chat.finish(task.threadId!,"done");pauseMac(box,task.sandboxId!);
+  await service.closeTask(task.id);const lease=store.macLeases.held()[0]!;
+  assert.equal(lease.kept,false);assert.equal(store.macLeases.tasks(lease.id)[0]!.workOutcome,"unknown");
+  await service.processMacLeases(Date.parse(lease.paidUntil)+1);
+  assert.equal(store.macLeases.held()[0]!.kept,false);assert.match(notices[0]!,/could not be checked/);assert.doesNotMatch(notices[0]!,/delete it manually/);
+  assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
+});
+test("an inconclusive paused probe defers one pass without a sticky keep and retries on resume",async t=>{
+  const {chat,task,service,store,box}=await macPushChat(t);await chat.archive(task.threadId!);store.update(task.id,{status:"cancelled"});
+  const lease=store.macLeases.held()[0]!;pauseMac(box,task.sandboxId!);
+  await service.processMacLeases(Date.parse(lease.paidUntil)+1);
+  assert.equal(store.macLeases.held()[0]!.kept,false);assert.equal(store.macLeases.tasks(lease.id)[0]!.workOutcome,"unknown");
+  const state=box.state();state.machines[task.sandboxId!].state="running";box.setState({machines:state.machines});
+  await service.processMacLeases(Date.parse(lease.paidUntil)+2);
+  assert.equal(store.macLeases.held()[0]!.kept,true);assert.equal(store.macLeases.tasks(lease.id)[0]!.workOutcome,"unshipped");
+});
+test("unknown paused work cancels a pending release without permanently keeping the lease",async t=>{
+  const {chat,task,service,store,box}=await macPushChat(t);await chat.archive(task.threadId!);store.update(task.id,{status:"cancelled"});
+  const lease=store.macLeases.held()[0]!;
+  await box.provider.scheduleLeaseRelease!(lease.machineId,lease.paidUntil);store.macLeases.schedule(lease.id,lease.paidUntil);
+  pauseMac(box,task.sandboxId!);await service.processMacLeases(Date.parse(lease.paidUntil)-15*60000);
+  assert.equal(store.macLeases.held()[0]!.releaseAt,null);assert.equal(store.macLeases.held()[0]!.kept,false);
+  const state=box.state();state.machines[task.sandboxId!].state="running";box.setState({machines:state.machines});
+  const exec=box.provider.exec;box.provider.exec=async(id,script,options)=>script.includes("BOAT_AHEAD")?{exitCode:0,stdout:"BOAT_AHEAD 0 clean\n",stderr:""}:exec(id,script,options);
+  await service.processMacLeases(Date.parse(lease.paidUntil)+1);assert.equal(store.macLeases.held().length,0);
+});
+test("a resolved close outcome does not cover work from a later turn",async t=>{
+  const {chat,task,service,store,box}=await macPushChat(t);chat.finish(task.threadId!,"done");
+  const exec=box.provider.exec;box.provider.exec=async(id,script,options)=>script.includes("BOAT_AHEAD")?{exitCode:0,stdout:"BOAT_AHEAD 0 clean\n",stderr:""}:exec(id,script,options);
+  await service.closeTask(task.id);box.provider.exec=exec;
+  store.update(task.id,{turns:task.turns+1,status:"cancelled"});const lease=store.macLeases.held()[0]!;
+  await service.processMacLeases(Date.parse(lease.paidUntil)+1);
+  assert.equal(store.macLeases.held()[0]!.kept,true);assert.equal(store.macLeases.tasks(lease.id)[0]!.workTurns,task.turns+1);
+});
+test("hand-back does not exec git before the minimum-end margin",async t=>{
+  const {chat,task,service,store,box}=await macPushChat(t);await chat.archive(task.threadId!);store.update(task.id,{status:"cancelled"});
+  let probes=0;const exec=box.provider.exec;box.provider.exec=async(...args)=>{if(args[1].includes("BOAT_AHEAD"))probes++;return exec(...args)};
+  const lease=store.macLeases.held()[0]!;await service.processMacLeases(Date.parse(lease.paidUntil)-31*60000);
+  assert.equal(probes,0);assert.equal(store.macLeases.held()[0]!.kept,false);
+});
+test("page-started kept leases persist recurring cost notices without an orchestrator thread",async t=>{
+  const {start,service,store}=await macEnv(t);const task=await start({orchestratorThreadId:null});
+  await service.closeTask(task.id,{keepSandbox:true});const lease=store.macLeases.held()[0]!,end=Date.parse(lease.paidUntil);
+  await service.processMacLeases(end+1);
+  const {providerHandlers}=await import("../src/rpc-providers.ts");
+  const view=()=>providerHandlers({service,bb:{}} as unknown as import("../src/runtime.ts").Runtime).macUsage();
+  assert.match(view().notices[0]!.text,/Mac lease is kept; compute cost \$10\.80/);
+  const restarted=new BoatService(service.sandboxProviders,store,hooks().hooks);
+  await restarted.processMacLeases(end+86400000+1);
+  assert.match(view().notices[0]!.text,/compute cost \$21\.60/);assert.equal(view().notices.length,1);
 });
