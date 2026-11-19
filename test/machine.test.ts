@@ -4,7 +4,8 @@ import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BoatApi } from "../src/providers/boat/api.ts";
 import type { BoatCli } from "../src/providers/boat/cli.ts";
-import { keepSandboxKey, registerBoatMachine } from "../src/machine.ts";
+import { keepSandboxKey } from "../src/providers/machine.ts";
+import { registerBoatMachine } from "../src/providers/boat/machine.ts";
 import { bootstrapFailureMessage } from "../src/bootstrap.ts";
 import { defaultSettings, makeService } from "./fakes.ts";
 

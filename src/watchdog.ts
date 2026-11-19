@@ -28,7 +28,7 @@ import { KEEP_LIMIT_MS, NO_WORK, addWork, describeWork, hasWork, messagesWaiting
 import { ACTIVE_STATES, busyProcesses, type BoatApi, type Sandbox } from "./providers/boat/api.ts";
 import { wakeIds, type WakePacer } from "./wake-pacer.ts";
 import { RESUME_NOTE_PREFIX, WATCHDOG_PREFIX, quietNotice, resumeNoteText, stoppedNotice, waitingNotice, type NoticeSubject } from "./format.ts";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
+import { MACHINE_PROVIDER_ID } from "./providers/boat/provider.ts";
 import { OPEN_STATUSES, type Task, type TaskStore } from "./store.ts";
 
 /** Messages waiting this long on a stopped or disconnected machine: the orchestrator hears of it. */

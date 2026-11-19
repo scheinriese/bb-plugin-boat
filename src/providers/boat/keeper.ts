@@ -24,7 +24,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { KEEP_LIMIT_MS, hasWork, rowWork, workingChildren, type ThreadRow } from "../../activity.ts";
 import { ACTIVE_STATES, autoStopHours, withinAutoStopCap, type BoatApi } from "./api.ts";
-import { MACHINE_PROVIDER_ID } from "../../machine.ts";
+import { MACHINE_PROVIDER_ID } from "./provider.ts";
 import type { BoatSettings } from "../../service.ts";
 import { OPEN_STATUSES, type Task, type TaskStore } from "../../store.ts";
 

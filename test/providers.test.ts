@@ -3,13 +3,16 @@
 // provider, and tasks that keep the provider their sandbox is on.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { DEFAULT_PROVIDER_ID, createProviderRegistry } from "../src/providers/registry.ts";
-import { ProviderError, isNotFound, type SandboxInfo } from "../src/providers/types.ts";
+import { ProviderError, isNotFound, type MachineSpec, type SandboxInfo, type SandboxProvider } from "../src/providers/types.ts";
 import { MACHINE_PROVIDER_ID, createBoatProvider } from "../src/providers/boat/provider.ts";
 import { BOAT_GIT_ENV, type BoatApi } from "../src/providers/boat/api.ts";
 import { BoatError } from "../src/providers/boat/cli.ts";
 import { explainBoatError } from "../src/providers/boat/words.ts";
-import { FakeBoat } from "./fakes.ts";
+import { registerSandboxMachine } from "../src/providers/machine.ts";
+import type { BoatService } from "../src/service.ts";
+import { FakeBoat, defaultSettings } from "./fakes.ts";
 
 const SANDBOX: SandboxInfo = {
   id: "bx_1",
@@ -193,4 +196,115 @@ test("provider errors explain themselves; boat's in boat's words", () => {
   assert.ok(isNotFound(new ProviderError("gone", { status: 404 })));
   assert.ok(!isNotFound(new ProviderError("boat start limit reached", { code: "start_limited" })));
   assert.ok(!isNotFound(new Error("not_found")));
+});
+
+test("any provider with bb enrollment registers as a bb machine provider, in its own words", async () => {
+  const definitions: Record<string, unknown>[] = [];
+  const environments: Record<string, unknown>[] = [];
+  const kv = new Map<string, unknown>();
+  const executors: string[] = [];
+  const bb = {
+    experimental_machines: {
+      register: (definition: Record<string, unknown>) => void definitions.push(definition),
+      bootstrap: async ({ executor }: { executor: MachineExecutor }) => {
+        await executor.exec({ command: ["true"], stdin: "", timeoutMs: 1000, signal: new AbortController().signal, onOutput: () => undefined });
+        return { hostId: "host_abcdef123456" };
+      },
+    },
+    experimental_environments: { register: (environment: Record<string, unknown>) => void environments.push(environment) },
+    storage: {
+      kv: {
+        get: async (key: string) => kv.get(key),
+        set: async (key: string, value: unknown) => void kv.set(key, value),
+        delete: async (key: string) => void kv.delete(key),
+      },
+    },
+  } as unknown as BbPluginApi;
+  const sandboxes = new Map<string, SandboxInfo>();
+  const deleted: string[] = [];
+  const execs: string[] = [];
+  const machine: MachineSpec = {
+    id: "other-sandbox",
+    displayName: "Other sandbox",
+    description: "Run bb chats in another cloud sandbox",
+    icon: "ComputerCloud",
+    environments: [{ id: "other-sandbox", displayName: "Other sandbox", description: "A new sandbox with this project checked out", environmentProviderId: "project-checkout" }],
+    machineName: (key) => `bb machine ${key}`,
+    machineLabel: (sandboxId, hostId) => `Other ${sandboxId} (${hostId.slice(-6)})`,
+    words: {
+      invalidInputs: "Other machine options are invalid.",
+      usingPrepared: "Using the prepared sandbox",
+      creating: "Creating the other sandbox",
+      resuming: "Resuming the other sandbox",
+      created: (sandboxId) => `other sandbox ${sandboxId}`,
+      gone: (sandboxId) => `other sandbox ${sandboxId} no longer exists`,
+      stopSaid: (reason) => `other said: "${reason}"`,
+      notStopped: (why) => `other didn't stop it: ${why}`,
+      stillRestoring: (detail) => `it's still restoring${detail}`,
+    },
+  };
+  const other = {
+    id: "other",
+    idPattern: /^ot_[a-z0-9]+$/,
+    sizes: [{ id: "small", label: "Small", cpus: 2, memoryGb: 4 }],
+    machine,
+    executor: (sandboxId: string): MachineExecutor => ({
+      async exec() {
+        executors.push(sandboxId);
+        return { exitCode: 0 };
+      },
+    }),
+    findInfo: async (sandboxId: string) => sandboxes.get(sandboxId) ?? null,
+    list: async () => [...sandboxes.values()],
+    // The login scripts are quieted over the provider's exec before bb's setup.
+    exec: async (sandboxId: string) => {
+      execs.push(sandboxId);
+      return { exitCode: 0, stdout: "BOAT_MOTD off", stderr: "" };
+    },
+    stop: async () => undefined,
+    delete: async (sandboxId: string) => {
+      if (!sandboxes.has(sandboxId)) throw new ProviderError("no such sandbox", { code: "not_found" });
+      deleted.push(sandboxId);
+      sandboxes.delete(sandboxId);
+    },
+  } as unknown as SandboxProvider;
+  const created: Record<string, unknown>[] = [];
+  const service = {
+    async createSandbox(options: Record<string, unknown>) {
+      created.push(options);
+      const sandbox = { ...SANDBOX, id: "ot_1", name: String(options.name) };
+      sandboxes.set(sandbox.id, sandbox);
+      return sandbox;
+    },
+    bringUp: async (sandboxId: string) => sandboxes.get(sandboxId)!,
+  } as unknown as BoatService;
+  registerSandboxMachine(bb, other, { service, settings: async () => defaultSettings(), availability: async () => ({ status: "available" }) });
+
+  type Definition = {
+    id: string;
+    displayName: string;
+    create(args: unknown): Promise<{ status: string; name?: string; message?: string; resource?: unknown }>;
+    remove(args: unknown): Promise<{ status: string }>;
+  };
+  const definition = definitions[0] as unknown as Definition;
+  assert.equal(definition.id, "other-sandbox");
+  assert.equal(definition.displayName, "Other sandbox");
+  assert.deepEqual(environments, [{ id: "other-sandbox", displayName: "Other sandbox", description: "A new sandbox with this project checked out", icon: "ComputerCloud", machineProviderId: "other-sandbox", environmentProviderId: "project-checkout" }]);
+
+  const steps: string[] = [];
+  const report = { step: (text: string) => void steps.push(text), log: (text: string) => void steps.push(`log: ${text}`) };
+  const args = (key: string, inputs: unknown = {}) => ({ inputs, key, checkpoint: async () => undefined, report, signal: new AbortController().signal });
+  const result = await definition.create(args("k1"));
+  assert.equal(result.status, "created", result.message);
+  assert.equal(result.name, "Other ot_1 (123456)");
+  assert.deepEqual(created.map((options) => [options.name, options.type, options.gitGuard]), [["bb machine k1", "small", false]]);
+  assert.deepEqual(steps.slice(0, 3), ["Creating the other sandbox", "log: other sandbox ot_1", "Installing bb on the sandbox"]);
+  assert.deepEqual(executors, ["ot_1"], "bb's bootstrap ran through the provider's executor");
+  assert.deepEqual(execs, ["ot_1"], "the login scripts were quieted through the provider's exec");
+  // Its own sandbox ids and sizes: a boat id or size is refused.
+  assert.equal((await definition.create(args("k2", { sandboxId: "bx_1" }))).message, "Other machine options are invalid.");
+  assert.equal((await definition.create(args("k3", { type: "large" }))).message, "Other machine options are invalid.");
+  assert.equal((await definition.remove({ resource: { sandboxId: "ot_1", key: "k1" } })).status, "removed");
+  assert.deepEqual(deleted, ["ot_1"]);
+  assert.equal((await definition.remove({ resource: { sandboxId: "ot_1", key: "k1" } })).status, "removed", "already gone counts as removed");
 });

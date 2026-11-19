@@ -11,8 +11,7 @@
 // - A resume boat refuses for the sandbox's size goes under Needs you, with
 //   the way back by hand (src/wake-retry.ts). Boat never starts it on a
 //   larger size itself: that costs more.
-import { ACTIVE_STATES, type BoatApi, type MachineType } from "./providers/boat/api.ts";
-import { BoatError } from "./providers/boat/cli.ts";
+import { ACTIVE_STATES, ProviderError, type MachineType, type SandboxProvider } from "./providers/types.ts";
 import { SIZE_SPECS, isMachineType } from "./memory.ts";
 
 /** The trim's whole budget, from the look at the sandbox to fstrim's answer; the stop goes ahead after it whatever happens. */
@@ -78,7 +77,7 @@ export function trimLogLine(sandboxId: string, outcome: TrimOutcome): string {
  * sandbox's state, when the caller just read it.
  */
 export async function trimFreedBlocks(
-  boat: Pick<BoatApi, "findInfo" | "exec">,
+  boat: Pick<SandboxProvider, "findInfo" | "exec">,
   sandboxId: string,
   options: { state?: string | null; signal?: AbortSignal; log?: (line: string) => void; timeoutMs?: number } = {},
 ): Promise<TrimOutcome> {
@@ -148,7 +147,7 @@ function gb(text: string | undefined): number | null {
 /** The size refusal in a failed resume (null: it's something else). */
 export function diskTooLarge(error: unknown): DiskTooLarge | null {
   const text = error instanceof Error ? error.message : String(error);
-  const code = error instanceof BoatError ? error.code : null;
+  const code = error instanceof ProviderError ? error.code : null;
   if (!DISK_TOO_LARGE.test(text) && code !== "type_too_small") return null;
   const fit = DOES_NOT_FIT.exec(text);
   const type = fit?.[1]?.toLowerCase();

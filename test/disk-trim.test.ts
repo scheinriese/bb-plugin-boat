@@ -5,7 +5,7 @@ import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BoatApi } from "../src/providers/boat/api.ts";
 import { BoatError, type BoatCli } from "../src/providers/boat/cli.ts";
-import { registerBoatMachine } from "../src/machine.ts";
+import { registerBoatMachine } from "../src/providers/boat/machine.ts";
 import { TRIM_TIMEOUT_MS, diskTooLarge, markResize, parseTrim, resizeRefused, roomierSize, tooLargeMessage, tooLargeQuestion, trimFreedBlocks, trimScript } from "../src/disk-trim.ts";
 import { classifyWakeText } from "../src/wake-diagnosis.ts";
 import { defaultSettings, makeService } from "./fakes.ts";

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { rpcErrorInfo } from "../contract.ts";
-import { MACHINE_PROVIDER_ID } from "../src/machine.ts";
+import { MACHINE_PROVIDER_ID } from "../src/providers/boat/provider.ts";
 import plugin from "../server.ts";
 import { createTestHost } from "./fakes.ts";
 

@@ -29,7 +29,7 @@ import { automaticPaidClaude, effectiveRelay, onlyAgent, relayNote } from "./rel
 import { explainBoatError, sandboxSizes, testTaskInput, type ExplainedError } from "./providers/boat/setup.ts";
 import { SettingsError, settingRows } from "./settings-store.ts";
 import { SETTING_SECTIONS } from "./settings.ts";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
+import { MACHINE_PROVIDER_ID } from "./providers/boat/provider.ts";
 import { HIDDEN_EVENT_KINDS } from "./memory.ts";
 import { sizeHandlers } from "./rpc-size.ts";
 import { usageHandlers } from "./rpc-usage.ts";

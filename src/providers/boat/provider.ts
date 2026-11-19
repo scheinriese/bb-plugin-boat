@@ -72,6 +72,9 @@ export const BOAT_MACHINE: MachineSpec = {
     resuming: "Resuming the boat sandbox",
     created: (sandboxId) => `boat sandbox ${sandboxId}`,
     gone: (sandboxId) => `boat sandbox ${sandboxId} no longer exists`,
+    stopSaid: (reason) => `boat said: "${reason}"`,
+    notStopped: (why) => `boat didn't stop it: ${why}`,
+    stillRestoring: (detail) => `it can't snapshot a disk it hasn't finished restoring${detail}; Boat moves it off its node, or asks first under Needs you`,
   },
 };
 

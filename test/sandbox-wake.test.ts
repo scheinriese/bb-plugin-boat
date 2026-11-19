@@ -16,7 +16,7 @@ import { WAKE_MARKERS_KEY, WAKE_RETRY_REASON, createSandboxWaker, finishedNotice
 import { composeProtocol } from "../src/protocol.ts";
 import { makeService } from "./fakes.ts";
 import { createChatRunner } from "../src/chat.ts";
-import { MACHINE_PROVIDER_ID } from "../src/machine.ts";
+import { MACHINE_PROVIDER_ID } from "../src/providers/boat/provider.ts";
 
 const T0 = Date.parse("2026-11-19T09:00:00Z");
 const HYDRATOR = "[lazyfs] [ERROR] HYDRATOR FAILED attempt 32 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";

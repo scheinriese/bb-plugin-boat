@@ -11,7 +11,7 @@ import { TAGS } from "./contract.ts";
 import { BoatApi, parseBranchList, type MachineType } from "./src/providers/boat/api.ts";
 import { BoatCli, resolveBoatBinary } from "./src/providers/boat/cli.ts";
 import { buildCli } from "./src/cli.ts";
-import { registerBoatMachine } from "./src/machine.ts";
+import { registerBoatMachine } from "./src/providers/boat/machine.ts";
 import { createSandboxKeeper } from "./src/providers/boat/keeper.ts";
 import { createWatchdog, type QueuedRow, type Watchdog } from "./src/watchdog.ts";
 import { notificationText } from "./src/format.ts";

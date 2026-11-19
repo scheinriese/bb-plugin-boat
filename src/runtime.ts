@@ -30,7 +30,7 @@ import type { SandboxWaker, WakeCall, WakeReport } from "./sandbox-wake.ts";
 import type { ConnectCheck, ConnectStatus } from "./connect.ts";
 import type { ConfigDeps } from "./config.ts";
 import type { SettingsStore } from "./settings-store.ts";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
+import { MACHINE_PROVIDER_ID } from "./providers/boat/provider.ts";
 import type { Setup } from "./providers/boat/setup.ts";
 import {
   AGENT_NAME,

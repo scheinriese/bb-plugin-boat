@@ -418,6 +418,12 @@ export interface MachineSpec {
     resuming: string;
     created(sandboxId: string): string;
     gone(sandboxId: string): string;
+    /** A refused stop: what the provider said. */
+    stopSaid(reason: string): string;
+    /** Why a stop didn't happen. */
+    notStopped(why: string): string;
+    /** A stop refused while the disk is still being restored, so the sandbox moves to another node (detail: what it said, or ""). */
+    stillRestoring(detail: string): string;
   };
 }
 

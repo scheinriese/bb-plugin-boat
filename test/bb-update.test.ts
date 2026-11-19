@@ -28,7 +28,7 @@ import {
   type BbInstall,
   type HostPrep,
 } from "../src/bb-update.ts";
-import { registerBoatMachine } from "../src/machine.ts";
+import { registerBoatMachine } from "../src/providers/boat/machine.ts";
 import { retriesLater } from "../src/wake-diagnosis.ts";
 import { WakePacer } from "../src/wake-pacer.ts";
 import { createWakeGuard } from "../src/wake-retry.ts";
