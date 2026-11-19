@@ -43,7 +43,7 @@ sandbox by hand (no `pkill`, no new `boat stop` to read a stop's state, no
    turn, or leaves it when its queue is already sending.
 
 One wake per sandbox runs at a time; a second one shows the first one's
-progress. A wake takes at most 25 minutes. The command waits up to 90
+progress. A wake takes about 25 minutes at most. The command waits up to 90
 seconds, then the wake goes on: `bb boat sandbox wake <id> --status` shows
 it, and the chat that asked gets a `[boat]` message when it's done. A wake
 cut off between its stop and its start (a reload) is finished by the plugin:
@@ -55,6 +55,9 @@ it starts the sandbox again.
 - `--json`: the report as JSON (steps, the diagnosis, what needs you).
 - `--status`: the running or last wake of that sandbox; starts nothing.
   Orchestrators: `boat_wake` with `status: true`.
+- `--force-wake`: wake a sandbox whose tasks are all cancelled or closed (or
+  a closed task's, or its chat's). Only when the user asks. A chat of a task
+  that's cancelled or closed is never retried, with or without it.
 - `--allow-paid-start`: allow a paid extra boat start when no included start
   is left. Only when the user agreed in this chat. Without it, the command
   stops and says so. Boat never turns on paid extra starts.
@@ -70,8 +73,12 @@ safety:
   that couldn't read the snapshot);
 - a disk still unreadable after a stop and a start;
 - no boat start left, or a paid start without `--allow-paid-start`;
-- too little of its 25 minutes left to stop the sandbox and start it again
-  (nothing is stopped then);
+- too little of its time (about 25 minutes) left to stop the sandbox and
+  start it again (nothing is stopped then);
+- bb's machine on the sandbox couldn't be looked up, so its chats can't be
+  checked;
+- the sandbox's tasks are all cancelled or closed (wake it anyway with
+  `--force-wake` only when the user asks; their chats are never retried);
 - bb's machine not connecting.
 
 Tell the user what it says; don't work around it.

@@ -454,8 +454,16 @@ the pieces above, in the order that worked by hand:
 `--dry-run` only looks and prints the plan, `--json` gives the report. When it
 stops for safety it exits 1 with "Needs you" and the commands to run.
 
+Work that's over isn't woken for. A chat whose Boat task is cancelled or
+closed is never retried. A sandbox whose tasks are all cancelled or closed, a
+closed task, or a closed task's chat isn't woken unless you add
+`--force-wake`. A bb machine the plugin couldn't look up counts as one that
+may be running chats: nothing is stopped there, and the wake ends with Needs
+you. A sandbox a cut-off wake left stopped is started again for a day; after
+that, its tasks get a note instead.
+
 One wake per sandbox runs at a time (a second one shows the first one's
-progress), for at most 25 minutes; no stop goes out without time left to
+progress), for about 25 minutes; no stop goes out without time left to
 start the sandbox again. The command waits up to 90 seconds, then the wake
 goes on in the plugin: `bb boat sandbox wake <id> --status` shows it, and the
 chat that asked gets a `[boat]` message when it's done. A wake cut off
