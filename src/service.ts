@@ -1901,10 +1901,11 @@ export class BoatService {
       // 1. Sandbox: reuse or create.
       let reuse: string | null = null;
       let sandbox!: Sandbox;
+      const unlistedMacProviders = new Set<string>();
       const place = async () => {
         reuse = await this.pickSandbox(input, parent, settings, signal);
         if (task.sandboxSystem === "macos" && reuse === null) {
-          reuse = await this.heldMacFor(task, sizing.type, parent, signal);
+          reuse = await this.heldMacFor(task, sizing.type, parent, signal, unlistedMacProviders);
           task = this.store.get(id) ?? task;
         }
         stillWanted();
@@ -1928,7 +1929,7 @@ export class BoatService {
           task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: false }) ?? task;
           this.store.addEvent(id, "sandbox", `Reusing sandbox ${sandbox.id}`);
         } else {
-          sandbox = task.sandboxSystem === "macos" ? await this.createMacFor(task, sizing.type, signal) : await this.createSandbox({
+          sandbox = task.sandboxSystem === "macos" ? await this.createMacFor(task, sizing.type, signal, unlistedMacProviders) : await this.createSandbox({
             name: `bb ${id} ${slug(task.title)}`, type: sizing.type, environment: task.environment, snapshot: task.snapshot,
             sandboxProvider: this.sandboxProvider(task), signal,
           });
@@ -2446,7 +2447,7 @@ export class BoatService {
     return next;
   }
 
-  private async heldMacFor(task: Task, type: MachineType, parent: Task | null, signal?: AbortSignal): Promise<string | null> {
+  private async heldMacFor(task: Task, type: MachineType, parent: Task | null, signal?: AbortSignal, unlisted = new Set<string>()): Promise<string | null> {
     for (const provider of this.macProviders(task.sandboxProvider ?? "instabox")) {
       if (!this.sandboxProviders.get(provider.id) || (provider.id === "scaleway" && task.runner !== "chat")) continue;
       let machines: Sandbox[];
@@ -2455,6 +2456,7 @@ export class BoatService {
         // An unconfirmed held lease prevents a second rental. An unavailable
         // empty provider may give way to the other provider.
         if (this.store.macLeases.held().some(l => l.provider === provider.id)) throw error;
+        unlisted.add(provider.id);
         continue;
       }
       this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
@@ -2484,15 +2486,16 @@ export class BoatService {
       .map(id => this.sandboxProviders.forTask({ sandboxProvider: id }));
   }
 
-  private async createMacFor(task: Task, type: MachineType, signal: AbortSignal): Promise<Sandbox> {
+  private async createMacFor(task: Task, type: MachineType, signal: AbortSignal, unlisted = new Set<string>()): Promise<Sandbox> {
     const failures: string[] = [];
     for (const provider of this.macProviders(task.sandboxProvider ?? "instabox")) {
       signal.throwIfAborted();
       try {
+        if (unlisted.has(provider.id)) throw new TaskError(`${provider.displayName} machine list could not be confirmed.`, "provider_unavailable");
         if (!this.sandboxProviders.get(provider.id)) throw new TaskError(`${provider.displayName} is not configured.`, "provider_unavailable");
         if (provider.id === "scaleway" && task.runner !== "chat") throw new TaskError("Scaleway needs task chats and bb Connect. Enable Run tasks as chats for this project.", "chat_required");
         if (!(await provider.macModels?.(signal))?.length) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
-        const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", sandboxProvider: provider, signal });
+        const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", environment: task.environment, snapshot: task.snapshot, sandboxProvider: provider, signal });
         this.store.update(task.id, { sandboxProvider: provider.id });
         if (failures.length) this.store.addEvent(task.id, "sandbox-provider", `Mac provider fallback: ${failures.join("; ")} Using ${provider.displayName}.`);
         return sandbox;

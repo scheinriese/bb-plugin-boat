@@ -25,7 +25,7 @@ async function fixture(t: { after(fn: () => unknown): void }) {
   const dir = await mkdtemp(join(tmpdir(), "scaleway-test-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const store = memoryStore(), keys = new ScalewayKeys(dir);
   const calls: { method: string; path: string; body: any }[] = [], ssh: SshRequest[] = [];
-  let servers: any[] = [], quota = 2, available = true, failSetup = false, poll = 0;
+  let servers: any[] = [], quota = 2, available = true, failSetup = false, ambiguousCreate = false, poll = 0;
   const api = new ScalewayApi({ key: async () => secret, config: async () => ({ projectId, zone: "fr-par-3" }), fetch: (async (url: string, init: RequestInit) => {
     assert.equal(new Headers(init.headers).get("X-Auth-Token"), secret);
     const u = new URL(url), method = init.method!, path = u.pathname, body = init.body ? JSON.parse(String(init.body)) : null;
@@ -40,7 +40,7 @@ async function fixture(t: { after(fn: () => unknown): void }) {
     if (path.endsWith("/servers") && method === "POST") {
       const start = Date.now()-25*3600000;
       const server = { zone: "fr-par-3", id: serverId, name: body.name, type: body.type, project_id: projectId, status: "starting", delivered: false, ip: "192.0.2.1", ssh_username: "m1", created_at: new Date(start).toISOString(), deletable_at: new Date(start+86400000).toISOString(), tags: body.tags };
-      servers.push(server); return json(server);
+      servers.push(server); if (ambiguousCreate) throw new Error(secret); return json(server);
     }
     if (path.endsWith("/servers") && method === "GET") return json({ servers, total_count: servers.length });
     if (method === "PATCH") { Object.assign(servers[0], body); return json(servers[0]); }
@@ -53,7 +53,7 @@ async function fixture(t: { after(fn: () => unknown): void }) {
     return { exitCode: failSetup && request.stdin === BOOTSTRAP ? 1 : 0, stdout: "ok", stderr: "" };
   } });
   const create = () => provider.create({ name: "bb-task", type: "default", system: "macos", ttlSeconds: 3600, gitGuard: true });
-  return { api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, failSetup: () => { failSetup=true; }, servers: () => servers };
+  return { api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, servers: () => servers };
 }
 test("Scaleway create waits for delivered and SSH, bootstraps tools, stores a private key and releases it", async t => {
   const f=await fixture(t); const sandbox=await f.create();
@@ -116,11 +116,11 @@ test("Scaleway secret comes only from its bb secret setting and presence updates
   assert.equal(secrets.scalewayKeyPresent(),true); assert.equal(await secrets.scalewayKey(),secret); assert.equal(await secrets.instaboxKey(),null);
   values={}; changed(); await new Promise(resolve=>setTimeout(resolve,0)); assert.equal(secrets.scalewayKeyPresent(),false);
 });
-async function routing(preferred:string, options:{disabled?:string; fail?:string; ambiguous?:boolean; held?:string}={}) {
+async function routing(preferred:string, options:{disabled?:string; fail?:string; ambiguous?:boolean; held?:string;listFail?:string}={}) {
   const store=memoryStore(),chat=new FakeChat(),boat=new FakeBoat(),creates:string[]=[];
   const providers=["instabox","scaleway"].map(id=>{
     const inert=unavailableProvider(id);
-    const p:SandboxProvider={...inert,displayName:id==="instabox"?"Instabox":"Scaleway",caps:{...inert.caps,os:"macos",bbEnrollment:true},machine:{id:`${id}-sandbox`} as never,exec:async()=>({exitCode:0,stdout:"",stderr:""}),findInfo:async sid=>({id:sid,state:"idle",system:"macos"} as never),macModels:async()=>[{id:"M1-M",label:"M1-M",cpus:8,memoryMiB:16384,dayPrice:10,currency:"EUR"}],list:async()=>options.held===id?[{id:`${id}_held`,state:"idle"} as never]:[],capacity:async()=>({canStart:true,activeSandboxes:0,maxActiveSandboxes:4} as never),create:async()=>{creates.push(id);if(options.fail===id)throw Object.assign(new Error("No Mac free"),{code:options.ambiguous?"creation_unknown":"at_capacity"}); const start=Date.now();store.macLeases.record({id:`${id}:lease`,provider:id,machineId:`${id}_new`,size:"M1-M",startedAt:new Date(start).toISOString(),paidUntil:new Date(start+86400000).toISOString(),dayPrice:10,currency:"EUR",cpus:8,memoryMiB:16384});return {id:`${id}_new`,state:"idle",system:"macos"} as never;},info:async id=>({id,state:"idle",system:"macos"} as never)};
+    const p:SandboxProvider={...inert,displayName:id==="instabox"?"Instabox":"Scaleway",caps:{...inert.caps,os:"macos",bbEnrollment:true},machine:{id:`${id}-sandbox`} as never,exec:async()=>({exitCode:0,stdout:"",stderr:""}),findInfo:async sid=>({id:sid,state:"idle",system:"macos"} as never),macModels:async()=>[{id:"M1-M",label:"M1-M",cpus:8,memoryMiB:16384,dayPrice:10,currency:"EUR"}],list:async()=>{if(options.listFail===id)throw new Error("List unavailable");return options.held===id?[{id:`${id}_held`,state:"idle"} as never]:[];},capacity:async()=>({canStart:true,activeSandboxes:0,maxActiveSandboxes:4} as never),create:async()=>{creates.push(id);if(options.fail===id)throw Object.assign(new Error("No Mac free"),{code:options.ambiguous?"creation_unknown":"at_capacity"}); const start=Date.now();store.macLeases.record({id:`${id}:lease`,provider:id,machineId:`${id}_new`,size:"M1-M",startedAt:new Date(start).toISOString(),paidUntil:new Date(start+86400000).toISOString(),dayPrice:10,currency:"EUR",cpus:8,memoryMiB:16384});return {id:`${id}_new`,state:"idle",system:"macos"} as never;},info:async id=>({id,state:"idle",system:"macos"} as never)};
     return p;
   });
   const registry=createProviderRegistry([createBoatProvider(boat as never),...providers],{isEnabled:p=>p.id!==options.disabled});
@@ -155,4 +155,24 @@ test("a dispatched Mac task reaches a Scaleway bb chat when Instabox is unconfig
   assert.equal(task.status,"running",task.error??""); assert.equal(task.sandboxProvider,"scaleway");
   assert.equal(task.sandboxId,"scaleway_new"); assert.equal(f.chat.spawns.at(-1)?.where.kind,"machine");
   assert.ok(f.store.events(task.id).some(e=>/fallback/.test(e.text)));
+});
+
+test("an uncertain Scaleway create preserves its key and blocks another rental until listing recovers it",async t=>{
+  const f=await fixture(t);f.ambiguousCreate();
+  await assert.rejects(f.create(),error=>{assert.equal((error as {code:string}).code,"creation_unknown");assert.doesNotMatch(String(error),new RegExp(secret));return true;});
+  assert.equal((await f.keys.records())[0]?.serverId,undefined);
+  await assert.rejects(f.create(),{code:"creation_unknown"});
+  assert.equal(f.calls.filter(c=>c.method==="POST"&&c.path.endsWith("/servers")).length,1);
+  await f.provider.list();assert.equal((await f.keys.records())[0]?.serverId,serverId);assert.equal(f.store.macLeases.held().length,1);
+});
+
+test("a failed machine list never authorizes another rental on that provider",async()=>{
+  const f=await routing("instabox",{listFail:"instabox"});
+  const task=await f.service.startTask({title:"Mac task",brief:"Check tools",role:"custom",sandboxSystem:"macos",runner:"chat"});
+  assert.equal(task.status,"running",task.error??"");assert.deepEqual(f.creates,["scaleway"]);
+});
+test("an unconfirmed held Mac prevents new rentals on either provider",async()=>{
+  const f=await routing("instabox",{listFail:"instabox",held:"instabox"});
+  await assert.rejects(f.service.startTask({title:"Mac task",brief:"Check tools",role:"custom",sandboxSystem:"macos",runner:"chat"}),/List unavailable/);
+  assert.deepEqual(f.creates,[]);
 });
