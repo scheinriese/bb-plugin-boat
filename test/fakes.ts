@@ -671,10 +671,10 @@ export class FakeChat implements ChatRunner {
     if (sandboxId !== null) await this.linked.boat.stop(sandboxId);
     this.machineStates.set(hostId, { phase: "suspended", connected: false, message: null });
   }
-  composed: { taskId: string; request: unknown; parentThreadId: string | null; environmentId: string; threadId: string }[] = [];
+  composed: { taskId: string; request: unknown; parentThreadId: string | null; projectId?: string | null; environmentId: string; threadId: string }[] = [];
   async spawnComposed(args: { taskId: string; request: unknown; parentThreadId: string | null; projectId: string | null; environmentId: string }) {
     const threadId = `thr_c${++this.next}`;
-    this.composed.push({ taskId: args.taskId, request: args.request, parentThreadId: args.parentThreadId, environmentId: args.environmentId, threadId });
+    this.composed.push({ taskId: args.taskId, request: args.request, parentThreadId: args.parentThreadId, projectId: args.projectId, environmentId: args.environmentId, threadId });
     return { threadId };
   }
   adopted: { threadId: string; parentThreadId: string }[] = [];
