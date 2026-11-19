@@ -409,9 +409,30 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   tasks hear why and what became of the old bb (kept as it was, or, when it
   isn't complete any more, moved aside so bb's setup installs it again),
   bb's own setup goes ahead, and the plugin tries again after 30 minutes
-  (doubling up to 6 hours). Without a download there, bb's own update runs;
-  a broken install is moved aside first, so bb installs into an empty
-  folder.
+  (doubling up to 6 hours).
+- **From the npm registry without a download.** When the sandbox has no
+  download of the server's version (none, one that can't be read, or
+  another version), the plugin installs `bb-app` at exactly the server's
+  version from the npm registry (registry.npmjs.org, never `latest`) the
+  same way, as it was done by hand. It fetches it with `npm pack` before
+  bb's service stops, so a version the registry doesn't have, a registry it
+  can't reach or a timeout leaves bb running as it was; the tasks hear why,
+  with the same backoff. It doesn't write bb's digest
+  (`host-artifact.sha256`): that's the hash of the server's own build, and
+  the file stays as it was. So bb's setup, right after, installs the
+  server's own build over it in place, unless that build is the one the
+  digest already names; that install only reads files the plugin has just
+  written. A broken install the registry couldn't replace is moved aside
+  first, as before, so bb installs into an empty folder. The prefetch and
+  the fetch take a while, and bb may repair or update its install
+  meanwhile, so nothing is stopped or moved on the first look: right before
+  bb's service stops, the plugin reads the install again. When it's the
+  server's version by then, nothing is stopped or installed; when it's
+  complete, that's what a failed install keeps and starts again. A broken
+  install goes aside only when a new look, and a last check right before
+  the stop, still find it broken; bb's own update running then is waited
+  for and never stopped. When the server's
+  version is unknown, bb's own update runs.
 - **bb's own update is never stopped half way.** When bb's service is
   updating itself right now (an `npm install` into its folder, in any
   state), the plugin waits for it to finish, looking again every 10
@@ -469,8 +490,8 @@ the pieces above, in the order that worked by hand:
    machine resume` (bb's own resume updates bb safely and starts it). When it's
    disconnected but not suspended, bb's safe update if it's older than the
    server or broken, and bb's service restarted. Then a wait until it
-   connects. Without bb's download on the sandbox it says so, and gives the
-   npm registry install as a manual step only.
+   connects. Without bb's download on the sandbox, that update installs the
+   server's version from the npm registry.
 5. The chat: a pending provider retry is sent now, a failed turn is retried
    (not one stopped at a usage limit), and a queue that's already sending is
    left alone.

@@ -36,8 +36,8 @@ sandbox by hand (no `pkill`, no new `boat stop` to read a stop's state, no
 4. Turns off the login message scripts. bb's machine suspended: only `bb
    machine resume` (bb's own resume updates bb safely and starts it). Not
    suspended but disconnected: updates bb there safely when it's old or broken
-   (from the server's download on the sandbox; without one it says so, with
-   the npm registry as a manual step only) and restarts bb's service. Then it
+   (from the server's download on the sandbox; without one, the server's
+   exact version from the npm registry) and restarts bb's service. Then it
    waits until the machine connects.
 5. Retries the chat: sends its pending provider retry now, retries its failed
    turn, or leaves it when its queue is already sending.

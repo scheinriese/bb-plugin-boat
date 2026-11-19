@@ -27,8 +27,8 @@
 // 6. login message scripts off (src/login-scripts.ts);
 // 7. bb older than the server, or broken: the safe update (src/bb-update.ts),
 //    only on a machine that's neither connected nor suspended (bb's own
-//    machine resume does the same update); no download: said, with the npm
-//    registry as a manual step only;
+//    machine resume does the same update); without a download of the
+//    server's version there, from the npm registry;
 // 8. a suspended machine: only `bb machine resume` (the provider's resume
 //    turns the login scripts off, updates bb and restarts it); a disconnected
 //    one: bb's service restarted. Then wait until it connects;
@@ -507,7 +507,7 @@ function bbPlanText(look: BbLook, sandboxId: string): string {
   const plan = look.plan;
   switch (plan.kind) {
     case "update":
-      return `Update bb on the sandbox ${plan.from ? `from ${plan.from} ` : ""}to ${plan.to}: a fresh install from the server's download there, swapped in, the old one kept.`;
+      return `Update bb on the sandbox ${plan.from ? `from ${plan.from} ` : ""}to ${plan.to}: a fresh install from ${plan.npm ? "the npm registry (no download of it there)" : "the server's download there"}, swapped in, the old one kept.`;
     case "set-aside":
       return `bb's install is broken (${plan.why}) and there's no download to install from: move it aside so bb's setup installs it again.`;
     case "busy":
@@ -520,11 +520,11 @@ function bbPlanText(look: BbLook, sandboxId: string): string {
   }
 }
 
-/** bb is older than the server and the server's build isn't downloaded there. */
+/** bb is older than the server, the server's build isn't downloaded there, and Boat won't install it from the npm registry either. */
 function noDownload(look: BbLook): boolean {
   const installed = isVersion(look.seen.installed) ? look.seen.installed : null;
   const behind = installed !== null && isVersion(look.target) && compareVersions(installed, look.target) < 0;
-  return look.seen.dataDir !== null && (behind || look.plan.kind === "set-aside") && !(isVersion(look.seen.tgz) && look.seen.tgz === look.target);
+  return look.seen.dataDir !== null && look.plan.kind !== "update" && (behind || look.plan.kind === "set-aside") && !(isVersion(look.seen.tgz) && look.seen.tgz === look.target);
 }
 
 function noDownloadText(look: BbLook): string {
@@ -1209,7 +1209,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       }
       switch (result.kind) {
         case "updated":
-          say("bb-update", "done", `Updated bb on the sandbox from ${result.from ?? "a broken install"} to ${result.to}.`);
+          say("bb-update", "done", `Updated bb on the sandbox from ${result.from ?? "a broken install"} to ${result.to}${result.npm ? ", installed from the npm registry" : ""}.`);
           return true;
         case "set-aside":
           say("bb-update", "done", "bb's install there was broken, so Boat moved it aside; bb's setup installs it again.");
