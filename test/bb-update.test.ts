@@ -9,8 +9,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type { BoatApi } from "../src/boat-api.ts";
-import type { BoatCli } from "../src/boat.ts";
+import type { BoatApi } from "../src/providers/boat/api.ts";
+import type { BoatCli } from "../src/providers/boat/cli.ts";
 import {
   BB_UPDATES_KEY,
   BbUpdateHung,

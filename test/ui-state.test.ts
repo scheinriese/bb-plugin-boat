@@ -43,7 +43,7 @@ test("the UI state: defaults, what was saved, and nothing it doesn't accept", as
 });
 
 test("Hide and Show again go through the RPC, refresh open pages, and stay out of settings and backups", async (t) => {
-  const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+  const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-ui-state-test-")), "state.json");
   const { bb, harness } = await createTestHost({ pluginId: "boat", settings: { boatPath: fakeBoat, evidenceUploader: "" }, agentSkillIds: ["boat", "boat-orchestrator"] });
   t.after(async () => {

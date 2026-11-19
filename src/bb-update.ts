@@ -41,7 +41,7 @@
 //    service stuck stopping, or an npm install whose read of the disk made no
 //    progress: "disk-restoring", Boat's own retries later.
 import { setTimeout as delay } from "node:timers/promises";
-import type { BoatApi } from "./boat-api.ts";
+import type { BoatApi } from "./providers/boat/api.ts";
 import { clockTime } from "./format.ts";
 import type { WakeDiagnosis } from "./wake-diagnosis.ts";
 

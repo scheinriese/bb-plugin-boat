@@ -11,7 +11,7 @@
 // Idempotent and cheap: one `boat exec` that changes nothing when the scripts
 // are already off, then never again for that sandbox while the plugin runs.
 // It never fails a wake: without sudo it says so and bb's setup goes ahead.
-import type { BoatApi } from "./boat-api.ts";
+import type { BoatApi } from "./providers/boat/api.ts";
 
 /**
  * Plain `bash -c` (a login shell would read ~/.profile, which may not be

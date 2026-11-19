@@ -3,8 +3,8 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { ProjectCatalogDto } from "../contract-projects.ts";
-import type { BoatApi } from "./boat-api.ts";
-import { normalizeRepo } from "./boat-api.ts";
+import type { BoatApi } from "./providers/boat/api.ts";
+import { normalizeRepo } from "./providers/boat/api.ts";
 
 interface NativeProject { id: string; name: string; gitRemoteUrl?: string | null; sources?: { hostId: string; path: string; isDefault?: boolean; type?: string }[] }
 export async function nativeProjectRows(bb: Pick<BbPluginApi, "sdk">, signal = AbortSignal.timeout(4000)): Promise<NativeProject[]> {

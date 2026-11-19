@@ -5,7 +5,7 @@ import { WakePacer } from "../src/wake-pacer.ts";
 import { GIVE_UP_AFTER, RETRY_MAX_MS, WAKE_EVENT, createWakeGuard, nextFailure, retryDelayMs, type MachineWake } from "../src/wake-retry.ts";
 import type { ThreadRow } from "../src/activity.ts";
 import { makeService } from "./fakes.ts";
-import { BoatError } from "../src/boat.ts";
+import { BoatError } from "../src/providers/boat/cli.ts";
 import { markResize } from "../src/disk-trim.ts";
 
 const HYDRATOR = "ascii-agents-server[812]: [lazyfs] [ERROR] HYDRATOR FAILED attempt 32 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";

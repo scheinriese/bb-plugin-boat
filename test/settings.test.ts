@@ -23,10 +23,10 @@ import {
 import { ORCHESTRATOR_EFFORT_VALUES } from "../contract.ts";
 import { EFFORTS } from "../src/tiers.ts";
 import { PLUGIN_SETTINGS_KEY, SettingsError, createSettingsStore, pluginValues } from "../src/settings-store.ts";
-import { autoStopHours } from "../src/boat-api.ts";
+import { autoStopHours } from "../src/providers/boat/api.ts";
 import { createTestHost } from "./fakes.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 
 async function setup(t: { after(fn: () => unknown): void }, settings: Record<string, unknown> = {}) {
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-settings-test-")), "state.json");

@@ -1,8 +1,8 @@
 import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidelity.ts";
 // `bb boat …` — the agent- and human-facing command line.
 import { PluginCliError, cliCommand, defineCli, type PluginCliContext } from "@get-bb/plugin-sdk";
-import { MACHINE_TYPES, autoStopHours, dashboardUrl, type MachineType } from "./boat-api.ts";
-import { BoatError } from "./boat.ts";
+import { MACHINE_TYPES, autoStopHours, dashboardUrl, type MachineType } from "./providers/boat/api.ts";
+import { BoatError } from "./providers/boat/cli.ts";
 import { describeClose } from "./close-outcome.ts";
 import {
   agentLine,
@@ -29,7 +29,7 @@ import { AGENT_NAME, effectiveRelay, onlyAgent, otherAgent, relayNote } from "./
 import { SIZE_SPECS } from "./memory.ts";
 import { wakeText } from "./sandbox-wake.ts";
 import { resizeText } from "./sandbox-size.ts";
-import { doctorText, explainBoatError, testTaskInput, type SetupStatus } from "./setup.ts";
+import { doctorText, explainBoatError, testTaskInput, type SetupStatus } from "./providers/boat/setup.ts";
 import { ALL_SETTINGS, ORCHESTRATOR_EFFORTS, parseSettingText, type SettingKey } from "./settings.ts";
 import { choiceSummary } from "./orchestrator-agent.ts";
 import { SettingsError, settingRows, settingsText, type SettingRow } from "./settings-store.ts";
@@ -264,7 +264,7 @@ export function buildCli(runtime: Runtime) {
         },
         async run({ options }, ctx) {
           return guard(async () => {
-            const { normalizeRepo, assertBranch } = await import("./boat-api.ts");
+            const { normalizeRepo, assertBranch } = await import("./providers/boat/api.ts");
             if ((options.branch || options.base) && !options.repo) {
               throw new PluginCliError("--branch and --base need --repo.", { code: "invalid_value" });
             }

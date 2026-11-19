@@ -5,15 +5,15 @@
 // the machine provider's availability, and the checks that run before any
 // sandbox is created (so a broken setup costs no starts).
 //
-// JSON shapes observed from boat CLI 1.0.89 (test/fixtures/boat-json).
+// JSON shapes observed from boat CLI 1.0.89 (fixtures/boat-json).
 // `env list` carries the environments' variable VALUES (envContents): they
 // are never kept, logged or returned; only the fields below are read.
-import { BoatError, bool, num, rec, str, type BoatRunOptions, type BoatRunResult, type JsonRecord } from "./boat.ts";
-import { autoStopCapFromLimits } from "./boat-api.ts";
-import { SIZE_ORDER, SIZE_SPECS, sizeDetail } from "./memory.ts";
-import type { ConnectCheck, ConnectStatus } from "./connect.ts";
-import { TaskError, type StartTaskInput } from "./service.ts";
-import type { Provider } from "./store.ts";
+import { BoatError, bool, num, rec, str, type BoatRunOptions, type BoatRunResult, type JsonRecord } from "./cli.ts";
+import { autoStopCapFromLimits } from "./api.ts";
+import { SIZE_ORDER, SIZE_SPECS, sizeDetail } from "../../memory.ts";
+import type { ConnectCheck, ConnectStatus } from "../../connect.ts";
+import { TaskError, type StartTaskInput } from "../../service.ts";
+import type { Provider } from "../../store.ts";
 
 // ---------------------------------------------------------------- wording
 

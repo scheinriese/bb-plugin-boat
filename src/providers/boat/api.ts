@@ -1,10 +1,10 @@
-import { parseSandboxUsage, parseUsagePlan } from "./usage.ts";
+import { parseSandboxUsage, parseUsagePlan } from "../../usage.ts";
 // Typed boat operations built on the CLI wrapper. All JSON shapes were
 // observed from boat CLI 1.0.89; every accessor tolerates missing fields.
 import { randomUUID } from "node:crypto";
-import { BoatCli, BoatError, bool, num, rec, str, type JsonRecord } from "./boat.ts";
-import { codeSpan } from "./literal.ts";
-import type { Provider } from "./store.ts";
+import { BoatCli, BoatError, bool, num, rec, str, type JsonRecord } from "./cli.ts";
+import { codeSpan } from "../../literal.ts";
+import type { Provider } from "../../store.ts";
 
 export const MACHINE_TYPES = ["small", "default", "large", "xlarge"] as const;
 export type MachineType = (typeof MACHINE_TYPES)[number];
@@ -384,7 +384,7 @@ export interface AiProxyState {
 /**
  * `boat ai proxy --json` (no state given: it only shows), e.g.
  * `{"enabled":false,"pricing":{"dailyDollars":1,"dollarsPer1000Requests":1},…}`
- * (test/fixtures/boat-json/ai-proxy.json).
+ * (fixtures/boat-json/ai-proxy.json).
  */
 export function parseAiProxy(raw: JsonRecord): AiProxyState {
   const nested = rec(raw.proxy) ?? rec(raw.aiProxy);

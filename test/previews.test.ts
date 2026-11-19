@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { composeFollowupPrompt, composeInitialPrompt, parsePreview } from "../src/briefs.ts";
-import { BoatError } from "../src/boat.ts";
+import { BoatError } from "../src/providers/boat/cli.ts";
 import { notificationText } from "../src/format.ts";
 import { checkPreview, previewLink, previewView } from "../src/previews.ts";
 import { TaskError, previewStartScript, snapshotError } from "../src/service.ts";

@@ -1,7 +1,7 @@
 // Continue as a chat: the headless (boat) conversation so far, as a Markdown
 // file the new chat reads first. It holds prompts, the agent's messages and
 // the names of the tools it used; boat's log has no tool output or diffs.
-import type { ChatEvent } from "./boat-api.ts";
+import type { ChatEvent } from "./providers/boat/api.ts";
 
 /** About 30k tokens: room to read it in a turn that only reads up. */
 export const TRANSCRIPT_LIMIT = 120_000;

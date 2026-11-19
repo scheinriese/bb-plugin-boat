@@ -3,7 +3,7 @@ import { z } from "zod";
 import { NATIVE_REVIEW_METADATA, nativeReviewStateSchema, reviewerSchema, type NativeReviewState } from "../contract-review.ts";
 import type { PullRequestFacts } from "../contract-merge.ts";
 import { getPullRequest, pullRequestNumber } from "./github.ts";
-import { assertBranch } from "./boat-api.ts";
+import { assertBranch } from "./providers/boat/api.ts";
 import { parseReport } from "./briefs.ts";
 import { nativeReviewConfigSchema, nativeReviewSourceSchema, reviewGeneration, completedTurnKey, type NativeReviewSource } from "./review-policy.ts";
 import { TaskError } from "./service.ts";

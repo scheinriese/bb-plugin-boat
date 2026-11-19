@@ -217,7 +217,7 @@ test("in the plugin: the consent RPC answers provider retry, and the dispatch ho
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-reset-")), "state.json");
   const { bb, harness } = await createTestHost({
     pluginId: "boat",
-    settings: { boatPath: fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "" },
+    settings: { boatPath: fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "" },
     agentSkillIds: ["boat", "boat-orchestrator"],
   });
   t.after(() => harness.lifecycle.dispose());

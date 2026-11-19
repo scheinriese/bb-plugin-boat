@@ -22,11 +22,11 @@
 // "running"), a dispatch, ship or wake in flight, or a live preview.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { KEEP_LIMIT_MS, hasWork, rowWork, workingChildren, type ThreadRow } from "./activity.ts";
-import { ACTIVE_STATES, autoStopHours, withinAutoStopCap, type BoatApi } from "./boat-api.ts";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
-import type { BoatSettings } from "./service.ts";
-import { OPEN_STATUSES, type Task, type TaskStore } from "./store.ts";
+import { KEEP_LIMIT_MS, hasWork, rowWork, workingChildren, type ThreadRow } from "../../activity.ts";
+import { ACTIVE_STATES, autoStopHours, withinAutoStopCap, type BoatApi } from "./api.ts";
+import { MACHINE_PROVIDER_ID } from "../../machine.ts";
+import type { BoatSettings } from "../../service.ts";
+import { OPEN_STATUSES, type Task, type TaskStore } from "../../store.ts";
 
 /** Move the deadline once it's this close (or half the auto-stop, if that's shorter). */
 export const KEEP_MARGIN_MS = 25 * 60_000;
@@ -70,7 +70,7 @@ const TURN_ENDS = new Set(["finished", "failed"]);
 
 const resourceSchema = z.object({ sandboxId: z.string(), key: z.string() });
 
-export type { ThreadRow } from "./activity.ts";
+export type { ThreadRow } from "../../activity.ts";
 
 /** A state that only counts as working for a while (the keeper times it). */
 export function lingering(thread: ThreadRow): "blocked" | "stopping" | null {

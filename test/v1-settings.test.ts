@@ -6,7 +6,7 @@ import { SETTINGS } from "../src/settings.ts";
 import type { SetupStatusDto } from "../contract.ts";
 import { checkedAgo, groupedSettings, notificationSettingPatch, setupNeedsWork, setupProgress, setupTestPassed } from "../web/v1-settings-logic.ts";
 import { makeService } from "./fakes.ts";
-import { testTaskInput } from "../src/setup.ts";
+import { testTaskInput } from "../src/providers/boat/setup.ts";
 
 test("settings migrate over two generations without losing false, zero, empty or later edits", async (t) => {
   let host = createFakePluginHost({ pluginId: "boat", settings: { agents: "codex", workers: "projects", environment: "", maxActiveSandboxes: 0, pushNotifications: false, machineType: "small" } });

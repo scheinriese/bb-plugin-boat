@@ -3,8 +3,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type { BoatApi } from "../src/boat-api.ts";
-import { BoatError, type BoatCli } from "../src/boat.ts";
+import type { BoatApi } from "../src/providers/boat/api.ts";
+import { BoatError, type BoatCli } from "../src/providers/boat/cli.ts";
 import { registerBoatMachine } from "../src/machine.ts";
 import { WakeDeferred, WakePacer } from "../src/wake-pacer.ts";
 import { createWakeGuard } from "../src/wake-retry.ts";

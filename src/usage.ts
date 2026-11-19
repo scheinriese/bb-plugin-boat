@@ -1,6 +1,6 @@
 // Boat CLI 1.0.92 `usage --json` prints SandboxUsageResponse verbatim.
 // https://docs.boat.dev/api/reference/sandboxes/get-sandbox-usage
-import { bool, num, rec, str, type JsonRecord } from "./boat.ts";
+import { bool, num, rec, str, type JsonRecord } from "./providers/boat/cli.ts";
 import type { FidelityUsageDto } from "../contract-fidelity.ts";
 
 export interface SandboxUsage {

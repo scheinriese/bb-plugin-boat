@@ -17,7 +17,7 @@
 //   wakes, or on stops boat refused), it moves the sandbox to a new node, or
 //   asks first when anything there could be lost (src/node-move.ts).
 import type { ThreadRow } from "./activity.ts";
-import { ACTIVE_STATES, type BoatApi, type StopReport } from "./boat-api.ts";
+import { ACTIVE_STATES, type BoatApi, type StopReport } from "./providers/boat/api.ts";
 import { clockTime } from "./format.ts";
 import type { TaskStore } from "./store.ts";
 import { resizeRefused, tooLargeQuestion } from "./disk-trim.ts";

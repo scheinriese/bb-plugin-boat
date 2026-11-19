@@ -7,7 +7,7 @@
 // passwordless sudo), and `boat exec` runs a login shell whose profile it can
 // write. Every value is clamped, process names are sanitized, and probe data
 // never moves a sandbox by itself.
-import type { MachineType } from "./boat-api.ts";
+import type { MachineType } from "./providers/boat/api.ts";
 import type { Runner, TaskEvent } from "./store.ts";
 import { AUTO_RETRY_RECORD } from "./steer-retry.ts";
 

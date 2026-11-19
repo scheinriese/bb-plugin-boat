@@ -41,7 +41,7 @@ import {
   type ThreadFacts,
 } from "../src/paid-resume.ts";
 import type { MachineState } from "../src/chat.ts";
-import { BoatError } from "../src/boat.ts";
+import { BoatError } from "../src/providers/boat/cli.ts";
 import { TaskError } from "../src/service.ts";
 import { WakePacer, kvWakeStorage } from "../src/wake-pacer.ts";
 import { PAID_USAGE_EVIDENCE_MS } from "../src/relay.ts";
@@ -624,7 +624,7 @@ test("the plugin: a chat stopped at a Pooler 429 continues on paid Claude at the
   fakeBoatState();
   const { bb, harness } = await createTestHost({
     pluginId: "boat",
-    settings: { boatPath: fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "", paidClaudeFallback: true },
+    settings: { boatPath: fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "", paidClaudeFallback: true },
   });
   t.after(() => harness.lifecycle.dispose());
   const thread = { id: "thr_chat", title: "Refactor", providerId: CLAUDE_CODE, status: "error", archivedAt: null, deletedAt: null, projectId: "proj_personal", parentThreadId: null, environmentId: "env_chat" };
@@ -668,7 +668,7 @@ test("a project's Never continue on paid Claude: set with bb boat project set, k
   fakeBoatState();
   const { bb, harness } = await createTestHost({
     pluginId: "boat",
-    settings: { boatPath: fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "" },
+    settings: { boatPath: fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "" },
   });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);

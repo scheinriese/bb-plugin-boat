@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type Database from "better-sqlite3";
-import { BOAT_GIT_ENV, BoatApi, chainedHook, invalidBranchNames, parseBranchList, prePushHook } from "../src/boat-api.ts";
-import { BoatCli } from "../src/boat.ts";
+import { BOAT_GIT_ENV, BoatApi, chainedHook, invalidBranchNames, parseBranchList, prePushHook } from "../src/providers/boat/api.ts";
+import { BoatCli } from "../src/providers/boat/cli.ts";
 import { localToOrchestratorProject, pushRefusal, type LocalProject } from "../src/local-projects.ts";
 import { kickoffPrompt } from "../src/orchestrator.ts";
 import {

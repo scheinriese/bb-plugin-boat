@@ -50,7 +50,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isOpen, turnRuns, type ThreadRow } from "./activity.ts";
-import { ACTIVE_STATES, type BoatApi, type Limits, type Sandbox, type StopReport } from "./boat-api.ts";
+import { ACTIVE_STATES, type BoatApi, type Limits, type Sandbox, type StopReport } from "./providers/boat/api.ts";
 import { BbUpdateHung, compareVersions, decideBbUpdate, inspectScript, isVersion, parseInspection, type BbInstall, type BbUpdatePlan, type HostPrep, type HostPrepResult } from "./bb-update.ts";
 import type { MachineState } from "./chat.ts";
 import { clockTime } from "./format.ts";

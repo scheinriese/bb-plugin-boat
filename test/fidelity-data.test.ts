@@ -69,7 +69,7 @@ test("history scan is bounded even when private raw logs dominate", () => {
 });
 
 test("actual Boat limits and documented usage payload retain measured numbers and drop unrelated secrets", () => {
-  const fixture = JSON.parse(readFileSync(new URL("./fixtures/boat-json/limits-standard.json", import.meta.url), "utf8"));
+  const fixture = JSON.parse(readFileSync(new URL("../src/providers/boat/fixtures/boat-json/limits-standard.json", import.meta.url), "utf8"));
   assert.deepEqual(parseUsagePlan(fixture), { name: "standard", hoursRemaining: 550, hoursTotal: 555.56, resetsAt: "2026-02-01T12:00:00.000Z" });
   assert.deepEqual(parseSandboxUsage({ ok: true, type: "sandbox.usage", sandboxId: "bx_23456789", sandboxType: "default", billingMultiplier: 1, since: "2026-09-01T00:00:00.000Z", until: "2026-09-14T09:30:00.000Z", seconds: 4980, dollars: 0.0498, secondsPerDollar: 100000, running: false, token: "hidden" }), { seconds: 4980, hours: 4980 / 3600, dollars: 0.0498, since: "2026-09-01T00:00:00.000Z", until: "2026-09-14T09:30:00.000Z", running: false });
   assert.equal(parseSandboxUsage({ seconds: -1, dollars: Infinity }).hours, null);
@@ -119,7 +119,7 @@ test("structured decision CLI, agent tool and RPC preserve their shared boundary
   const { default: plugin } = await import("../server.ts");
   const dir = mkdtempSync(join(tmpdir(), "boat-data-rpc-"));
   process.env.FAKE_BOAT_STATE = join(dir, "state.json");
-  const { bb, harness } = await createTestHost({ pluginId: "boat", settings: { boatPath: new URL("./fixtures/fake-boat.mjs", import.meta.url).pathname, evidenceUploader: "" }, agentSkillIds: ["boat", "boat-orchestrator"] });
+  const { bb, harness } = await createTestHost({ pluginId: "boat", settings: { boatPath: new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url).pathname, evidenceUploader: "" }, agentSkillIds: ["boat", "boat-orchestrator"] });
   harness.sdk.stub("threads.get", async () => ({ id: "thr_demo", environmentId: null, deletedAt: null, archivedAt: null }));
   harness.sdk.stub("system.config", async () => ({ primaryHostId: "host_demo" }));
   await plugin(bb); t.after(() => harness.lifecycle.dispose());

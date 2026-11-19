@@ -14,7 +14,7 @@
 // (~/.nvm/versions/node/<current>; a system node isn't read).
 // Bounded in time (60 s), in total size (1.5 GiB) and per file (256 MiB);
 // it never fails or holds up the wake past its limit, whatever the disk does.
-import type { BoatApi } from "./boat-api.ts";
+import type { BoatApi } from "./providers/boat/api.ts";
 import type { PrefetchRequest } from "./bb-update.ts";
 
 export const PREFETCH_SECONDS = 60;

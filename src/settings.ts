@@ -8,7 +8,7 @@
 // (src/config.ts) exports and imports all of them.
 import type { PluginSettingDescriptor, PluginSettingValue, PluginSettingsValues } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { MACHINE_TYPES, invalidBranchNames } from "./boat-api.ts";
+import { MACHINE_TYPES, invalidBranchNames } from "./providers/boat/api.ts";
 import { DEFAULT_EVIDENCE_UPLOADER, evidenceSourceProblem } from "./evidence.ts";
 
 /** Number ranges (bb's list shows only label and description; the plugin's own UI shows these). */

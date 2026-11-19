@@ -11,8 +11,8 @@
 // - A resume boat refuses for the sandbox's size goes under Needs you, with
 //   the way back by hand (src/wake-retry.ts). Boat never starts it on a
 //   larger size itself: that costs more.
-import { ACTIVE_STATES, type BoatApi, type MachineType } from "./boat-api.ts";
-import { BoatError } from "./boat.ts";
+import { ACTIVE_STATES, type BoatApi, type MachineType } from "./providers/boat/api.ts";
+import { BoatError } from "./providers/boat/cli.ts";
 import { SIZE_SPECS, isMachineType } from "./memory.ts";
 
 /** The trim's whole budget, from the look at the sandbox to fstrim's answer; the stop goes ahead after it whatever happens. */

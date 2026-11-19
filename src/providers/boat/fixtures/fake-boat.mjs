@@ -27,7 +27,7 @@ const flag = (name) => {
   return index === -1 ? null : rest[index + 1];
 };
 
-// Setup facts (test/fixtures/boat-json has the real shapes): signed in, a
+// Setup facts (boat-json has the real shapes): signed in, a
 // trial, both agents connected, unless the state says otherwise.
 const signedOut = state.signedOut === true;
 if (signedOut && ["limits", "env", "ai", "list", "new"].includes(command)) {
@@ -49,7 +49,7 @@ switch (command) {
   case "ai":
     // `boat ai proxy` without on or off only shows the account's proxy.
     if (rest[0] === "proxy" && (rest[1] === undefined || rest[1].startsWith("-"))) {
-      // The real shape (test/fixtures/boat-json/ai-proxy.json); the proxy is a paid add-on.
+      // The real shape (boat-json/ai-proxy.json); the proxy is a paid add-on.
       print({ enabled: state.aiProxy !== false, enabledAt: null, org: false, pricing: { dailyDollars: 1, dollarsPer1000Requests: 1 }, proxyUrl: "https://ai-proxy.example.com", success: true });
       break;
     }

@@ -3,7 +3,7 @@
 // the start limit. Fakes only: no boat CLI, no bb.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Limits, Sandbox, StopReport } from "../src/boat-api.ts";
+import type { Limits, Sandbox, StopReport } from "../src/providers/boat/api.ts";
 import { createBbUpdater, parseInspection } from "../src/bb-update.ts";
 import type { MachineState } from "../src/chat.ts";
 import type { QueuedFacts, ThreadFacts } from "../src/paid-resume.ts";

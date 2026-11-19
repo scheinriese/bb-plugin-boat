@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { NO_WORK, readMachineActivity } from '../src/activity.ts';
-import { busyProcesses, parseProcessSample } from '../src/boat-api.ts';
+import { busyProcesses, parseProcessSample } from '../src/providers/boat/api.ts';
 import { createWatchdog } from '../src/watchdog.ts';
 import { makeService } from './fakes.ts';
 const REPORT = 'Done.\n\n=== REPORT ===\nSTATUS: done\nPR: none\nBRANCH: boat/x\nSUMMARY: done\nTESTS: ok\nOPEN QUESTIONS: none\n=== END REPORT ===';

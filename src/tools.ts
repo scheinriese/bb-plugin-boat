@@ -3,13 +3,13 @@ import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidel
 // with schemas (no shell quoting for long briefs) and timeline labels.
 import type { PluginAgentToolResult } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { MACHINE_TYPES, type MachineType } from "./boat-api.ts";
-import { BoatError } from "./boat.ts";
+import { MACHINE_TYPES, type MachineType } from "./providers/boat/api.ts";
+import { BoatError } from "./providers/boat/cli.ts";
 import { describeClose } from "./close-outcome.ts";
 import { agentLine, ago, decisionLines, limitsLine, overviewLink, taskDetail, taskNote, taskTable, tasksAtOnceLine, queuedStartMarker } from "./format.ts";
 import { parseProjectRef, type Runtime } from "./runtime.ts";
 import { TaskError } from "./service.ts";
-import { explainBoatError } from "./setup.ts";
+import { explainBoatError } from "./providers/boat/setup.ts";
 import { OPEN_STATUSES, PROVIDERS, TASK_ROLES, TASK_STATUSES, type Provider, type Task, type TaskStatus } from "./store.ts";
 import { EFFORTS, TIERS, type Tier } from "./tiers.ts";
 import { resizeText } from "./sandbox-size.ts";

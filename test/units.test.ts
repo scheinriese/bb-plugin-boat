@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertBranch, finalResponse, normalizeRepo, promptStatus, type ChatEvent } from "../src/boat-api.ts";
-import { parseJsonLines, withJsonFlag } from "../src/boat.ts";
+import { assertBranch, finalResponse, normalizeRepo, promptStatus, type ChatEvent } from "../src/providers/boat/api.ts";
+import { parseJsonLines, withJsonFlag } from "../src/providers/boat/cli.ts";
 import { composeFollowupPrompt, composeHandoverPrompt, composeInitialPrompt, extractPrUrl, parseReport, trustNote } from "../src/briefs.ts";
 import { eventText, notificationText, resultExcerpt } from "../src/format.ts";
 
@@ -207,9 +207,9 @@ test("excerpts keep the report block of long messages", () => {
 });
 
 test("boat events JSON (live shapes) parses tool names, prompts, and the final answer", async () => {
-  const { BoatCli } = await import("../src/boat.ts");
-  const { BoatApi } = await import("../src/boat-api.ts");
-  const script = new URL("./fixtures/print-events.mjs", import.meta.url).pathname;
+  const { BoatCli } = await import("../src/providers/boat/cli.ts");
+  const { BoatApi } = await import("../src/providers/boat/api.ts");
+  const script = new URL("../src/providers/boat/fixtures/print-events.mjs", import.meta.url).pathname;
   const api = new BoatApi(new BoatCli(async () => script));
   const events = await api.events("bx_1", "conv-0001");
   assert.equal(events.length, 3);

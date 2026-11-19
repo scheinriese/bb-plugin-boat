@@ -13,7 +13,7 @@ import { ALL_SETTINGS, PLUGIN_SETTINGS, SETTINGS } from "../src/settings.ts";
 import { PLUGIN_SETTINGS_KEY } from "../src/settings-store.ts";
 import { DEFAULT_TIERS } from "../src/tiers.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 
 /** A plugin in a fresh fake bb; `files` stands in for the machine the CLI runs on. */
 async function setup(settings: Record<string, unknown> = {}) {

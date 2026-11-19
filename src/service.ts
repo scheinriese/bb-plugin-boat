@@ -24,11 +24,11 @@ import {
   busyProcesses,
   programName,
   shellQuote,
-} from "./boat-api.ts";
+} from "./providers/boat/api.ts";
 import { checkPreview, previewLink, previewView, type PreviewView } from "./previews.ts";
 import { KEEP_LIMIT_MS, describeWork, hasWork } from "./activity.ts";
-import { BOAT_GIT_ENV, aiProxyPrice, autoStopHours, withinAutoStopCap, type AiProxyState } from "./boat-api.ts";
-import { BoatError } from "./boat.ts";
+import { BOAT_GIT_ENV, aiProxyPrice, autoStopHours, withinAutoStopCap, type AiProxyState } from "./providers/boat/api.ts";
+import { BoatError } from "./providers/boat/cli.ts";
 import { bootstrapFailureMessage, retryableBootstrap } from "./bootstrap.ts";
 import { alwaysProtectedBranches, protectedBranches, type OrchestratorProject, type ProjectRepo } from "./projects.ts";
 import {
@@ -77,7 +77,7 @@ import type { QuotaReader } from "./quota.ts";
 import { AGENT_NAME, agentForWork, checksSubscription, effectiveRelay, onlyAgent, otherAgent, startAgent, subscriptionRoom, type AgentChoice, type RelaySettings } from "./relay.ts";
 import type { ConnectCheck } from "./connect.ts";
 import { renderBoatTranscript, transcriptDir, transcriptPath } from "./transcript.ts";
-import type { PreflightInput } from "./setup.ts";
+import type { PreflightInput } from "./providers/boat/setup.ts";
 import type { PlanSize, SizedProject } from "./memory.ts";
 import { wakeIds, type WakePacer, type WakePermit } from "./wake-pacer.ts";
 import { SandboxSizes } from "./sandbox-size.ts";

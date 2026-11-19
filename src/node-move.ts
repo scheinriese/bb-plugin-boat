@@ -21,7 +21,7 @@
 // unpushed commits (any branch), changes (untracked too) or stashes.
 // Otherwise the user decides (Needs you, with the commands and what's lost).
 import { hasWork, isOpen, rowWork, turnRuns, type ThreadRow } from "./activity.ts";
-import type { BoatApi, StopReport } from "./boat-api.ts";
+import type { BoatApi, StopReport } from "./providers/boat/api.ts";
 import { clockTime } from "./format.ts";
 import type { Task } from "./store.ts";
 import { DISK_CHECK_SCRIPT, parseDiskCheck } from "./wake-diagnosis.ts";

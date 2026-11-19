@@ -10,7 +10,7 @@ import plugin from "../server.ts";
 import { rpcErrorInfo } from "../contract.ts";
 import { createTestHost } from "./fakes.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 
 async function setup(overrides: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "boat-plugin-test-"));

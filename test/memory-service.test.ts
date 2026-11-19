@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { notificationText } from "../src/format.ts";
 import { costSentence, decodeData } from "../src/memory.ts";
 import { TaskError } from "../src/service.ts";
-import { testTaskInput } from "../src/setup.ts";
+import { testTaskInput } from "../src/providers/boat/setup.ts";
 import { makeService, oomLines } from "./fakes.ts";
 
 const REPORT = `Done.

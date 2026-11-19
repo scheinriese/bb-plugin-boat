@@ -111,7 +111,7 @@ test("the project a chat coordinates: its own repo's, the only one, else the new
 
 // ------------------------------------------------------------------ RPC
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 
 async function setup() {
   const dir = mkdtempSync(join(tmpdir(), "boat-entry-test-"));

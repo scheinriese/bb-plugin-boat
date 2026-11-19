@@ -96,7 +96,7 @@ async function usageHost(t: { after(fn: () => unknown): void }, pool: FakePool, 
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-usage-test-")), "state.json");
   const { bb, harness } = await createTestHost({
     pluginId: "boat",
-    settings: { boatPath: fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "", agents: "both", ...settings },
+    settings: { boatPath: fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "", agents: "both", ...settings },
     agentSkillIds: ["boat", "boat-orchestrator"],
   });
   t.after(() => harness.lifecycle.dispose());

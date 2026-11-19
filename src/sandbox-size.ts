@@ -8,7 +8,7 @@
 // plugin (no database migration). BoatService builds one SandboxSizes and
 // calls it from a few places (marked "sizes" there).
 import type { TaskMemoryDto, ResizeInfoDto } from "../contract-size.ts";
-import { ACTIVE_STATES, type BoatApi, type MachineType, type Sandbox } from "./boat-api.ts";
+import { ACTIVE_STATES, type BoatApi, type MachineType, type Sandbox } from "./providers/boat/api.ts";
 import { trimFreedBlocks } from "./disk-trim.ts";
 import {
   DATA_KIND,

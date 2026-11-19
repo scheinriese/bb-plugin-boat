@@ -1,7 +1,7 @@
 // Human/agent-readable text for CLI output, tool results and notifications.
 import { evidenceStatus, uploaderWorks } from "./evidence.ts";
 import type { PreviewView } from "./previews.ts";
-import { dashboardUrl, type Limits, type Sandbox } from "./boat-api.ts";
+import { dashboardUrl, type Limits, type Sandbox } from "./providers/boat/api.ts";
 import type { Decision, Task, TaskEvent } from "./store.ts";
 import { tierSummary } from "./tiers.ts";
 import { HIDDEN_EVENT_KINDS, memoryNoticeLines } from "./memory.ts";
