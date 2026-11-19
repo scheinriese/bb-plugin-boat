@@ -130,8 +130,8 @@ export interface Runtime {
   /** Each agent's usage, as the relay reads it (null in tests that don't wire it). */
   quotas: QuotaReader | null;
   /**
-   * A chat stopped at a limit: continue what stopped at a limit if paid Claude
-   * is available now (one pass, in turn with the relay's).
+   * Continue what stopped at a usage limit if paid Claude is available now:
+   * one pass, on its own timer (never under the relay's lock), one at a time.
    */
   paidResumeCheck(): Promise<RelayAction[]>;
   /** Chats and headless tasks continued on paid Claude in the last day. */
@@ -687,8 +687,6 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         }
       }
     }
-    // Chats stopped at a usage limit, once paid Claude is available (same reading).
-    actions.push(...(await paidResumePass(quotas, settings)));
     // One notice for all orchestrators that can't move.
     const waiting = actions.filter((action) => action.kind === "both-out");
     if (waiting.length > 0) {
@@ -982,12 +980,12 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     relaySwitch: (threadId, to, options) => exclusive(() => relaySwitch(threadId, to, options)),
     relayStatus,
     quotas: deps.quotas ?? null,
-    paidResumeCheck: () =>
-      exclusive(async () => {
-        const settings = await service.settings();
-        if (deps.quotas === undefined || deps.paidResume === undefined || !resumeEnabled(settings)) return [];
-        return paidResumePass(await deps.quotas.read(), settings);
-      }),
+    async paidResumeCheck() {
+      const settings = await service.settings();
+      if (deps.quotas === undefined || deps.paidResume === undefined || !resumeEnabled(settings)) return [];
+      // The relay's pass keeps the reading fresh each minute; this one only reads it.
+      return paidResumePass(await deps.quotas.read(), settings);
+    },
     recentPaidResumes: () => deps.paidResume?.recent() ?? 0,
     isHandingOver,
     relayIdle,

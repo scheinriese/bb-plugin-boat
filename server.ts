@@ -40,7 +40,8 @@ import { registerStartQueueRpc } from "./src/start-queue-rpc.ts";
 import { registerNativeReviews } from "./src/native-review.ts";
 import { nativeStart, adoptNativeChat } from "./src/native-start.ts";
 import { createRuntime, type Runtime } from "./src/runtime.ts";
-import { PaidResumeStore, bbResumeThreads, createPaidResume, mayBeLimitStop, type TurnFailedPayload } from "./src/paid-resume.ts";
+import { PaidResumeStore, bbMachineReader, bbResumeThreads, createPaidResume, createPaidResumeTimer, mayBeLimitStop, type TurnFailedPayload } from "./src/paid-resume.ts";
+import { createWakeBudget } from "./src/wake-budget.ts";
 import { BoatService, DeliveryDeferred, type BoatSettings, type Notification } from "./src/service.ts";
 import { TaskStore, type Provider } from "./src/store.ts";
 import { TOOL_NAMES, registerTools } from "./src/tools.ts";
@@ -62,6 +63,8 @@ const GROUP_HOLD_MS = 2 * 60_000;
 const POLL_INTERVAL_MS = 15_000;
 /** After a chat stops at a limit, give provider-retry and the limit tracker a moment before a paid resume check. */
 const STOP_CHECK_DELAY_MS = 5_000;
+/** How often the paid Claude resume looks for chats stopped at a limit (its own timer, apart from the monitor's loop). */
+const PAID_RESUME_INTERVAL_MS = 60_000;
 
 /** Abortable sleep that cleans up its listener either way. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -363,10 +366,14 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  // Chats stopped at a usage limit continue once paid Claude is available (on the relay's cadence).
+  // Machine wakes the plugin makes on its own (the watchdog's resumes, paid Claude resumes): 2 a minute, kept in kv.
+  const wakeBudget = createWakeBudget(bb.storage.kv);
+  // Chats stopped at a usage limit continue once paid Claude is available (its own timer, below).
   const paidResume = createPaidResume({
-    threads: bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve()),
+    threads: bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(), { error: (line) => bb.log.error(line) }),
     store: new PaidResumeStore(() => bb.storage.database()),
+    machines: bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await boat.findInfo(sandboxId))?.state ?? null),
+    wakes: wakeBudget,
     tasks: {
       byThread: (threadId) => service.store.byThread(threadId),
       failedHeadless: () => service.store.list({ statuses: ["failed"], limit: 500 }).filter((task) => task.runner === "boat"),
@@ -384,7 +391,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (service.store.orchestratorThreadIds().former.has(threadId)) return "a former orchestrator (another chat took over)";
       return (await runtimeRef?.isHandingOver(threadId)) ? "being handed over to another agent" : null;
     },
-    log: { info: (line) => bb.log.info(line), warn: (line) => bb.log.warn(line) },
+    log: { info: (line) => bb.log.info(line), warn: (line) => bb.log.warn(line), error: (line) => bb.log.error(line) },
     sleep: (ms) => sleep(ms, lifecycle.signal),
   });
 
@@ -405,6 +412,13 @@ export default async function plugin(bb: BbPluginApi) {
     wake: () => wakeMonitor(),
   });
   runtimeRef = runtime;
+  // The paid Claude resume: its own timer, one pass at a time, so it never holds up the monitor's loop or the relay.
+  const paidTimer = createPaidResumeTimer(
+    async () => {
+      for (const action of await runtime.paidResumeCheck()) bb.log.info(`relay ${action.threadId}: ${action.kind} (${action.reason})`);
+    },
+    { intervalMs: PAID_RESUME_INTERVAL_MS, delayMs: STOP_CHECK_DELAY_MS, signal: lifecycle.signal, onError: (error) => bb.log.warn(`paid resume failed: ${error instanceof Error ? error.message : String(error)}`) },
+  );
   const nativeReviews = registerNativeReviews(runtime);
   attentionNotifications = createAttentionNotifications({
     kv: bb.storage.kv,
@@ -532,12 +546,11 @@ export default async function plugin(bb: BbPluginApi) {
     const event = payload as TurnFailedPayload;
     if (!mayBeLimitStop(event) || typeof event.threadId !== "string") return;
     const threadId = event.threadId;
-    void (async () => {
-      if (!(await paidResume.stopped(threadId, typeof event.requestId === "string" ? event.requestId : null))) return;
-      await sleep(STOP_CHECK_DELAY_MS, lifecycle.signal);
-      if (lifecycle.signal.aborted) return;
-      for (const action of await runtime.paidResumeCheck()) bb.log.info(`relay ${action.threadId}: ${action.kind} (${action.reason})`);
-    })().catch((error: unknown) => bb.log.warn(`paid resume ${threadId}: ${error instanceof Error ? error.message : String(error)}`));
+    // A burst of stops makes one check a few seconds later, not one pass each.
+    void paidResume
+      .stopped(threadId, typeof event.requestId === "string" ? event.requestId : null)
+      .then((recorded) => (recorded ? paidTimer.soon() : undefined))
+      .catch((error: unknown) => bb.log.warn(`paid resume ${threadId}: ${error instanceof Error ? error.message : String(error)}`));
   });
   bb.events.on("thread.failed", (payload: unknown) => {
     const event = payload as { thread?: { providerId?: string | null }; error?: string | null };
@@ -606,6 +619,8 @@ export default async function plugin(bb: BbPluginApi) {
     boat,
     store: service.store,
     kv: bb.storage.kv,
+    // Its resumes share the 2-a-minute wake budget with the paid Claude resume.
+    wakeBudget,
     // The same boat ps readings the idle stop and the keeper go by.
     computing: (sandboxId) => service.processesBusy(sandboxId),
     tell: (threadId, text) => runtime.tellOrchestrator(threadId, text),
@@ -751,6 +766,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (signal.aborted) { abortMonitor(); return; }
       await watchdog.load().catch((error: unknown) => bb.log.warn(`watchdog notes: ${error instanceof Error ? error.message : String(error)}`));
       if (signal.aborted) return;
+      paidTimer.start();
       let lastRelayAt = 0;
       while (!signal.aborted) {
         try {

@@ -17,26 +17,44 @@
 //   (`bb thread retry`) re-submits the failed turn. It needs the thread in error.
 // - A retry's request keeps the first request of its chain (retryOfRequestId), so
 //   "one resume per stopped turn" holds across retries that fail again.
+// A reply this bb doesn't answer the way 0.50.1 does reads as "unknown": the
+// chat is skipped, never retried on a guess.
 //
-// Safety: one resume per thread and stopped turn, a few seconds between
-// resumes, at most RESUME_CAP per pass (the rest wait for the next pass), and
-// nothing while the reading is stale, Claude is on hold or extra usage is
-// rejected (all part of the shared check).
+// Pacing: a burst of wakes overloads boat.dev (its start limit, its snapshot
+// storage). Every attempt counts toward RESUME_CAP and waits RESUME_STAGGER_MS
+// after the last one; a failure ends the pass and backs off (5 min, doubling to
+// an hour, kept across restarts). A machine that is starting, stopping or
+// failed is left alone; waking a suspended one takes a token from the wake
+// budget the watchdog shares (src/wake-budget.ts: 2 a minute). A failed wake
+// holds further wakes for WAKE_HOLD_MS. One headless follow-up a pass.
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { ACTIVE_STATES } from "./boat-api.ts";
+import type { MachineState } from "./chat.ts";
 import { USAGE_LIMIT_TEXT } from "./limits.ts";
 import type { BoatProject } from "./projects.ts";
 import type { Quotas } from "./quota.ts";
 import { isBusy, subscriptionRoom, type SubscriptionRoom } from "./relay.ts";
-import type { BoatSettings } from "./service.ts";
+import { TaskError, type BoatSettings } from "./service.ts";
 import type { TurnEventRow } from "./steer-retry.ts";
 import type { Task } from "./store.ts";
+import type { WakeBudget } from "./wake-budget.ts";
 
-/** At most this many resumes per pass; the rest wait for the next one. */
+/** At most this many attempts per pass (failed ones count too); the rest wait for the next pass. */
 export const RESUME_CAP = 10;
-/** Pause between two resumes, so a pool of chats doesn't wake at once. */
+/** Pause before every attempt after the first, so a pool of chats doesn't wake at once. */
 export const RESUME_STAGGER_MS = 3_000;
+/** At most this many headless follow-ups a pass (each may resume a sandbox, waiting up to two minutes). */
+export const HEADLESS_PER_PASS = 1;
+/** Tries per stopped turn: a failure that may have reached nothing is tried again after the backoff. */
+export const MAX_ATTEMPTS = 3;
+/** After a failed attempt the pass waits this long, doubling with each failure in a row… */
+export const BACKOFF_FIRST_MS = 5 * 60_000;
+/** …up to this. */
+export const BACKOFF_MAX_MS = 60 * 60_000;
+/** After a machine failed to start (or a wake failed), no machine is woken for this long. */
+export const WAKE_HOLD_MS = 15 * 60_000;
 /** provider-retry records its decision right after a failure: wait this long for it before a core retry. */
 export const DECISION_WAIT_MS = 60_000;
 /** A pending provider retry due this soon is left alone: it may still run on included usage. */
@@ -54,6 +72,8 @@ export const HEADLESS_RESUME_TEXT =
   "[boat] Your last turn stopped at a Claude usage limit. Paid Claude extra usage is available now: continue where you stopped.";
 /** The task event kind (task history and `bb boat task show`). */
 export const RESUME_EVENT = "paid-resume";
+/** A reply bb gave in a shape this version doesn't know (nothing is guessed from it). */
+export const UNKNOWN = "unknown" as const;
 
 // ---------------------------------------------------------------- the failure
 
@@ -166,11 +186,18 @@ export function readStoppedTurn(rows: readonly TurnEventRow[]): StoppedTurn | nu
   return { requestId, rootRequestId, failedAt: typeof failed.createdAt === "number" ? failed.createdAt : null, failure };
 }
 
+
 // ---------------------------------------------------------------- records
 
 export type ResumeHow = "pending-retry" | "retry" | "follow-up";
 
-/** Stops seen (bb's turn.failed) and the resumes made, once per stopped turn (src/paid-resume-migrations.ts). */
+/** The pass's backoff after a failure: not before `until`, after `failures` in a row. */
+export interface Backoff {
+  until: number;
+  failures: number;
+}
+
+/** Stops seen (bb's turn.failed), the resumes tried once per stopped turn, and the pass's pacing (src/paid-resume-migrations.ts). */
 export class PaidResumeStore {
   private readonly db: () => Database.Database;
 
@@ -198,31 +225,151 @@ export class PaidResumeStore {
     this.db().prepare(`DELETE FROM paid_resume_stops WHERE thread_id = ?`).run(threadId);
   }
 
-  claimed(threadId: string, turnKey: string): boolean {
-    return this.db().prepare(`SELECT 1 FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).get(threadId, turnKey) !== undefined;
+  /**
+   * This stopped turn is done with: continued, being tried, or out of tries.
+   * A failed try with tries left isn't (it goes again after the backoff).
+   */
+  settled(threadId: string, turnKey: string): boolean {
+    const row = this.db().prepare(`SELECT state, attempts FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).get(threadId, turnKey) as { state: string; attempts: number } | undefined;
+    return row !== undefined && !(row.state === "unsent" && Number(row.attempts) < MAX_ATTEMPTS);
   }
 
-  /** Claim a stopped turn; false when it was resumed (or tried) before. */
+  /** Claim a stopped turn for one try; false when it's settled. */
   claim(threadId: string, turnKey: string, how: ResumeHow, at = new Date()): boolean {
-    const result = this.db()
-      .prepare(`INSERT OR IGNORE INTO paid_resumes (thread_id, turn_key, how, state, at) VALUES (?, ?, ?, 'claimed', ?)`)
+    const inserted = this.db()
+      .prepare(`INSERT OR IGNORE INTO paid_resumes (thread_id, turn_key, how, state, at, attempts) VALUES (?, ?, ?, 'claimed', ?, 1)`)
       .run(threadId, turnKey, how, at.toISOString());
-    return Number(result.changes) === 1;
+    if (Number(inserted.changes) === 1) return true;
+    const again = this.db()
+      .prepare(`UPDATE paid_resumes SET state = 'claimed', how = ?, at = ?, attempts = attempts + 1 WHERE thread_id = ? AND turn_key = ? AND state = 'unsent' AND attempts < ?`)
+      .run(how, at.toISOString(), threadId, turnKey, MAX_ATTEMPTS);
+    return Number(again.changes) === 1;
   }
 
-  /** Forget a claim whose resume provably didn't go out. */
+  /** How many tries this stopped turn had (0: none). */
+  attempts(threadId: string, turnKey: string): number {
+    const row = this.db().prepare(`SELECT attempts FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).get(threadId, turnKey) as { attempts: number } | undefined;
+    return row === undefined ? 0 : Number(row.attempts);
+  }
+
+  /** Forget a try that provably sent nothing (it doesn't count). */
   release(threadId: string, turnKey: string): void {
-    this.db().prepare(`DELETE FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).run(threadId, turnKey);
+    const row = this.db().prepare(`SELECT attempts FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).get(threadId, turnKey) as { attempts: number } | undefined;
+    if (row === undefined) return;
+    if (Number(row.attempts) <= 1) this.db().prepare(`DELETE FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).run(threadId, turnKey);
+    else this.db().prepare(`UPDATE paid_resumes SET state = 'unsent', attempts = attempts - 1 WHERE thread_id = ? AND turn_key = ?`).run(threadId, turnKey);
   }
 
   mark(threadId: string, turnKey: string, state: "resumed" | "unsent"): void {
     this.db().prepare(`UPDATE paid_resumes SET state = ? WHERE thread_id = ? AND turn_key = ?`).run(state, threadId, turnKey);
   }
 
+  /** No more tries: whether it reached the agent can't be told. */
+  exhaust(threadId: string, turnKey: string): void {
+    this.db().prepare(`UPDATE paid_resumes SET state = 'unsent', attempts = ? WHERE thread_id = ? AND turn_key = ?`).run(MAX_ATTEMPTS, threadId, turnKey);
+  }
+
   /** Resumes that went out since `since`. */
   resumedSince(since: Date): number {
     const row = this.db().prepare(`SELECT COUNT(*) AS count FROM paid_resumes WHERE state = 'resumed' AND at >= ?`).get(since.toISOString()) as { count: number };
     return Number(row.count);
+  }
+
+  private read<T>(key: string): T | null {
+    const row = this.db().prepare(`SELECT value FROM paid_resume_state WHERE key = ?`).get(key) as { value: string } | undefined;
+    if (row === undefined) return null;
+    try {
+      return JSON.parse(row.value) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  private write(key: string, value: unknown): void {
+    if (value === null) this.db().prepare(`DELETE FROM paid_resume_state WHERE key = ?`).run(key);
+    else this.db().prepare(`INSERT INTO paid_resume_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, JSON.stringify(value));
+  }
+
+  backoff(): Backoff | null {
+    const value = this.read<Backoff>("backoff");
+    return value !== null && Number.isFinite(value.until) && Number.isFinite(value.failures) ? value : null;
+  }
+
+  setBackoff(value: Backoff | null): void {
+    this.write("backoff", value);
+  }
+
+  /** No machine is woken before this (epoch ms; 0: no hold). */
+  wakeHold(): number {
+    const value = this.read<{ until: number }>("wakeHold");
+    return value !== null && Number.isFinite(value.until) ? value.until : 0;
+  }
+
+  setWakeHold(until: number): void {
+    this.write("wakeHold", { until });
+  }
+}
+
+/** The wait after `failures` failed passes in a row. */
+export function backoffMs(failures: number): number {
+  return Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** Math.max(0, failures - 1));
+}
+
+// ---------------------------------------------------------------- machines
+
+/**
+ * Where a resume would run: up (it runs at once), asleep (the resume wakes a
+ * suspended machine or a stopped sandbox), or not now (starting, stopping,
+ * failed, offline or unknown). `failed`: it failed to start; wakes hold.
+ */
+export type MachineCheck = { state: "up" } | { state: "asleep" } | { state: "skip"; why: string; failed?: boolean };
+
+/** bb's machine record (hosts.get). */
+export function hostCheck(machine: MachineState | null): MachineCheck {
+  if (machine === null) return { state: "skip", why: "bb doesn't know its machine" };
+  const { phase } = machine;
+  if ((phase === "active" || phase === null) && machine.connected) return { state: "up" };
+  // bb clears the message on a good suspend; one left there is a failed resume or suspend.
+  if (phase === "suspended") return machine.message === null ? { state: "asleep" } : { state: "skip", why: `its machine failed: ${machine.message}`, failed: true };
+  if (phase === "active") return { state: "skip", why: "its machine is offline" };
+  return { state: "skip", why: `its machine is ${phase ?? "in an unknown state"}` };
+}
+
+/** A boat sandbox's state (null: gone). */
+export function sandboxCheck(state: string | null): MachineCheck {
+  if (state === null) return { state: "skip", why: "its sandbox is gone" };
+  if (ACTIVE_STATES.has(state)) return { state: "up" };
+  if (state === "stopped" || state === "archived") return { state: "asleep" };
+  return { state: "skip", why: `its sandbox is ${state}`, failed: state === "error" || state === "failed" };
+}
+
+/** Several checks of one resume: the worst wins (skip, then asleep, then up). */
+export function worstCheck(checks: readonly MachineCheck[]): MachineCheck {
+  return checks.find((check) => check.state === "skip") ?? checks.find((check) => check.state === "asleep") ?? { state: "up" };
+}
+
+/** What the machine check reads. */
+export interface MachineReader {
+  /** The bb machine a workspace is on (null: none known). */
+  hostOf(environmentId: string): Promise<string | null>;
+  /** bb's record of a machine (null: bb doesn't know it). */
+  host(hostId: string): Promise<MachineState | null>;
+  /** A boat sandbox's state (null: gone). */
+  sandbox(sandboxId: string): Promise<string | null>;
+}
+
+/** The machine a chat's or a headless task's resume runs on. A read that fails skips it. */
+export async function readMachine(reader: MachineReader, thread: Pick<ThreadFacts, "environmentId"> | null, task: Pick<Task, "runner" | "hostId" | "sandboxId"> | null): Promise<MachineCheck> {
+  try {
+    const checks: MachineCheck[] = [];
+    if (task?.sandboxId) checks.push(sandboxCheck(await reader.sandbox(task.sandboxId)));
+    if (task?.runner !== "boat") {
+      const hostId = task?.hostId ?? (thread?.environmentId ? await reader.hostOf(thread.environmentId) : null);
+      checks.push(hostId === null ? { state: "skip", why: "its machine is unknown" } : hostCheck(await reader.host(hostId)));
+    }
+    return worstCheck(checks);
+  } catch (error) {
+    return { state: "skip", why: `couldn't read its machine: ${message(error)}` };
   }
 }
 
@@ -239,6 +386,8 @@ export interface ThreadFacts {
   /** bb project. */
   projectId: string | null;
   parentThreadId: string | null;
+  /** The workspace (its machine is checked before a resume). */
+  environmentId: string | null;
   /** Background agents still running. */
   backgroundAgents: number;
 }
@@ -265,14 +414,14 @@ export interface ResumeThreads {
   get(threadId: string): Promise<ThreadFacts | null>;
   /** The thread's latest STOP_EVENT_TYPES events. */
   stopEvents(threadId: string): Promise<TurnEventRow[]>;
-  /** Queued rows of one thread, or of every thread. */
-  queued(threadId?: string): Promise<QueuedFacts[]>;
+  /** Queued rows of one thread, or of every thread; UNKNOWN: bb answered in a shape this version doesn't know. */
+  queued(threadId?: string): Promise<QueuedFacts[] | typeof UNKNOWN>;
   /** Send a queued row now (`bb provider-retry retry`). */
   sendQueued(threadId: string, queuedMessageId: string): Promise<void>;
   /** Re-submit the failed turn now (`bb thread retry`). */
   retry(threadId: string, turnRequestId: string, reason: string): Promise<void>;
-  /** null: no decision, or provider-retry doesn't answer. */
-  decision(threadId: string): Promise<RetryDecision | null>;
+  /** null: provider-retry has no decision for the thread. UNKNOWN: it couldn't be asked, or answered in another shape. */
+  decision(threadId: string): Promise<RetryDecision | null | typeof UNKNOWN>;
   /** One message to a chat (queued behind a running turn). */
   tell(threadId: string, text: string): Promise<void>;
 }
@@ -280,6 +429,9 @@ export interface ResumeThreads {
 export interface PaidResumeDeps {
   threads: ResumeThreads;
   store: PaidResumeStore;
+  machines: MachineReader;
+  /** Wakes of suspended machines and stopped sandboxes, shared with the watchdog. */
+  wakes: WakeBudget;
   tasks: {
     /** The Boat task this chat belongs to (any chat it used), or null. */
     byThread(threadId: string): Task | null;
@@ -297,7 +449,8 @@ export interface PaidResumeDeps {
    * handing over, or one that was taken over), or null.
    */
   held?(threadId: string): Promise<string | null>;
-  log: { info(line: string): void; warn(line: string): void };
+  /** `error`: bb answered in a shape this version doesn't know. */
+  log: { info(line: string): void; warn(line: string): void; error?(line: string): void };
   sleep?(ms: number): Promise<void>;
   now?(): number;
   /** Tests: smaller numbers. */
@@ -319,10 +472,14 @@ export interface ResumeReport {
   resumed: ResumedWork[];
   /** Candidates not resumed, and why. */
   skipped: { id: string; reason: string }[];
-  /** Candidates left for the next pass (the cap). */
+  /** Candidates left for the next pass (the cap, a failure, the wake budget). */
   deferred: string[];
   /** Orchestrators told (one message each). */
   told: string[];
+  /** Attempts made (resumed or not). */
+  attempts: number;
+  /** The pass stopped at a failure: no attempt before this (epoch ms). */
+  backoffUntil: number | null;
 }
 
 /** The setting is on, and only counts with the paid fallback on. */
@@ -344,9 +501,31 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** A call this bb doesn't have (an older SDK): nothing was sent. */
+export class ResumeUnsupported extends Error {
+  readonly code = "unsupported";
+}
+
+/**
+ * bb refused the call, so nothing went out: the thread or row is gone (404),
+ * or the turn moved on (409, no_failed_turn).
+ */
+export function nothingSent(error: unknown): boolean {
+  const facts = (error ?? {}) as { status?: unknown; statusCode?: unknown; code?: unknown };
+  if (facts.status === 404 || facts.status === 409 || facts.statusCode === 404 || facts.statusCode === 409) return true;
+  if (facts.code === "not_found" || facts.code === "conflict" || facts.code === "no_failed_turn") return true;
+  return /\b(?:404|409)\b|not[ _]found|no_failed_turn/i.test(message(error));
+}
+
+/** A follow-up the service refused before sending anything: it may be tried again later. */
+const ADMISSION_REFUSALS = new Set(["agents_at_limit", "task_busy", "task_running", "task_starting", "task_closed"]);
+
 type Plan =
   | { how: "pending-retry"; queuedMessageId: string; turn: StoppedTurn }
   | { how: "retry"; turn: StoppedTurn; detail: string };
+
+/** What one attempt did: went out, sent nothing (claim given back), or failed (the pass stops). */
+type Attempt = { kind: "resumed"; work: ResumedWork } | { kind: "released"; reason: string } | { kind: "failed"; reason: string; wake: boolean };
 
 export function createPaidResume(deps: PaidResumeDeps) {
   const now = () => deps.now?.() ?? Date.now();
@@ -354,9 +533,12 @@ export function createPaidResume(deps: PaidResumeDeps) {
   const cap = deps.timing?.cap ?? RESUME_CAP;
   const staggerMs = deps.timing?.staggerMs ?? RESUME_STAGGER_MS;
   const decisionWaitMs = deps.timing?.decisionWaitMs ?? DECISION_WAIT_MS;
+  const logError = (line: string) => (deps.log.error ?? deps.log.warn)(line);
   // Parents seen in a pass (a chat's bb parent; a headless task's orchestrator).
   const parents = new Map<string, string>();
   const headlessParents = new Map<string, string>();
+  // One pass at a time: a second caller gets the running one's report.
+  let running: Promise<ResumeReport> | null = null;
 
   /** The project that keeps this chat or task on included usage, if any. */
   function optOut(thread: ThreadFacts | null, task: Task | null): string | null {
@@ -374,20 +556,15 @@ export function createPaidResume(deps: PaidResumeDeps) {
     return hit?.name ?? null;
   }
 
-  async function plan(threadId: string, stopAt: number | null, at: number): Promise<{ plan: Plan; thread: ThreadFacts; task: Task | null } | { skip: string; drop: boolean }> {
+  type Step = { plan: Plan; thread: ThreadFacts; task: Task | null } | { skip: string; drop: boolean };
+
+  /** Whether this chat continues, and how. Cheap checks first: only a real candidate's events are read. */
+  async function plan(threadId: string, stopAt: number | null, at: number): Promise<Step> {
     const thread = await deps.threads.get(threadId);
     if (thread === null) return { skip: "gone", drop: true };
     if (thread.archived) return { skip: "archived", drop: true };
     if (thread.providerId !== CLAUDE_CODE) return { skip: "not a Claude Code chat", drop: true };
     if (isBusy(thread.status) || thread.backgroundAgents > 0) return { skip: "a turn is running", drop: true };
-    const rows = await deps.threads.queued(threadId);
-    const pending = rows.find((row) => row.retry) ?? null;
-    if (rows.some((row) => row !== pending)) return { skip: "a message is queued", drop: false };
-    if (thread.status !== "error" && pending === null) return { skip: "it isn't stopped", drop: true };
-    const turn = readStoppedTurn(await deps.threads.stopEvents(threadId));
-    if (turn === null) return { skip: "no failed turn", drop: true };
-    if (turn.failure.kind !== "usage-limit") return { skip: `it stopped on ${turn.failure.why}`, drop: true };
-    if (deps.store.claimed(threadId, turn.rootRequestId)) return { skip: "this stopped turn was continued once already", drop: true };
     const task = deps.tasks.byThread(threadId);
     // An older chat of a task (a hand-over left it): never two agents in one checkout.
     if (task !== null && task.threadId !== threadId) return { skip: `an earlier chat of task ${task.id}`, drop: true };
@@ -396,11 +573,22 @@ export function createPaidResume(deps: PaidResumeDeps) {
     // Two orchestrators must never act at once.
     const held = (await deps.held?.(threadId)) ?? null;
     if (held !== null) return { skip: held, drop: false };
+    const rows = await deps.threads.queued(threadId);
+    if (rows === UNKNOWN) return { skip: "bb's queue for it couldn't be read", drop: false };
+    const pending = rows.find((row) => row.retry) ?? null;
+    if (rows.some((row) => row !== pending)) return { skip: "a message is queued", drop: false };
+    if (thread.status !== "error" && pending === null) return { skip: "it isn't stopped", drop: true };
+    const turn = readStoppedTurn(await deps.threads.stopEvents(threadId));
+    if (turn === null) return { skip: "no failed turn", drop: true };
+    if (turn.failure.kind !== "usage-limit") return { skip: `it stopped on ${turn.failure.why}`, drop: true };
+    if (deps.store.settled(threadId, turn.rootRequestId)) return { skip: "this stopped turn was continued once already", drop: true };
     if (pending !== null) {
       if (pending.sendAt !== null && pending.sendAt - at <= PENDING_SOON_MS) return { skip: "its provider retry goes out soon anyway", drop: false };
       return { plan: { how: "pending-retry", queuedMessageId: pending.id, turn }, thread, task };
     }
-    const decision = await deps.threads.decision(threadId).catch(() => null);
+    const decision = await deps.threads.decision(threadId);
+    // provider-retry couldn't be asked: it may still have a retry scheduled, so no guess.
+    if (decision === UNKNOWN) return { skip: "provider retry's decision couldn't be read", drop: false };
     if (decision !== null && decision.requestId === turn.requestId) {
       // A retry was scheduled for this failure and its row is gone: someone cancelled it.
       if (decision.kind === "retry") return { skip: "its provider retry was cancelled", drop: true };
@@ -411,42 +599,61 @@ export function createPaidResume(deps: PaidResumeDeps) {
     return { plan: { how: "retry", turn, detail: "no provider retry pending" }, thread, task };
   }
 
-  async function resumeChat(threadId: string, step: { plan: Plan; thread: ThreadFacts; task: Task | null }): Promise<ResumedWork | string> {
+  async function resumeChat(threadId: string, step: { plan: Plan; thread: ThreadFacts; task: Task | null }, wake: boolean): Promise<Attempt> {
     const { plan: chosen, thread, task } = step;
     const key = chosen.turn.rootRequestId;
-    if (!deps.store.claim(threadId, key, chosen.how)) return "this stopped turn was continued once already";
+    if (!deps.store.claim(threadId, key, chosen.how)) return { kind: "released", reason: "this stopped turn was continued once already" };
     try {
       if (chosen.how === "pending-retry") await deps.threads.sendQueued(threadId, chosen.queuedMessageId);
       else await deps.threads.retry(threadId, chosen.turn.requestId, RESUME_REASON);
     } catch (error) {
-      // Claimed either way: a resume that may have gone out is never repeated.
+      const reason = `couldn't continue it: ${message(error)}`;
+      if (error instanceof ResumeUnsupported) {
+        deps.store.release(threadId, key);
+        logError(`paid resume ${threadId}: ${message(error)}`);
+        return { kind: "failed", reason, wake: false };
+      }
+      // Gone, or the turn moved on: nothing went out, and nothing is wrong with bb or boat.dev.
+      if (nothingSent(error)) {
+        deps.store.release(threadId, key);
+        return { kind: "released", reason };
+      }
+      // Tried again after the backoff, while tries are left (bb's state keeps a retry from running twice).
       deps.store.mark(threadId, key, "unsent");
-      deps.log.warn(`paid resume ${threadId}: couldn't continue it: ${message(error)}`);
-      return `couldn't continue it: ${message(error)}`;
+      deps.log.warn(`paid resume ${threadId}: ${reason} (try ${deps.store.attempts(threadId, key)} of ${MAX_ATTEMPTS})`);
+      return { kind: "failed", reason, wake };
     }
     deps.store.mark(threadId, key, "resumed");
     deps.store.dropStop(threadId);
     const reason = chosen.how === "pending-retry" ? "sent its pending provider retry now" : `retried the stopped turn (${chosen.detail})`;
     if (task !== null) deps.tasks.addEvent(task.id, RESUME_EVENT, `Continued on paid Claude after a usage limit: ${reason}.`);
-    return { threadId, taskId: task?.id ?? null, title: thread.title ?? task?.title ?? null, how: chosen.how, reason: `on paid Claude: ${reason}` };
+    return { kind: "resumed", work: { threadId, taskId: task?.id ?? null, title: thread.title ?? task?.title ?? null, how: chosen.how, reason: `on paid Claude: ${reason}` } };
   }
 
-  async function resumeHeadless(task: Task): Promise<ResumedWork | string> {
+  async function resumeHeadless(task: Task, wake: boolean): Promise<Attempt> {
     const key = `turn:${task.turns}`;
     const id = `task:${task.id}`;
-    if (!deps.store.claim(id, key, "follow-up")) return "this stopped turn was continued once already";
+    if (!deps.store.claim(id, key, "follow-up")) return { kind: "released", reason: "this stopped turn was continued once already" };
     try {
       await deps.tasks.continueHeadless(task.id, HEADLESS_RESUME_TEXT);
     } catch (error) {
-      // The service refused before sending (a TaskError has a code): it may be tried again later.
-      if (typeof (error as { code?: unknown } | null)?.code === "string") deps.store.release(id, key);
-      else deps.store.mark(id, key, "unsent");
-      deps.log.warn(`paid resume ${task.id}: couldn't continue it: ${message(error)}`);
-      return `couldn't continue it: ${message(error)}`;
+      const reason = `couldn't continue it: ${message(error)}`;
+      // The service refused before sending anything (its own admission check): it may go later.
+      if (error instanceof TaskError && ADMISSION_REFUSALS.has(error.code)) {
+        deps.store.release(id, key);
+        return { kind: "released", reason };
+      }
+      // Anything else (a boat error, a timeout) may have come after boat took the prompt. With the
+      // sandbox up, a second follow-up could be a second message to the agent: no more tries.
+      const after = await readMachine(deps.machines, null, task);
+      deps.store.mark(id, key, "unsent");
+      if (after.state === "up") deps.store.exhaust(id, key);
+      deps.log.warn(`paid resume ${task.id}: ${reason}${after.state === "up" ? " (not tried again: it may have reached the agent)" : ""}`);
+      return { kind: "failed", reason, wake };
     }
     deps.store.mark(id, key, "resumed");
     deps.tasks.addEvent(task.id, RESUME_EVENT, "Continued on paid Claude after a usage limit: sent a follow-up to the headless task.");
-    return { threadId: null, taskId: task.id, title: task.title, how: "follow-up", reason: "on paid Claude: sent the headless task a follow-up" };
+    return { kind: "resumed", work: { threadId: null, taskId: task.id, title: task.title, how: "follow-up", reason: "on paid Claude: sent the headless task a follow-up" } };
   }
 
   /** Headless tasks that stopped at a Claude usage limit in the last STOP_TTL_MS (like chats), oldest first. */
@@ -488,13 +695,19 @@ export function createPaidResume(deps: PaidResumeDeps) {
   }
 
   /** One pass: resume what stopped at a limit when paid Claude is available. */
-  async function pass(quotas: Quotas, settings: BoatSettings): Promise<ResumeReport> {
-    const report: ResumeReport = { resumed: [], skipped: [], deferred: [], told: [] };
+  async function runPass(quotas: Quotas, settings: BoatSettings): Promise<ResumeReport> {
+    const report: ResumeReport = { resumed: [], skipped: [], deferred: [], told: [], attempts: 0, backoffUntil: null };
     if (!resumeEnabled(settings)) return report;
     const at = now();
     const chatRoom: SubscriptionRoom = subscriptionRoom("claude", quotas, settings, { runner: "chat", now: at });
     const headlessRoom: SubscriptionRoom = subscriptionRoom("claude", quotas, settings, { runner: "boat", now: at });
     if (chatRoom !== "paid" && headlessRoom !== "paid") return report;
+    // A failure ended an earlier pass: nothing until its backoff is over.
+    const backoff = deps.store.backoff();
+    if (backoff !== null && backoff.until > at) {
+      report.backoffUntil = backoff.until;
+      return report;
+    }
     parents.clear();
     headlessParents.clear();
 
@@ -504,27 +717,62 @@ export function createPaidResume(deps: PaidResumeDeps) {
       if (!Number.isFinite(stop.at) || at - stop.at > STOP_TTL_MS) deps.store.dropStop(stop.threadId);
       else stops.set(stop.threadId, stop.at);
     }
-    const pendingRows = await deps.threads.queued().catch((error: unknown) => {
+    const pendingRows = chatRoom === "paid" ? await deps.threads.queued().catch((error: unknown) => {
       deps.log.warn(`paid resume: couldn't list queued retries: ${message(error)}`);
       return [] as QueuedFacts[];
-    });
+    }) : [];
+    if (pendingRows === UNKNOWN) logError("paid resume: bb's queue (threads.queue.list) answered in a shape this version doesn't know; only recorded stops are checked");
     const ids = [...stops.keys()];
-    for (const row of pendingRows) if (row.retry && !ids.includes(row.threadId)) ids.push(row.threadId);
+    for (const row of pendingRows === UNKNOWN ? [] : pendingRows) if (row.retry && !ids.includes(row.threadId)) ids.push(row.threadId);
 
-    const act = async (id: string, run: () => Promise<ResumedWork | string>) => {
-      if (report.resumed.length > 0) await sleep(staggerMs);
+    let stopped = false;
+    let wakesHeld = deps.store.wakeHold() > at;
+    /** The machine check before an attempt: up goes; asleep goes with a wake (if one is left); else why not. */
+    const ready = async (check: MachineCheck): Promise<{ go: true; wake: boolean } | { go: false; reason: string; defer: boolean }> => {
+      if (check.state === "skip") {
+        if (check.failed) {
+          // A machine that failed to start: no wakes for a while (boat.dev may be struggling).
+          deps.store.setWakeHold(at + WAKE_HOLD_MS);
+          wakesHeld = true;
+        }
+        return { go: false, reason: check.why, defer: false };
+      }
+      if (check.state === "up") return { go: true, wake: false };
+      if (wakesHeld) return { go: false, reason: "machines aren't woken for now (one failed to start)", defer: true };
+      if (!(await deps.wakes.take())) return { go: false, reason: "waiting for a wake (at most 2 a minute)", defer: true };
+      return { go: true, wake: true };
+    };
+    const attempt = async (id: string, run: () => Promise<Attempt>) => {
+      if (report.attempts > 0) await sleep(staggerMs);
+      report.attempts += 1;
       const outcome = await run();
-      if (typeof outcome === "string") report.skipped.push({ id, reason: outcome });
-      else report.resumed.push(outcome);
+      if (outcome.kind === "resumed") {
+        report.resumed.push(outcome.work);
+        if (deps.store.backoff() !== null) deps.store.setBackoff(null);
+        return;
+      }
+      report.skipped.push({ id, reason: outcome.reason });
+      if (outcome.kind === "failed") {
+        // Stop at the first failure and back off: boat.dev or bb may be overloaded.
+        const failures = (deps.store.backoff()?.failures ?? 0) + 1;
+        const until = now() + backoffMs(failures);
+        deps.store.setBackoff({ until, failures });
+        if (outcome.wake) {
+          deps.store.setWakeHold(now() + WAKE_HOLD_MS);
+          wakesHeld = true;
+        }
+        report.backoffUntil = until;
+        stopped = true;
+      }
     };
 
     if (chatRoom === "paid") {
       for (const threadId of ids) {
-        if (report.resumed.length >= cap) {
+        if (stopped || report.attempts >= cap) {
           report.deferred.push(threadId);
           continue;
         }
-        let step: Awaited<ReturnType<typeof plan>>;
+        let step: Step;
         try {
           step = await plan(threadId, stops.get(threadId) ?? null, at);
         } catch (error) {
@@ -536,17 +784,24 @@ export function createPaidResume(deps: PaidResumeDeps) {
           report.skipped.push({ id: threadId, reason: step.skip });
           continue;
         }
+        const go = await ready(await readMachine(deps.machines, step.thread, step.task));
+        if (!go.go) {
+          report.skipped.push({ id: threadId, reason: go.reason });
+          if (go.defer) report.deferred.push(threadId);
+          continue;
+        }
         if (step.thread.parentThreadId !== null) parents.set(threadId, step.thread.parentThreadId);
-        await act(threadId, () => resumeChat(threadId, step));
+        await attempt(threadId, () => resumeChat(threadId, step, go.wake));
       }
     }
 
     if (headlessRoom === "paid") {
+      let headless = 0;
       for (const task of headlessCandidates(at)) {
         const id = `task:${task.id}`;
         // The resumed turn stopped again: never a second time.
-        if (deps.store.claimed(id, `turn:${task.turns}`) || deps.store.claimed(id, `turn:${task.turns - 1}`)) continue;
-        if (report.resumed.length >= cap) {
+        if (deps.store.settled(id, `turn:${task.turns}`) || deps.store.settled(id, `turn:${task.turns - 1}`)) continue;
+        if (stopped || report.attempts >= cap || headless >= HEADLESS_PER_PASS) {
           report.deferred.push(id);
           continue;
         }
@@ -555,18 +810,31 @@ export function createPaidResume(deps: PaidResumeDeps) {
           report.skipped.push({ id, reason: `project ${project} never continues on paid Claude` });
           continue;
         }
+        const go = await ready(await readMachine(deps.machines, null, task));
+        if (!go.go) {
+          report.skipped.push({ id, reason: go.reason });
+          if (go.defer) report.deferred.push(id);
+          continue;
+        }
         if (task.orchestratorThreadId !== null) headlessParents.set(task.id, task.orchestratorThreadId);
-        await act(id, () => resumeHeadless(task));
+        headless += 1;
+        await attempt(id, () => resumeHeadless(task, go.wake));
       }
     }
 
-    if (report.deferred.length > 0) deps.log.info(`paid resume: ${report.deferred.length} more stopped ${report.deferred.length === 1 ? "chat waits" : "chats wait"} for the next pass (at most ${cap} a pass): ${report.deferred.join(", ")}`);
+    if (report.deferred.length > 0) deps.log.info(`paid resume: ${report.deferred.length} more stopped ${report.deferred.length === 1 ? "chat waits" : "chats wait"} for a later pass${stopped ? " (stopped at a failure; backing off)" : ""}: ${report.deferred.join(", ")}`);
     if (report.resumed.length > 0) await tellParents(report.resumed, report);
     return report;
   }
 
   return {
-    pass,
+    /** One pass (one at a time: a call while one runs gets that one's report). */
+    pass(quotas: Quotas, settings: BoatSettings): Promise<ResumeReport> {
+      running ??= runPass(quotas, settings).finally(() => {
+        running = null;
+      });
+      return running;
+    },
     /**
      * bb reported a failed turn that may be a usage limit: remember the chat
      * when it's Claude Code. True when it was recorded.
@@ -598,6 +866,50 @@ export function mayBeLimitStop(event: TurnFailedPayload): boolean {
   return event.errorInfo?.category === "rate-limit" || event.errorInfo?.httpStatusCode === 429;
 }
 
+/**
+ * Run `run` at most once at a time, every `intervalMs`, and once soon after
+ * `soon()`: any number of calls within `delayMs` make one run (a burst of
+ * stops is one check, not one pass each). Stops with `signal`.
+ */
+export function createPaidResumeTimer(run: () => Promise<unknown>, options: { intervalMs: number; delayMs: number; signal: AbortSignal; onError?(error: unknown): void }) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let dueAt = Number.POSITIVE_INFINITY;
+  let busy = false;
+  const schedule = (ms: number) => {
+    if (options.signal.aborted) return;
+    const at = Date.now() + ms;
+    if (timer !== null && dueAt <= at) return;
+    if (timer !== null) clearTimeout(timer);
+    dueAt = at;
+    timer = setTimeout(fire, ms);
+    (timer as { unref?: () => void }).unref?.();
+  };
+  const fire = async () => {
+    timer = null;
+    dueAt = Number.POSITIVE_INFINITY;
+    if (options.signal.aborted) return;
+    if (busy) return schedule(options.intervalMs);
+    busy = true;
+    try {
+      await run();
+    } catch (error) {
+      options.onError?.(error);
+    } finally {
+      busy = false;
+      schedule(options.intervalMs);
+    }
+  };
+  options.signal.addEventListener("abort", () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  }, { once: true });
+  return {
+    start: () => schedule(options.intervalMs),
+    /** A chat stopped at a limit: check soon (calls in a burst make one check). */
+    soon: () => schedule(options.delayMs),
+  };
+}
+
 // ---------------------------------------------------------------- bb
 
 const decisionSchema = z
@@ -608,21 +920,30 @@ const decisionSchema = z
   .passthrough()
   .nullable();
 
-function rowsOf(raw: unknown, key: string): unknown[] {
+/** The rows of a list reply: an array, or { key | items: array }; null: another shape. */
+function rowsOf(raw: unknown, key: string): unknown[] | null {
   if (Array.isArray(raw)) return raw;
-  const value = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>)[key] ?? (raw as Record<string, unknown>).items : null;
-  return Array.isArray(value) ? value : [];
+  if (raw === null || typeof raw !== "object") return null;
+  const value = (raw as Record<string, unknown>)[key] ?? (raw as Record<string, unknown>).items;
+  return Array.isArray(value) ? value : null;
 }
 
-function queuedFacts(raw: unknown): QueuedFacts | null {
+/** A queued row; null when it isn't one this version can read (then the whole list is unknown). */
+function queuedFacts(raw: unknown, threadId: string | undefined): QueuedFacts | null {
   if (raw === null || typeof raw !== "object") return null;
   const row = raw as { id?: unknown; threadId?: unknown; sendAt?: unknown; payload?: { kind?: unknown } | null };
-  if (typeof row.id !== "string" || typeof row.threadId !== "string") return null;
-  return { id: row.id, threadId: row.threadId, retry: row.payload?.kind === "retry", sendAt: typeof row.sendAt === "number" ? row.sendAt : null };
+  const thread = typeof row.threadId === "string" ? row.threadId : threadId;
+  if (typeof row.id !== "string" || thread === undefined) return null;
+  // A row without a payload kind counts as a message of its own: it holds a resume back.
+  return { id: row.id, threadId: thread, retry: row.payload?.kind === "retry", sendAt: typeof row.sendAt === "number" ? row.sendAt : null };
 }
 
-/** The reads and writes above, through bb's SDK (shapes as in bb 0.50.1). */
-export function bbResumeThreads(bb: BbPluginApi, tell: (threadId: string, text: string) => Promise<void>): ResumeThreads {
+/** The reads and writes above, through bb's SDK (shapes as in bb 0.50.1; others read as UNKNOWN). */
+export function bbResumeThreads(bb: BbPluginApi, tell: (threadId: string, text: string) => Promise<void>, log?: { error(line: string): void }): ResumeThreads {
+  const unknownShape = (what: string, raw: unknown) => {
+    log?.error(`paid resume: ${what} answered in a shape this version doesn't know (${typeof raw === "object" && raw !== null ? `keys ${Object.keys(raw).slice(0, 8).join(", ") || "none"}` : typeof raw}); skipped`);
+    return UNKNOWN;
+  };
   return {
     async get(threadId) {
       let raw: unknown;
@@ -643,40 +964,69 @@ export function bbResumeThreads(bb: BbPluginApi, tell: (threadId: string, text: 
         archived: Boolean(thread.archivedAt),
         projectId: typeof thread.projectId === "string" ? thread.projectId : null,
         parentThreadId: typeof thread.parentThreadId === "string" ? thread.parentThreadId : null,
+        environmentId: typeof thread.environmentId === "string" ? thread.environmentId : null,
         backgroundAgents: typeof thread.activeBackgroundAgentCount === "number" ? thread.activeBackgroundAgentCount : 0,
       };
     },
     async stopEvents(threadId) {
       const raw = (await bb.sdk.threads.events.list({ threadId, order: "desc", limit: "100", types: [...STOP_EVENT_TYPES] } as never)) as unknown;
-      return rowsOf(raw, "events").filter(
+      return (rowsOf(raw, "events") ?? []).filter(
         (row): row is TurnEventRow => row !== null && typeof row === "object" && Number.isSafeInteger((row as TurnEventRow).seq) && typeof (row as TurnEventRow).type === "string",
       );
     },
     async queued(threadId) {
       const raw = threadId === undefined ? await bb.sdk.threads.queue.list({}) : await bb.sdk.threads.queuedMessages.list({ threadId });
-      return rowsOf(raw, "queuedMessages").flatMap((row) => {
-        const facts = queuedFacts(row);
-        return facts === null ? [] : [facts];
-      });
+      const rows = rowsOf(raw, "queuedMessages");
+      if (rows === null) return unknownShape(threadId === undefined ? "threads.queue.list" : "threads.queuedMessages.list", raw);
+      const facts: QueuedFacts[] = [];
+      for (const row of rows) {
+        const fact = queuedFacts(row, threadId);
+        // One row that can't be read could be a retry or a user's message: the whole list is unknown.
+        if (fact === null) return unknownShape(threadId === undefined ? "threads.queue.list" : "threads.queuedMessages.list", row);
+        facts.push(fact);
+      }
+      return facts;
     },
     async sendQueued(threadId, queuedMessageId) {
+      if (typeof bb.sdk.threads.queuedMessages?.send !== "function") throw new ResumeUnsupported("This bb can't send a queued message now (threads.queuedMessages.send).");
       await bb.sdk.threads.queuedMessages.send({ threadId, queuedMessageId, mode: "auto" });
     },
     async retry(threadId, turnRequestId, reason) {
+      if (typeof bb.sdk.threads.retry !== "function") throw new ResumeUnsupported("This bb can't retry a failed turn (threads.retry).");
       await bb.sdk.threads.retry({ threadId, turnRequestId, reason });
     },
     async decision(threadId) {
-      const raw = await bb.sdk.plugins.callRpc({
-        pluginId: "provider-retry",
-        method: "decision.get",
-        input: { threadId },
-        outputSchema: decisionSchema,
-        signal: AbortSignal.timeout(5_000),
-      } as never);
+      let raw: unknown;
+      try {
+        raw = await bb.sdk.plugins.callRpc({
+          pluginId: "provider-retry",
+          method: "decision.get",
+          input: { threadId },
+          // Checked below, so an unknown shape is told apart from "no decision".
+          outputSchema: z.unknown(),
+          signal: AbortSignal.timeout(5_000),
+        } as never);
+      } catch {
+        // Not installed, off, an unknown method or a timeout: provider-retry may still have a retry scheduled.
+        return UNKNOWN;
+      }
       const parsed = decisionSchema.safeParse(raw);
-      if (!parsed.success || parsed.data === null) return null;
+      if (!parsed.success) return unknownShape("provider-retry's decision.get", raw);
+      if (parsed.data === null) return null;
       return { requestId: parsed.data.requestId, kind: parsed.data.decision.kind, reason: parsed.data.decision.reason };
     },
     tell,
+  };
+}
+
+/** The machine reads above, through bb's SDK and the boat CLI. */
+export function bbMachineReader(bb: BbPluginApi, machineState: (hostId: string) => Promise<MachineState | null>, sandboxState: (sandboxId: string) => Promise<string | null>): MachineReader {
+  return {
+    async hostOf(environmentId) {
+      const raw = (await bb.sdk.environments.get({ environmentId })) as { hostId?: string | null; environment?: { hostId?: string | null } } | null;
+      return raw?.hostId ?? raw?.environment?.hostId ?? null;
+    },
+    host: machineState,
+    sandbox: sandboxState,
   };
 }

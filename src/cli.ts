@@ -1233,11 +1233,11 @@ export function buildCli(runtime: Runtime) {
         },
       }),
       "relay check": cliCommand({
-        summary: "Run Claude ↔ Codex switching once now (it also runs every minute while bb is open)",
+        summary: "Run Claude ↔ Codex switching once now, then continue chats stopped at a limit if paid Claude is available (both also run every minute while bb is open)",
         options: { json },
         async run({ options }) {
           return guard(async () => {
-            const actions = await runtime.relayTick();
+            const actions = [...(await runtime.relayTick()), ...(await runtime.paidResumeCheck())];
             runtime.changed();
             return out({ actions }, options.json, () =>
               actions.length === 0
