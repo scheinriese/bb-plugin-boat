@@ -217,10 +217,10 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   const seen = new Map<string, Seen>();
   /** Host id → resource (sandbox id). */
   const resources = new Map<string, string | null>();
-  /** Host id → when to try a suspend or resume again. */
+  /** Host id → when to try a failed suspend again. */
   const retryAt = new Map<string, number>();
-  /** Host id → the plugin's failed resumes of it in a row (its backoff, until it's back). */
-  const resumeFailures = new Map<string, number>();
+  /** Host id → the plugin's failed resumes of it in a row, and when to resume it again (until it's back). */
+  const resumeBackoff = new Map<string, { failures: number; retryAt: number }>();
   /** Host id → the outcome of the plugin's last resume of it. */
   const resumed = new Map<string, { at: number; ok: boolean; error: string | null }>();
   /** Host id → why the plugin couldn't bring bb's record in line (a failed suspend). */
@@ -537,9 +537,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       deps.info?.(`watchdog: resumed ${hostId}: messages were waiting for it`);
     } catch (error) {
       // Tried again later each time, doubling: a machine that keeps failing isn't resumed every few minutes for hours.
-      const failures = (resumeFailures.get(hostId) ?? 0) + 1;
-      resumeFailures.set(hostId, failures);
-      retryAt.set(hostId, at + resumeRetryMs(failures));
+      const failures = (resumeBackoff.get(hostId)?.failures ?? 0) + 1;
+      resumeBackoff.set(hostId, { failures, retryAt: at + resumeRetryMs(failures) });
       resumed.set(hostId, { at, ok: false, error: message(error) });
       deps.log(`watchdog: resume ${hostId}: ${message(error)} (failure ${failures} in a row; next try in ${Math.round(resumeRetryMs(failures) / 60_000)} minutes)`);
     }
@@ -597,13 +596,13 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   async function machines(at: number, sandboxes: Map<string, Sandbox>): Promise<void> {
     const hosts = ((await bb.sdk.hosts.list()) as unknown as HostRow[]).filter((host) => host.machineProviderId === MACHINE_PROVIDER_ID);
     const live = new Set(hosts.map((host) => host.id));
-    for (const id of new Set([...seen.keys(), ...resources.keys(), ...resumed.keys(), ...problems.keys(), ...upNow.keys(), ...tries.keys(), ...retryAt.keys(), ...resumeFailures.keys()])) {
+    for (const id of new Set([...seen.keys(), ...resources.keys(), ...resumed.keys(), ...problems.keys(), ...upNow.keys(), ...tries.keys(), ...retryAt.keys(), ...resumeBackoff.keys()])) {
       if (live.has(id)) continue;
       seen.delete(id);
       resources.delete(id);
       resumed.delete(id);
       retryAt.delete(id);
-      resumeFailures.delete(id);
+      resumeBackoff.delete(id);
       problems.delete(id);
       upNow.delete(id);
       tries.delete(id);
@@ -632,9 +631,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       upNow.set(host.id, running);
       if (running) {
         remember(host.id, rows, at);
-        // Back: its backoff starts over.
-        retryAt.delete(host.id);
-        resumeFailures.delete(host.id);
+        // Back: its resume backoff starts over.
+        resumeBackoff.delete(host.id);
         resumed.delete(host.id);
         problems.delete(host.id);
         tries.delete(host.id);
@@ -684,7 +682,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       const fresh = (await bb.sdk.hosts.get({ hostId: host.id } as never).catch(() => null)) as unknown as HostRow | null;
       const phaseNow = fresh?.lifecycle?.phase ?? phase;
       const last = resumed.get(host.id);
-      if (phaseNow === "suspended" && at - watched >= RESUME_AFTER_MS && (retryAt.get(host.id) ?? 0) <= at && !(last?.ok === true && at - last.at < RESUME_AGAIN_MS) && resumes < RESUMES_PER_PASS) {
+      if (phaseNow === "suspended" && at - watched >= RESUME_AFTER_MS && (retryAt.get(host.id) ?? 0) <= at && (resumeBackoff.get(host.id)?.retryAt ?? 0) <= at && !(last?.ok === true && at - last.at < RESUME_AGAIN_MS) && resumes < RESUMES_PER_PASS) {
         // bb resumes a suspended machine for a new message itself; one queued before the stop it may not.
         // A slot from the account's wake pacer, claimed for this machine (its boat resume uses it): none free now
         // (2 a minute, a pause after a failed wake, the hold), the next pass tries.
@@ -701,7 +699,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       // The next resume: a failed one at its own backoff, or when the shared pause (the hold, a pause after a
       // failed wake) ends, whichever is later.
       const pausedUntil = deps.wakes ? await deps.wakes.pausedUntil().catch(() => 0) : 0;
-      const nextAt = Math.max(outcome !== undefined && !outcome.ok ? (retryAt.get(host.id) ?? 0) : 0, pausedUntil);
+      const nextAt = Math.max(outcome !== undefined && !outcome.ok ? (resumeBackoff.get(host.id)?.retryAt ?? 0) : 0, pausedUntil);
       const inAbout = (ms: number) => {
         const minutes = Math.max(1, Math.ceil(ms / 60_000));
         return `in about ${minutes} minute${minutes === 1 ? "" : "s"}`;

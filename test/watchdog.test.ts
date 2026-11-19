@@ -376,6 +376,32 @@ test("a failed resume is tried again 3, 6, 12 … minutes later, at most an hour
   assert.deepEqual(tries.map((at) => at - again), [1, 4, 10]);
 });
 
+test("a failed suspend is tried again 3 minutes later, even while that machine's resume backs off longer", async () => {
+  const w = await world({ resumeFails: true });
+  const dog = w.watchdog();
+  waitFor(w);
+  // Resumes at 1, 4 and 10 minutes fail: the next one waits 12 minutes.
+  for (let minute = 0; minute < 11; minute++) {
+    await dog.tick();
+    w.advance(MINUTE);
+  }
+  assert.equal(w.calls.resume.length, 3);
+  // bb has the machine active again, but boat stopped the sandbox behind its back; bb refuses the first suspend.
+  w.host.lifecycle = { phase: "active", suspendedAt: null };
+  w.host.status = "disconnected";
+  w.host.lastSeenAt = w.now();
+  let refusals = 1;
+  w.setFailSuspend(() => refusals-- > 0);
+  await dog.tick();
+  assert.equal(w.calls.suspend.length, 1, "not held up by the resume's backoff");
+  for (let minute = 0; minute < 3; minute++) {
+    w.advance(MINUTE);
+    await dog.tick();
+  }
+  assert.equal(w.calls.suspend.length, 2, "the suspend's own 3 minutes");
+  assert.equal(w.host.lifecycle.phase, "suspended");
+});
+
 test("a failed resume's notice counts from its own backoff when that ends later than the shared pause", async () => {
   const w = await world({ resumeFails: true });
   const dog = w.watchdog({ wakes: new WakePacer({ now: w.now }) });
@@ -472,6 +498,18 @@ test("a host failing at boat next to a healthy one: its own backoff keeps it fro
     clock = failing.now();
   };
   waitFor(failing);
+  // Its first resume fails at 1 minute (a failed wake: every wake pauses 30 seconds, it backs off 3 minutes).
+  for (let at = 0; at < 2; at++) await minute();
+  assert.equal(failing.calls.resume.length, 1);
+  assert.ok((await pacer.snapshot()).failures >= 1);
+  // Work for the healthy machine right then, within the failing one's short backoff: woken at the next minute.
+  waitFor(healthy);
+  await minute();
+  assert.deepEqual(healthy.calls.resume, []);
+  await minute();
+  assert.deepEqual(healthy.calls.resume, [healthy.host.id]);
+  assert.equal(failing.calls.resume.length, 1, "the failing host was still backing off");
+  backUp(healthy);
   for (let at = 0; at < 3 * 60; at++) {
     await minute();
     // Each failed boat resume used exactly the slot claimed for it: no claim is left over a minute on.
@@ -480,10 +518,10 @@ test("a host failing at boat next to a healthy one: its own backoff keeps it fro
   // 3 hours: a handful of tries, not 60.
   assert.ok(failing.calls.resume.length <= 8, `${failing.calls.resume.length} tries`);
   assert.equal(await pacer.heldUntil(), 0, "the watchdog never sets the hold");
-  // Work for the healthy machine while the failing one is still failing: it's woken within a few minutes.
-  waitFor(healthy);
+  // Work for the healthy machine again while the failing one is still failing: it's woken within a few minutes.
+  waitFor(healthy, "q_late");
   for (let at = 0; at < 3; at++) await minute();
-  assert.deepEqual(healthy.calls.resume, [healthy.host.id]);
+  assert.deepEqual(healthy.calls.resume, [healthy.host.id, healthy.host.id]);
   assert.equal(await pacer.heldUntil(), 0);
 });
 
