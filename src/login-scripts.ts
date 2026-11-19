@@ -13,14 +13,30 @@
 // It never fails a wake: without sudo it says so and bb's setup goes ahead.
 import type { BoatApi } from "./boat-api.ts";
 
-/** Plain `bash -c` (a login shell would read ~/.profile, which may not be restored yet). */
+/**
+ * Plain `bash -c` (a login shell would read ~/.profile, which may not be
+ * restored yet). Only what's in the folder changes: regular files lose their
+ * execute bit (find without -L never follows a link), and a link (Ubuntu's
+ * 50-landscape-sysinfo points into /usr/share/landscape) is renamed to a
+ * name `run-parts --lsbsysinit` skips: a ".disabled" suffix (a dot and no
+ * dash after it; ".boat-off" would still run).
+ */
 export const QUIET_LOGIN_SCRIPT = [
   "D=/etc/update-motd.d",
   '[ -d "$D" ] || { echo "BOAT_MOTD none"; exit 0; }',
-  // -L: the scripts may be links (landscape's); the target's execute bit is what run-parts checks.
-  'X=$(timeout 5 find -L "$D" -mindepth 1 -maxdepth 1 -type f -perm /111 2>/dev/null | head -n 1)',
-  '[ -n "$X" ] || { echo "BOAT_MOTD off"; exit 0; }',
-  'if timeout 10 sudo -n chmod a-x -- "$D"/* 2>/dev/null; then echo "BOAT_MOTD disabled"; else echo "BOAT_MOTD failed"; fi',
+  'X=$(timeout 5 find "$D" -mindepth 1 -maxdepth 1 -type f -perm /111 2>/dev/null | head -n 1)',
+  'L=$(timeout 5 find "$D" -mindepth 1 -maxdepth 1 -type l ! -name "*.disabled" 2>/dev/null | head -n 1)',
+  '[ -n "$X$L" ] || { echo "BOAT_MOTD off"; exit 0; }',
+  "OK=1",
+  '[ -z "$X" ] || timeout 10 sudo -n find "$D" -mindepth 1 -maxdepth 1 -type f -perm /111 -exec chmod a-x {} + 2>/dev/null || OK=0',
+  'if [ -n "$L" ]; then',
+  '  for l in "$D"/*; do',
+  '    [ -L "$l" ] || continue',
+  '    case "$l" in *.disabled) continue ;; esac',
+  '    timeout 5 sudo -n mv -T -- "$l" "$l.disabled" 2>/dev/null || OK=0',
+  "  done",
+  "fi",
+  '[ "$OK" = 1 ] && echo "BOAT_MOTD disabled" || echo "BOAT_MOTD failed"',
 ].join("\n");
 
 export type QuietLogin = "disabled" | "off" | "none" | "failed";
