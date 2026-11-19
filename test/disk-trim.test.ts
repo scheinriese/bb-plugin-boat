@@ -281,3 +281,30 @@ test("the make-room stop, inside the slot lock, trims with a shorter budget (20 
   assert.deepEqual(trims, [{ sandboxId: first.sandboxId!, script: trimScript(SLOT_TRIM_TIMEOUT_MS), timeoutMs: SLOT_TRIM_TIMEOUT_MS - 5_000 }]);
   assert.equal(trimScript(SLOT_TRIM_TIMEOUT_MS), "timeout -k 5 10 sudo -n fstrim -av 2>&1");
 });
+
+// boat's two refusals verbatim, as seen on 19 Nov: a plain resume, and one with --type (code type_too_small).
+const SEEN_PLAIN = "This sandbox uses 84.1 GB of disk, which does not fit any available 'small' machine (largest budget: 76.0 GB). Delete data in the sandbox and let it snapshot again before resuming or forking.";
+const SEEN_TYPED = "This sandbox uses 84.1 GB of disk, which does not fit a 'default' machine (76.0 GB). Delete data in the sandbox and let it snapshot again, or resume it as 'small' or larger.";
+
+test("boat's verbatim refusals from 19 Nov: the kind, the data, the size asked for, its budget, and a remedy on Large", () => {
+  const cases = [
+    { text: SEEN_PLAIN, error: new BoatError(SEEN_PLAIN, { code: "boat_failed" }), type: "small", label: "Small" },
+    { text: SEEN_TYPED, error: new BoatError(SEEN_TYPED, { code: "type_too_small" }), type: "default", label: "Default" },
+  ] as const;
+  for (const { text, error, type, label } of cases) {
+    assert.equal(classifyWakeText(text), "disk-too-large", text);
+    const size = diskTooLarge(error);
+    assert.deepEqual(size, { usedGb: 84.1, type, budgetGb: 76, detail: text });
+    assert.equal(tooLargeMessage(size), `This sandbox won't start: its data is 84.1 GB, too large for its size (${label} fits 76.0 GB). One start on Large plus a cleanup brings it back to ${label}; the steps are under Needs you.`);
+    const asked = tooLargeQuestion({ sandboxId: "bx_acme01", size });
+    assert.equal(asked.question, `Sandbox bx_acme01 won't start: its data is 84.1 GB, too large for its size (${label} fits 76.0 GB). Bring it back to ${label} with one start on Large?`);
+    assert.deepEqual(asked.context.split("\n"), [
+      `boat.dev said: ${text}`,
+      "boat resume bx_acme01 --type large",
+      "boat exec bx_acme01 --timeout 300 -- sudo fstrim -av",
+      "boat exec bx_acme01 -- sudo -n docker image prune -f",
+      "boat stop bx_acme01",
+      `boat resume bx_acme01 --type ${type}`,
+    ]);
+  }
+});
