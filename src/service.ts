@@ -2334,7 +2334,15 @@ export class BoatService {
         where,
       },
       ctx.stillWanted,
-    );
+    ).catch((error: unknown) => {
+      // Joining another task's workspace: bb's refusal can be a bare "Something went wrong". Say whose and what to do.
+      if (where.kind !== "environment" || ctx.parent === null || error instanceof DispatchCancelled || ctx.signal.aborted) throw error;
+      throw new TaskError(
+        `Couldn't open this task's chat in task ${ctx.parent.id}'s workspace on sandbox ${ctx.sandbox.id}: ${clip(errorText(error), 300) || "bb gave no reason"}.`,
+        "workspace_unavailable",
+        `Start it in a new sandbox instead (sandbox "new"), or once task ${ctx.parent.id}'s turn is over.`,
+      );
+    });
     this.store.addEvent(id, "chat", spawned.threadId);
     this.recordChat(id, spawned.threadId, task.provider, task.model, task.reasoningEffort);
     const running = this.store.transition(id, ["starting"], {
@@ -2354,6 +2362,17 @@ export class BoatService {
     this.store.addEvent(id, "dispatched", `Opened a ${task.provider} chat · ${modelLine(task.tier, task.model, task.reasoningEffort, task.reason)}`);
     this.hooks.changed([id]);
     return running;
+  }
+
+  /**
+   * Work runs in this sandbox: a task's turn (running or starting), or what
+   * bb reports on its machine (a chat's turn, waiting messages, background
+   * work; a machine bb can't read counts as busy), which the task's own
+   * status can miss (a message typed into its chat).
+   */
+  private async sandboxWorkRuns(sandboxId: string): Promise<boolean> {
+    const tasks = this.store.liveSandboxTasks(sandboxId);
+    return tasks.some((task) => task.status === "running" || task.status === "starting") || (await this.machineBusy(tasks));
   }
 
   private async pickSandbox(
@@ -2377,8 +2396,10 @@ export class BoatService {
     if (input.role === "review" && parent?.sandboxId) {
       const mode = choice === "auto" ? "auto" : settings.reviewSandbox;
       if (mode === "same") return parent.sandboxId;
-      if (mode === "auto") {
-        const { free, active } = await this.capacity(signal);
+      // Not into a sandbox whose own work still runs (the implementer mid-turn): a new one, made room for or refused in plain words.
+      if (mode === "auto" && !(await this.sandboxWorkRuns(parent.sandboxId))) {
+        // The room on the parent's provider, where a new sandbox for the review would go.
+        const { free, active } = await this.capacity(signal, undefined, this.sandboxProvider(parent));
         if (free !== null && free <= 0 && active.some((sandbox) => sandbox.id === parent.sandboxId)) {
           return parent.sandboxId;
         }
