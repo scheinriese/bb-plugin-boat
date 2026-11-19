@@ -45,20 +45,20 @@
 //    setup install the server's build in place over it, which then reads only
 //    files Boat has just written. A broken install the fallback didn't
 //    replace (npm failed before the stop, or a backoff holds it) is moved
-//    aside, as before.
-//    The look that planned all this is a while old by the time anything is
-//    stopped (a prefetch and a fetch ran since), and bb may have repaired or
-//    updated its install meanwhile. So on this path every destructive step
-//    acts on a reading taken right before it, through one guard (NOW_SCRIPT):
-//    the install script reads the old install again right before the stop
-//    (already the server's version: nothing is stopped; complete: that's
-//    what a failure keeps and starts again), and a set-aside first looks
-//    again (bb's own update running is waited for, never stopped, as in 1.)
-//    and checks once more right before its stop;
+//    aside, as before;
 // 4. no download and the server's version unknown: nothing to install from
 //    without the server's credentials, so bb's own update runs (a broken
 //    install is moved aside first, so bb's setup installs into an empty
-//    prefix);
+//    prefix).
+//    The look that planned any of 2.-4. is a while old by the time anything
+//    is stopped (a prefetch, and a copy or a fetch, ran since), and bb may
+//    have repaired or updated its install meanwhile. So every destructive
+//    step acts on a reading taken right before it, through one guard
+//    (NOW_SCRIPT): the install script reads the old install again right
+//    before the stop (already the server's version: nothing is stopped;
+//    complete: that's what a failure keeps and starts again), and a set-aside
+//    first looks again (bb's own update running is waited for, never stopped,
+//    as in 1.) and checks once more right before its stop;
 // 5. bb's own update hung there: Boat doesn't fight it, nothing is stopped or
 //    installed, and the wake fails already diagnosed for the wake guard
 //    (src/wake-retry.ts). A zombie npm install (seen twice, 5 s apart) only
@@ -536,7 +536,7 @@ export function installScript(input: { dataDir: string; unit: string | null; nod
 
 /**
  * Broken, nothing to install from: move it aside (bb's setup then installs into an empty prefix).
- * recheck (the npm path, whose look is a while old): right before the stop the script looks again
+ * recheck (Boat always passes it: its look is a while old): right before the stop the script looks again
  * (NOW_SCRIPT) and leaves it alone when bb's own npm install runs ("busy") or the install isn't
  * broken any more ("intact": its files complete, or, broken only by a module it couldn't load,
  * its service running).
@@ -818,13 +818,13 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
   }
 
   /**
-   * The npm path's set-aside of a broken install, on readings taken right before it: a new look
-   * (bb's own update running is waited for, as before the install, up to 3 minutes), then the
-   * guarded set-aside script, which checks once more right before the stop. The look that planned
-   * the update is a while old by now (a prefetch or a fetch from the npm registry ran since), and
-   * bb may have repaired the install meanwhile, or be updating it.
+   * Every set-aside of a broken install, on readings taken right before it: a new look (bb's own
+   * update running is waited for, as before the install, up to 3 minutes), then the guarded
+   * set-aside script, which checks once more right before the stop. The look that planned it is a
+   * while old by now (a prefetch, or a fetch from the npm registry, ran since), and bb may have
+   * repaired the install meanwhile, or be updating it. goal: the server's version (null: unknown).
    */
-  async function setAsideIfStillBroken(prep: HostPrep, goal: string): Promise<
+  async function setAsideIfStillBroken(prep: HostPrep, goal: string | null): Promise<
     | { kind: "set-aside"; why: string }
     | { kind: "repaired" | "busy" | "kept" }
     | { kind: "hung"; seen: BbInstall; plan: Extract<BbUpdatePlan, { kind: "hung" | "waiting" }> }
@@ -833,7 +833,7 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
     let plan = seen === null ? null : decideBbUpdate(seen, goal);
     if (plan?.kind === "busy") ({ seen, plan } = await waitForOwnUpdate(prep, goal, plan.detail));
     // Not readable as a whole: nothing is moved on a guess.
-    if (seen === null || plan === null || !seen.complete) return { kind: "kept" };
+    if (seen === null || plan === null || !seen.complete || seen.dataDir === null) return { kind: "kept" };
     if (plan.kind === "hung" || plan.kind === "waiting") return { kind: "hung", seen, plan };
     if (plan.kind === "busy") return { kind: "busy" };
     const why = brokenInstall(seen);
@@ -866,11 +866,9 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
 
   /**
    * Move a broken install aside, so bb's setup installs into an empty prefix: true when it was.
-   * recheck: the script looks again right before the stop; "repaired" or "busy" when it left it alone.
+   * The script looks again right before the stop (recheck); "repaired" or "busy" when it left it alone.
    */
-  async function setAside(prep: HostPrep, seen: BbInstall, why: string): Promise<boolean>;
-  async function setAside(prep: HostPrep, seen: BbInstall, why: string, recheck: BrokenBy): Promise<boolean | "repaired" | "busy">;
-  async function setAside(prep: HostPrep, seen: BbInstall, why: string, recheck?: BrokenBy): Promise<boolean | "repaired" | "busy"> {
+  async function setAside(prep: HostPrep, seen: BbInstall, why: string, recheck: BrokenBy): Promise<boolean | "repaired" | "busy"> {
     try {
       const said = (await deps.boat.exec(prep.sandboxId, setAsideScript({ dataDir: seen.dataDir!, unit: seen.unit, recheck }), { timeoutMs: 60_000, signal: prep.signal, login: false })).stdout;
       if (/BOAT_BBFIX moved/.test(said)) {
@@ -888,29 +886,37 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
 
   const setAsideText = (why: string) => `bb's install on the sandbox was broken (${why}); Boat moved it aside so bb's setup installs it again`;
 
+  /**
+   * A broken install goes aside for bb's setup, if it still is (setAsideIfStillBroken). "busy": bb's
+   * own update started right before the stop, Boat waits for it, then looks again (prepare). kept:
+   * the answer when nothing could be checked, so nothing was moved.
+   */
+  async function setAsideStep(prep: HostPrep, goal: string | null, kept: HostPrepResult): Promise<HostPrepResult | "busy"> {
+    const aside = await setAsideIfStillBroken(prep, goal);
+    switch (aside.kind) {
+      case "set-aside":
+        prep.report.log(setAsideText(aside.why));
+        return { kind: "set-aside" };
+      case "repaired":
+        prep.report.log("bb's install on the sandbox is complete again (bb repaired it meanwhile); Boat left it as it is");
+        info(`bb update ${prep.sandboxId}: the broken install is complete again; left as it is`);
+        return { kind: "none", why: "bb's install there is complete again" };
+      case "busy":
+        return "busy";
+      case "hung":
+        throw new BbUpdateHung(hungDiagnosis(aside.seen, aside.plan));
+      case "kept":
+        return kept;
+    }
+  }
+
   async function install(prep: HostPrep, seen: BbInstall, plan: Extract<BbUpdatePlan, { kind: "update" }>): Promise<HostPrepResult | "busy"> {
     const held = (await loadBackoffs())[prep.sandboxId];
     if (held !== undefined && held.retryAt > now()) {
       info(`bb update ${prep.sandboxId}: held until ${new Date(held.retryAt).toISOString()} after ${held.failures} failure(s) (${held.detail}); bb's own setup goes ahead`);
       // Nothing from the npm registry this time: a broken install still goes aside, as it did
       // without it, if it still is broken (the prefetch ran since the look).
-      if (plan.npm && plan.broken) {
-        const aside = await setAsideIfStillBroken(prep, plan.to);
-        switch (aside.kind) {
-          case "set-aside":
-            prep.report.log(setAsideText(aside.why));
-            return { kind: "set-aside" };
-          case "repaired":
-            prep.report.log("bb's install on the sandbox is complete again (bb repaired it meanwhile); Boat left it as it is");
-            info(`bb update ${prep.sandboxId}: the broken install is complete again; left as it is`);
-            return { kind: "none", why: "bb's install there is complete again" };
-          // bb's own update started right before the stop: Boat waits for it, then looks again (prepare).
-          case "busy":
-            return "busy";
-          case "hung":
-            throw new BbUpdateHung(hungDiagnosis(aside.seen, aside.plan));
-        }
-      }
+      if (plan.npm && plan.broken) return setAsideStep(prep, plan.to, { kind: "held", until: held.retryAt });
       return { kind: "held", until: held.retryAt };
     }
     prep.report.step(`Updating bb on the sandbox to ${plan.to}${plan.npm ? " from the npm registry" : ""}: a fresh install next to the old one`);
@@ -985,23 +991,18 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
       }
       if (round === 0) await prefetch(prep, seen, plan);
       if (seen === null || plan === null) return { kind: "none", why: "Boat couldn't look at bb's install" };
-      if (plan.kind === "update") {
-        const done = await install(prep, seen, plan);
+      // A broken install with nothing to install from (the server's version unknown) goes aside,
+      // if it still is broken: the prefetch ran since the look.
+      if (plan.kind === "update" || plan.kind === "set-aside") {
+        const done = plan.kind === "update" ? await install(prep, seen, plan) : await setAsideStep(prep, goal, { kind: "none", why: plan.why });
         if (done !== "busy") return done;
-        const detail = "bb's own update is running: it started while Boat was about to install";
+        const detail = `bb's own update is running: it started while Boat was about to ${plan.kind === "update" ? "install" : "move its broken install aside"}`;
         // Twice in a row: Boat's wake retries take it from here.
         if (round >= 1) throw new BbUpdateHung(hungDiagnosis(seen, { kind: "waiting", detail }));
         plan = { kind: "busy", detail };
         continue;
       }
       break;
-    }
-    if (plan.kind === "set-aside") {
-      if (await setAside(prep, seen!, plan.why)) {
-        prep.report.log(setAsideText(plan.why));
-        return { kind: "set-aside" };
-      }
-      return { kind: "none", why: plan.why };
     }
     if (plan.kind === "none") info(`bb update ${prep.sandboxId}: nothing to do (${plan.why})`);
     return { kind: "none", why: plan.kind === "none" ? plan.why : "" };

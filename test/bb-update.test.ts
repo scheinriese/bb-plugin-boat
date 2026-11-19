@@ -702,13 +702,13 @@ test("a broken install the npm registry couldn't replace still goes aside for bb
 });
 
 /** The updater over the real scripts, run on a sandbox copy (procfs and the look's 5 s sample faked). */
-function realUpdater(box: ReturnType<typeof sandboxHome>, env: Record<string, string>, options: { proc: string; now?: () => number; sleep?: (ms: number) => Promise<unknown>; kv?: ReturnType<typeof kvStore>; prefetch?: () => void }) {
+function realUpdater(box: ReturnType<typeof sandboxHome>, env: Record<string, string>, options: { proc: string; now?: () => number; sleep?: (ms: number) => Promise<unknown>; kv?: ReturnType<typeof kvStore>; prefetch?: () => void; serverVersion?: string | null }) {
   const told: string[] = [];
   const update = createBbUpdater({
     boat: { exec: async (_id: string, script: string) => ({ exitCode: 0, stdout: box.run(script.replace(/^PR='\/proc'$/m, `PR='${options.proc}'`).replace(/^  sleep 5$/m, "  sleep 0"), env), stderr: "" }) },
     kv: options.kv ?? kvStore(),
     prefetch: options.prefetch && (async () => options.prefetch!()),
-    serverVersion: async () => "0.50.1",
+    serverVersion: async () => (options.serverVersion === undefined ? "0.50.1" : options.serverVersion),
     tell: (_id, text) => told.push(text),
     now: options.now,
     sleep: options.sleep,
@@ -1008,6 +1008,76 @@ test("a repair or an in-place update between the look and the stop, with a downl
   assert.equal(busy.log().includes("systemctl --user stop"), false);
   assert.equal(busy.log().includes("npm install"), false);
   assert.deepEqual(npmDirs(busy), []);
+});
+
+test("the server's version unknown, a broken install: the set-aside looks again first, and checks once more right before the stop", LINUX_ONLY, async (t) => {
+  // Repaired during the prefetch: nothing stopped or moved, bb's service runs.
+  const box = sandboxHome(t, { tgz: null, bin: false });
+  const first = realUpdater(box, {}, { proc: join(box.root, "proc"), serverVersion: null, prefetch: () => box.run(repair(box, "0.49.0")) });
+  const step = prep({ hostId: HOST });
+  assert.deepEqual(await first.update(step), { kind: "none", why: "bb's install there is complete again" });
+  assert.deepEqual(step.logs, ["bb's install on the sandbox is complete again (bb repaired it meanwhile); Boat left it as it is"]);
+  assert.equal(box.log().includes("systemctl --user stop"), false, "bb's service never stopped");
+  assert.equal(readFileSync(join(box.fake, "active"), "utf8").trim(), "active");
+  assert.equal(box.version(), "0.49.0");
+  assert.deepEqual(npmDirs(box), [], "nothing moved aside");
+  // Still broken: moved aside for bb's setup, as before.
+  const still = sandboxHome(t, { tgz: null, bin: false });
+  writeFileSync(join(still.data, "host-artifact.sha256"), "a".repeat(64));
+  const second = realUpdater(still, {}, { proc: join(still.root, "proc"), serverVersion: null, prefetch: () => undefined });
+  const moved = prep({ hostId: HOST });
+  assert.deepEqual(await second.update(moved), { kind: "set-aside" });
+  assert.deepEqual(moved.logs, ["bb's install on the sandbox was broken (npm/bin/bb-app is missing); Boat moved it aside so bb's setup installs it again"]);
+  assert.equal(existsSync(join(still.data, "npm")), false);
+  assert.equal(npmDirs(still).filter((name) => name.startsWith("npm.broken-")).length, 1);
+  assert.equal(existsSync(join(still.data, "host-artifact.sha256")), false);
+  // bb's own update starts during the prefetch: Boat waits for it (never stops it), then looks again.
+  const busy = sandboxHome(t, { tgz: null, bin: false });
+  const proc = join(busy.root, "proc");
+  mkdirSync(join(proc, "4242"), { recursive: true });
+  writeFileSync(join(proc, "4242", "status"), "Name:\tnpm install -g \nState:\tS (sleeping)\n");
+  writeFileSync(join(proc, "4242", "io"), "rchar: 100\n");
+  let at = Date.parse("2026-11-19T02:00:00Z");
+  const waits: number[] = [];
+  const third = realUpdater(busy, {}, {
+    proc,
+    serverVersion: null,
+    now: () => at,
+    prefetch: () => busy.set("ps", `   4242 Sl     20 npm install -g --prefix ${busy.data}/npm ${busy.data}/host-package-download/bb-app.tgz\n`),
+    sleep: async (ms) => {
+      waits.push(ms);
+      at += ms;
+      rmSync(join(busy.fake, "ps"), { force: true });
+      busy.run(repair(busy, "0.49.0"));
+    },
+  });
+  assert.deepEqual(await third.update(prep({ hostId: HOST })), { kind: "none", why: "bb's install there is complete again" });
+  assert.deepEqual(waits, [10_000]);
+  assert.equal(busy.log().includes("systemctl --user stop"), false);
+  assert.deepEqual(npmDirs(busy), []);
+});
+
+test("the server's version unknown: bb's own update starting right before the set-aside's stop is waited for, then looked at again", async () => {
+  let at = Date.parse("2026-11-19T02:00:00Z");
+  const broken = INSPECTED.replace("BOAT_BB tgz 0.50.1", "BOAT_BB tgz none").replace("BOAT_BB bin ok", "BOAT_BB bin missing");
+  let fixes = 0;
+  let looks = 0;
+  // The set-aside script finds bb's own npm install running; once it's done, the install is complete.
+  const exec = fakeExec({ inspect: () => (looks++ < 2 ? broken : INSPECTED.replace("BOAT_BB tgz 0.50.1", "BOAT_BB tgz none")), setAside: () => { fixes += 1; return "BOAT_BBFIX busy 4242"; } });
+  const sleeps: number[] = [];
+  const update = createBbUpdater({ boat: exec.boat, kv: kvStore(), serverVersion: async () => null, now: () => at, sleep: async (ms) => { sleeps.push(ms); at += ms; } });
+  const step = prep();
+  assert.deepEqual(await update(step), { kind: "none", why: "Boat couldn't tell which bb the server needs" });
+  assert.equal(fixes, 1);
+  assert.deepEqual(sleeps, [10_000]);
+  assert.ok(step.steps.includes("Waiting for bb's own update on the sandbox to finish (it started while Boat was about to move its broken install aside)"), step.steps.join("\n"));
+  assert.deepEqual(exec.scripts.map((script) => (script.includes("say end") ? "look" : script.includes("BOAT_BBFIX") ? "set aside" : "other")), ["look", "look", "set aside", "look"], "looked at again before the set-aside, and after the wait");
+  assert.match(exec.scripts[2]!, /BOAT_BBFIX busy/, "the set-aside checks once more right before the stop");
+  // Twice in a row: Boat's wake retries take it from here.
+  looks = -100;
+  const again = (await update(prep()).catch((caught: unknown) => caught)) as BbUpdateHung;
+  assert.ok(again instanceof BbUpdateHung, String(again));
+  assert.equal(again.wakeDiagnosis.kind, "disk-restoring");
 });
 
 test("backoffs of sandboxes long gone are dropped, and a removed machine's goes at once", async () => {
