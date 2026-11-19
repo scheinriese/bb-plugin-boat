@@ -2959,14 +2959,15 @@ export class BoatService {
     }
   }
 
-  async sandboxAction(sandboxId: string, action: "stop" | "resume" | "delete", ttlSeconds: number, signal?: AbortSignal): Promise<void> {
+  /** keepPlan: a resume the plugin makes itself (a ship), not someone asking: the sandbox's retry plan stays. */
+  async sandboxAction(sandboxId: string, action: "stop" | "resume" | "delete", ttlSeconds: number, signal?: AbortSignal, options: { keepPlan?: boolean } = {}): Promise<void> {
     if (this.isMovingSandbox(sandboxId)) {
       throw new TaskError(`A task is moving to a task chat in sandbox ${sandboxId}.`, "task_busy", "Try again once the chat is open (in about a minute).");
     }
     this.sizes.assertSandboxNotResizing(sandboxId); // sizes
     const hostId = this.hooks.chat === undefined ? null : this.store.hostForSandbox(sandboxId);
     // Asked for explicitly: the sandbox's retry plan starts over (src/wake-retry.ts).
-    if (action === "resume") await this.hooks.wakes?.forget(sandboxId);
+    if (action === "resume" && options.keepPlan !== true) await this.hooks.wakes?.forget(sandboxId);
     if (hostId === null) {
       if (action === "stop") await this.boat.stop(sandboxId, signal);
       else if (action === "resume") await this.pacedResume(() => withinAutoStopCap(ttlSeconds, (ttl) => this.boat.resume(sandboxId, ttl, signal)), signal);
@@ -4105,7 +4106,7 @@ export class BoatService {
       if (sandbox === null) throw new TaskError(`Task ${task.id}'s sandbox is gone, and its unshipped commits with it.`, "sandbox_gone");
       if (!ACTIVE_STATES.has(sandbox.state)) {
         if (hostId !== null) {
-          await this.sandboxAction(task.sandboxId, "resume", 0, options.signal);
+          await this.sandboxAction(task.sandboxId, "resume", 0, options.signal, { keepPlan: true });
           await this.waitForSandbox(task.sandboxId, options.signal);
         } else {
           await this.ensureRunning(task.sandboxId, options.signal);
