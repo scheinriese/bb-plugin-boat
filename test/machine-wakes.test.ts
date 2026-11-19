@@ -20,6 +20,7 @@ type Provider = {
 const HYDRATOR = "[lazyfs] [ERROR] HYDRATOR FAILED attempt 32 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";
 
 function setup(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean } } = {}) {
+  // (threadsOn: no chats listed on these machines.)
   let at = Date.parse("2026-11-19T00:00:00Z");
   const sleeps: number[] = [];
   const pacer = new WakePacer({ now: () => at, sleep: async (ms) => { sleeps.push(ms); at += ms; }, ...(options.maxWaitMs === undefined ? {} : { maxWaitMs: options.maxWaitMs }) });
@@ -32,7 +33,7 @@ function setup(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean } } 
   };
   let wakes: ReturnType<typeof createWakeGuard> | null = null;
   const fake = makeService({ wakes: { pacer, forget: (sandboxId) => wakes!.forget(sandboxId) } });
-  wakes = createWakeGuard({ pacer, kv, boat: fake.boat as never, store: fake.store, now: () => at, ...(options.moves ? { moves: options.moves } : {}) });
+  wakes = createWakeGuard({ pacer, kv, boat: fake.boat as never, store: fake.store, now: () => at, threadsOn: async () => [], ...(options.moves ? { moves: options.moves } : {}) });
   // Room for every sandbox here: pacing is what's tested, not the plan's limit.
   fake.boat.limitsValue = { ...fake.boat.limitsValue, maxActiveSandboxes: 10 };
   // bb's setup there, in order with the plugin's own steps.
@@ -56,7 +57,7 @@ function setup(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean } } 
     experimental_environments: { register: () => undefined },
     storage: { kv },
   } as unknown as BbPluginApi;
-  registerBoatMachine(bb, { boat: fake.boat as unknown as BoatApi, cli: { binary: async () => "/bin/boat" } as unknown as BoatCli, service: fake.service, settings: async () => defaultSettings(), wakes });
+  registerBoatMachine(bb, { boat: fake.boat as unknown as BoatApi, cli: { binary: async () => "/bin/boat" } as unknown as BoatCli, service: fake.service, settings: async () => defaultSettings(), wakes, now: () => at });
   const report = { steps: [] as string[], step(text: string) { this.steps.push(text); }, log: () => undefined };
   const lifecycle = (resource: unknown) => ({ resource, report, signal: new AbortController().signal, hostId: "host_123456" });
   return {
@@ -180,29 +181,48 @@ test("teardown backs off: bb's retries in between don't reach boat.dev", async (
   assert.equal((await env.provider().remove({ resource: other.resource })).status, "removed");
 });
 
-test("a plain stop boat refuses on a disk it hasn't restored: Boat force-stops it, keeping the last snapshot, instead of hammering", async () => {
-  const env = setup({ moves: { forkCheck: false } });
-  const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
-  const resource = created.resource!;
-  env.boat.stopRefused = true;
-  env.boat.execResult = (script) => ({ exitCode: 0, stdout: script.includes("BOAT_DISK_END") ? `BOAT_HYDRATOR ${HYDRATOR.replace("attempt 32", "attempt 77")}\nBOAT_DISK_END\n` : "", stderr: "" });
-  await assert.rejects(env.provider().suspend(env.lifecycle(resource)), /^Error: boat\.dev failed to stop this sandbox \(it can't snapshot a disk it hasn't finished restoring; Boat moves it off its node, or asks first under Needs you\)\. Boat asks it again at \d\d:\d\d UTC\.$/);
-  const plan = (await env.wakes.scheduled(resource.sandboxId))!;
-  assert.deepEqual(plan.move, { state: "due", at: plan.lastAt, resume: false });
-  assert.equal(await env.wakes.tick(), resource.sandboxId);
-  for (let round = 0; round < 500 && (await env.wakes.scheduled(resource.sandboxId)) !== null; round++) await new Promise((resolve) => setImmediate(resolve));
-  // An orchestrator's sandbox, nothing to lose: stopped, keeping its last completed snapshot; its next wake starts it on a new node.
-  assert.ok(env.boat.calls.includes(`stop ${resource.sandboxId} --force`));
-  assert.equal(env.boat.sandboxes.get(resource.sandboxId)!.state, "stopped");
-  assert.equal(await env.wakes.scheduled(resource.sandboxId), null);
-});
-
-test("a refused stop with a healthy disk is only reported", async () => {
+test("a plain stop boat keeps refusing, the node failing the same file: Boat watches, then moves it once safe, keeping the last snapshot", async () => {
   const env = setup({ moves: {} });
   const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
-  env.boat.stopRefused = true;
-  env.boat.execResult = () => ({ exitCode: 0, stdout: "BOAT_DISK ok .profile\nBOAT_DISK_END\n", stderr: "" });
-  await assert.rejects(env.provider().suspend(env.lifecycle(created.resource)), /boat didn't stop it: it's still idle/);
+  const resource = created.resource!;
+  const sandboxId = resource.sandboxId;
+  env.boat.stopBehavior = "refused";
+  env.boat.execResult = (script) => ({
+    exitCode: 0,
+    stdout: script.includes("BOAT_GIT_SCAN_END") ? "BOAT_GIT_SCAN_END\n" : script.includes("BOAT_DISK_END") ? (env.boat.execs.at(-1)!.sandboxId.startsWith("bx_fork") ? "BOAT_DISK ok .profile\nBOAT_DISK_END\n" : `BOAT_HYDRATOR ${HYDRATOR.replace("attempt 32", "attempt 77")}\nBOAT_DISK_END\n`) : "",
+    stderr: "",
+  });
+  // bb's suspends, as its own retries come (the backoff in between: no boat calls).
+  const suspend = () => env.provider().suspend(env.lifecycle(resource));
+  await assert.rejects(suspend(), /^Error: boat\.dev failed to stop this sandbox \(boat didn't stop it: the stop is failing\)\. Boat asks it again at 00:00 UTC\.$/);
+  await assert.rejects(suspend(), /a moment ago/);
+  assert.equal(env.boat.calls.filter((call) => call === `stop ${sandboxId}`).length, 1, "held: boat isn't asked again");
+  for (const minutes of [1, 2, 4, 8]) {
+    env.advance(minutes * 60_000 + 1_000);
+    await assert.rejects(suspend());
+    if ((await env.wakes.scheduled(sandboxId)) !== null) break;
+  }
+  const plan = (await env.wakes.scheduled(sandboxId))!;
+  assert.equal(plan.move!.state, "due");
+  assert.equal(plan.move!.resume, false);
+  await assert.rejects(suspend(), /Boat moves it off its node, or asks first under Needs you/);
+  // No chat at work there (none listed), clean checkouts: the forced stop, since boat refused the plain one.
+  assert.equal(await env.wakes.tick(), sandboxId);
+  await env.wakes.idle();
+  assert.ok(env.boat.calls.includes(`stop ${sandboxId} --force`));
+  assert.equal(env.boat.sandboxes.get(sandboxId)!.state, "stopped");
+  assert.equal(await env.wakes.scheduled(sandboxId), null);
+});
+
+test("a refused stop with the disk only restoring (or healthy) is only reported and backed off", async () => {
+  const env = setup({ moves: {} });
+  const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
+  env.boat.stopBehavior = "quiet";
+  env.boat.execResult = () => ({ exitCode: 0, stdout: "BOAT_HYDRATING [SNAPSHOT-INC] lazy volume hydration in progress\nBOAT_DISK ok .profile\nBOAT_DISK_END\n", stderr: "" });
+  for (let round = 0; round < 6; round++) {
+    await assert.rejects(env.provider().suspend(env.lifecycle(created.resource)), /boat didn't stop it: it's still idle|a moment ago/);
+    env.advance(16 * 60_000);
+  }
   assert.equal(await env.wakes.scheduled(created.resource!.sandboxId), null);
   assert.ok(!env.boat.calls.some((call) => call.includes("--force")));
 });

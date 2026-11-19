@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { reviewerSchema } from "../contract-review.ts";
-import { ACTIVE_STATES, MACHINE_TYPES, type BoatApi, type MachineType } from "./boat-api.ts";
+import { ACTIVE_STATES, MACHINE_TYPES, type BoatApi, type MachineType, type StopReport } from "./boat-api.ts";
 import { BoatError, type BoatCli } from "./boat.ts";
 import type { BoatService, BoatSettings } from "./service.ts";
 import type { ConnectCheck } from "./connect.ts";
@@ -129,13 +129,15 @@ export function registerBoatMachine(
     wakes?: Pick<WakeGuard, "machine"> & Partial<Pick<WakeGuard, "stopRefused">>;
     /** Turn off the login message scripts before bb's SSH setup (src/login-scripts.ts). */
     quietLogins?: (sandboxId: string, signal?: AbortSignal) => Promise<QuietLogin>;
+    /** Tests: the teardown backoff's clock. */
+    now?: () => number;
   },
 ): void {
   const { boat, cli, service } = deps;
   const wakes = deps.wakes ?? directWakes;
   const quietLogins = deps.quietLogins ?? createLoginQuieter(boat, (line) => bb.log?.warn?.(line));
   /** After boat.dev fails a stop or delete, bb's retries wait (src/teardown-backoff.ts). */
-  const teardown = new TeardownBackoff();
+  const teardown = new TeardownBackoff(deps.now);
 
   /** The machine's sandbox holds a headless task's work: bb forgets the machine, the sandbox stays. */
   async function keptSandbox(key: string): Promise<boolean> {
@@ -250,13 +252,14 @@ export function registerBoatMachine(
       const held = teardown.held(sandboxId, "stop");
       if (held !== null) throw new Error(held);
       let refused: string | null = null;
+      let stop: StopReport | null = null;
       try {
         const sandbox = await boat.findInfo(sandboxId);
         // Already stopped (for example by boat's auto-stop) is fine: the disk is kept.
         if (sandbox !== null && ACTIVE_STATES.has(sandbox.state)) {
-          const { status } = await boat.stop(sandboxId);
+          stop = await boat.stop(sandboxId);
           // boat may not stop it: it can't snapshot a disk it hasn't finished restoring.
-          if (status !== null && /^fail/i.test(status)) refused = `the stop is ${status}`;
+          if (stop.status !== null && /^fail/i.test(stop.status)) refused = `the stop is ${stop.status}`;
           else {
             const after = await boat.findInfo(sandboxId);
             if (after !== null && ACTIVE_STATES.has(after.state)) refused = `it's still ${after.state}`;
@@ -266,7 +269,7 @@ export function registerBoatMachine(
         throw new Error(teardown.failed(sandboxId, "stop", error));
       }
       if (refused !== null) {
-        const moving = (await deps.wakes?.stopRefused?.(sandboxId, hostId ?? null).catch(() => false)) ?? false;
+        const moving = (await deps.wakes?.stopRefused?.(sandboxId, hostId ?? null, stop).catch(() => false)) ?? false;
         throw new Error(teardown.failed(sandboxId, "stop", new Error(moving ? "it can't snapshot a disk it hasn't finished restoring; Boat moves it off its node, or asks first under Needs you" : `boat didn't stop it: ${refused}`)));
       }
       teardown.succeeded(sandboxId, "stop");

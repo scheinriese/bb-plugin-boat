@@ -779,6 +779,24 @@ export function conflictReason(baseBranch: string, conflict: ShipConflict, shipp
   return `its commits conflict with the latest ${baseBranch}${where}. The task's agent must rebase and resolve them`;
 }
 
+/** What boat printed of a stop. */
+export interface StopReport {
+  status: string | null;
+  stopId: string | null;
+  forced: boolean | null;
+}
+
+export function stopReport(records: JsonRecord[]): StopReport {
+  const report: StopReport = { status: null, stopId: null, forced: null };
+  for (const record of [...records].reverse()) {
+    const stop = rec(record.stop) ?? rec(record.operation) ?? record;
+    report.status ??= str(stop.status) ?? str(record.status);
+    report.stopId ??= str(stop.stopId) ?? str(record.stopId) ?? str(stop.stop_id) ?? (str(stop.id)?.startsWith("stop") ? str(stop.id) : null);
+    report.forced ??= bool(stop.forced) ?? bool(record.forced);
+  }
+  return report;
+}
+
 /**
  * The newest completed snapshot in `boat snapshots <id> --json` (shape not
  * verified against boat: any list of entries with a time; a status, when
@@ -941,13 +959,21 @@ export class BoatApi {
 
   /**
    * force: stop even if boat can't snapshot it; keeps the last completed
-   * snapshot, what was written since is lost. Returns the stop's status as
-   * boat printed it (pending, failing, completed, superseded; null: none).
+   * snapshot, what was written since is lost (boat: only after a stop has
+   * failed). Returns what boat printed of the stop (shape not verified):
+   * its status (pending, failing, completed, superseded), its id for
+   * `stopStatus`, and for a forced one whether boat forced it (false: it
+   * returned a stop still pending instead).
    */
-  async stop(id: string, signal?: AbortSignal, options: { force?: boolean } = {}): Promise<{ status: string | null }> {
+  async stop(id: string, signal?: AbortSignal, options: { force?: boolean } = {}): Promise<StopReport> {
     const result = await this.cli.run(["stop", id, ...(options.force === true ? ["--force"] : [])], { timeoutMs: 180_000, signal });
-    const said = [...result.records].reverse().map((record) => str(record.status) ?? str(rec(record.stop)?.status)).find((value) => value !== null);
-    return { status: said ?? null };
+    return stopReport(result.records);
+  }
+
+  /** An earlier stop's status (`boat stop <id> --status <stop id>`): reads it, never stops again. */
+  async stopStatus(id: string, stopId: string, signal?: AbortSignal): Promise<StopReport> {
+    const result = await this.cli.run(["stop", id, "--status", stopId], { timeoutMs: 60_000, signal });
+    return stopReport(result.records);
   }
 
   /**

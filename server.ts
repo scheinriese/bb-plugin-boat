@@ -276,6 +276,8 @@ export default async function plugin(bb: BbPluginApi) {
       const current = store.orchestratorThreadIds().current;
       return (await threadsOnMachine(bb, hostId)).map((row) => row.id).find((id): id is string => id !== undefined && current.has(id)) ?? null;
     },
+    // A move checks that no chat there is mid-turn.
+    threadsOn: (hostId) => threadsOnMachine(bb, hostId),
     resumeHost: (hostId) => bb.sdk.hosts.experimental_resume({ hostId } as never),
     changed: () => changed(),
     log: (line) => bb.log.warn(line),

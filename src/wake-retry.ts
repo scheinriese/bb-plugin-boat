@@ -10,25 +10,30 @@
 //   16 minutes); resumes before then fail at once without asking boat.dev.
 //   After 5 failures it stops, and the orchestrator gets a Needs you item
 //   naming the sandbox and boat.dev's error;
-// - when the node keeps failing the same file (or boat refuses a plain stop
-//   of it), Boat moves the sandbox to a new node, or asks first when unsaved
-//   work could be lost (src/node-move.ts).
-import { ACTIVE_STATES, type BoatApi } from "./boat-api.ts";
+// - bb's daemon broken by an update: Needs you, with the repair by hand;
+// - when Boat itself has seen the node fail the same file for a while (on
+//   wakes, or on stops boat refused), it moves the sandbox to a new node, or
+//   asks first when anything there could be lost (src/node-move.ts).
+import type { ThreadRow } from "./activity.ts";
+import { ACTIVE_STATES, type BoatApi, type StopReport } from "./boat-api.ts";
 import { clockTime } from "./format.ts";
 import type { TaskStore } from "./store.ts";
-import { DISK_CHECK_SCRIPT, diagnoseWakeFailure, parseDiskCheck, retriesLater, wakeFailureMessage, type DiskCheckRunner, type RetriedKind, type WakeDiagnosis } from "./wake-diagnosis.ts";
+import { DISK_CHECK_SCRIPT, daemonRepairQuestion, diagnoseWakeFailure, parseDiskCheck, retriesLater, wakeFailureMessage, type DiskCheckRunner, type RetriedKind, type WakeDiagnosis } from "./wake-diagnosis.ts";
 import { WakeDeferred, type WakePacer, type WakePermit, type WakeWait } from "./wake-pacer.ts";
 import {
   brokenSnapshotQuestion,
+  forcedOutcome,
   forkCheck,
   moveDecision,
+  moveFacts,
   moveQuestion,
   movingMessage,
   parseHydratorFailure,
   snapshotText,
+  stopOutcome,
   stuckOnNode,
-  taskFacts,
   trackHydrator,
+  type ForkCheck,
   type HydratorTrack,
   type MoveBoat,
 } from "./node-move.ts";
@@ -43,8 +48,17 @@ export const GIVE_UP_AFTER = 5;
 const LEASE_MS = 10 * 60_000;
 /** Plans untouched this long are dropped (the machine is gone, or woke some other way). */
 const FORGET_AFTER_MS = 24 * 3_600_000;
+/** A stop being followed is looked at this often (its status; never a new stop). */
+export const STOP_POLL_MS = 30_000;
+/** A stop still pending after this (the sandbox may be unreachable): forcing won't help, the user decides. */
+export const STOP_WAIT_MS = 20 * 60_000;
+/** A test fork that couldn't tell: tried again this much later, this many times, then the user decides. */
+export const RECHECK_MS = 10 * 60_000;
+export const FORK_TRIES = 2;
 /** kv: the retry plans, by sandbox. */
 export const WAKE_RETRIES_KEY = "wakeRetries";
+/** kv: the hydrator failures Boat has seen, by sandbox (src/node-move.ts). */
+export const NODE_TRACKS_KEY = "wakeNodeTracks";
 /** Task event kind for a sandbox that didn't wake. */
 export const WAKE_EVENT = "sandbox-wake";
 
@@ -53,29 +67,52 @@ export function retryDelayMs(failures: number): number {
   return Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.max(0, Math.min(failures - 1, 20)));
 }
 
+/** Moving a sandbox off its node. */
+export interface NodeMove {
+  /**
+   * due: the checks come next (the monitor's pass); stopping: a stop is
+   * followed; moved; asked (under Needs you); failed.
+   */
+  state: "due" | "stopping" | "moved" | "asked" | "failed";
+  /** When the move was planned (a pending stop is given up STOP_WAIT_MS after its start). */
+  at: number;
+  /** Wake it after (false: it came from a stop, it stays stopped). */
+  resume: boolean;
+  /** Not looked at again before this. */
+  nextAt?: number;
+  /** The stop being followed (boat's id for `boat stop --status`), and whether it's the forced one. */
+  stopId?: string | null;
+  forced?: boolean;
+  stoppedAt?: number | null;
+  /** A plain stop boat already answered (the provider's, before the move). */
+  stop?: StopReport | null;
+  /** When the sandbox was seen up after a stop boat said nothing more about. */
+  sawUpAt?: number | null;
+  /** Test forks that couldn't tell. */
+  forkTries?: number;
+  fork?: ForkCheck;
+  snapshotAt?: string | null;
+  /** The failure seen, for the message. */
+  track?: HydratorTrack | null;
+}
+
 export interface WakeRetry {
   sandboxId: string;
   hostId: string | null;
   /** The last failure's kind; "paced": no failure, the wake waits for a slot. */
-  kind: RetriedKind | "paced";
+  kind: RetriedKind | "paced" | "daemon-broken";
   /** Failed wakes in a row (waits for a slot don't count). */
   failures: number;
-  /** Boat wakes it again then (null: it gave up). */
+  /** Boat wakes it again then (null: it gave up, or it doesn't on its own). */
   retryAt: number | null;
   /** boat.dev's words for the last failure. */
   detail: string | null;
   lastAt: number;
   /** When Boat last fired its retry (bb's resume then reports back here). */
   firedAt: number | null;
-  /** The Needs you item made when Boat gave up. */
+  /** The Needs you item made for it (once a plan). */
   decisionId: string | null;
-  /** The same hydrator failure across Boat's looks (src/node-move.ts). */
-  hydrator?: HydratorTrack | null;
-  /**
-   * Moving it to a new node: due (the monitor's pass does it), moved, asked
-   * (under Needs you) or failed. resume: wake it after (false: it was a stop).
-   */
-  move?: { state: "due" | "moved" | "asked" | "failed"; at: number; resume: boolean } | null;
+  move?: NodeMove | null;
 }
 
 /** What the next failure leads to: Boat's retry later, or giving up. */
@@ -84,15 +121,15 @@ export function nextFailure(previous: WakeRetry | null, now: number): { failures
   return { failures, retryAt: failures >= GIVE_UP_AFTER ? null : now + retryDelayMs(failures) };
 }
 
-/** No resume before this (null: go ahead). After giving up, resumes stay RETRY_MAX_MS apart. */
-export function holdUntil(entry: WakeRetry | null): number | null {
-  if (entry === null) return null;
-  return entry.retryAt ?? entry.lastAt + RETRY_MAX_MS;
+/** Boat is moving it: no resume until that's done. */
+function moving(entry: WakeRetry | null): boolean {
+  return entry?.move?.state === "due" || entry?.move?.state === "stopping";
 }
 
-/** Boat is about to move it: no resume until that's done. */
-function moveDue(entry: WakeRetry | null): boolean {
-  return entry?.move?.state === "due";
+/** No resume before this (null: go ahead). After giving up, resumes stay RETRY_MAX_MS apart. A broken daemon holds nothing: its repair is by hand. */
+export function holdUntil(entry: WakeRetry | null): number | null {
+  if (entry === null || entry.kind === "daemon-broken") return null;
+  return entry.retryAt ?? entry.lastAt + RETRY_MAX_MS;
 }
 
 export interface MachineWake {
@@ -111,18 +148,23 @@ export interface WakeGuard {
    * Error with the plain-words message when it fails.
    */
   machine<T>(wake: MachineWake, run: (permit: () => Promise<WakePermit>) => Promise<T>): Promise<T>;
-  /** Fire one due retry, when the pacer has a slot (the monitor's pass). Returns the sandbox, if any. */
+  /** One step of a move, or one due retry, when the pacer has a slot (the monitor's pass). Returns the sandbox, if any. */
   tick(): Promise<string | null>;
   /** Someone asked for this sandbox explicitly: its plan starts over. */
   forget(sandboxId: string): Promise<void>;
   /** The plan for a sandbox (null: none). */
   scheduled(sandboxId: string): Promise<WakeRetry | null>;
+  /** The hydrator failure Boat has been seeing there (null: none). */
+  track(sandboxId: string): Promise<HydratorTrack | null>;
   /**
-   * boat didn't stop the sandbox (it can't snapshot a disk it hasn't finished
-   * restoring). With disk trouble there, Boat moves it off its node, or asks
-   * first; returns whether it does.
+   * boat didn't stop the sandbox (`stop`: what boat said of that stop). Once
+   * Boat has seen its node fail the same file for a while, it moves it (the
+   * checks first), or asks; returns whether it does. Otherwise the stop only
+   * backs off.
    */
-  stopRefused(sandboxId: string, hostId: string | null, signal?: AbortSignal): Promise<boolean>;
+  stopRefused(sandboxId: string, hostId: string | null, stop?: StopReport | null, signal?: AbortSignal): Promise<boolean>;
+  /** Resolves once the move steps started so far are done (tests). */
+  idle(): Promise<void>;
 }
 
 export interface WakeGuardDeps {
@@ -132,12 +174,14 @@ export interface WakeGuardDeps {
   store: Pick<TaskStore, "liveSandboxTasks" | "addEvent" | "addDecision" | "orchestrators">;
   /** The orchestrator chat that runs on this bb machine, if one does. */
   orchestratorOn?(hostId: string): Promise<string | null>;
+  /** bb's chats on this machine (a move checks none is mid-turn; absent: unknown, so a move asks). */
+  threadsOn?(hostId: string): Promise<ThreadRow[]>;
   /** Have bb resume this machine (its provider's resume runs, through the guard). */
   resumeHost?(hostId: string): Promise<unknown>;
   changed?(taskIds: string[]): void;
   log?(line: string): void;
   now?(): number;
-  /** Move a sandbox off a node that keeps failing its disk (absent: never); forkCheck: confirm the snapshot first (default on). */
+  /** Move a sandbox off a node that keeps failing its disk (absent: never). forkCheck false: never forces on its own (it always asks). */
   moves?: { forkCheck?: boolean };
 }
 
@@ -152,9 +196,9 @@ export function waitStep(until: number, reason: WakeWait, now = Date.now()): str
     : `Waiting until ${clockTime(until, now)}: Boat wakes at most 2 sandboxes a minute`;
 }
 
-/** The message for a resume refused before Boat's own retry. */
+/** The message for a resume refused before Boat's own retry (or while it moves the sandbox). */
 export function heldMessage(entry: WakeRetry, now: number): string {
-  if (moveDue(entry)) return movingMessage(entry.hydrator, now);
+  if (moving(entry)) return movingMessage(entry.move?.track, now);
   if (entry.move?.state === "asked") return `boat.dev keeps failing to restore this sandbox's disk on the node it runs on. Moving it to a new node could lose unsaved work, so it's under Needs you.`;
   if (entry.kind === "paced") return `Boat wakes at most 2 sandboxes a minute and others are waking now. Boat will wake this one at ${clockTime(entry.retryAt ?? now, now)}.`;
   const diagnosis: WakeDiagnosis = { kind: entry.kind, detail: entry.detail, checked: false };
@@ -166,31 +210,41 @@ export function heldMessage(entry: WakeRetry, now: number): string {
 export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? (() => undefined);
-  let plans: Promise<Record<string, WakeRetry>> | null = null;
-  let saving: Promise<void> = Promise.resolve();
-  /** Retries fired whose resume hasn't come back yet. */
+  /** Retries fired, or moves under way, that haven't come back yet. */
   const firing = new Set<string>();
+  /** Move steps running in the background. */
+  const steps = new Set<Promise<void>>();
 
-  function load(): Promise<Record<string, WakeRetry>> {
-    plans ??= deps.kv.get<Record<string, WakeRetry>>(WAKE_RETRIES_KEY).then(
-      (raw) => (raw !== null && typeof raw === "object" && !Array.isArray(raw) ? { ...raw } : {}),
-      () => ({}),
-    );
-    return plans;
+  /** A record of entries by sandbox, saved whole in kv. */
+  function record<T extends { lastAt?: number; firstAt?: number }>(key: string) {
+    let loaded: Promise<Record<string, T>> | null = null;
+    let saving: Promise<void> = Promise.resolve();
+    const load = () => {
+      loaded ??= deps.kv.get<Record<string, T>>(key).then((raw) => (raw !== null && typeof raw === "object" && !Array.isArray(raw) ? { ...raw } : {}), () => ({}));
+      return loaded;
+    };
+    const save = async () => {
+      const copy = { ...(await load()) };
+      saving = saving.then(() => deps.kv.set(key, copy)).catch((error: unknown) => log(`wake retries: couldn't save ${key} (${errorText(error)})`));
+      return saving;
+    };
+    return {
+      load,
+      save,
+      async get(id: string): Promise<T | null> {
+        return (await load())[id] ?? null;
+      },
+      async put(id: string, entry: T | null): Promise<void> {
+        const all = await load();
+        if (entry === null) delete all[id];
+        else all[id] = entry;
+        await save();
+      },
+    };
   }
-
-  async function save(): Promise<void> {
-    const copy = { ...(await load()) };
-    saving = saving.then(() => deps.kv.set(WAKE_RETRIES_KEY, copy)).catch((error: unknown) => log(`wake retries: couldn't save (${errorText(error)})`));
-    return saving;
-  }
-
-  async function update(sandboxId: string, entry: WakeRetry | null): Promise<void> {
-    const all = await load();
-    if (entry === null) delete all[sandboxId];
-    else all[sandboxId] = entry;
-    await save();
-  }
+  const plans = record<WakeRetry>(WAKE_RETRIES_KEY);
+  const tracks = record<HydratorTrack>(NODE_TRACKS_KEY);
+  const update = (sandboxId: string, entry: WakeRetry | null) => plans.put(sandboxId, entry);
 
   /** Look at the disk through boat's exec API, only while the sandbox runs (exec must never wake it). */
   function diskCheck(sandboxId: string, signal: AbortSignal): DiskCheckRunner {
@@ -200,6 +254,15 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
       const result = await deps.boat.exec(sandboxId, DISK_CHECK_SCRIPT, { timeoutMs: 30_000, signal, login: false });
       return { stdout: result.stdout, stderr: result.stderr };
     };
+  }
+
+  /** One more look that saw this hydrator failure (null: it didn't). Returns the track. */
+  async function observe(sandboxId: string, detail: string | null, at: number): Promise<HydratorTrack | null> {
+    const failure = parseHydratorFailure(detail);
+    if (failure === null) return tracks.get(sandboxId);
+    const next = trackHydrator(await tracks.get(sandboxId), failure, at);
+    await tracks.put(sandboxId, next);
+    return next;
   }
 
   /** The text on every live task in the sandbox. */
@@ -247,59 +310,143 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
     });
   }
 
-  /**
-   * Move it off its node (the monitor's pass, in the background): check the
-   * tasks there and the snapshot, then force-stop it (Boat's own retry then
-   * resumes it on a new node), or ask first.
-   */
-  async function runMove(entry: WakeRetry): Promise<void> {
-    const signal = undefined;
-    const tasks = deps.store.liveSandboxTasks(entry.sandboxId);
-    const decision = moveDecision(await taskFacts(deps.boat, entry.sandboxId, tasks, signal));
-    const fork = deps.moves?.forkCheck === false ? "skipped" : await forkCheck(deps.boat, entry.sandboxId, { pacer: deps.pacer, log });
-    const snapshotAt = await deps.boat.lastSnapshotAt(entry.sandboxId, signal).catch(() => null);
+  /** The move ends with the user deciding: no more automatic wakes or stops. */
+  async function askMove(entry: WakeRetry, fields: Parameters<typeof ask>[1], taskText: string): Promise<void> {
+    const decisionId = await ask(entry, fields);
     const at = now();
-    const stays = (state: "asked" | "failed", decisionId: string | null, retryAt: number | null): WakeRetry => ({ ...entry, move: { state, at, resume: entry.move?.resume ?? true }, retryAt, lastAt: at, firedAt: null, decisionId: decisionId ?? entry.decisionId });
-    if (fork === "unreadable") {
-      const decisionId = await ask(entry, brokenSnapshotQuestion({ sandboxId: entry.sandboxId, detail: entry.detail }));
-      await update(entry.sandboxId, stays("asked", decisionId, null));
-      tellTasks(entry.sandboxId, "boat.dev can't restore this sandbox's disk, on its node or on a new one (a test fork couldn't read its files either). It's under Needs you.");
-      return;
-    }
-    if (!decision.auto) {
-      const decisionId = await ask(entry, moveQuestion({ sandboxId: entry.sandboxId, snapshotAt, reasons: decision.reasons, detail: entry.detail, fork, now: at }));
-      await update(entry.sandboxId, stays("asked", decisionId, null));
-      tellTasks(entry.sandboxId, `boat.dev keeps failing to restore this sandbox's disk on the node it runs on. Moving it to a new node would lose what changed since ${snapshotText(snapshotAt, at)}, and ${decision.reasons.join("; ")}, so it's under Needs you.`);
-      return;
-    }
-    try {
-      await deps.boat.stop(entry.sandboxId, signal, { force: true });
-    } catch (error) {
-      log(`node move: force stop ${entry.sandboxId}: ${errorText(error)}`);
-      await update(entry.sandboxId, stays("failed", null, entry.move?.resume === false ? null : at + retryDelayMs(Math.max(1, entry.failures))));
-      tellTasks(entry.sandboxId, `Boat couldn't move this sandbox to a new boat.dev node: boat refused the forced stop (${errorText(error).split("\n")[0]}).`);
-      return;
-    }
-    log(`node move: force-stopped ${entry.sandboxId} (snapshot ${snapshotAt ?? "unknown"}, test fork ${fork})`);
-    if (entry.move?.resume === false) {
-      // It was a stop: it's stopped now; its next wake lands on a new node.
+    await update(entry.sandboxId, { ...entry, move: { ...entry.move!, state: "asked", nextAt: undefined }, retryAt: null, lastAt: at, firedAt: null, decisionId: decisionId ?? entry.decisionId });
+    tellTasks(entry.sandboxId, taskText);
+  }
+
+  /** Stopped: wake it on a new node (or, from a stop, leave it stopped). */
+  async function moved(entry: WakeRetry, lost: boolean): Promise<void> {
+    const at = now();
+    const move = entry.move!;
+    await tracks.put(entry.sandboxId, null);
+    const stopped = lost
+      ? `boat.dev couldn't take a fresh snapshot of this sandbox, so Boat stopped it keeping its last completed snapshot (${snapshotText(move.snapshotAt ?? null, at)}).`
+      : "boat.dev stopped this sandbox with a fresh snapshot, so nothing was lost.";
+    log(`node move: ${entry.sandboxId} stopped (${lost ? "forced" : "plain"})`);
+    if (!move.resume) {
       await update(entry.sandboxId, null);
-      tellTasks(entry.sandboxId, `boat couldn't snapshot this sandbox's disk, so Boat stopped it keeping its last completed snapshot (${snapshotText(snapshotAt, at)}). Its next wake starts it on a new boat.dev node.`);
+      tellTasks(entry.sandboxId, `${stopped} Its next wake starts it on a new boat.dev node.`);
       return;
     }
     // A new node gets a fresh start: Boat's retry resumes it at once.
-    await update(entry.sandboxId, { ...entry, move: { state: "moved", at, resume: true }, hydrator: null, failures: 0, retryAt: at, lastAt: at, firedAt: null });
-    tellTasks(entry.sandboxId, `Boat moved this sandbox to a new boat.dev node: it stopped it keeping its last completed snapshot (${snapshotText(snapshotAt, at)}) and resumes it now.${fork === "healthy" ? " A test fork had restored fine." : ""}`);
+    await update(entry.sandboxId, { ...entry, move: { ...move, state: "moved", nextAt: undefined }, failures: 0, retryAt: at, lastAt: at, firedAt: null });
+    tellTasks(entry.sandboxId, `${stopped} Boat resumes it now on a new boat.dev node.${move.fork === "healthy" ? " A test fork had restored fine." : ""}`);
+  }
+
+  /** Follow a stop: stopped, force it once boat refused, wait while it's pending (never a new plain stop). */
+  async function followStop(entry: WakeRetry, report: StopReport): Promise<void> {
+    const move = entry.move!;
+    const at = now();
+    const state = (await deps.boat.findInfo(entry.sandboxId).catch(() => null))?.state ?? null;
+    let outcome = move.forced === true ? forcedOutcome(report, state) : stopOutcome(report, state);
+    // Up, and boat said nothing more of the stop: look once more before calling it refused.
+    if (outcome === "refused" && move.forced !== true && report.status === null && report.stopId === null) {
+      if (move.sawUpAt == null || at - move.sawUpAt < STOP_POLL_MS) {
+        await update(entry.sandboxId, { ...entry, move: { ...move, state: "stopping", sawUpAt: move.sawUpAt ?? at, nextAt: at + STOP_POLL_MS }, lastAt: at });
+        return;
+      }
+    }
+    if (outcome === "stopped") return moved(entry, move.forced === true);
+    if (outcome === "refused" && move.forced !== true) {
+      // boat refused the plain stop: now --force (keeps the last completed snapshot).
+      let forced: StopReport;
+      try {
+        forced = await deps.boat.stop(entry.sandboxId, undefined, { force: true });
+      } catch (error) {
+        log(`node move: force stop ${entry.sandboxId}: ${errorText(error)}`);
+        return askMove(entry, moveQuestion({ sandboxId: entry.sandboxId, snapshotAt: move.snapshotAt ?? null, reasons: [`boat refused the forced stop too (${errorText(error).split("\n")[0]})`], detail: entry.detail, fork: move.fork ?? "skipped", now: at }), `Boat couldn't move this sandbox to a new boat.dev node: boat refused the forced stop (${errorText(error).split("\n")[0]}). It's under Needs you.`);
+      }
+      const after = (await deps.boat.findInfo(entry.sandboxId).catch(() => null))?.state ?? null;
+      const next: WakeRetry = { ...entry, move: { ...move, state: "stopping", forced: true, stopId: forced.stopId ?? move.stopId ?? null, nextAt: at + STOP_POLL_MS }, lastAt: at };
+      if (forcedOutcome(forced, after) === "stopped") return moved(next, true);
+      await update(entry.sandboxId, next);
+      return;
+    }
+    // Pending (or superseded): wait, then let the user decide; forcing a pending stop only hands it back.
+    if (at - (move.stoppedAt ?? move.at) > STOP_WAIT_MS) {
+      return askMove(
+        entry,
+        moveQuestion({ sandboxId: entry.sandboxId, snapshotAt: move.snapshotAt ?? null, reasons: [`boat's stop has been pending since ${clockTime(move.stoppedAt ?? move.at, at)} (the sandbox may be unreachable)`], detail: entry.detail, fork: move.fork ?? "skipped", now: at }),
+        `boat's stop of this sandbox has been pending for ${Math.round((at - (move.stoppedAt ?? move.at)) / 60_000)} minutes, so Boat leaves the move to you. It's under Needs you.`,
+      );
+    }
+    await update(entry.sandboxId, { ...entry, move: { ...move, state: "stopping", stopId: report.stopId ?? move.stopId ?? null, nextAt: at + STOP_POLL_MS }, lastAt: at });
+  }
+
+  /**
+   * One step of a move (the monitor's pass, in the background). due: is
+   * anything there at risk (tasks, chats, every checkout), and does the
+   * snapshot read fine on another node; then a plain stop. stopping: follow it.
+   */
+  async function runMove(entry: WakeRetry): Promise<void> {
+    const move = entry.move!;
+    const id = entry.sandboxId;
+    if (move.state === "stopping") {
+      const report = move.stopId ? await deps.boat.stopStatus(id, move.stopId).catch((): StopReport => ({ status: null, stopId: move.stopId ?? null, forced: null })) : { status: null, stopId: null, forced: null };
+      return followStop(entry, report);
+    }
+    const hostId = entry.hostId;
+    const facts = await moveFacts(deps.boat, id, deps.store.liveSandboxTasks(id), hostId !== null && deps.threadsOn ? () => deps.threadsOn!(hostId) : null);
+    const decision = moveDecision(facts);
+    const fork: ForkCheck = deps.moves?.forkCheck === false ? "skipped" : await forkCheck(deps.boat, id, { pacer: deps.pacer, log });
+    const snapshotAt = await deps.boat.lastSnapshotAt(id).catch(() => null);
+    const at = now();
+    const checked: WakeRetry = { ...entry, move: { ...move, fork, snapshotAt } };
+    if (fork === "unreadable") {
+      return askMove(checked, brokenSnapshotQuestion({ sandboxId: id, detail: entry.detail }), "boat.dev can't restore this sandbox's disk, on its node or on a new one (a test fork couldn't read its files either). It's under Needs you.");
+    }
+    const reasons = [...decision.reasons];
+    if (fork !== "healthy") {
+      // The snapshot isn't known to read fine: nothing is forced. A fork that couldn't tell is tried again, then the user decides.
+      const tries = (move.forkTries ?? 0) + 1;
+      if (fork === "unknown" && decision.auto && tries < FORK_TRIES) {
+        log(`node move: ${id}: the test fork couldn't tell; again at ${clockTime(at + RECHECK_MS, at)}`);
+        await update(id, { ...checked, move: { ...checked.move!, forkTries: tries, nextAt: at + RECHECK_MS }, lastAt: at });
+        return;
+      }
+      reasons.push(fork === "skipped" ? "Boat doesn't check snapshots with a test fork here" : "Boat couldn't check the snapshot with a test fork");
+    }
+    if (reasons.length > 0) {
+      return askMove(
+        checked,
+        moveQuestion({ sandboxId: id, snapshotAt, reasons, detail: entry.detail, fork, now: at }),
+        `boat.dev keeps failing to restore this sandbox's disk on the node it runs on. Moving it could lose what changed since ${snapshotText(snapshotAt, at)}, and ${reasons.join("; ")}, so it's under Needs you.`,
+      );
+    }
+    // Safe, and the snapshot reads fine elsewhere: a plain stop first (or follow the one boat already answered).
+    let report: StopReport;
+    if (move.stop) report = move.stop;
+    else {
+      try {
+        report = await deps.boat.stop(id);
+      } catch (error) {
+        const said = errorText(error).split("\n")[0]!;
+        // boat saying it can't snapshot it is a refusal; anything else isn't known to be one.
+        if (/snapshot|hydrat|refus|can(?:no|')t stop/i.test(said)) report = { status: "failing", stopId: null, forced: null };
+        else return askMove(checked, moveQuestion({ sandboxId: id, snapshotAt, reasons: [`boat's stop failed (${said})`], detail: entry.detail, fork, now: at }), `Boat couldn't stop this sandbox to move it (${said}). It's under Needs you.`);
+      }
+    }
+    const stopping: WakeRetry = { ...checked, move: { ...checked.move!, state: "stopping", stopId: report.stopId, stoppedAt: at }, lastAt: at };
+    return followStop(stopping, report);
+  }
+
+  /** Plan a move once Boat's own looks say the node is stuck. */
+  function planMove(entry: WakeRetry | null, base: Omit<WakeRetry, "move">, track: HydratorTrack | null, resume: boolean, stop: StopReport | null, at: number): WakeRetry {
+    return { ...base, retryAt: null, firedAt: null, decisionId: entry?.decisionId ?? base.decisionId, move: { state: "due", at, resume, stop, sawUpAt: stop !== null && stop.status === null && stop.stopId === null ? at : null, track } };
   }
 
   return {
     pacer: deps.pacer,
 
     async machine(wake, run) {
-      const entry = (await load())[wake.sandboxId] ?? null;
+      const entry = await plans.get(wake.sandboxId);
       const hold = holdUntil(entry);
       // Before Boat's own retry (or while it moves the sandbox): boat.dev isn't asked again.
-      if (entry !== null && ((hold !== null && hold > now()) || moveDue(entry))) throw new Error(heldMessage(entry, now()));
+      if (entry !== null && ((hold !== null && hold > now()) || moving(entry))) throw new Error(heldMessage(entry, now()));
       let permit: WakePermit | null = null;
       const take = async () => {
         permit ??= await deps.pacer.acquire({ signal: wake.signal, onWait: (until, reason) => wake.report.step(waitStep(until, reason, now())) });
@@ -310,6 +457,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
         await (permit as WakePermit | null)?.succeeded();
         firing.delete(wake.sandboxId);
         if (entry !== null) await update(wake.sandboxId, null);
+        await tracks.put(wake.sandboxId, null);
         return result;
       } catch (error) {
         firing.delete(wake.sandboxId);
@@ -317,13 +465,24 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
         const at = now();
         if (error instanceof WakeDeferred) {
           // Boat gave up on it: a wait for a slot doesn't start its retries again.
-          if (entry !== null && entry.retryAt === null) throw new Error(heldMessage({ ...entry, kind: "paced", retryAt: error.retryAt }, at));
+          if (entry !== null && entry.retryAt === null && entry.kind !== "daemon-broken") throw new Error(heldMessage({ ...entry, kind: "paced", retryAt: error.retryAt }, at));
           // Too many wakes at once: Boat wakes this one itself when its turn comes.
           const next: WakeRetry = { ...(entry ?? { sandboxId: wake.sandboxId, kind: "paced", failures: 0, detail: null, decisionId: null }), hostId: wake.hostId ?? entry?.hostId ?? null, retryAt: error.retryAt, lastAt: at, firedAt: null };
           await update(wake.sandboxId, next);
           throw new Error(heldMessage({ ...next, kind: "paced" }, at));
         }
         const diagnosis = await diagnoseWakeFailure(error, diskCheck(wake.sandboxId, wake.signal));
+        const hostId = wake.hostId ?? entry?.hostId ?? null;
+        if (diagnosis.kind === "daemon-broken") {
+          // A repair by hand: Needs you once, no retries, nothing held.
+          const next: WakeRetry = { sandboxId: wake.sandboxId, hostId, kind: "daemon-broken", failures: (entry?.failures ?? 0) + 1, retryAt: null, detail: diagnosis.detail, lastAt: at, firedAt: null, decisionId: entry?.kind === "daemon-broken" ? entry.decisionId : null };
+          if (next.decisionId === null) next.decisionId = await ask(next, daemonRepairQuestion({ sandboxId: wake.sandboxId, detail: diagnosis.detail, daemon: diagnosis.daemon }));
+          await update(wake.sandboxId, next);
+          const text = wakeFailureMessage(diagnosis, { retryAt: null, now: at }, errorText(error));
+          tellTasks(wake.sandboxId, text);
+          log(`wake ${wake.sandboxId}: daemon-broken: ${diagnosis.detail ?? ""}`);
+          throw new Error(text);
+        }
         // Not boat.dev's restore any more: Boat's retry plan for it ends.
         if (!retriesLater(diagnosis.kind) && entry !== null) await update(wake.sandboxId, null);
         if (diagnosis.kind === "other") throw error;
@@ -335,35 +494,21 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
           throw new Error(text);
         }
         const { failures, retryAt } = nextFailure(entry, at);
-        const failure = parseHydratorFailure(diagnosis.detail);
-        const hydrator = failure === null ? (entry?.hydrator ?? null) : trackHydrator(entry?.hydrator, failure, at);
-        // The node keeps failing the same file: move it to a new one (once a plan).
-        if (deps.moves !== undefined && diagnosis.kind === "disk-restoring" && !entry?.move && stuckOnNode(hydrator, at)) {
-          const moving: WakeRetry = { sandboxId: wake.sandboxId, hostId: wake.hostId ?? entry?.hostId ?? null, kind: "disk-restoring", failures, retryAt: null, detail: diagnosis.detail, lastAt: at, firedAt: null, decisionId: entry?.decisionId ?? null, hydrator, move: { state: "due", at, resume: true } };
-          await update(wake.sandboxId, moving);
-          const text = movingMessage(hydrator, at);
+        const track = diagnosis.kind === "disk-restoring" ? await observe(wake.sandboxId, diagnosis.detail, at) : null;
+        const base: WakeRetry = { sandboxId: wake.sandboxId, hostId, kind: diagnosis.kind, failures, retryAt, detail: diagnosis.detail, lastAt: at, firedAt: null, decisionId: entry?.decisionId ?? null, move: entry?.move ?? null };
+        // Boat has seen the node fail the same file for a while: move it to a new one (once a plan).
+        if (deps.moves !== undefined && diagnosis.kind === "disk-restoring" && !entry?.move && stuckOnNode(track, at)) {
+          await update(wake.sandboxId, planMove(entry, base, track, true, null, at));
+          const text = movingMessage(track, at);
           tellTasks(wake.sandboxId, text);
-          log(`wake ${wake.sandboxId}: stuck on its node (${hydrator?.object ?? "?"}, ${hydrator?.attempts ?? 0} attempts); moving it`);
+          log(`wake ${wake.sandboxId}: stuck on its node (${track?.object ?? "?"}, seen ${track?.seen ?? 0} times); moving it`);
           throw new Error(text);
         }
-        const next: WakeRetry = {
-          sandboxId: wake.sandboxId,
-          hostId: wake.hostId ?? entry?.hostId ?? null,
-          kind: diagnosis.kind,
-          failures,
-          retryAt,
-          detail: diagnosis.detail,
-          lastAt: at,
-          firedAt: null,
-          decisionId: entry?.decisionId ?? null,
-          hydrator,
-          move: entry?.move ?? null,
-        };
-        if (retryAt === null && next.decisionId === null) next.decisionId = await needsYou(next, diagnosis);
-        await update(wake.sandboxId, next);
+        if (retryAt === null && base.decisionId === null) base.decisionId = await needsYou(base, diagnosis);
+        await update(wake.sandboxId, base);
         const text =
           retryAt === null
-            ? wakeFailureMessage(diagnosis, { retryAt: null, gaveUpAfter: failures, resumeAfter: holdUntil(next), sandboxId: wake.sandboxId, now: at }, errorText(error))
+            ? wakeFailureMessage(diagnosis, { retryAt: null, gaveUpAfter: failures, resumeAfter: holdUntil(base), sandboxId: wake.sandboxId, now: at }, errorText(error))
             : wakeFailureMessage(diagnosis, { retryAt, now: at }, errorText(error));
         tellTasks(wake.sandboxId, text);
         log(`wake ${wake.sandboxId}: ${diagnosis.kind} (failure ${failures})${diagnosis.detail ? `: ${diagnosis.detail}` : ""}`);
@@ -373,7 +518,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
 
     async tick() {
       const at = now();
-      const all = await load();
+      const all = await plans.load();
       let changed = false;
       for (const [sandboxId, entry] of Object.entries(all)) {
         if (at - entry.lastAt > FORGET_AFTER_MS) {
@@ -381,17 +526,30 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
           changed = true;
         }
       }
-      if (changed) await save();
-      // A move first (in the background: a test fork and a forced stop take a while), with a wake slot free.
-      const moving = deps.moves === undefined ? undefined : Object.values(all).find((entry) => moveDue(entry) && !firing.has(entry.sandboxId));
-      if (moving !== undefined) {
-        if ((await deps.pacer.nextWakeAt()) > at) return null;
-        firing.add(moving.sandboxId);
-        log(`node move: moving ${moving.sandboxId} off its node`);
-        void runMove(moving)
-          .catch((error: unknown) => log(`node move: ${moving.sandboxId}: ${errorText(error)}`))
-          .finally(() => firing.delete(moving.sandboxId));
-        return moving.sandboxId;
+      if (changed) await plans.save();
+      const seen = await tracks.load();
+      let stale = false;
+      for (const [sandboxId, track] of Object.entries(seen)) {
+        if (at - track.firstAt > FORGET_AFTER_MS) {
+          delete seen[sandboxId];
+          stale = true;
+        }
+      }
+      if (stale) await tracks.save();
+      // A move first (in the background: a test fork and a stop take a while), with a wake slot free.
+      const step = deps.moves === undefined ? undefined : Object.values(all).find((entry) => moving(entry) && !firing.has(entry.sandboxId) && (entry.move?.nextAt ?? 0) <= at);
+      if (step !== undefined) {
+        if (step.move!.state === "due" && (await deps.pacer.nextWakeAt()) > at) return null;
+        firing.add(step.sandboxId);
+        log(`node move: ${step.sandboxId}: ${step.move!.state === "due" ? "checking before moving it off its node" : "following its stop"}`);
+        const running: Promise<void> = runMove(step)
+          .catch((error: unknown) => log(`node move: ${step.sandboxId}: ${errorText(error)}`))
+          .finally(() => {
+            firing.delete(step.sandboxId);
+            steps.delete(running);
+          });
+        steps.add(running);
+        return step.sandboxId;
       }
       if (deps.resumeHost === undefined) return null;
       const due = Object.values(all)
@@ -401,7 +559,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
       // One a pass, and only with a wake slot free: the pacer would only make it wait.
       if (first === undefined || (await deps.pacer.nextWakeAt()) > at) return null;
       all[first.sandboxId] = { ...first, firedAt: at };
-      await save();
+      await plans.save();
       firing.add(first.sandboxId);
       log(`wake retries: resuming ${first.sandboxId} (${first.kind}, after ${first.failures} failure${first.failures === 1 ? "" : "s"})`);
       void deps.resumeHost(first.hostId!).then(
@@ -417,45 +575,37 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
     },
 
     async forget(sandboxId) {
-      if ((await load())[sandboxId] === undefined) return;
-      await update(sandboxId, null);
+      if ((await plans.get(sandboxId)) !== null) await update(sandboxId, null);
+      if ((await tracks.get(sandboxId)) !== null) await tracks.put(sandboxId, null);
     },
 
-    async scheduled(sandboxId) {
-      return (await load())[sandboxId] ?? null;
+    scheduled: (sandboxId) => plans.get(sandboxId),
+    async idle() {
+      await Promise.allSettled([...steps]);
     },
+    track: (sandboxId) => tracks.get(sandboxId),
 
-    async stopRefused(sandboxId, hostId, signal) {
+    async stopRefused(sandboxId, hostId, stop, signal) {
       if (deps.moves === undefined) return false;
-      const entry = (await load())[sandboxId] ?? null;
-      if (moveDue(entry)) return true;
+      const entry = await plans.get(sandboxId);
+      if (moving(entry)) return true;
       if (entry?.move) return false;
-      let seen: ReturnType<typeof parseDiskCheck> | null = null;
+      let detail: string | null = null;
       try {
         const result = await diskCheck(sandboxId, signal ?? new AbortController().signal)();
-        seen = result === null ? null : parseDiskCheck(result.stdout);
+        detail = result === null ? null : parseDiskCheck(result.stdout).hydrator;
       } catch (error) {
         log(`stop of ${sandboxId} refused; couldn't look at its disk: ${errorText(error)}`);
       }
-      const trouble = seen !== null && (seen.hydrator !== null || seen.unreadable.length > 0 || seen.fuseBlocked.length > 0 || seen.hydrating !== null);
-      if (!trouble) return false;
+      // Only a hydrator failure Boat has seen for a while moves it: a disk still restoring
+      // normally ("hydration in progress", a read waiting on lazyfs) only backs the stop off.
+      if (detail === null) return false;
       const at = now();
-      const detail = seen!.hydrator ?? seen!.hydrating ?? entry?.detail ?? null;
-      const failure = parseHydratorFailure(detail);
-      await update(sandboxId, {
-        sandboxId,
-        hostId: hostId ?? entry?.hostId ?? null,
-        kind: "disk-restoring",
-        failures: entry?.failures ?? 0,
-        retryAt: null,
-        detail,
-        lastAt: at,
-        firedAt: null,
-        decisionId: entry?.decisionId ?? null,
-        hydrator: failure === null ? (entry?.hydrator ?? null) : trackHydrator(entry?.hydrator, failure, at),
-        move: { state: "due", at, resume: false },
-      });
-      log(`stop of ${sandboxId} refused with its disk not restored; moving it off its node`);
+      const track = await observe(sandboxId, detail, at);
+      if (!stuckOnNode(track, at)) return false;
+      const base: WakeRetry = { sandboxId, hostId: hostId ?? entry?.hostId ?? null, kind: "disk-restoring", failures: entry?.failures ?? 0, retryAt: null, detail, lastAt: at, firedAt: null, decisionId: entry?.decisionId ?? null };
+      await update(sandboxId, planMove(entry, base, track, false, stop ?? { status: null, stopId: null, forced: null }, at));
+      log(`stop of ${sandboxId} refused, its node failing the same file (seen ${track?.seen ?? 0} times); moving it off its node`);
       return true;
     },
   };

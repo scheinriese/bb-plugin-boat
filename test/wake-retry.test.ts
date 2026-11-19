@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WakePacer } from "../src/wake-pacer.ts";
 import { GIVE_UP_AFTER, RETRY_MAX_MS, WAKE_EVENT, createWakeGuard, nextFailure, retryDelayMs, type MachineWake } from "../src/wake-retry.ts";
+import type { ThreadRow } from "../src/activity.ts";
 import { makeService } from "./fakes.ts";
 
 const HYDRATOR = "ascii-agents-server[812]: [lazyfs] [ERROR] HYDRATOR FAILED attempt 32 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";
@@ -22,7 +23,7 @@ test("the retry schedule: 2, 4, 8, 16 minutes, at most 30, and Boat gives up at 
   assert.deepEqual(plan, [2, 4, 8, 16, null]);
 });
 
-async function env(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean } } = {}) {
+async function env(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean }; threads?: boolean } = {}) {
   const fake = makeService();
   const { task } = await fake.service.launchTask({ title: "Cart spacing", role: "implement", brief: "Fix the spacing." }, 5_000);
   fake.store.addOrchestrator("thr_orch");
@@ -35,12 +36,14 @@ async function env(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean 
   const logs: string[] = [];
   // What the check over boat's exec API finds there.
   let check = `BOAT_HYDRATOR ${HYDRATOR}\nBOAT_DISK fail .profile Input/output error\nBOAT_DISK_END\n`;
-  // A task's branch (the move's check), and what a test fork reads.
-  let git = "BOAT_GIT ahead=0 dirty=0\n";
+  // The sandbox's git checkouts (the move's scan), and what a test fork reads.
+  let scan = "BOAT_GIT_SCAN_END\n";
   let fork = "BOAT_DISK ok .profile\nBOAT_DISK ok .bashrc\nBOAT_DISK_END\n";
+  // bb's chats on the machine.
+  let threads: ThreadRow[] = [{ id: "thr_orch", title: "Orchestrator", status: "idle" }];
   fake.boat.execResult = (script) => {
     const on = fake.boat.execs.at(-1)!.sandboxId;
-    const stdout = script.includes("BOAT_GIT") ? git : on.startsWith("bx_fork") ? fork : check;
+    const stdout = script.includes("BOAT_GIT_SCAN_END") ? scan : on.startsWith("bx_fork") ? fork : check;
     return { exitCode: 0, stdout, stderr: "" };
   };
   const guard = createWakeGuard({
@@ -49,6 +52,7 @@ async function env(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean 
     boat: fake.boat as never,
     store: fake.store,
     resumeHost: async (hostId) => { resumed.push(hostId); },
+    ...(options.threads === false ? {} : { threadsOn: async () => threads }),
     now: () => at,
     log: (line) => logs.push(line),
     ...(options.moves ? { moves: options.moves } : {}),
@@ -57,14 +61,12 @@ async function env(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean 
   const wake = (): MachineWake => ({ sandboxId, hostId: "host_orch1", signal: new AbortController().signal, report: { step: (text) => steps.push(text), log: () => undefined } });
   return {
     ...fake, task, sandboxId, pacer, guard, kv, resumed, logs, steps, wake, now: () => at, advance(ms: number) { at += ms; },
-    setCheck(text: string) { check = text; }, setGit(text: string) { git = text; }, setFork(text: string) { fork = text; },
-    /** The move runs in the background: wait until it's past "due". */
-    async moved(sandboxId: string) {
-      for (let round = 0; round < 500; round++) {
-        if ((await guard.scheduled(sandboxId))?.move?.state !== "due") return guard.scheduled(sandboxId);
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      throw new Error("the move never finished");
+    setCheck(text: string) { check = text; }, setScan(text: string) { scan = text; }, setFork(text: string) { fork = text; }, setThreads(rows: ThreadRow[]) { threads = rows; },
+    /** One pass of the monitor, and the move step it started. */
+    async pass() {
+      const sandbox = await guard.tick();
+      await guard.idle();
+      return sandbox;
     },
   };
 }
@@ -198,31 +200,50 @@ test("a cancelled wake records nothing", async () => {
 
 const STUCK = "ascii-agents-server[812]: [lazyfs] [ERROR] HYDRATOR FAILED attempt 77 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";
 
-test("a node that keeps failing the same file: Boat moves an orchestrator's sandbox itself, after a test fork, then wakes it", async () => {
+/** Wakes failing on the same file until Boat's own looks call the node stuck: the 5th failure, 30 minutes on. */
+async function failUntilStuck(e: Awaited<ReturnType<typeof env>>, wake: MachineWake): Promise<Error> {
+  for (let index = 0; ; index++) {
+    let thrown: Error | null = null;
+    await e.guard.machine(wake, async () => { throw new Error(KEY_STEP); }).catch((error: Error) => { thrown = error; });
+    const plan = (await e.guard.scheduled(wake.sandboxId))!;
+    if (plan.move?.state === "due") return thrown!;
+    assert.ok(index < 6, "never called stuck");
+    e.advance(plan.retryAt! - e.now());
+  }
+}
+
+test("lazyfs's own count moves nothing: the incident's first look is a normal retry; Boat's own looks over 15 minutes are what count", async () => {
+  const e = await env({ moves: {} });
+  e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error(KEY_STEP); }), /Boat will retry at 01:02 UTC/);
+  assert.equal((await e.guard.scheduled(e.sandboxId))!.move ?? null, null, "attempt 77 on the first look isn't stuck");
+  assert.deepEqual(await e.guard.track(e.sandboxId), { object: "chunk 1 GET 0000.tar.zst", firstAt: e.now(), attempts: 77, seen: 1 });
+  e.advance(2 * 60_000);
+  const error = await failUntilStuck(e, e.wake());
+  assert.equal(error.message, "boat.dev keeps failing to restore this sandbox's disk on the node it runs on (Boat saw the same file fail 5 times since 01:00 UTC). Boat moves it to a new node if nothing there could be lost, else asks you first under Needs you.");
+  assert.equal(e.now(), Date.parse("2026-11-19T01:30:00Z"), "the 5th failure, 30 minutes after the first");
+});
+
+test("an orchestrator's sandbox with no chat at work and clean checkouts: a test fork, a plain stop (nothing lost), a wake on a new node", async () => {
   const e = await env({ moves: {} });
   e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
   const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
   const wake = { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" };
-  await assert.rejects(e.guard.machine(wake, async () => { throw new Error(KEY_STEP); }), (error: Error) => {
-    assert.equal(error.message, "boat.dev keeps failing to restore this sandbox's disk on the node it runs on (the same file failed 77 times since 01:00 UTC). Boat moves it to a new node now, or asks you first under Needs you if unsaved work could be lost.");
-    return true;
-  });
-  assert.equal((await e.guard.scheduled(orch.id))!.move!.state, "due");
+  await failUntilStuck(e, wake);
   // Resumes wait for the move.
   let runs = 0;
-  await assert.rejects(e.guard.machine(wake, async () => { runs += 1; }), /Boat moves it to a new node now/);
+  await assert.rejects(e.guard.machine(wake, async () => { runs += 1; }), /Boat moves it to a new node if nothing there could be lost/);
   assert.equal(runs, 0);
-  assert.equal(await e.guard.tick(), orch.id);
-  const plan = (await e.moved(orch.id))!;
-  // The snapshot restored fine elsewhere: force-stopped, keeping the last completed snapshot.
+  assert.equal(await e.pass(), orch.id);
   assert.deepEqual(e.boat.forks.map((fork) => [fork.from, fork.noSnapshots, fork.ttlSeconds]), [[orch.id, true, 600]]);
   assert.ok(e.boat.calls.includes(`delete ${e.boat.forks[0]!.id}`), "the test fork is gone");
-  assert.ok(e.boat.calls.includes(`stop ${orch.id} --force`));
-  assert.equal(orch.state, "stopped");
+  assert.ok(e.boat.calls.includes(`stop ${orch.id}`), "a plain stop first");
+  assert.ok(!e.boat.calls.some((call) => call.includes("--force")), "it took a fresh snapshot: nothing forced");
+  const plan = (await e.guard.scheduled(orch.id))!;
   assert.equal(plan.move!.state, "moved");
   assert.equal(plan.failures, 0);
-  assert.equal(plan.hydrator, null);
   assert.equal(plan.retryAt, e.now());
+  assert.equal(await e.guard.track(orch.id), null);
   // Boat's retry wakes it (on a new node) at once.
   assert.equal(await e.guard.tick(), orch.id);
   assert.deepEqual(e.resumed, ["host_orch"]);
@@ -230,68 +251,227 @@ test("a node that keeps failing the same file: Boat moves an orchestrator's sand
   assert.equal(await e.guard.scheduled(orch.id), null);
 });
 
+test("boat refuses the plain stop: then --force, keeping the last completed snapshot", async () => {
+  const e = await env({ moves: {} });
+  e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
+  e.boat.stopBehavior = "refused";
+  await failUntilStuck(e, { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" });
+  await e.pass();
+  assert.deepEqual(e.boat.calls.filter((call) => call.startsWith(`stop ${orch.id}`)), [`stop ${orch.id}`, `stop ${orch.id} --force`]);
+  assert.equal(orch.state, "stopped");
+  assert.equal((await e.guard.scheduled(orch.id))!.move!.state, "moved");
+});
+
+test("a pending stop is followed with its status, never stopped again, and forced only once boat says it failed", async () => {
+  const e = await env({ moves: {} });
+  e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
+  e.boat.stopBehavior = "pending";
+  e.boat.forceWhilePending = true;
+  await failUntilStuck(e, { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" });
+  await e.pass();
+  let plan = (await e.guard.scheduled(orch.id))!;
+  assert.equal(plan.move!.state, "stopping");
+  assert.equal(plan.move!.stopId, "stop_1");
+  // Not looked at again before its next poll.
+  assert.equal(await e.pass(), null);
+  e.advance(30_000);
+  await e.pass();
+  assert.ok(e.boat.calls.includes(`stop ${orch.id} --status stop_1`));
+  assert.equal((await e.guard.scheduled(orch.id))!.move!.state, "stopping", "still pending: it waits");
+  e.boat.stopStatuses.set("stop_1", "failing");
+  e.advance(30_000);
+  await e.pass();
+  assert.deepEqual(e.boat.calls.filter((call) => call.startsWith(`stop ${orch.id}`) && !call.includes("--status")), [`stop ${orch.id}`, `stop ${orch.id} --force`], "one plain stop, then the forced one");
+  plan = (await e.guard.scheduled(orch.id))!;
+  assert.equal(plan.move!.state, "moved");
+});
+
+test("a stop pending for 20 minutes goes to the user: forcing it would only hand it back", async () => {
+  const e = await env({ moves: {} });
+  e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
+  e.boat.stopBehavior = "pending";
+  await failUntilStuck(e, { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" });
+  await e.pass();
+  for (let minute = 0; minute < 21; minute++) {
+    e.advance(60_000);
+    await e.pass();
+  }
+  assert.equal((await e.guard.scheduled(orch.id))!.move!.state, "asked");
+  assert.ok(!e.boat.calls.some((call) => call.includes("--force")));
+  assert.equal(e.boat.calls.filter((call) => call === `stop ${orch.id}`).length, 1);
+  assert.match(e.store.decisions({ statuses: ["open"] })[0]!.recommendation, /because boat's stop has been pending since 01:30 UTC \(the sandbox may be unreachable\)/);
+});
+
+test("a stop boat says nothing about, with the sandbox still up, is looked at once more before forcing", async () => {
+  const e = await env({ moves: {} });
+  e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
+  e.boat.stopBehavior = "quiet";
+  await failUntilStuck(e, { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" });
+  await e.pass();
+  assert.equal((await e.guard.scheduled(orch.id))!.move!.state, "stopping");
+  assert.ok(!e.boat.calls.some((call) => call.includes("--force")));
+  e.advance(30_000);
+  await e.pass();
+  assert.ok(e.boat.calls.includes(`stop ${orch.id} --force`));
+  assert.equal(e.boat.calls.filter((call) => call === `stop ${orch.id}`).length, 1, "never stopped again to see");
+});
+
+test("no Boat task there, but a chat mid-turn, a checkout with work, or chats Boat can't see: Needs you, nothing stopped", async () => {
+  for (const [label, setup] of [
+    ["a chat mid-turn", (e: Awaited<ReturnType<typeof env>>) => e.setThreads([{ id: "thr_orch", title: "Orchestrator", status: "active" }])],
+    ["an untracked file", (e: Awaited<ReturnType<typeof env>>) => e.setScan("BOAT_GIT_AT ahead=0 dirty=1 stash=0 /home/user/notes\nBOAT_GIT_SCAN_END\n")],
+    ["a scan cut short", (e: Awaited<ReturnType<typeof env>>) => e.setScan("BOAT_GIT_SCAN_INCOMPLETE 124\nBOAT_GIT_SCAN_END\n")],
+  ] as const) {
+    const e = await env({ moves: {} });
+    e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+    setup(e);
+    const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
+    await failUntilStuck(e, { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" });
+    await e.pass();
+    assert.equal((await e.guard.scheduled(orch.id))!.move!.state, "asked", label);
+    assert.ok(!e.boat.calls.some((call) => call.startsWith(`stop ${orch.id}`)), label);
+  }
+  const blind = await env({ moves: {}, threads: false });
+  blind.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  const orch = blind.boat.addSandbox("bx_orchbox", "small", "idle");
+  await failUntilStuck(blind, { ...blind.wake(), sandboxId: orch.id, hostId: "host_orch" });
+  await blind.pass();
+  assert.equal((await blind.guard.scheduled(orch.id))!.move!.state, "asked");
+  assert.match(blind.store.decisions({ statuses: ["open"] })[0]!.recommendation, /because Boat couldn't see which chats run there/);
+});
+
 test("a task with unpushed commits: Boat asks first, with the exact commands and what would be lost", async () => {
   const e = await env({ moves: {} });
   e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
   e.store.update(e.task.id, { status: "idle", repoPath: "/home/user/work/web" });
-  e.setGit("BOAT_GIT ahead=2 dirty=0\n");
-  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error(KEY_STEP); }), /Boat moves it to a new node now, or asks you first/);
-  await e.guard.tick();
-  const plan = (await e.moved(e.sandboxId))!;
+  e.setScan("BOAT_GIT_AT ahead=2 dirty=0 stash=0 /home/user/work/web\nBOAT_GIT_SCAN_END\n");
+  await failUntilStuck(e, e.wake());
+  await e.pass();
+  const plan = (await e.guard.scheduled(e.sandboxId))!;
   assert.equal(plan.move!.state, "asked");
   assert.equal(plan.retryAt, null, "no more automatic wakes: they can't get past the node");
-  assert.ok(!e.boat.calls.some((call) => call.includes("--force")), "nothing is dropped without the user");
-  const decision = e.store.decisions({ statuses: ["open"] })[0]!;
+  assert.ok(!e.boat.calls.some((call) => call.startsWith(`stop ${e.sandboxId}`)), "nothing is stopped without the user");
+  const decision = e.store.decisions({ statuses: ["open"] }).find((entry) => entry.shortLabel === "Sandbox stuck on a node")!;
   assert.equal(decision.orchestratorThreadId, "thr_orch");
-  assert.equal(decision.question, `Sandbox ${e.sandboxId} is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? That loses what changed there since 00:41 UTC (its last completed snapshot).`);
-  assert.equal(decision.recommendation, `Move it if nothing written since then matters: run \`boat stop ${e.sandboxId} --force\`, then \`bb boat sandbox resume ${e.sandboxId}\`. Boat didn't do it itself because task ${e.task.id} has 2 unpushed commits. Otherwise wait for boat.dev to recover.`);
+  assert.equal(decision.question, `Sandbox ${e.sandboxId} is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? If boat can't take a fresh snapshot, that loses what changed there since 00:41 UTC (its last completed snapshot).`);
+  assert.equal(decision.recommendation, `Move it if nothing written since then matters: run \`boat stop ${e.sandboxId}\` (if boat refuses it, \`boat stop ${e.sandboxId} --force\`), then \`bb boat sandbox resume ${e.sandboxId}\`. Boat didn't do it itself because task ${e.task.id} has 2 unpushed commits. Otherwise wait for boat.dev to recover.`);
   assert.match(decision.context ?? "", /HYDRATOR FAILED attempt 77 .*status code 503\. A test fork from the same snapshot restored fine on another node\.$/);
-  assert.equal(decision.shortLabel, "Sandbox stuck on a node");
-  assert.match(e.store.events(e.task.id, 50).filter((event) => event.kind === WAKE_EVENT).at(-1)!.text, /would lose what changed since 00:41 UTC \(its last completed snapshot\), and task t_\w+ has 2 unpushed commits, so it's under Needs you\.$/);
+  assert.match(e.store.events(e.task.id, 50).filter((event) => event.kind === WAKE_EVENT).at(-1)!.text, /could lose what changed since 00:41 UTC \(its last completed snapshot\), and task t_\w+ has 2 unpushed commits, so it's under Needs you\.$/);
   await assert.rejects(e.guard.machine(e.wake(), async () => "up"), /could lose unsaved work, so it's under Needs you/);
 });
 
-test("a task mid-turn is asked about too; a clean, idle one is moved", async () => {
-  const busy = await env({ moves: { forkCheck: false } });
+test("a task mid-turn is asked about; a clean, idle one is moved", async () => {
+  const busy = await env({ moves: {} });
   busy.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
   // launchTask left it running.
-  await assert.rejects(busy.guard.machine(busy.wake(), async () => { throw new Error(KEY_STEP); }));
-  await busy.guard.tick();
-  assert.equal((await busy.moved(busy.sandboxId))!.move!.state, "asked");
-  assert.match(busy.store.decisions({ statuses: ["open"] })[0]!.recommendation, /because task t_\w+ is mid-turn\./);
-  assert.equal(busy.boat.forks.length, 0, "no test fork when it's turned off");
-  const idle = await env({ moves: { forkCheck: false } });
+  await failUntilStuck(busy, busy.wake());
+  await busy.pass();
+  assert.equal((await busy.guard.scheduled(busy.sandboxId))!.move!.state, "asked");
+  assert.match(busy.store.decisions({ statuses: ["open"] }).at(0)!.recommendation, /because task t_\w+ is mid-turn/);
+  const idle = await env({ moves: {} });
   idle.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
   idle.store.update(idle.task.id, { status: "idle", repoPath: "/home/user/work/web" });
-  await assert.rejects(idle.guard.machine(idle.wake(), async () => { throw new Error(KEY_STEP); }));
-  await idle.guard.tick();
-  assert.equal((await idle.moved(idle.sandboxId))!.move!.state, "moved");
-  assert.ok(idle.boat.calls.includes(`stop ${idle.sandboxId} --force`));
-  assert.match(idle.store.events(idle.task.id, 50).filter((event) => event.kind === WAKE_EVENT).at(-1)!.text, /^Boat moved this sandbox to a new boat\.dev node: it stopped it keeping its last completed snapshot \(00:41 UTC/);
+  idle.setScan("BOAT_GIT_AT ahead=0 dirty=0 stash=0 /home/user/work/web\nBOAT_GIT_SCAN_END\n");
+  await failUntilStuck(idle, idle.wake());
+  await idle.pass();
+  assert.equal((await idle.guard.scheduled(idle.sandboxId))!.move!.state, "moved");
+  assert.match(idle.store.events(idle.task.id, 50).filter((event) => event.kind === WAKE_EVENT).at(-1)!.text, /^boat\.dev stopped this sandbox with a fresh snapshot, so nothing was lost\. Boat resumes it now on a new boat\.dev node\. A test fork had restored fine\.$/);
 });
 
-test("the snapshot itself doesn't restore: no forced stop, and Needs you says so", async () => {
+test("a test fork that couldn't tell: tried again later, then the user decides; nothing is forced", async () => {
   const e = await env({ moves: {} });
   e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
-  e.store.update(e.task.id, { status: "idle" });
+  const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
+  e.boat.forkError = new Error("no_ready_machine");
+  await failUntilStuck(e, { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" });
+  await e.pass();
+  let plan = (await e.guard.scheduled(orch.id))!;
+  assert.equal(plan.move!.state, "due");
+  assert.equal(plan.move!.forkTries, 1);
+  assert.equal(plan.move!.nextAt, e.now() + 10 * 60_000);
+  e.advance(10 * 60_000);
+  await e.pass();
+  plan = (await e.guard.scheduled(orch.id))!;
+  assert.equal(plan.move!.state, "asked");
+  assert.ok(!e.boat.calls.some((call) => call.startsWith(`stop ${orch.id}`)));
+  assert.match(e.store.decisions({ statuses: ["open"] })[0]!.recommendation, /because Boat couldn't check the snapshot with a test fork/);
+});
+
+test("the snapshot itself doesn't restore: nothing stopped, and Needs you says so", async () => {
+  const e = await env({ moves: {} });
+  e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
   e.setFork(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK fail .profile Input/output error\nBOAT_DISK_END\n`);
-  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error(KEY_STEP); }));
-  await e.guard.tick();
-  assert.equal((await e.moved(e.sandboxId))!.move!.state, "asked");
-  assert.ok(!e.boat.calls.some((call) => call.includes("--force")));
+  await failUntilStuck(e, { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" });
+  await e.pass();
+  assert.equal((await e.guard.scheduled(orch.id))!.move!.state, "asked");
+  assert.ok(!e.boat.calls.some((call) => call.startsWith(`stop ${orch.id}`)));
   assert.ok(e.boat.calls.includes(`delete ${e.boat.forks[0]!.id}`));
   assert.equal(e.store.decisions({ statuses: ["open"] })[0]!.shortLabel, "Sandbox won't restore");
 });
 
-test("not stuck yet (a few attempts, a few minutes): the normal retries, no move", async () => {
+test("a refused stop moves it only once Boat has seen the same hydrator failure for a while; a disk only restoring backs off", async () => {
   const e = await env({ moves: {} });
-  e.setCheck(`BOAT_HYDRATOR ${STUCK.replace("attempt 77", "attempt 2")}\nBOAT_DISK_END\n`);
-  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error(KEY_STEP); }), /Boat will retry at 01:02 UTC/);
+  const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
+  // Normal restoring after a wake: "hydration in progress", a read waiting on lazyfs.
+  e.setCheck("BOAT_HYDRATING [SNAPSHOT-INC] lazy volume hydration in progress\nBOAT_DSTATE 4242 request_wait_answer fuse_file_open node x\nBOAT_DISK ok .profile\nBOAT_DISK_END\n");
+  assert.equal(await e.guard.stopRefused(orch.id, "host_orch"), false);
+  assert.equal(await e.guard.scheduled(orch.id), null);
+  assert.equal(await e.guard.track(orch.id), null);
+  // A real hydrator failure: seen once, then more, over more than 15 minutes.
+  e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  assert.equal(await e.guard.stopRefused(orch.id, "host_orch"), false);
+  e.advance(8 * 60_000);
+  assert.equal(await e.guard.stopRefused(orch.id, "host_orch"), false);
+  assert.equal(await e.guard.scheduled(orch.id), null, "watching it holds no resume");
+  e.advance(8 * 60_000);
+  assert.equal(await e.guard.stopRefused(orch.id, "host_orch", { status: "failing", stopId: "stop_7", forced: null }), true);
+  const plan = (await e.guard.scheduled(orch.id))!;
+  assert.equal(plan.move!.state, "due");
+  assert.equal(plan.move!.resume, false);
+  assert.deepEqual(plan.move!.stop, { status: "failing", stopId: "stop_7", forced: null });
+  // The checks, then the forced stop (boat already refused the plain one); it stays stopped.
+  await e.pass();
+  assert.deepEqual(e.boat.calls.filter((call) => call.startsWith(`stop ${orch.id}`)), [`stop ${orch.id} --force`]);
+  assert.equal(orch.state, "stopped");
+  assert.equal(await e.guard.scheduled(orch.id), null);
+});
+
+test("bb's daemon broken by an update: its own kind, Needs you with the repair by hand, no retries and no hold", async () => {
+  const e = await env({ moves: {} });
+  e.setCheck([
+    "BOAT_ZOMBIE 5150 Zl [npm install -g] <defunct>",
+    "BOAT_UNIT bb-host-daemon-acme.service deactivating stop-sigterm",
+    "BOAT_BB_DIR /home/user/.bb-machines/acme",
+    "BOAT_BB_MISSING /home/user/.bb-machines/acme",
+    "BOAT_BB_LOG Error: Cannot find module '/home/user/.bb-machines/acme/npm/lib/node_modules/bb-app/dist/bb-host-daemon.js' code: 'MODULE_NOT_FOUND'",
+    "BOAT_DISK ok .profile",
+    "BOAT_DISK_END",
+  ].join("\n"));
+  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error("Machine daemon did not start within 20 seconds"); }), (error: Error) => {
+    assert.match(error.message, /^bb's daemon on this sandbox broke during an update \(npm install left a zombie: \[npm install -g\] <defunct> \(pid 5150, Zl\); bb-host-daemon-acme\.service is stuck deactivating; ~\/\.bb-machines\/acme\/npm\/bin\/bb-app is missing; .*MODULE_NOT_FOUND.*\), so bb can't start there\. It needs a repair by hand; the steps are under Needs you\.$/);
+    return true;
+  });
+  const decision = e.store.decisions({ statuses: ["open"] })[0]!;
+  assert.equal(decision.shortLabel, "bb's daemon needs a repair");
+  assert.match(decision.recommendation, /An npm install zombie is left there: it goes only with a VM restart \(`boat recover bx_\w+`\) or a move to a new node\./);
+  const steps = decision.context!.split("\n").slice(1);
+  assert.deepEqual(steps, [
+    "D=~/.bb-machines/acme",
+    'cp "$D/host-package-download/bb-app.tgz" /tmp/bb-app.tgz',
+    'npm_config_cache=/tmp/npmcache npm install -g --no-audit --no-fund --allow-scripts=@parcel/watcher,node-pty --prefix "$D/npm.new" /tmp/bb-app.tgz',
+    'mv "$D/npm" "$D/npm.old" && mv "$D/npm.new" "$D/npm"',
+    "systemctl --user reset-failed bb-host-daemon-acme.service && systemctl --user start bb-host-daemon-acme.service",
+  ]);
   const plan = (await e.guard.scheduled(e.sandboxId))!;
-  assert.equal(plan.move ?? null, null);
-  assert.deepEqual(plan.hydrator, { object: "chunk 1 GET 0000.tar.zst", firstAt: e.now(), attempts: 2, seen: 1 });
-  // 16 minutes later the same chunk still fails: now it moves.
-  e.advance(16 * 60_000);
-  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error(KEY_STEP); }), /on the node it runs on \(the same file failed 2 times since 01:00 UTC\)/);
-  assert.equal((await e.guard.scheduled(e.sandboxId))!.move!.state, "due");
+  assert.equal(plan.kind, "daemon-broken");
+  assert.equal(plan.retryAt, null);
+  assert.equal(await e.guard.tick(), null, "no retry of its own");
+  // Repaired by hand: the next resume goes ahead at once (nothing held), and no second item.
+  assert.equal(await e.guard.machine(e.wake(), async () => "up"), "up");
+  assert.equal(e.store.decisions({ statuses: ["open"] }).length, 1);
 });
