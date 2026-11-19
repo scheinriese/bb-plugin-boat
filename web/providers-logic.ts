@@ -8,7 +8,7 @@ export type ProviderGlyph = "boat" | "box" | "laptop" | "laptop-dashed";
 
 /** "boat.dev · Default", "Instabox · Mac M2 · lease ends Thu 14:00": a task's line and its chip's tooltip. */
 export function runsOnLine(runsOn: RunsOnDto, fallbackMachine: string | null = null): string {
-  return [runsOn.label, runsOn.machine ?? fallbackMachine, runsOn.note].filter(Boolean).join(" · ");
+  return [runsOn.label, runsOn.machine ?? fallbackMachine, runsOnNote(runsOn)].filter(Boolean).join(" · ");
 }
 
 /** "boat.dev · Default", "Instabox · Mac M2": a sandbox's provider and machine (the Sandboxes table). */
@@ -61,4 +61,16 @@ export function keyHint(provider: Pick<SandboxProviderDto, "label" | "apiKey">):
   const setting = provider.apiKey?.setting ?? null;
   if (setting === null) return { title: `This version of Boat can't take a key for ${provider.label} yet`, description: `${provider.label} comes in a later version; its key will go in bb's secrets, never to Boat.` };
   return { title: `Set “${setting}” in the settings list at the top of this page`, description: "bb keeps the key in its secrets; Boat never sees it." };
+}
+
+/** Local browser time; the server sends instants, never preformatted UTC. */
+export function runsOnNote(runsOn: RunsOnDto, now = Date.now(), locale?: string, timeZone?: string): string | null {
+  const lease = runsOn.lease;
+  if (!lease) return runsOn.note;
+  const time = (value: string) => new Intl.DateTimeFormat(locale, { weekday: "short", hour: "2-digit", minute: "2-digit", ...(timeZone ? { timeZone } : {}) }).format(new Date(value)).replace(",", "");
+  if (lease.endedAt) return `lease ended ${time(lease.endedAt)}`;
+  if (lease.kept) return "Kept · automatic hand-back off";
+  if (lease.releaseAt) return `release scheduled ${time(lease.releaseAt)}`;
+  if (now >= Date.parse(lease.paidUntil)) return `${lease.shared ? "same lease · " : ""}bills per second`;
+  return `${lease.shared ? "same lease, paid until" : "paid until"} ${time(lease.paidUntil)}`;
 }

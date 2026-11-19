@@ -727,7 +727,7 @@ async function macEnv(t: { after(fn: () => unknown): void }, overrides: Record<s
 test("Mac capability fails closed; prices and model sizes come from live templates",async t=>{
   const {box}=await macEnv(t);
   assert.deepEqual(box.provider.caps.systems,["linux"]);
-  assert.match((await box.provider.pricing!())!,/M2 \$10.80 a day/);
+  assert.match((await box.provider.pricing!())!,/M2 \$10.80 minimum/);
   assert.deepEqual(box.provider.caps.systems,["linux","macos"]);
   box.setState({tier:"free"});
   assert.deepEqual(await box.provider.macModels!(),[]);
@@ -765,7 +765,7 @@ test("Mac review auto never joins its busy parent's workspace",async t=>{
   assert.equal(review.status,"running",review.error??"");
   assert.notEqual(review.sandboxId,parent.sandboxId);
 });
-test("empty Mac hand-back waits for the margin and is idempotent",async t=>{
+test("empty Mac schedules hand-back at the minimum, then releases idempotently",async t=>{
   const {start,service,store,box}=await macEnv(t);
   const task=await start();
   store.update(task.id,{status:"done"});
@@ -774,26 +774,34 @@ test("empty Mac hand-back waits for the margin and is idempotent",async t=>{
   assert.equal(store.macLeases.held().length,1);
   await service.processMacLeases(until-29*60000);
   await service.processMacLeases(until-28*60000);
+  assert.equal(store.macLeases.held().length,1,"the paid Mac stays available");
+  assert.equal(box.state().machines[task.sandboxId!].state,"running");
+  assert.equal(store.macLeases.held()[0]!.releaseAt,lease.paidUntil);
+  assert.ok(!box.state().calls.some((c:string)=>c.includes("--now")));
+  box.setState({nowMs:until+1});
+  await service.processMacLeases(until+1);
+  await service.processMacLeases(until+2);
   assert.equal(store.macLeases.held().length,0);
   assert.equal(store.macLeases.list()[0]!.endReason,"handed back");
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,1);
 });
-test("idle open tasks get one heads-up per renewal across restarts; running and unpushed tasks are never deleted",async t=>{
+test("idle open tasks get one paid-time heads-up across restarts; running and unpushed tasks are never deleted",async t=>{
   const {start,service,store,notices,box}=await macEnv(t);
   const task=await start({orchestratorThreadId:"thread_1"});
   const lease=store.macLeases.held()[0]!;const until=Date.parse(lease.paidUntil);
   await service.processMacLeases(until-29*60000);
-  assert.equal(notices.length,0,"active work renews silently");
+  assert.equal(notices.length,0,"active work continues silently");
   store.update(task.id,{status:"idle",unshipped:4});
   await service.processMacLeases(until-28*60000);
   await service.processMacLeases(until-27*60000);
   assert.equal(notices.length,1);
-  assert.match(notices[0]!,/^\[boat\] Mac lease renews at \d\d:\d\d UTC; tasks /);
+  assert.match(notices[0]!,/^\[boat\] Mac lease's paid time ends at .*after that it bills per second while tasks /);
   const restarted=new BoatService(service.sandboxProviders,store,hooks({tell:async (_id:string,text:string)=>{notices.push(text)}}).hooks);
   await restarted.processMacLeases(until-26*60000);
   assert.equal(notices.length,1);
   await restarted.processMacLeases(until+24*3600000-28*60000);
-  assert.equal(notices.length,2);
+  assert.equal(notices.length,1);
+  assert.equal(store.macLeases.held()[0]!.paidUntil,lease.paidUntil);
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
 });
 test("hand-back rechecks task attachment after I/O",async t=>{
@@ -874,4 +882,103 @@ test("a stopped Mac still inside its held minimum is resumed before creating ano
   assert.ok(box.state().calls.includes(`start ${first.sandboxId} --accept-24h-minimum --json`));
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("create ")).length,1);
   assert.equal((await service.sandboxProvider(second).info(second.sandboxId!)).state,"idle");
+});
+
+test("an empty Mac after its minimum is released on the next pass without a day extension",async t=>{
+  const {start,service,store,box}=await macEnv(t);
+  const task=await start();store.update(task.id,{status:"done"});
+  const lease=store.macLeases.held()[0]!, after=Date.parse(lease.paidUntil)+30_000;
+  await service.processMacLeases(after);
+  assert.equal(store.macLeases.held().length,0);
+  assert.equal(store.macLeases.list()[0]!.paidUntil,lease.paidUntil);
+  assert.ok(Math.abs(store.macLeases.between(Date.parse(lease.startedAt),after,after).costs.USD!-(lease.minimumCost+lease.hourPrice/120))<1e-8);
+  assert.equal(box.state().machines[task.sandboxId!].state,"deleted");
+});
+test("explicit keep_sandbox protects closed unpushed work across restarts and stays visible in usage",async t=>{
+  const {start,service,store,box}=await macEnv(t);
+  const task=await start();store.update(task.id,{status:"idle",unshipped:5,delivery:"push"});
+  const closed=await service.closeTask(task.id,{keepSandbox:true});assert.equal(closed.sandbox,"kept");
+  const lease=store.macLeases.held()[0]!;assert.equal(lease.kept,true);
+  const restarted=new BoatService(service.sandboxProviders,store,hooks().hooks);
+  await restarted.processMacLeases(Date.parse(lease.paidUntil)+3*86400000);
+  assert.equal(box.state().machines[task.sandboxId!].state,"running");
+  const {providerHandlers}=await import("../src/rpc-providers.ts");
+  const usage=providerHandlers({service,bb:{}} as unknown as import("../src/runtime.ts").Runtime).macUsage();
+  assert.equal(usage.held[0]!.kept,true);
+  assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
+});
+test("new work cancels a scheduled minimum-end release before reusing the paid Mac",async t=>{
+  const {start,service,store,box}=await macEnv(t);
+  const first=await start();store.update(first.id,{status:"done"});
+  const lease=store.macLeases.held()[0]!;
+  await service.processMacLeases(Date.parse(lease.paidUntil)-29*60000);
+  assert.equal(box.state().machines[first.sandboxId!].deleteAt,lease.paidUntil);
+  const second=await start();assert.equal(second.sandboxId,first.sandboxId);
+  assert.equal(box.state().machines[first.sandboxId!].deleteAt,undefined);
+  assert.equal(store.macLeases.held()[0]!.releaseAt,null);
+  box.setState({nowMs:Date.parse(lease.paidUntil)+1});
+  await service.processMacLeases(Date.parse(lease.paidUntil)+1);
+  assert.equal(box.state().machines[first.sandboxId!].state,"running");
+});
+test("concurrent Mac dispatches share a held lease while the first still prepares its checkout",async t=>{
+  let release!:()=>void,entered!:()=>void;
+  const gate=new Promise<void>(resolve=>{release=resolve}),preparing=new Promise<void>(resolve=>{entered=resolve});
+  let calls=0;
+  const repos:import("../src/sandbox-repos.ts").RepoSteps={
+    prepareRepo:async (_provider,_id,_repo,_checkout,opts)=>{if(++calls===1){entered();await gate;}return {path:`/work/${opts?.workDir}/web`,branch:"task",baseBranch:"main",canPush:true}},
+    githubLogin:async()=>({valid:true,expiresAt:null}),ship:async()=>({shipped:[]}),
+  };
+  const {start,box}=await macEnv(t,{repos});t.after(release);
+  const first=start({repo:"acme/web"});await preparing;
+  try {const second=await start({repo:"acme/web"});release();const ready=await first;assert.equal(second.sandboxId,ready.sandboxId);assert.equal(box.state().calls.filter((c:string)=>c.startsWith("create ")).length,1);}finally{release();}
+});
+test("a Linux parent's review stays Linux when its project and requested default switch to Mac",async t=>{
+  const project=normalizeProject({id:"web",name:"Web",repos:[{repo:"acme/web",baseBranch:"main"}],sandboxProvider:"instabox",sandboxSystem:"macos"});
+  const {start}=await macEnv(t,{projects:()=>[project]});
+  const parent=await start({repo:"acme/web",sandboxSystem:"linux"});
+  const review=await start({parentTaskId:parent.id,role:"review",sandbox:"auto"});
+  assert.equal(review.status,"running",review.error??"");assert.equal(review.sandboxSystem,undefined);
+});
+test("a stopped Mac whose lease ended rechecks plan and capacity before accepting a new minimum",async t=>{
+  const {start,box,store}=await macEnv(t);
+  const task=await start(),id=task.sandboxId!;
+  const state=box.state();state.machines[id].state="stopped";delete state.machines[id].lease;
+  box.setState({machines:state.machines,tier:"free"});
+  await assert.rejects(box.provider.resume(id,{ttlSeconds:3600}),/cannot start a new Mac lease/);
+  assert.ok(!box.state().calls.some((c:string)=>c.startsWith(`start ${id}`)));
+  box.setState({tier:"pro",maxMachines:1});
+  const capacity=box.provider.capacity;box.provider.capacity=async signal=>({...await capacity(signal),canStart:false,maxActiveSandboxes:0,blockedReason:"No Mac capacity"});
+  await assert.rejects(box.provider.resume(id,{ttlSeconds:3600}),/No Mac capacity/);
+  box.provider.capacity=async signal=>({...await capacity(signal),canStart:false,maxActiveSandboxes:3,blockedReason:"Account is blocked"});
+  await assert.rejects(box.provider.resume(id,{ttlSeconds:3600}),/Account is blocked/);
+  box.provider.capacity=capacity;
+  await box.provider.resume(id,{ttlSeconds:3600});
+  assert.equal(store.macLeases.held(id).length,1);
+  assert.equal(store.macLeases.list().length,2,"new physical lease gets new billing terms");
+  assert.ok(store.macLeases.list().some(lease=>lease.endReason === "handed back"));
+  assert.ok(box.state().calls.some((c:string)=>c.startsWith(`start ${id}`)));
+});
+test("a stale Instabox list finishing after hand-back cannot reopen the lease",async t=>{
+  const {start,box,store}=await macEnv(t);await start();
+  const lease=store.macLeases.held()[0]!;
+  const run=box.cli.run.bind(box.cli);let release!:()=>void,read!:()=>void;
+  const gate=new Promise<void>(resolve=>{release=resolve}),readGate=new Promise<void>(resolve=>{read=resolve});
+  box.cli.run=async(...args)=>{const result=await run(...args);if(args[0][0]==="ls"){read();await gate;}return result;};
+  const pending=box.provider.list({all:true});await readGate;
+  store.macLeases.end(lease.id,"handed back");release();await pending;
+  assert.equal(store.macLeases.held().length,0);assert.equal(store.macLeases.list()[0]!.endReason,"handed back");
+});
+
+test("task collection RPCs batch lease reads and task detail retains unrelated lease sharers",async t=>{
+  const {start,service,store}=await macEnv(t);
+  const first=await start({orchestratorThreadId:"orch_a"}),second=await start({orchestratorThreadId:"orch_b"});
+  const {createTestHost}=await import("./fakes.ts"),{registerRpc}=await import("../src/rpc.ts");
+  const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:"/fake/boat"}});t.after(()=>harness.lifecycle.dispose());
+  registerRpc({bb,service,settings:{},projects:{}} as unknown as import("../src/runtime.ts").Runtime);
+  let snapshots=0;const snapshot=store.macLeases.snapshot.bind(store.macLeases);
+  store.macLeases.snapshot=()=>{snapshots++;return snapshot()};
+  await harness.callRpc("tasks",{statuses:null,threadId:null,limit:100});assert.equal(snapshots,1);
+  await harness.callRpc("tasksByThread",{keys:["orch_a","orch_b"]});assert.equal(snapshots,2);
+  const detail=await harness.callRpc("task",{id:second.id}) as {task:{runsOn:RunsOnDto}};
+  assert.equal(detail.task.runsOn.sharedTasks,1);assert.match(detail.task.runsOn.detail!,new RegExp(first.title));
 });

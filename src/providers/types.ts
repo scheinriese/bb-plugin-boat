@@ -71,8 +71,9 @@ export interface SandboxInfo {
   setupStatus: string | null;
   error: string | null;
   /** Its size, when the provider says (not verified that boat.dev does; the memory probe is what counts). */
+  scheduledReleaseAt?: string | null;
   system?: "linux" | "macos";
-  mac?: { model: string; leaseId: string; startedAt: string; chargeUntil: string; dayPrice: number; cpus: number; memoryMiB: number };
+  mac?: { model: string; leaseId: string; startedAt: string; chargeUntil: string; minimumCost: number; hourPrice: number; cpus: number; memoryMiB: number };
   machineType?: MachineType | null;
 }
 
@@ -560,7 +561,7 @@ export interface SandboxLifecycle {
   /** boat new: a new sandbox, up (a failed create leaves none behind). */
   create(options: CreateSandboxOptions): Promise<SandboxInfo>;
   /** boat delete --yes */
-  delete(sandboxId: string, signal?: AbortSignal): Promise<void>;
+  delete(sandboxId: string, signal?: AbortSignal, options?: { leaseEndReason?: "handed back" | "deleted" | "failed"; leaseEndAt?: number }): Promise<void>;
   /**
    * boat stop [--force]: keeps the disk and the agent's conversations, and
    * says what became of the stop. force: stop even if the provider can't
@@ -625,9 +626,13 @@ export interface AgentRunner {
 }
 
 /** For later providers: not called yet. */
-export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; dayPrice: number; currency: string }
+export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string }
 export interface LaterMembers {
   macModels?(signal?: AbortSignal): Promise<MacModel[]>;
+  /** Release an empty lease exactly when its paid minimum ends. Omit if the provider cannot schedule; Boat waits until the minimum ends instead. */
+  scheduleLeaseRelease?(sandboxId: string, at: string, signal?: AbortSignal): Promise<void>;
+  /** Cancel that schedule before attaching more work. */
+  cancelLeaseRelease?(sandboxId: string, signal?: AbortSignal): Promise<void>;
   /**
    * Its prices in one line, as the provider states them now ("M2 $10.80 a
    * day"); null: it doesn't say. Settings shows amounts only from here.

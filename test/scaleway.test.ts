@@ -21,7 +21,7 @@ const keyId = "30000000-0000-4000-8000-000000000001";
 const secret = "test-only-scaleway-secret";
 const type = { name: "M1-M", stock: "high_stock", cpu: { core_count: 8 }, memory: { capacity: 8*1024**3 }, default_os: { id: "macos-stable", name: "macOS" } };
 const product = { locality: { zone: "fr-par-3" }, status: "general_availability", properties: { apple_silicon: { server_type: "M1-M" } }, unit_of_measure: { unit: "hour", size: 1 }, price: { retail_price: { currency_code: "EUR", units: 0, nanos: 110000000 } } };
-async function fixture(t: { after(fn: () => unknown): void }) {
+async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25) {
   const dir = await mkdtemp(join(tmpdir(), "scaleway-test-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const store = memoryStore(), keys = new ScalewayKeys(dir);
   const calls: { method: string; path: string; body: any }[] = [], ssh: SshRequest[] = [];
@@ -38,7 +38,7 @@ async function fixture(t: { after(fn: () => unknown): void }) {
     if (path.endsWith("ssh-keys") && method === "POST") return json({ id: keyId });
     if (path.includes("ssh-keys/") && method === "DELETE") return new Response(null,{ status: 204 });
     if (path.endsWith("/servers") && method === "POST") {
-      const start = Date.now()-25*3600000;
+      const start = Date.now()-ageHours*3600000;
       const server = { zone: "fr-par-3", id: serverId, name: body.name, type: body.type, project_id: projectId, status: "starting", delivered: false, ip: "192.0.2.1", ssh_username: "m1", created_at: new Date(start).toISOString(), deletable_at: new Date(start+86400000).toISOString(), tags: body.tags };
       servers.push(server); if (ambiguousCreate) throw new Error(secret); return json(server);
     }
@@ -67,7 +67,7 @@ test("Scaleway create waits for delivered and SSH, bootstraps tools, stores a pr
   const output:string[]=[];
   await f.provider.executor!(sandbox.id).exec({ command:["sh","-c","install bb"],stdin:"test-enrollment",timeoutMs:900000,signal:new AbortController().signal,onOutput:s=>output.push(s) });
   assert.equal(f.ssh.at(-1)!.stdin,"test-enrollment"); assert.deepEqual(output,["bb installed"]);
-  assert.equal(f.store.macLeases.held()[0]!.currency,"EUR"); assert.equal(f.store.macLeases.held()[0]!.dayPrice,2.64);
+  assert.equal(f.store.macLeases.held()[0]!.currency,"EUR"); assert.equal(f.store.macLeases.held()[0]!.minimumCost,2.64);
   await f.provider.exec(sandbox.id,"echo hello");
   await f.provider.delete(sandbox.id);
   assert.equal(f.store.macLeases.held().length,0); assert.equal((await f.keys.records()).length,0);
@@ -92,7 +92,7 @@ test("failed Scaleway bootstrap records the allocation and schedules deletion in
   const f=await fixture(t); f.failSetup(); await assert.rejects(f.create(),{code:"creation_allocated"});
   assert.equal(f.store.macLeases.held().length,1);
   assert.ok(f.calls.some(c=>c.method==="PATCH"&&c.body.deletion_scheduled===true));
-  assert.equal((await f.provider.list())[0]?.state,"stopping");
+  assert.equal((await f.provider.list())[0]?.scheduledReleaseAt,f.servers()[0]!.deletable_at);
 });
 test("Scaleway pricing uses hourly EUR catalog entries only; external deletion cleans keys on reconciliation",async t=>{
   const f=await fixture(t); assert.match((await f.provider.pricing!())!,/EUR 0.11\/h · EUR 2.64 minimum/);
@@ -120,14 +120,14 @@ async function routing(preferred:string, options:{disabled?:string; fail?:string
   const store=memoryStore(),chat=new FakeChat(),boat=new FakeBoat(),creates:string[]=[];
   const providers=["instabox","scaleway"].map(id=>{
     const inert=unavailableProvider(id);
-    const p:SandboxProvider={...inert,displayName:id==="instabox"?"Instabox":"Scaleway",caps:{...inert.caps,os:"macos",bbEnrollment:true},machine:{id:`${id}-sandbox`} as never,exec:async()=>({exitCode:0,stdout:"",stderr:""}),findInfo:async sid=>({id:sid,state:"idle",system:"macos"} as never),macModels:async()=>[{id:"M1-M",label:"M1-M",cpus:8,memoryMiB:16384,dayPrice:10,currency:"EUR"}],list:async()=>{if(options.listFail===id)throw new Error("List unavailable");return options.held===id?[{id:`${id}_held`,state:"idle"} as never]:[];},capacity:async()=>({canStart:true,activeSandboxes:0,maxActiveSandboxes:4} as never),create:async()=>{creates.push(id);if(options.fail===id)throw Object.assign(new Error("No Mac free"),{code:options.ambiguous?"creation_unknown":"at_capacity"}); const start=Date.now();store.macLeases.record({id:`${id}:lease`,provider:id,machineId:`${id}_new`,size:"M1-M",startedAt:new Date(start).toISOString(),paidUntil:new Date(start+86400000).toISOString(),dayPrice:10,currency:"EUR",cpus:8,memoryMiB:16384});return {id:`${id}_new`,state:"idle",system:"macos"} as never;},info:async id=>({id,state:"idle",system:"macos"} as never)};
+    const p:SandboxProvider={...inert,displayName:id==="instabox"?"Instabox":"Scaleway",caps:{...inert.caps,os:"macos",bbEnrollment:true},machine:{id:`${id}-sandbox`} as never,exec:async()=>({exitCode:0,stdout:"",stderr:""}),findInfo:async sid=>({id:sid,state:"idle",system:"macos"} as never),macModels:async()=>[{minimumHours:24,id:"M1-M",label:"M1-M",cpus:8,memoryMiB:16384,minimumCost:10,hourPrice:10/24,currency:"EUR"}],list:async()=>{if(options.listFail===id)throw new Error("List unavailable");return options.held===id?[{id:`${id}_held`,state:"idle"} as never]:[];},capacity:async()=>({canStart:true,activeSandboxes:0,maxActiveSandboxes:4} as never),create:async()=>{creates.push(id);if(options.fail===id)throw Object.assign(new Error("No Mac free"),{code:options.ambiguous?"creation_unknown":"at_capacity"}); const start=Date.now();store.macLeases.record({id:`${id}:lease`,provider:id,machineId:`${id}_new`,size:"M1-M",startedAt:new Date(start).toISOString(),paidUntil:new Date(start+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"EUR",cpus:8,memoryMiB:16384});return {id:`${id}_new`,state:"idle",system:"macos"} as never;},info:async id=>({id,state:"idle",system:"macos"} as never)};
     return p;
   });
   const registry=createProviderRegistry([createBoatProvider(boat as never),...providers],{isEnabled:p=>p.id!==options.disabled});
   const service=new BoatService(registry,store,{settings:async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:""}),chat,lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
   const initial=await service.startTask({title:"Mac",role:"custom",brief:"Check tools",provider:"codex",runner:"boat"});
   const task=store.update(initial.id,{sandboxProvider:preferred,sandboxSystem:"macos",runner:"chat",sandboxId:null})!;
-  if(options.held)store.macLeases.record({id:`${options.held}:held`,provider:options.held,machineId:`${options.held}_held`,size:"M1-M",startedAt:new Date().toISOString(),paidUntil:new Date(Date.now()+86400000).toISOString(),dayPrice:10,currency:"EUR",cpus:8,memoryMiB:16384});
+  if(options.held)store.macLeases.record({id:`${options.held}:held`,provider:options.held,machineId:`${options.held}_held`,size:"M1-M",startedAt:new Date().toISOString(),paidUntil:new Date(Date.now()+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"EUR",cpus:8,memoryMiB:16384});
   const seam=service as unknown as {createMacFor(task:import("../src/store.ts").Task,type:"default",signal:AbortSignal):Promise<{id:string}>;heldMacFor(task:import("../src/store.ts").Task,type:"default",parent:null):Promise<string|null>};
   return {store,creates,task,seam,service,chat};
 }
@@ -181,4 +181,26 @@ test("Scaleway never selects a beta default OS",async t=>{
   const f=await fixture(t);f.beta();assert.deepEqual(await f.provider.macModels!(),[]);
   assert.deepEqual(f.provider.caps.systems,[]);await assert.rejects(f.create(),/stock, quota/);
   assert.ok(!f.calls.some(c=>c.method==="POST"));
+});
+
+test("shared hand-back schedules Scaleway at its minimum, cancels for new work and protects keep_sandbox",async t=>{
+  const f=await fixture(t,1);const sandbox=await f.create();const chat=new FakeChat();
+  const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{settings:async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:""}),chat,lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+  const lease=f.store.macLeases.held()[0]!;
+  await service.processMacLeases(Date.parse(lease.paidUntil)-20*60000);
+  assert.equal(f.servers()[0]!.deletion_scheduled,true);assert.equal(f.store.macLeases.held()[0]!.releaseAt,lease.paidUntil);
+  const task=await service.startTask({title:"Mac task",brief:"Check tools",role:"custom",sandboxSystem:"macos",runner:"chat"});
+  assert.equal(task.status,"running",task.error??"");assert.equal(task.sandboxId,sandbox.id);
+  assert.equal(f.servers()[0]!.deletion_scheduled,false);assert.equal(f.store.macLeases.held()[0]!.releaseAt,null);
+  await service.closeTask(task.id,{keepSandbox:true});
+  assert.equal(f.store.macLeases.held()[0]!.kept,true);
+  await service.processMacLeases(Date.parse(lease.paidUntil)+3600000);
+  assert.equal(f.servers().length,1);assert.ok(!f.calls.some(c=>c.method==="DELETE"&&c.path.includes("/servers/")));
+});
+test("shared hand-back releases an empty Scaleway Mac after its minimum with the correct end reason",async t=>{
+  const f=await fixture(t);const sandbox=await f.create();
+  const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+  await service.processMacLeases();assert.equal(f.servers().length,0);
+  assert.equal(f.store.macLeases.list()[0]?.endReason,"handed back");
+  assert.equal(f.store.macLeases.list()[0]?.machineId,sandbox.id);assert.deepEqual(await f.keys.records(),[]);
 });

@@ -9,6 +9,7 @@ import { registerSandboxMachine } from "./src/providers/machine.ts";
 // server (where the user is logged in to boat), keeps a task registry in its
 // own SQLite database, watches running tasks in a background service, and
 // posts a message into the dispatching thread when a worker finishes a turn.
+import { maintainLeasesAndKeepAwake } from "./src/lease-maintenance.ts";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { PROVIDERS_TAG, TAGS } from "./contract.ts";
@@ -982,15 +983,12 @@ export default async function plugin(bb: BbPluginApi) {
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-        // Instabox doesn't see a bb chat working: an activity lease keeps its machine awake meanwhile.
-        if (sandboxProviders.get(INSTABOX_PROVIDER_ID) !== null) {
-          try {
-            await service.processMacLeases();
-            await keepInstaboxAwake?.();
-          } catch (error) {
-            bb.log.warn(`instabox keeper failed: ${error instanceof Error ? error.message : String(error)}`);
-          }
-        }
+        await maintainLeasesAndKeepAwake({
+          hasMacLeases: () => store.macLeases.held().length > 0,
+          mac: () => service.processMacLeases(),
+          keepAwake: () => sandboxProviders.get(INSTABOX_PROVIDER_ID) !== null ? keepInstaboxAwake?.() ?? Promise.resolve() : Promise.resolve(),
+          warn: (line) => bb.log.warn(line),
+        });
         try {
           await watchdog.tick();
         } catch (error) {

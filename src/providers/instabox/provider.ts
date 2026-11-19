@@ -230,7 +230,12 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
   const remember = (sandbox: SandboxInfo) => {
     if (sandbox.mac && options.ledger) {
       const m = sandbox.mac;
-      options.ledger.record({ id: `instabox:${m.leaseId}`, provider: "instabox", machineId: sandbox.id, size: m.model, startedAt: m.startedAt, paidUntil: m.chargeUntil, dayPrice: m.dayPrice, currency: "USD", cpus: m.cpus, memoryMiB: m.memoryMiB });
+      // A confirmed newer physical lease may replace an older one on the
+      // same VM. An older/stale list must never end the newer lease.
+      for (const old of options.ledger.held(sandbox.id)) {
+        if (old.id !== `instabox:${m.leaseId}` && Date.parse(old.startedAt) < Date.parse(m.startedAt)) options.ledger.end(old.id, "handed back", Date.parse(m.startedAt));
+      }
+      options.ledger.record({ id: `instabox:${m.leaseId}`, provider: "instabox", machineId: sandbox.id, size: m.model, startedAt: m.startedAt, paidUntil: m.chargeUntil, minimumCost: m.minimumCost, hourPrice: m.hourPrice, currency: "USD", cpus: m.cpus, memoryMiB: m.memoryMiB });
     }
     return sandbox;
   };
@@ -293,7 +298,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     async pricing(signal) {
       const linux = toPricing(await cli.json(["usage", "--json"], { signal }));
       const models = await macModels(signal).catch(() => []);
-      return [linux, ...models.map(m => `${m.label} ${new Intl.NumberFormat("en-US", { style: "currency", currency: m.currency }).format(m.dayPrice)} a day (24 h minimum)`)].filter(Boolean).join(" · ") || null;
+      return [linux, ...models.map(m => `${m.label} ${new Intl.NumberFormat("en-US", { style: "currency", currency: m.currency }).format(m.minimumCost)} minimum (${m.minimumHours} h), ${new Intl.NumberFormat("en-US", { style: "currency", currency: m.currency }).format(m.hourPrice)}/h after`)].filter(Boolean).join(" · ") || null;
     },
     async usage(sandboxId, window = {}, signal) {
       const used = await rest.machineUsage(sandboxId, window, signal);
@@ -353,10 +358,16 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       if (sandbox.id === "") throw new InstaboxError("instabox create did not report a machine id", { code: "instabox_bad_output" });
       return remember(sandbox);
     },
-    async delete(sandboxId, signal) {
+    async delete(sandboxId, signal, deleteOptions) {
       await cli.run(["rm", sandboxId, "--yes", "--json", ...(options.ledger?.held(sandboxId).length ? ["--now"] : [])], { signal, timeoutMs: 120_000 });
-      for (const lease of options.ledger?.held(sandboxId) ?? []) options.ledger?.end(lease.id, "deleted");
+      for (const lease of options.ledger?.held(sandboxId) ?? []) options.ledger?.end(lease.id, deleteOptions?.leaseEndReason ?? "deleted", deleteOptions?.leaseEndAt);
       for (const key of [...links.keys()]) if (key.startsWith(`${sandboxId}:`)) links.delete(key);
+    },
+    async scheduleLeaseRelease(sandboxId, _at, signal) {
+      await cli.run(["rm", sandboxId, "--yes", "--json"], { signal, timeoutMs: 120_000 });
+    },
+    async cancelLeaseRelease(sandboxId, signal) {
+      await cli.run(["rm", sandboxId, "--cancel", "--json"], { signal, timeoutMs: 120_000 });
     },
     async stop(sandboxId, signal) {
       // Waits until it's down; the disk is kept.
@@ -383,6 +394,16 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       const current = await info(sandboxId, resumeOptions.signal);
       if (current.native === "running") return;
       if (current.system === "macos" || options.ledger?.held(sandboxId).length) {
+        // Starting after the physical lease ended accepts another minimum.
+        // Recheck the key's live plan/templates and limits before that consent.
+        if (!current.mac || Date.parse(current.mac.chargeUntil) <= Date.now()) {
+          if (!current.mac) for (const lease of options.ledger?.held(sandboxId) ?? []) options.ledger?.end(lease.id, "handed back", Date.parse(current.stoppedAt ?? lease.paidUntil));
+          const models = await macModels(resumeOptions.signal);
+          if (!models.length) throw new InstaboxError("This account cannot start a new Mac lease. Check its plan and templates.", { code: "template_not_allowed" });
+          const capacity = await provider.capacity(resumeOptions.signal);
+          const restartingOnlyMachine = capacity.maxActiveSandboxes !== null && capacity.maxActiveSandboxes > 0 && capacity.activeSandboxes === capacity.maxActiveSandboxes;
+          if (!capacity.canStart && !restartingOnlyMachine) throw new InstaboxError(capacity.blockedReason ?? "Instabox cannot start a new Mac lease", { code: "quota_exceeded" });
+        }
         await cli.run(["start", sandboxId, "--accept-24h-minimum", "--json"], { signal: resumeOptions.signal, timeoutMs: 300_000 });
         remember(await info(sandboxId, resumeOptions.signal));
         return;

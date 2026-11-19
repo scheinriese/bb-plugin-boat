@@ -1333,7 +1333,7 @@ export class BoatService {
     // Where its sandbox runs: a named sandbox's provider, its parent's, else its project's (Runs on).
     const sandboxProvider = this.providerForNewTask(input, parent, boatProject, repo);
     const storedProject = governingProject(this.hooks.projects?.() ?? [], boatProject, repo);
-    const sandboxSystem = parent?.sandboxSystem ?? input.sandboxSystem ?? storedProject?.sandboxSystem ?? (sandboxProvider.id === "scaleway" ? "macos" : "linux");
+    const sandboxSystem = parent !== null ? parent.sandboxSystem ?? "linux" : input.sandboxSystem ?? storedProject?.sandboxSystem ?? (sandboxProvider.id === "scaleway" ? "macos" : "linux");
     if (sandboxSystem === "macos" && !["instabox", "scaleway"].includes(sandboxProvider.id)) throw new TaskError("Choose a Mac day-lease provider in Runs on.", "provider_unavailable");
     const protect = protectedBranches(
       project,
@@ -1925,6 +1925,16 @@ export class BoatService {
             const current = await this.sandboxProvider(task).info(reuse, signal);
             if (current.system === "macos" && task.sandboxSystem !== "macos") throw new TaskError("Linux tasks cannot use a Mac sandbox.", "invalid_task");
           }
+          if (task.sandboxSystem === "macos") {
+            const lease = this.store.macLeases.held(reuse)[0]!;
+            const info = await this.sandboxProvider(task).info(reuse, signal);
+            if (lease.releaseAt || info.scheduledReleaseAt) {
+              const provider = this.sandboxProvider(task);
+              if (!provider.cancelLeaseRelease) throw new TaskError("This Mac is scheduled for release and cannot accept more work.", "sandbox_unavailable");
+              await provider.cancelLeaseRelease(reuse, signal);
+              this.store.macLeases.schedule(lease.id, null);
+            }
+          }
           release = this.claim(reuse);
           sandbox = await this.ensureRunning(reuse, signal);
           task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: false }) ?? task;
@@ -2036,7 +2046,7 @@ export class BoatService {
       const briefProtect = [...new Set([...protect, ...(task.baseBranch ? [task.baseBranch] : [])])];
 
       // A sandbox with no bb machine (a boat conversation's) can't host a chat.
-      if (task.runner === "chat" && reuse !== null && !(sharesParentCheckout && parent?.environmentId) && this.store.hostForSandbox(reuse) === null) {
+      if (task.runner === "chat" && task.sandboxSystem !== "macos" && reuse !== null && !(sharesParentCheckout && parent?.environmentId) && this.store.hostForSandbox(reuse) === null) {
         if (input.runner === "chat") {
           throw new TaskError(`Sandbox ${reuse} doesn't run bb, so a task chat can't start there.`, "sandbox_not_chat", "Use a new sandbox, or start it headless.");
         }
@@ -2463,7 +2473,7 @@ export class BoatService {
       this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
     const need = INSTABOX_TASK_SPECS[type];
     for (const lease of this.store.macLeases.held()) {
-      if (lease.provider !== provider.id || this.holdsSandbox(lease.machineId)) continue;
+      if (lease.provider !== provider.id || this.isMovingSandbox(lease.machineId) || this.sizes.isResizing(lease.machineId)) continue;
       if (!machines.some(m => m.id === lease.machineId && (m.state === "idle" || m.state === "stopped"))) continue;
       if (parent?.sandboxId === lease.machineId && await this.sandboxWorkRuns(lease.machineId)) continue;
       const open = new Set(this.store.liveSandboxTasks(lease.machineId).map(t => t.id));
@@ -2512,36 +2522,50 @@ export class BoatService {
 
   /** One serialized hand-back pass, including a final state check after I/O. */
   async processMacLeases(now = Date.now()): Promise<void> {
-    const provider = this.sandboxProviders.get("instabox");
-    if (!provider) return;
+    if (!this.store.macLeases.held().length) return;
     const settings = await this.settings();
     await this.withMacLock(async () => {
-      const machines = await provider.list({ all: true, signal: this.hooks.lifecycle });
-      this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)), now);
-      for (const lease of this.store.macLeases.held()) {
-        if (lease.provider !== provider.id || now < Date.parse(lease.paidUntil)-(settings.macHandBackMarginMinutes ?? 30)*60_000) continue;
-        const open = this.store.liveSandboxTasks(lease.machineId);
-        if (open.length) {
-          const threshold = (settings.macIdleNoticeMinutes ?? 60)*60_000;
-          if (open.every(t => t.status !== "running" && t.status !== "starting" && now-Date.parse(t.updatedAt) >= threshold) && !(await this.sandboxWorkRuns(lease.machineId))) {
-            const threads = [...new Set(open.map(t => t.orchestratorThreadId).filter((id): id is string => id !== null))];
-            if (threads.length && this.hooks.tell && this.store.macLeases.warn(lease.id, lease.paidUntil)) {
-              const time = new Date(lease.paidUntil).toISOString().slice(11,16);
-              for (const thread of threads) await this.hooks.tell(thread, `[boat] Mac lease renews at ${time} UTC; tasks ${open.map(t => t.id).join(", ")} are idle; close them to hand it back`);
+      const providers = new Set(this.store.macLeases.held().map(lease => lease.provider));
+      for (const providerId of providers) {
+        const provider = this.sandboxProviders.get(providerId);
+        if (!provider) continue;
+        const machines = await provider.list({ all: true, signal: this.hooks.lifecycle });
+        this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)), now);
+        for (const lease of this.store.macLeases.held().filter(lease => lease.provider === provider.id)) {
+          if (lease.kept) continue;
+          const minimumEnd = Date.parse(lease.paidUntil);
+          if (now < minimumEnd-(settings.macHandBackMarginMinutes ?? 30)*60_000) continue;
+          const open = this.store.liveSandboxTasks(lease.machineId);
+          if (open.length) {
+            const threshold = (settings.macIdleNoticeMinutes ?? 60)*60_000;
+            if (open.every(t => t.status !== "running" && t.status !== "starting" && now-Date.parse(t.updatedAt) >= threshold) && !(await this.sandboxWorkRuns(lease.machineId))) {
+              const threads = [...new Set(open.map(t => t.orchestratorThreadId).filter((id): id is string => id !== null))];
+              if (threads.length && this.hooks.tell && this.store.macLeases.warn(lease.id)) {
+                const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", timeZoneName: "short" }).format(new Date(lease.paidUntil));
+                for (const thread of threads) await this.hooks.tell(thread, `[boat] Mac lease's paid time ends at ${time}; after that ${lease.billingIncrementSeconds === 3600 ? "it bills hourly" : "it bills per second"} while tasks ${open.map(t => t.id).join(", ")} sit idle; close them to hand it back`);
+              }
             }
+            continue; // All open tasks, including failed/unpushed work, are protected.
           }
-          continue; // Open work, including unknown/unpushed work, is never deleted.
+          if (this.holdsSandbox(lease.machineId) || await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
+          const current = await provider.findInfo(lease.machineId, this.hooks.lifecycle);
+          if (await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
+          const latest = this.store.macLeases.held(lease.machineId).find(l => l.id === lease.id);
+          // Re-read after I/O. Nothing awaits between this guard and release.
+          if (this.store.liveSandboxTasks(lease.machineId).length || this.holdsSandbox(lease.machineId) || !latest || latest.kept) continue;
+          if (now < minimumEnd) {
+            // Keep the paid Mac available until the boundary. A provider without
+            // scheduling is released on the first pass after its minimum.
+            if (latest.releaseAt || !provider.scheduleLeaseRelease || !provider.cancelLeaseRelease) continue;
+            await provider.scheduleLeaseRelease(lease.machineId, lease.paidUntil, this.hooks.lifecycle);
+            this.store.macLeases.schedule(lease.id, current?.scheduledReleaseAt ?? lease.paidUntil);
+          } else {
+            await provider.delete(lease.machineId, this.hooks.lifecycle, { leaseEndReason: "handed back", leaseEndAt: now });
+            this.store.macLeases.end(lease.id, "handed back", now);
+            this.store.expirePreviewsForSandbox(lease.machineId);
+          }
+          this.hooks.changed([]);
         }
-        if (this.holdsSandbox(lease.machineId) || await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
-        await provider.findInfo(lease.machineId, this.hooks.lifecycle);
-        if (await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
-        // Task attachment, follow-up, resize or background work may have changed
-        // while the provider and bb answered. Nothing awaits between this guard and delete.
-        if (this.store.liveSandboxTasks(lease.machineId).length || this.holdsSandbox(lease.machineId) || !this.store.macLeases.held(lease.machineId).some(l => l.id === lease.id)) continue;
-        await provider.delete(lease.machineId, this.hooks.lifecycle);
-        this.store.macLeases.end(lease.id, "handed back", now);
-        this.store.expirePreviewsForSandbox(lease.machineId);
-        this.hooks.changed([]);
       }
     });
   }
@@ -4786,6 +4810,22 @@ export class BoatService {
         "Ship it once the user approves (Ship on the overview, or boat_ship after their OK in chat), or ask the user whether to throw the work away.",
       );
     }
+    // Persist an explicit keep before closing removes the task's open-work
+    // protection. It remains exempt even if other tasks later share this Mac.
+    if (keep && task.sandboxId !== null && this.store.macLeases.held(task.sandboxId).length) {
+      const sandboxId = task.sandboxId;
+      await this.withMacLock(async () => {
+        for (const lease of this.store.macLeases.held(sandboxId)) {
+          if (lease.releaseAt) {
+            const provider = this.sandboxProvider(task);
+            if (!provider.cancelLeaseRelease) throw new TaskError("Cannot keep a Mac scheduled for release.", "sandbox_unavailable");
+            await provider.cancelLeaseRelease(sandboxId, options.signal);
+            this.store.macLeases.schedule(lease.id, null);
+          }
+          this.store.macLeases.keep(lease.id);
+        }
+      });
+    }
     const updated = this.store.update(task.id, { status, finishedAt: new Date().toISOString(), shipApproval: null }) ?? task;
     // Stop an in-flight dispatch, then the running turn.
     this.dispatches.get(task.id)?.abort();
@@ -4800,7 +4840,7 @@ export class BoatService {
     const sandboxId = current.sandboxId;
     if (sandboxId !== null && this.store.macLeases.held(sandboxId).length > 0) {
       sandbox = "kept";
-      this.store.addEvent(task.id, "sandbox", "Kept the paid Mac lease for reuse until hand-back.");
+      this.store.addEvent(task.id, "sandbox", keep ? "Kept the Mac; automatic hand-back is off until it is deleted manually." : "Kept the paid Mac lease for reuse until hand-back.");
     } else if (this.isNativeChat(current)) {
       sandbox = sandboxId === null ? "none" : "kept";
       this.store.addEvent(task.id, "sandbox", "Kept the native chat and its core-owned machine.");

@@ -89,6 +89,17 @@ is unconfigured, has no capacity, or rejects creation. History records each
 attempt and the chosen fallback. An unknown create outcome or an allocated
 machine whose setup failed stops fallback to avoid paying for two Macs.
 The shared ledger, placement lock, hand-back and keep-sandbox policy apply.
+Scaleway records `minimumCost`, immutable `paidUntil`, `hourPrice` and
+`billingIncrementSeconds: 3600`. The ledger charges the minimum plus begun
+hours after it, splitting billable time and costs across UTC months. The
+default increment preserves Instabox's elapsed-time accounting.
+
+The shared monitor keeps idle Macs inside their minimum, schedules release
+at its end with the provider's PATCH hook, and cancels that schedule before
+attaching more work. Empty Macs past the minimum are released promptly.
+Open work is protected; `keep_sandbox` persists an exemption and cancels any
+pending automatic release. These policies are the merged PR #24 logic,
+with no separate Scaleway hand-back loop.
 
 Automated tests use fake HTTP and SSH, never real rentals. A live account
 must verify quota names/localities, OS delivery, SSH propagation, package

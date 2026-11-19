@@ -66,8 +66,8 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       if (type.default_os.is_beta || /asahi|linux/i.test(type.name + type.default_os.name) || (stockOnly && !["low_stock", "high_stock"].includes(type.stock))) return [];
       const price = products.find(p => p.locality.zone === zone && ["general_availability", "public_beta"].includes(p.status) && p.properties.apple_silicon?.server_type === type.name && p.unit_of_measure.unit === "hour" && p.unit_of_measure.size === 1 && p.price.retail_price.currency_code === "EUR")?.price.retail_price;
       if (!price || price.units + price.nanos / 1e9 <= 0) return [];
-      return [{ id: type.name, label: type.name, cpus: type.cpu.core_count, memoryMiB: type.memory.capacity / 1048576, dayPrice: (price.units + price.nanos / 1e9) * 24, currency: "EUR" }];
-    }).sort((a,b) => a.dayPrice-b.dayPrice);
+      return [{ id: type.name, label: type.name, cpus: type.cpu.core_count, memoryMiB: type.memory.capacity / 1048576, minimumCost: (price.units + price.nanos / 1e9) * 24, minimumHours: 24, hourPrice: price.units + price.nanos / 1e9, currency: "EUR" }];
+    }).sort((a,b) => a.minimumCost-b.minimumCost);
     if (result.length) caps.systems = ["macos"];
     return result;
   }
@@ -113,15 +113,15 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     if (!lease && server.tags.some(t => t.startsWith(TAG))) {
       const model = (await models(signal)).find(m => m.id === server.type);
       if (!model) throw fail("Scaleway Mac pricing could not be confirmed.", "lease_unknown");
-      lease = ledger.record({ id: `scaleway:${server.id}`, provider: "scaleway", machineId: id, size: model.id, startedAt: server.created_at, paidUntil: server.deletable_at, dayPrice: model.dayPrice, currency: "EUR", cpus: model.cpus, memoryMiB: model.memoryMiB });
+      lease = ledger.record({ id: `scaleway:${server.id}`, provider: "scaleway", machineId: id, size: model.id, startedAt: server.created_at, paidUntil: server.deletable_at, minimumCost: model.minimumCost, hourPrice: model.hourPrice, billingIncrementSeconds: 3600, currency: "EUR", cpus: model.cpus, memoryMiB: model.memoryMiB });
     }
-    return { id, name: server.name, system: "macos", state: server.deletion_scheduled ? "stopping" : server.status === "ready" && server.delivered ? "idle" : server.status === "error" || server.status === "locked" ? "error" : "starting", health: null, url: null, desktopUrl: null, environment: null, createdAt: server.created_at, archiveAfter: null, stoppedAt: null, setupStatus: null, error: null };
+    return { id, name: server.name, system: "macos", scheduledReleaseAt: server.deletion_scheduled ? server.deletable_at : null, state: server.status === "ready" && server.delivered ? "idle" : server.status === "error" || server.status === "locked" ? "error" : "starting", health: null, url: null, desktopUrl: null, environment: null, createdAt: server.created_at, archiveAfter: null, stoppedAt: null, setupStatus: null, error: null };
   }
   const provider: SandboxProvider = {
     ...unavailableProvider("scaleway"), id: "scaleway", displayName: "Scaleway", caps, idPattern: SCALEWAY_ID_PATTERN, machine,
     sizes: Object.entries(SPECS).map(([id, spec]) => ({ id: id as "small" | "default" | "large" | "xlarge", label: id, cpus: spec.vcpus, memoryGb: spec.memMiB / 1024 })),
     macModels: signal => models(signal),
-    async pricing(signal) { const list = await models(signal); return list.map(m => `${m.label} EUR ${(m.dayPrice/24).toFixed(2)}/h · EUR ${m.dayPrice.toFixed(2)} minimum (24 h)`).join("; ") || null; },
+    async pricing(signal) { const list = await models(signal); return list.map(m => `${m.label} EUR ${(m.hourPrice).toFixed(2)}/h · EUR ${m.minimumCost.toFixed(2)} minimum (24 h)`).join("; ") || null; },
     async capacity(signal) {
       const { servers, choices } = await available(signal);
       const canStart = choices.some(c => c.ready);
@@ -158,7 +158,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
         await keys.save({ token: generated.token, sshKeyId, serverId: created.id, zone, projectId });
         // Record the charge immediately, before readiness/bootstrap can fail.
         const id = `scw_${zone}_${created.id}`;
-        ledger.record({ id: `scaleway:${created.id}`, provider: "scaleway", machineId: id, size: choice.model.id, startedAt: created.created_at, paidUntil: created.deletable_at, dayPrice: choice.model.dayPrice, currency: "EUR", cpus: choice.model.cpus, memoryMiB: choice.model.memoryMiB });
+        ledger.record({ id: `scaleway:${created.id}`, provider: "scaleway", machineId: id, size: choice.model.id, startedAt: created.created_at, paidUntil: created.deletable_at, minimumCost: choice.model.minimumCost, hourPrice: choice.model.hourPrice, billingIncrementSeconds: 3600, currency: "EUR", cpus: choice.model.cpus, memoryMiB: choice.model.memoryMiB });
         const deadline = Date.now() + (options.readyTimeoutMs ?? 30*60_000);
         while (Date.now() < deadline) {
           input.signal?.throwIfAborted();
@@ -191,14 +191,23 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
         throw error;
       }
     },
-    async delete(id, signal) {
+    async delete(id, signal, endOptions) {
       let server: Server;
       try { server = await raw(id,signal); } catch (error) { if (!isNotFound(error)) throw error; return; }
       if (Date.now() < Date.parse(server.deletable_at)) throw fail("Scaleway cannot release this Mac before its 24 h minimum ends.", "minimum_lease");
       await api.request("DELETE", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, undefined, signal);
       const token = server.tags.find(t => t.startsWith(TAG))?.slice(TAG.length);
       if (token) { const record = await keys.load(token); await api.request("DELETE", `/iam/v1alpha1/ssh-keys/${record.sshKeyId}`, undefined, signal).catch(error => { if (!isNotFound(error)) throw error; }); await keys.remove(token); }
-      for (const lease of ledger.held(id)) ledger.end(lease.id,"deleted");
+      for (const lease of ledger.held(id)) ledger.end(lease.id,endOptions?.leaseEndReason ?? "deleted",endOptions?.leaseEndAt);
+    },
+    async scheduleLeaseRelease(id, at, signal) {
+      const server = await raw(id,signal);
+      if (Date.parse(at) !== Date.parse(server.deletable_at)) throw fail("Scaleway only schedules deletion at its minimum boundary.", "minimum_lease");
+      await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, { deletion_scheduled: true }, signal);
+    },
+    async cancelLeaseRelease(id, signal) {
+      const server = await raw(id,signal);
+      await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, { deletion_scheduled: false }, signal);
     },
     // A suspend releases no money and must not shut down a shared Mac. Keep
     // it up for later task attachment; only the ledger's hand-back deletes it.
