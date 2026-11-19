@@ -242,6 +242,107 @@ export function agentWithRoom(wanted: Provider, quotas: Quotas, switchAtPercent:
   return null;
 }
 
+/** The settings a start checks (BoatSettings' fields of the same names). */
+export interface NewWorkSettings {
+  relay: RelaySettings;
+  agents: AgentChoice;
+  avoidExtraUsage: boolean;
+  /** Agent for tasks. */
+  implementProvider: Provider;
+  notConnectedAgents: readonly Provider[];
+}
+
+/**
+ * Where new work goes now: room on the default agent, a switch to the other
+ * one, paid Claude, a wait for a reset (`until`: the earliest reset that
+ * frees an agent), or over a limit (nothing holds it back).
+ */
+export type NextStep =
+  | { kind: "room" | "switch" | "paid" | "over"; agent: Provider; wanted: Provider; until: null }
+  | { kind: "wait"; agent: null; wanted: Provider; until: string | null };
+
+/**
+ * The agent a start picks (BoatService.prepareTask): with switching, the one
+ * agentForWork finds room on; without, the default unless no agent has room.
+ * null: no agent has room, nor authorized paid Claude.
+ */
+export function startAgent(wanted: Provider, quotas: Quotas, relay: RelaySettings, agents: AgentChoice, canSwitch: boolean): Provider | null {
+  const pick = agentForWork(wanted, quotas, relay, agents);
+  return pick === null ? null : canSwitch ? pick : wanted;
+}
+
+/** A start checks subscription room at all: to avoid paid extra usage, or for the paid Claude fallback. */
+export function checksSubscription(settings: Pick<NewWorkSettings, "avoidExtraUsage" | "relay">): boolean {
+  return settings.avoidExtraUsage || settings.relay.paidClaudeFallback === true;
+}
+
+/**
+ * room: included allowance (or nothing to check); paid: an authorized
+ * automatic paid Claude start; wait: near its limit; unconfirmed: the paid
+ * fallback is on, but there's no reading, the agent isn't connected, or the
+ * saved policy changed since.
+ */
+export type SubscriptionRoom = "room" | "paid" | "wait" | "unconfirmed";
+
+/**
+ * The subscription check a start makes on its agent. BoatService.
+ * assertSubscriptionRoom reads fresh usage and the saved settings, then asks
+ * this; the usage view's next step asks it too, so they can't disagree.
+ * `current`: the saved settings now (default: `settings`). `runner` "boat"
+ * (headless) needs the same-account opt-in for paid Claude.
+ */
+export function subscriptionRoom(
+  provider: Provider,
+  quotas: Quotas,
+  settings: Omit<NewWorkSettings, "implementProvider">,
+  options: { runner?: string | null; current?: Omit<NewWorkSettings, "implementProvider" | "avoidExtraUsage">; now?: number } = {},
+): SubscriptionRoom {
+  if (!checksSubscription(settings)) return "room";
+  const reading = quotas.get(provider);
+  if (settings.relay.paidClaudeFallback) {
+    const current = options.current ?? settings;
+    if (!reading || current.relay.paidClaudeFallback !== true || current.relay.paidClaudeHeadless !== settings.relay.paidClaudeHeadless || current.relay.switchAtPercent !== settings.relay.switchAtPercent || current.agents !== settings.agents || current.notConnectedAgents.includes(provider)) return "unconfirmed";
+  }
+  if (provider === "claude" && (options.runner !== "boat" || settings.relay.paidClaudeHeadless === true) && automaticPaidClaude(quotas, settings.relay, settings.agents, options.now) && !settings.notConnectedAgents.includes(provider)) return "paid";
+  if (reading && reading.usedPercent >= settings.relay.switchAtPercent) return "wait";
+  return "room";
+}
+
+/**
+ * What a task started now with no agent named would do, from a bb chat:
+ * the pick a start makes (startAgent), then its subscription check
+ * (subscriptionRoom). Nothing here decides on its own.
+ */
+export function nextForNewWork(quotas: Quotas, settings: NewWorkSettings, now = Date.now()): NextStep {
+  const relay = effectiveRelay(settings.relay, settings.agents);
+  const only = onlyAgent(settings.agents);
+  const wanted = only ?? settings.implementProvider;
+  // With switching on (and both agents), either agent's reset frees work.
+  const blocking: Provider[] = only !== null ? [only] : relay.enabled ? [wanted, otherAgent(wanted)] : [wanted];
+  const wait: NextStep = { kind: "wait", agent: null, wanted, until: earliestReset(quotas, blocking) };
+  let agent = wanted;
+  if (relay.enabled || settings.avoidExtraUsage) {
+    const pick = startAgent(wanted, quotas, relay, settings.agents, relay.enabled);
+    if (pick === null && settings.avoidExtraUsage) return wait;
+    if (pick !== null) agent = pick;
+  }
+  const room = subscriptionRoom(agent, quotas, settings, { now });
+  if (room === "paid") return { kind: "paid", agent, wanted, until: null };
+  if (room !== "room") return wait;
+  // Nothing checks the subscription: it starts even past the limit.
+  const reading = quotas.get(agent);
+  if (reading !== undefined && reading.usedPercent >= relay.switchAtPercent) return { kind: "over", agent, wanted, until: null };
+  return { kind: agent === wanted ? "room" : "switch", agent, wanted, until: null };
+}
+
+/** The earliest known reset of these agents' binding windows (ISO), or null. */
+function earliestReset(quotas: Quotas, providers: readonly Provider[]): string | null {
+  const times = providers
+    .map((provider) => Date.parse(quotas.get(provider)?.resetsAt ?? ""))
+    .filter((at) => Number.isFinite(at));
+  return times.length > 0 ? new Date(Math.min(...times)).toISOString() : null;
+}
+
 /** What the relay is doing for an orchestrator, in a few words (null: nothing). */
 export function relayNote(state: RelayState | null, decision: RelayDecision, now = Date.now()): string | null {
   if (state?.phase === "handoff-requested") return `writing a handoff note for ${AGENT_NAME[state.to]}`;

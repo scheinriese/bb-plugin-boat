@@ -18,6 +18,8 @@ export interface AgentQuota {
   extraUsage?: ExtraUsageEvidence;
   /** A real failed turn blocks automatic paid admission until this time. */
   blockedUntil?: number;
+  /** The usage source the numbers came from (one of USAGE_SOURCES). */
+  source?: string;
 }
 
 export type ExtraUsageStatus = "allowed" | "rejected" | "disabled" | "unknown";
@@ -37,9 +39,19 @@ export interface ExtraUsageEvidence {
 
 export type Quotas = Map<Provider, AgentQuota>;
 
+export interface QuotaReadOptions {
+  /** Skip the cache and ask each source for a new reading. */
+  fresh?: boolean;
+  /**
+   * With fresh: the Account Pooler's accounts were just refreshed by hand
+   * (account.refreshUsage), so read them again without asking twice.
+   */
+  poolRefreshed?: boolean;
+}
+
 export interface QuotaReader {
   /** Known quotas per agent; an agent missing from the map is unknown. */
-  read(signal?: AbortSignal, options?: { fresh?: boolean }): Promise<Quotas>;
+  read(signal?: AbortSignal, options?: QuotaReadOptions): Promise<Quotas>;
 }
 
 const PROVIDER_OF: Record<string, Provider> = { "claude-code": "claude", codex: "codex" };
@@ -103,12 +115,12 @@ export interface QuotaReaderOptions {
 export function createQuotaReader(bb: BbPluginApi, options: QuotaReaderOptions = {}): QuotaReader {
   const { sources = USAGE_SOURCES, cacheMs = 60_000 } = options;
   let cache: { at: number; quotas: Quotas } | null = null;
-  async function readings(signal?: AbortSignal, fresh = false): Promise<Quotas> {
+  async function readings(signal?: AbortSignal, fresh = false, poolRefreshed = false): Promise<Quotas> {
     if (!fresh && cache !== null && Date.now() - cache.at < cacheMs) return cache.quotas;
     const quotas: Quotas = new Map();
     for (const source of sources) {
       // Each agent's numbers come from the first source that has them.
-      const found = await readSource(bb, source, signal, fresh);
+      const found = await readSource(bb, source, signal, fresh && !(poolRefreshed && source === "account-pool"));
       for (const [provider, quota] of found) if (!quotas.has(provider)) quotas.set(provider, quota);
       if (quotas.size === 2) break;
     }
@@ -120,7 +132,7 @@ export function createQuotaReader(bb: BbPluginApi, options: QuotaReaderOptions =
   }
   return {
     async read(signal, readOptions) {
-      const quotas = await readings(signal, readOptions?.fresh);
+      const quotas = await readings(signal, readOptions?.fresh, readOptions?.poolRefreshed);
       const flags = options.limits ? await options.limits().catch(() => ({})) : {};
       return applyLimitFlags(quotas, flags);
     },
@@ -142,28 +154,72 @@ export function applyLimitFlags(quotas: Quotas, flags: LimitFlags): Quotas {
   return merged;
 }
 
-const poolStatusSchema = z
+// The Account Pooler's status.get. Every field may be missing, null or of
+// another type in another version: a field that doesn't fit reads as null,
+// an account without an id is skipped, and unknown fields are ignored.
+const maybeNumber = z.number().finite().nullable().optional().catch(null);
+const maybeString = z.string().nullable().optional().catch(null);
+const poolWindowSchema = z
   .object({
-    routing: z.object({ claude: z.boolean(), codex: z.boolean() }).partial().passthrough(),
-    accounts: z.array(z.object({ id: z.string(), provider: z.string().optional(), status: z.string().optional(),
-      extraUsage: z.object({ status: z.string(), observedAt: z.number().finite().nullable().optional() }).passthrough().nullable().optional(),
-      usageRestriction: z.unknown().optional(),
-    }).passthrough()),
+    slot: maybeString,
+    windowMinutes: maybeNumber,
+    /** 0–1 (over 1 past the limit). */
+    utilization: maybeNumber,
+    resetAt: z.union([z.number().finite(), z.string()]).nullable().optional().catch(null),
+    /** allowed, allowed_warning, rejected. */
+    status: maybeString,
+    observedAt: maybeNumber,
   })
   .passthrough();
+const poolAccountSchema = z
+  .object({
+    id: z.string().min(1),
+    provider: maybeString,
+    label: maybeString,
+    email: maybeString,
+    enabled: z.boolean().nullable().optional().catch(null),
+    status: maybeString,
+    usageRestriction: z.unknown().optional(),
+    extraUsage: z.object({ status: maybeString, observedAt: maybeNumber }).passthrough().nullable().optional().catch(null),
+    familyWeekly: z.record(z.string(), poolWindowSchema.nullable().catch(null)).nullable().optional().catch(null),
+    limitWindows: z.array(poolWindowSchema.nullable().catch(null)).nullable().optional().catch(null),
+    observedAt: maybeNumber,
+    heldUntil: maybeNumber,
+    error: z.unknown().optional(),
+  })
+  .passthrough();
+const poolStatusSchema = z
+  .object({
+    routing: z.object({ claude: z.boolean().optional().catch(undefined), codex: z.boolean().optional().catch(undefined) }).passthrough(),
+    accounts: z.array(poolAccountSchema.nullable().catch(null)).nullable().optional().catch(null),
+  })
+  .passthrough();
+
+type PoolAccount = z.infer<typeof poolAccountSchema>;
+interface PoolStatus {
+  routing: Partial<Record<Provider, boolean>>;
+  accounts: PoolAccount[];
+}
+
+/** The Pooler's status.get (read-only), or a throw when it doesn't answer. */
+async function readPoolStatus(bb: BbPluginApi, signal?: AbortSignal): Promise<PoolStatus> {
+  const raw = await bb.sdk.plugins.callRpc({
+    pluginId: "account-pool",
+    method: "status.get",
+    input: null,
+    outputSchema: poolStatusSchema,
+    ...(signal ? { signal } : {}),
+  } as never);
+  const status = poolStatusSchema.parse(raw);
+  return { routing: status.routing, accounts: (status.accounts ?? []).filter((account): account is PoolAccount => account !== null) };
+}
 
 /**
  * The Account Pooler's readings count only for agents it routes, and only for
  * accounts it uses; for the others the host's own login is what chats use.
  */
 async function poolFilter(bb: BbPluginApi, signal?: AbortSignal): Promise<(resourceId: string, provider: Provider) => boolean> {
-  const status = (await bb.sdk.plugins.callRpc({
-    pluginId: "account-pool",
-    method: "status.get",
-    input: null,
-    outputSchema: poolStatusSchema,
-    ...(signal ? { signal } : {}),
-  } as never)) as z.infer<typeof poolStatusSchema>;
+  const status = await readPoolStatus(bb, signal);
   const accounts = new Map(status.accounts.map((account) => [account.id, account]));
   return (resourceId, provider) => {
     if (status.routing[provider] !== true) return false;
@@ -180,24 +236,152 @@ const UNKNOWN_EXTRA_USAGE = (pool: ExtraUsageEvidence["pool"]): ExtraUsageEviden
  * otherwise the newest real reading, with the time the Pooler took it.
  */
 export async function poolExtraUsage(bb: BbPluginApi, provider: Provider, signal?: AbortSignal): Promise<ExtraUsageEvidence> {
-  let status: z.infer<typeof poolStatusSchema>;
+  let status: PoolStatus;
   try {
-    status = await bb.sdk.plugins.callRpc({ pluginId: "account-pool", method: "status.get", input: null, outputSchema: poolStatusSchema, ...(signal ? { signal } : {}) } as never) as z.infer<typeof poolStatusSchema>;
+    status = await readPoolStatus(bb, signal);
   } catch {
     return UNKNOWN_EXTRA_USAGE("off");
   }
+  return extraUsageFrom(status, provider);
+}
+
+function extraUsageFrom(status: PoolStatus, provider: Provider): ExtraUsageEvidence {
   if (status.routing[provider] !== true) return UNKNOWN_EXTRA_USAGE("not-routing");
   const readings = status.accounts
     .filter(a => a.provider === provider && a.status === "ready")
-    .map((a): ExtraUsageEvidence => {
-      const observedAt = typeof a.extraUsage?.observedAt === "number" ? a.extraUsage.observedAt : null;
-      if (a.usageRestriction != null) return { allowed: false, status: "disabled", observedAt, pool: "on" };
-      const known = a.extraUsage?.status === "allowed" || a.extraUsage?.status === "rejected";
-      if (!known || observedAt === null) return { allowed: false, status: "unknown", observedAt, pool: "on" };
-      return { allowed: a.extraUsage!.status === "allowed", status: a.extraUsage!.status as "allowed" | "rejected", observedAt, pool: "on" };
-    })
+    .map(accountExtraUsage)
     .sort((a, b) => (b.observedAt ?? -Infinity) - (a.observedAt ?? -Infinity));
   return readings.find(r => r.allowed) ?? readings.find(r => r.observedAt !== null) ?? readings[0] ?? UNKNOWN_EXTRA_USAGE("on");
+}
+
+/** One account's extra usage: a usage restriction (a spend control) turns it off for the account. */
+function accountExtraUsage(a: PoolAccount): ExtraUsageEvidence {
+  const observedAt = typeof a.extraUsage?.observedAt === "number" ? a.extraUsage.observedAt : null;
+  if (a.usageRestriction != null) return { allowed: false, status: "disabled", observedAt, pool: "on" };
+  const status = a.extraUsage?.status;
+  if ((status !== "allowed" && status !== "rejected") || observedAt === null) return { allowed: false, status: "unknown", observedAt, pool: "on" };
+  return { allowed: status === "allowed", status, observedAt, pool: "on" };
+}
+
+// ------------------------------------------------------------- per account
+
+/** One limit of one pooled account, as the Account Pooler last read it. */
+export interface AccountWindow {
+  /** "5-hour limit", "Weekly limit", "Fable weekly limit". */
+  label: string;
+  /** The model family a model-only limit applies to ("fable"); null: every model. */
+  model: string | null;
+  /** Percent used (over 100 past the limit); null: not read yet. */
+  usedPercent: number | null;
+  resetsAt: string | null;
+  /** The provider refuses work at this limit now. */
+  atLimit: boolean;
+  /** When the Pooler read it (epoch ms; null: never). */
+  observedAt: number | null;
+}
+
+export interface PoolAccountUsage {
+  id: string;
+  provider: Provider;
+  /** The email, else the Pooler's label. */
+  name: string;
+  /** Off in the Account Pooler: chats don't use it. */
+  enabled: boolean;
+  /** The Pooler's state when it isn't "ready" (null: ready, or not said). */
+  state: string | null;
+  windows: AccountWindow[];
+  extraUsage: ExtraUsageEvidence;
+  /** The newest reading of this account (epoch ms; null: never). */
+  observedAt: number | null;
+  heldUntil: number | null;
+  /** The Pooler's last error for this account. */
+  error: string | null;
+}
+
+/** Every pooled account, or "off" when the Account Pooler doesn't answer. */
+export type PoolUsage = { pool: "on"; routing: Record<Provider, boolean>; accounts: PoolAccountUsage[] } | { pool: "off" };
+
+/** The Account Pooler's accounts and their limits, read-only (status.get). */
+export async function readPoolUsage(bb: BbPluginApi, signal?: AbortSignal): Promise<PoolUsage & { claudeExtraUsage: ExtraUsageEvidence }> {
+  let status: PoolStatus;
+  try {
+    status = await readPoolStatus(bb, signal);
+  } catch {
+    return { pool: "off", claudeExtraUsage: UNKNOWN_EXTRA_USAGE("off") };
+  }
+  return {
+    pool: "on",
+    routing: { claude: status.routing.claude === true, codex: status.routing.codex === true },
+    accounts: status.accounts.flatMap((account) => {
+      const usage = accountUsage(account);
+      return usage === null ? [] : [usage];
+    }),
+    claudeExtraUsage: extraUsageFrom(status, "claude"),
+  };
+}
+
+const FAMILY_LABEL: Record<string, string> = { other: "Other models" };
+
+function windowLabel(minutes: number | null): string {
+  if (minutes === null || minutes <= 0) return "Usage limit";
+  if (minutes === 7 * 1440) return "Weekly limit";
+  if (minutes === 1440) return "Daily limit";
+  if (minutes % 1440 === 0) return `${minutes / 1440}-day limit`;
+  if (minutes % 60 === 0) return `${minutes / 60}-hour limit`;
+  return `${minutes}-minute limit`;
+}
+
+function instant(value: number | string | null | undefined): string | null {
+  const at = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(at) ? new Date(at).toISOString() : null;
+}
+
+function toWindow(window: z.infer<typeof poolWindowSchema>, label: string, model: string | null): AccountWindow {
+  // Rounded like the Pooler's provider-usage reading the relay goes by, so a bar and the next step agree on "at its limit".
+  const usedPercent = typeof window.utilization === "number" ? Math.round(window.utilization * 100) : null;
+  return {
+    label,
+    model,
+    usedPercent,
+    resetsAt: instant(window.resetAt),
+    atLimit: window.status === "rejected" || (usedPercent !== null && usedPercent >= 100),
+    observedAt: window.observedAt ?? null,
+  };
+}
+
+/** The Pooler's error for an account (a string or { message }), or null when there is none. */
+export function poolErrorText(error: unknown): string | null {
+  if (typeof error === "string") return error.trim() || null;
+  if (error !== null && typeof error === "object" && typeof (error as { message?: unknown }).message === "string") return (error as { message: string }).message.trim() || null;
+  return null;
+}
+
+/** One account for the usage view: all-model limits first (shortest first), then model-only ones. */
+function accountUsage(account: PoolAccount): PoolAccountUsage | null {
+  const provider = account.provider === "claude" || account.provider === "codex" ? account.provider : null;
+  if (provider === null) return null;
+  const general = (account.limitWindows ?? [])
+    .filter((window): window is z.infer<typeof poolWindowSchema> => window !== null)
+    .sort((a, b) => (a.windowMinutes ?? Infinity) - (b.windowMinutes ?? Infinity))
+    .map((window) => toWindow(window, windowLabel(window.windowMinutes ?? null), null));
+  const families = Object.entries(account.familyWeekly ?? {}).flatMap(([family, window]) =>
+    window ? [toWindow(window, `${FAMILY_LABEL[family] ?? family.charAt(0).toUpperCase() + family.slice(1)} weekly limit`, family)] : [],
+  );
+  const windows = [...general, ...families];
+  const times = [account.observedAt, ...windows.map((window) => window.observedAt)].filter((at): at is number => typeof at === "number");
+  const disabled = account.enabled === false || account.status === "disabled";
+  return {
+    id: account.id,
+    provider,
+    name: account.email?.trim() || account.label?.trim() || `${provider === "claude" ? "Claude" : "Codex"} account`,
+    enabled: !disabled,
+    state: disabled || account.status == null || account.status === "ready" ? null : account.status,
+    windows,
+    extraUsage: accountExtraUsage(account),
+    observedAt: times.length > 0 ? Math.max(...times) : null,
+    heldUntil: account.heldUntil ?? null,
+    error: poolErrorText(account.error),
+  };
 }
 
 async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: AbortSignal, fresh = false): Promise<Quotas> {
@@ -231,7 +415,7 @@ async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: Abor
     }
     for (const [provider, accounts] of byProvider) {
       const quota = pickAgentQuota(provider, accounts);
-      if (quota) quotas.set(provider, quota);
+      if (quota) quotas.set(provider, { ...quota, source: sourcePluginId });
     }
   } catch {
     // This source isn't installed or doesn't answer: try the next one.

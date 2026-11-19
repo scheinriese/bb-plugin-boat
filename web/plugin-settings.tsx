@@ -21,6 +21,7 @@ import { SetupChecklist } from "./setup";
 import { BackupSettings } from "./backup-settings";
 import { EVERYDAY_SETTING_COPY, groupedSettings, notificationSettingPatch, setupNeedsWork, setupTestPassed } from "./v1-settings-logic";
 import { useSettingsFrameTweak } from "./workarounds/settings-frame";
+import { UsageLimitsSection } from "./usage-limits";
 import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, focusNeighbour, showError } from "./ui";
 
 type SettingValue = string | number | boolean;
@@ -552,6 +553,8 @@ function DesktopBoatSettings() {
   const master = query.data?.settings.find((row) => row.key === "pushNotifications")?.value === true;
   return <div className="boat-settings space-y-[22px] text-[13px] leading-[18px]">
     <SetupChecklist />
+    {/* First, so the usage links (homepage, thread chip, a waiting start) land on it. */}
+    <UsageLimitsSection />
     <Loading error={query.error} rows={query.data?.settings.length ?? 0} />
     {grouped.groups.map((group) => <section key={group.title} aria-label={group.title} className={cn("space-y-2", dimmed && "opacity-35")}>
       <h3 className="text-[13px] font-medium leading-[18px] text-[color:var(--boat-group-heading)]">{group.title}</h3>
@@ -606,6 +609,8 @@ export function MobileBoatSettings() {
   const master = rows.find((row) => row.key === "pushNotifications")?.value === true;
   return <div className="space-y-3.5 text-sm">
     <div className="flex items-center gap-2 rounded-[12px] border border-border bg-[var(--boat-mobile-card)] px-3.5 py-3 text-[14px] leading-[19px]"><span aria-hidden className={cn("size-[7px] shrink-0 rounded-full",setup?.ok ? "bg-[#5BD08A]" : "bg-[#F0B135]")} /><span>{setup === undefined ? "Checking cloud agents…" : setup.ok ? ["All set",setup.plan?.maxActiveSandboxes ? `${setup.plan.activeSandboxes} of ${setup.plan.maxActiveSandboxes} sandboxes on` : null,usage?.plan?.hoursRemaining !== null && usage?.plan?.hoursRemaining !== undefined ? `${usage.plan.hoursRemaining.toLocaleString()} h left` : null].filter(Boolean).join(" · ") : "Cloud agents need setup"}</span></div>
+    {/* The homepage's usage link opens this page on a phone or a narrow window too. */}
+    <UsageLimitsSection compact />
     <div className="divide-y divide-border overflow-hidden rounded-[12px] border border-border bg-[var(--boat-mobile-card)]">
       {rows.filter((row) => ["notifyNeedsYou","notifyReady","avoidExtraUsage","paidClaudeFallback","paidClaudeHeadless"].includes(row.key)).sort((a,b)=>["notifyNeedsYou","notifyReady","avoidExtraUsage","paidClaudeFallback","paidClaudeHeadless"].indexOf(a.key)-["notifyNeedsYou","notifyReady","avoidExtraUsage","paidClaudeFallback","paidClaudeHeadless"].indexOf(b.key)).map((row) => <div key={row.key} className="flex items-center gap-3 px-3.5 py-3"><div className="min-w-0 flex-1"><p className="text-[15px] leading-5 text-[color:var(--boat-heading)]">{row.key === "avoidExtraUsage" ? "Don’t start on paid extra usage" : row.label}</p><p className="mt-0.5 text-[13px] leading-[18px] text-muted-foreground">{row.key === "notifyNeedsYou" ? "A decision or an OK waits on you" : row.key === "notifyReady" ? "A change is reviewed and can ship" : ["paidClaudeFallback","paidClaudeHeadless"].includes(row.key) ? row.description : "Wait near limits, except for an authorized Claude fallback or a confirmed paid start"}</p>{saver.errors[row.key] ? <p role="alert" className="text-xs text-[#E06C6C]">{saver.errors[row.key]}</p> : null}</div><Switch aria-label={row.label} className="h-[26px] w-[44px] border-0 p-[3px] data-[state=checked]:bg-primary [&>span]:size-5 [&>span]:data-[state=checked]:translate-x-[18px] [&>span]:data-[state=checked]:bg-[var(--boat-mobile-card)] [&>span]:data-[state=unchecked]:translate-x-0" checked={row.value===true&&(!["notifyNeedsYou","notifyReady"].includes(row.key)||master)} onCheckedChange={(checked)=>void(row.key==="notifyNeedsYou"||row.key==="notifyReady" ? saver.runValues(notificationSettingPatch(master,row.key,checked)) : saver.run(row.key,checked))}/></div>)}
     </div>

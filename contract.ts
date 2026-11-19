@@ -24,6 +24,9 @@ export { UI_TAG, uiStateSchema, type UiStateDto } from "./contract-ui.ts";
 // What a new orchestrator starts with (contract-orchestrator.ts), spread in at the end too.
 import { orchestratorEffortSchema, orchestratorRpcMethods } from "./contract-orchestrator.ts";
 export { ORCHESTRATOR_EFFORT_VALUES, type OrchestratorChoicesDto, type OrchestratorEffortDto } from "./contract-orchestrator.ts";
+// The usage view (contract-usage.ts), spread in at the end too.
+import { extraUsageViewSchema, usageRpcMethods } from "./contract-usage.ts";
+export { USAGE_STALE_MS, type UsageAccountDto, type UsageViewDto, type UsageWindowDto } from "./contract-usage.ts";
 
 export const PROVIDER_VALUES = ["claude", "codex"] as const;
 export const ROLE_VALUES = ["implement", "review", "custom"] as const;
@@ -652,11 +655,7 @@ export const rpcContract = defineRpcContract({
        * ms; null: never). pool "off"/"not-routing": nothing is known. Never a
        * money balance.
        */
-      claudeExtraUsage: z.object({
-        status: z.enum(["allowed", "rejected", "disabled", "unknown"]),
-        observedAt: z.number().nullable(),
-        pool: z.enum(["on", "off", "not-routing"]),
-      }).optional(),
+      claudeExtraUsage: extraUsageViewSchema.optional(),
       paidClaudeHeadless: z.boolean().optional(),
       agents: z.array(
         z.object({
@@ -1093,6 +1092,8 @@ export const rpcContract = defineRpcContract({
   ...uiRpcMethods,
   // ------------------------------------------------------------- what a new orchestrator starts with (contract-orchestrator.ts)
   ...orchestratorRpcMethods,
+  // ------------------------------------------------------------- the usage view (contract-usage.ts)
+  ...usageRpcMethods,
 });
 
 export type RpcContract = typeof rpcContract;
