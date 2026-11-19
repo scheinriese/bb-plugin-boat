@@ -1956,7 +1956,8 @@ export class BoatService {
           return false;
         },
       );
-      await this.releaseProjectSources({ taskId, hostId: removed ? hostId : null });
+      if (removed) await this.dropMachineSources(hostId);
+      await this.releaseTaskSources({ id: taskId, hostId });
       return;
     }
     if (sandboxId !== null) await this.releaseSandbox(sandboxId, taskId).catch(() => undefined);
@@ -1964,9 +1965,10 @@ export class BoatService {
 
   /**
    * Open a task chat. In its checkout on a machine outside Personal, bb wants
-   * a project source for that machine first: add (or reuse) one. When that
-   * fails, the chat opens in Personal instead, still under its orchestrator
-   * and in its section: the task never fails over a source.
+   * a project source for that machine first: reuse the project's one there,
+   * or add one. When that fails, the chat opens in Personal instead, still
+   * under its orchestrator and in its section: the task never fails over a
+   * source.
    */
   private async spawnTaskChat(args: ChatSpawn, stillWanted: () => void = () => undefined): Promise<{ threadId: string; environmentId: string | null }> {
     const chat = this.hooks.chat!;
@@ -1974,21 +1976,18 @@ export class BoatService {
     if (where.kind !== "machine" || where.path === null || isPersonalProject(projectId)) return chat.spawn(args);
     let why: string | null = null;
     try {
-      const source = await chat.ensureProjectSource({ taskId: args.taskId, projectId: projectId!, hostId: where.hostId, path: where.path });
-      this.store.addEvent(
-        args.taskId,
-        "project-source",
-        source.created
-          ? `Added the sandbox's checkout to bb project ${projectId} (source ${source.sourceId})`
-          : `bb project ${projectId} already has the sandbox's checkout (source ${source.sourceId}${source.own ? "" : ", not added by Boat: it stays"})`,
-      );
+      await this.ensureProjectSource(args.taskId, projectId!, where.hostId, where.path);
     } catch (error) {
       why = `Couldn't add the sandbox's checkout to bb project ${projectId}: ${clip(errorText(error), 300)}`;
     }
     stillWanted();
     if (why === null) {
       try {
-        return await chat.spawn(args);
+        const spawned = await chat.spawn(args);
+        if (this.inPersonalFallback(args.taskId)) {
+          this.store.addEvent(args.taskId, "project-chat", `Opened the chat in bb project ${projectId}; later chats in its workspace open there too.`);
+        }
+        return spawned;
       } catch (error) {
         if (!NO_PROJECT_SOURCE.test(errorText(error))) throw error;
         why = `bb refused the chat in project ${projectId}: ${clip(errorText(error), 300)}`;
@@ -1999,14 +1998,30 @@ export class BoatService {
     return chat.spawn({ ...args, projectId: PERSONAL_PROJECT });
   }
 
-  /** The task's chat opened in Personal instead of its project (or shares a workspace there). */
-  private inPersonalFallback(task: Task): boolean {
-    return this.store.latestEvent(task.id, "project-fallback") !== null;
+  /** Reuse or add the project's source on the machine, and record it on the task. Throws when bb refuses. */
+  private async ensureProjectSource(taskId: string, projectId: string, hostId: string, path: string): Promise<void> {
+    const source = await this.hooks.chat!.ensureProjectSource({ taskId, projectId, hostId, path });
+    const what = source.created
+      ? `Added the sandbox's checkout to bb project ${projectId} (source ${source.sourceId})`
+      : `bb project ${projectId} already has a source on the sandbox (${source.sourceId}${source.own ? "" : ", not added by Boat: it stays"})`;
+    // bb makes a project's first source its default; Boat never asks for that.
+    const madeDefault = source.created && source.isDefault ? "; bb made it the project's default, since the project had no other source" : "";
+    if (madeDefault) this.hooks.log.warn(`task ${taskId}: bb made source ${source.sourceId} the default of project ${projectId}`);
+    this.store.addEvent(taskId, "project-source", `${what}${madeDefault}`);
+  }
+
+  /** The task's chat opened in Personal instead of its project (or shares a workspace there), and no later chat of it opened in the project. */
+  private inPersonalFallback(taskId: string): boolean {
+    const last = this.store
+      .events(taskId, 200)
+      .filter((event) => event.kind === "project-fallback" || event.kind === "project-chat")
+      .at(-1);
+    return last?.kind === "project-fallback";
   }
 
   /** The bb project a task's next chat in its workspace opens in: the one its workspace is in. */
   private chatProject(task: Task): string | null {
-    return this.inPersonalFallback(task) ? PERSONAL_PROJECT : task.projectId;
+    return this.inPersonalFallback(task.id) ? PERSONAL_PROJECT : task.projectId;
   }
 
   private isOpenTask(taskId: string): boolean {
@@ -2015,40 +2030,57 @@ export class BoatService {
   }
 
   /**
-   * Remove the bb project sources Boat added for a task's chat once no other
-   * open task uses them; with hostId (the machine is gone), every source Boat
-   * added for that machine. Sources Boat didn't add are never touched. Never
-   * fatal: the sweep tries again.
+   * A project source Boat added is in use while an open task (other than
+   * `except`) is on its machine, whatever its chat (a review in the shared
+   * workspace too), or opened with it and isn't on a machine yet (a move).
    */
-  private async releaseProjectSources(scope: { taskId?: string; hostId?: string | null }): Promise<void> {
+  private sourceInUse(row: OwnProjectSource, except: string | null): boolean {
+    if (row.taskIds.some((taskId) => taskId !== except && this.isOpenTask(taskId))) return true;
+    return this.store.list({ statuses: OPEN_STATUSES, limit: 1000 }).some((task) => task.id !== except && task.hostId === row.hostId);
+  }
+
+  /**
+   * A task is done with its machine's project sources (closed, or its chat
+   * never opened): remove the ones Boat added there once no other open task
+   * uses them. Never fatal: the sweep tries again.
+   */
+  private async releaseTaskSources(task: { id: string; hostId: string | null }): Promise<void> {
+    await this.removeOwnSources((row) => row.taskIds.includes(task.id) || (task.hostId !== null && row.hostId === task.hostId), (row) => this.sourceInUse(row, task.id));
+  }
+
+  /** The machine is gone: every source Boat added for it goes too. */
+  private async dropMachineSources(hostId: string): Promise<void> {
+    await this.removeOwnSources((row) => row.hostId === hostId, () => false);
+  }
+
+  private async removeOwnSources(which: (row: OwnProjectSource) => boolean, inUse: (row: OwnProjectSource) => boolean): Promise<number> {
     const chat = this.hooks.chat;
-    if (chat === undefined) return;
+    if (chat === undefined) return 0;
     let own: OwnProjectSource[];
     try {
       own = await chat.ownProjectSources();
     } catch (error) {
       this.hooks.log.warn(`project sources: ${errorText(error)}`);
-      return;
+      return 0;
     }
-    for (const entry of own) {
-      const machineGone = scope.hostId != null && entry.hostId === scope.hostId;
-      if (!machineGone) {
-        if (scope.taskId === undefined || !entry.taskIds.includes(scope.taskId)) continue;
-        if (entry.taskIds.some((taskId) => taskId !== scope.taskId && this.isOpenTask(taskId))) continue;
-      }
-      await this.removeOwnSource(entry);
-    }
+    let removed = 0;
+    for (const row of own.filter(which)) if (await this.removeOwnSource(row, inUse)) removed += 1;
+    return removed;
   }
 
-  private async removeOwnSource(entry: OwnProjectSource): Promise<boolean> {
+  private async removeOwnSource(row: OwnProjectSource, inUse: (row: OwnProjectSource) => boolean): Promise<boolean> {
+    let result;
     try {
-      if (!(await this.hooks.chat!.removeProjectSource(entry.sourceId))) return false;
+      // Asked again inside the registry's lock, with its latest row.
+      result = await this.hooks.chat!.removeProjectSource(row.sourceId, inUse);
     } catch (error) {
-      this.hooks.log.warn(`remove project source ${entry.sourceId}: ${errorText(error)}`);
+      this.hooks.log.warn(`remove project source ${row.sourceId}: ${errorText(error)}`);
       return false;
     }
-    for (const taskId of entry.taskIds) {
-      if (this.store.get(taskId) !== null) this.store.addEvent(taskId, "project-source", `Removed the sandbox's checkout from bb project ${entry.projectId} (source ${entry.sourceId})`);
+    if (result === "last-source") this.hooks.log.info(`project source ${row.sourceId} is the last source of bb project ${row.projectId}; bb keeps it until the project has another`);
+    if (result !== "removed") return false;
+    for (const taskId of row.taskIds) {
+      if (this.store.get(taskId) !== null) this.store.addEvent(taskId, "project-source", `Removed the sandbox's source from bb project ${row.projectId} (${row.sourceId})`);
     }
     return true;
   }
@@ -2061,7 +2093,7 @@ export class BoatService {
 
   /**
    * Project sources Boat added that nothing needs any more: their machine is
-   * gone, or no open task uses them (a close cut short, a restart). Returns
+   * gone, or no open task is on it (a close cut short, a restart). Returns
    * how many it removed.
    */
   async sweepProjectSources(now = Date.now()): Promise<number> {
@@ -2069,14 +2101,15 @@ export class BoatService {
     if (chat === undefined) return 0;
     this.lastSourceSweep = now;
     let removed = 0;
-    for (const entry of await chat.ownProjectSources()) {
-      let stale = !entry.taskIds.some((taskId) => this.isOpenTask(taskId));
-      if (!stale) {
+    for (const row of await chat.ownProjectSources()) {
+      let gone = false;
+      if (this.sourceInUse(row, null)) {
         // Only bb's "no such machine" counts; an error leaves it for the next sweep.
-        const machine = await chat.machineState(entry.hostId).catch(() => undefined);
-        stale = machine === null || machine?.phase === "destroyed";
+        const machine = await chat.machineState(row.hostId).catch(() => undefined);
+        gone = machine === null || machine?.phase === "destroyed";
+        if (!gone) continue;
       }
-      if (stale && (await this.removeOwnSource(entry))) removed += 1;
+      if (await this.removeOwnSource(row, (latest) => !gone && this.sourceInUse(latest, null))) removed += 1;
     }
     return removed;
   }
@@ -2130,7 +2163,7 @@ export class BoatService {
     task = this.store.update(id, { hostId }) ?? task;
     ctx.stillWanted();
     let projectId = input.projectId ?? null;
-    if (where.kind === "environment" && ctx.parent !== null && !isPersonalProject(projectId) && this.inPersonalFallback(ctx.parent)) {
+    if (where.kind === "environment" && ctx.parent !== null && !isPersonalProject(projectId) && this.inPersonalFallback(ctx.parent.id)) {
       // The shared workspace is in Personal, where the parent's chat fell back to.
       projectId = PERSONAL_PROJECT;
       this.store.addEvent(id, "project-fallback", `Opened the chat in Personal, like task ${ctx.parent.id}'s chat whose workspace it shares.`);
@@ -2953,7 +2986,7 @@ export class BoatService {
       }
       await this.hooks.chat.removeMachine(task.hostId);
       this.store.addEvent(task.id, "sandbox", `Removed bb machine ${task.hostId} and its sandbox ${task.sandboxId ?? ""}`.trim());
-      await this.releaseProjectSources({ taskId: task.id, hostId: task.hostId });
+      await this.dropMachineSources(task.hostId);
       return "deleted";
     } catch (error) {
       this.store.addEvent(task.id, "sandbox", `Couldn't remove bb machine ${task.hostId}: ${errorText(error)}`);
@@ -3142,7 +3175,7 @@ export class BoatService {
         for (const threadId of this.store.chatThreads(task.id)) await chat.archive(threadId).catch(() => undefined);
       }
       await chat.removeMachine(hostId);
-      await this.releaseProjectSources({ hostId });
+      await this.dropMachineSources(hostId);
     }
     this.observedSandboxStates.set(sandboxId, action === "stop" ? "stopped" : action === "resume" ? "running" : "deleted");
   }
@@ -3837,7 +3870,8 @@ export class BoatService {
       }
       if (protectedKey !== null) await chat.settleMachine(protectedKey).catch(() => undefined);
       // The task stays headless: it needs no project source for its checkout.
-      await this.releaseProjectSources({ taskId: id, hostId: detached });
+      if (detached !== null) await this.dropMachineSources(detached);
+      await this.releaseTaskSources({ id, hostId: null });
       // An abort (a close, an unload) can surface as any error from the step it cut short.
       const cancelled = error instanceof MoveCancelled ? error : signal.aborted ? unwanted() : null;
       const reason = cancelled !== null ? cancelled.message : clip(errorText(error), 300);
@@ -3869,7 +3903,7 @@ export class BoatService {
     if (!key?.startsWith(`task-${task.id}-m`)) return null;
     try {
       await this.hooks.chat.detachMachine(hostId, key);
-      await this.releaseProjectSources({ taskId: task.id, hostId });
+      await this.dropMachineSources(hostId);
       return hostId;
     } catch (error) {
       this.hooks.log.warn(`detach ${hostId}: ${errorText(error)}`);
@@ -4331,6 +4365,13 @@ export class BoatService {
     const reopened = this.store.transition(task.id,["cancelled"],{status:"idle",environmentId:state.environmentId,readyAt:null,readyNote:null,error:null,shipApproval:null});
     if (!reopened) throw new TaskError("The task changed while its workspace was checked.","task_changed");
     this.store.addEvent(task.id,"reopened","Reopened the existing task and checkout at the user's explicit request. No agent turn or sandbox was started.");
+    // Closing removed the project source Boat added for its machine: add it back, as before the close (never fatal).
+    if (reopened.hostId !== null && reopened.repoPath !== null && !isPersonalProject(reopened.projectId) && !this.inPersonalFallback(reopened.id)) {
+      await this.ensureProjectSource(reopened.id, reopened.projectId!, reopened.hostId, reopened.repoPath).catch((error) => {
+        this.hooks.log.warn(`task ${reopened.id}: project source: ${errorText(error)}`);
+        this.store.addEvent(reopened.id, "project-source", `Couldn't add the sandbox back to bb project ${reopened.projectId}: ${clip(errorText(error), 300)}`);
+      });
+    }
     this.hooks.changed([task.id]);
     return reopened;
   }
@@ -4409,7 +4450,7 @@ export class BoatService {
       if (sandboxId !== null) this.store.expirePreviewsForSandbox(sandboxId);
     }
     // Closed: the project sources Boat added for its chat go (a kept sandbox's too), unless another open task uses them.
-    await this.releaseProjectSources({ taskId: task.id });
+    await this.releaseTaskSources(current);
     this.hooks.changed([task.id]);
     return { task: this.store.get(task.id) ?? updated, sandbox };
   }
@@ -4774,7 +4815,7 @@ export class BoatService {
           if (removed === "deleted" && closed.sandboxId !== null) this.store.expirePreviewsForSandbox(closed.sandboxId);
         }
       }
-      await this.releaseProjectSources({ taskId: task.id });
+      await this.releaseTaskSources(closed);
       return true;
     }
     // Queued messages (a follow-up, a provider retry), background agents and
