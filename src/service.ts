@@ -954,7 +954,7 @@ export class BoatService {
     if (sandboxProvider.caps.concurrencyUnit === "kept-sandboxes") {
       // The plan counts every machine the provider keeps (a create adds one, a resume none);
       // Sandboxes at once counts the ones running, as it says.
-      const running = active.length + this.sizes.reservedSlots(active, forSandbox);
+      const running = active.length + this.sizes.reservedSlots(active, forSandbox, sandboxProvider.id);
       const planFree = planCap === null ? null : Math.max(0, planCap - Math.max(limits?.activeSandboxes ?? 0, active.length));
       const userFree = userCap === null ? null : Math.max(0, userCap - running);
       const free = planFree === null ? userFree : userFree === null ? planFree : Math.min(planFree, userFree);
@@ -962,7 +962,7 @@ export class BoatService {
     }
     // boat's own count also covers sandboxes the list can miss while they provision.
     // A sandbox stopped for a move to another size keeps its slot (sizes).
-    const used = Math.max(active.length, limits?.activeSandboxes ?? 0) + this.sizes.reservedSlots(active, forSandbox);
+    const used = Math.max(active.length, limits?.activeSandboxes ?? 0) + this.sizes.reservedSlots(active, forSandbox, sandboxProvider.id);
     return { limits, active, cap, free: cap === null ? null : Math.max(0, cap - used) };
   }
 
@@ -1177,7 +1177,8 @@ export class BoatService {
       if (ACTIVE_STATES.has(sandbox.state)) return sandbox;
       if (resumable(sandbox)) {
         // A slot the paid resume claimed for this sandbox is this wake's (it counts once).
-        if (permit === null && this.hooks.wakes !== undefined) permit = await this.hooks.wakes.pacer.acquire({ signal, ids: wakeIds({ sandboxId }) });
+        // Paced only where the provider's wakes are (boat.dev's): another provider's never take or hold one of boat's.
+        if (permit === null && this.hooks.wakes !== undefined && sandboxProvider.caps.pacedWakes === true) permit = await this.hooks.wakes.pacer.acquire({ signal, ids: wakeIds({ sandboxId }) });
         const owned = given === undefined ? permit : null;
         const resumed = await this.withSlotLock(async () => {
           const current = await sandboxProvider.findInfo(sandboxId, signal);
@@ -1460,6 +1461,8 @@ export class BoatService {
       role: input.role,
       settings,
       userApproved: input.userApproved === true,
+      // A new sandbox goes on the task's provider: its plan's sizes apply.
+      provider: sandboxProvider,
     });
     if (input.nativeReview) {
       input.nativeReview.signal?.throwIfAborted();
@@ -3354,7 +3357,8 @@ export class BoatService {
 
   /** A boat resume within the account's wake pacing (src/wake-pacer.ts). */
   private async pacedResume<T>(sandboxId: string, resume: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const permit = await this.hooks.wakes?.pacer.acquire({ signal, ids: wakeIds({ sandboxId }) });
+    // Only a provider whose wakes are paced (boat.dev): another's resume takes no slot and sets no hold.
+    const permit = this.sandboxProvider(sandboxId).caps.pacedWakes === true ? await this.hooks.wakes?.pacer.acquire({ signal, ids: wakeIds({ sandboxId }) }) : undefined;
     try {
       const result = await resume();
       await permit?.succeeded();

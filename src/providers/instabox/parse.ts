@@ -103,7 +103,18 @@ export function toCapacity(raw: JsonRecord): CapacityReport {
       : null,
     checkoutRequired: false,
     autoStopCapHours: null,
+    machineTypes: planSizes(limits.machineSpecs),
   };
+}
+
+/** The plugin's sizes against the plan's (`limits.machineSpecs`: vCPUs and memory a new machine may have); null: not said. */
+export function planSizes(specs: unknown): CapacityReport["machineTypes"] {
+  if (!Array.isArray(specs)) return null;
+  const allowed = specs.map(rec).filter((spec): spec is JsonRecord => spec !== null);
+  return (Object.keys(SPECS) as MachineType[]).map((type) => {
+    const available = allowed.some((spec) => num(spec.vcpus) === SPECS[type].vcpus && num(spec.memMiB) === SPECS[type].memMiB);
+    return { type, available, reason: available ? null : "your Instabox plan doesn't include this size" };
+  });
 }
 
 /**

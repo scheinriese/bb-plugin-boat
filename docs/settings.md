@@ -130,7 +130,8 @@ What works differently on Instabox:
   Instabox, apart from boat.dev's. Instabox's own plan limit counts every
   machine you keep, stopped and paused ones included, so a new task there
   can wait at that limit even when few machines run. Resuming a machine you
-  already have is never held up by it, and the plugin never stops one to
+  already have, or moving it to another size, is never held up by it (only
+  Sandboxes at once counts there), and the plugin never stops one to
   make room (a stop frees nothing there); close finished tasks to delete
   their machines.
 

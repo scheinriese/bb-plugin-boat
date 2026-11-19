@@ -409,7 +409,11 @@ export default async function plugin(bb: BbPluginApi) {
 
   // A chat's queue, failed turn and retries, and the machine it runs on (the paid resume and `bb boat sandbox wake`).
   const resumeThreads = bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(), { error: (line) => bb.log.error(line) });
-  const machineReader = bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await service.sandboxProvider(sandboxId).findInfo(sandboxId))?.state ?? null);
+  const machineReader = {
+    ...bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await service.sandboxProvider(sandboxId).findInfo(sandboxId))?.state ?? null),
+    // Only boat.dev's sandboxes take a slot of its wake pacer.
+    sandboxPaced: (sandboxId: string) => service.sandboxProvider(sandboxId).caps.pacedWakes === true,
+  };
   // Chats stopped at a usage limit continue once paid Claude is available (its own timer, below).
   const paidResume = createPaidResume({
     threads: resumeThreads,
@@ -542,6 +546,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (tasks.length > 0) changed();
     },
     bringUp: (sandboxId, signal, wake) => service.bringUp(sandboxId, signal, wake),
+    providerOf: (sandboxId) => service.sandboxProvider(sandboxId),
     pacer: wakePacer,
     guard: wakes,
     quietLogins: createLoginQuieter(sandboxProviders.default, (line) => bb.log.warn(line)),

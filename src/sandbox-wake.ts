@@ -220,6 +220,8 @@ export interface SandboxWakeDeps {
   boat: Pick<SandboxProvider, "findInfo" | "exec" | "stop" | "stopStatus" | "capacity" | "lastSnapshotAt" | "fork" | "delete">;
   /** Resume it within the slot limit with this wake slot (BoatService.bringUp). */
   bringUp(sandboxId: string, signal: AbortSignal, wake: { permit: WakePermit; paidStart: boolean }): Promise<unknown>;
+  /** The provider a sandbox is on, by id and name (absent: boat.dev): this wake is boat.dev's. */
+  providerOf?(sandboxId: string): { id: string; displayName: string };
   pacer: WakePacer;
   /** Boat's own wake retries and node moves (src/wake-retry.ts). */
   guard?: Pick<WakeGuard, "forget" | "moving">;
@@ -652,7 +654,25 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
     return rows.filter((row) => isOpen(row) && typeof row.id === "string").map((row) => row.id!);
   }
 
+  /**
+   * The target, on boat.dev only: this wake is boat.dev's (its disk restore,
+   * its start limits and wake pacing). Another provider's machine is refused
+   * with what brings it back.
+   */
   async function resolve(input: string): Promise<WakeTarget> {
+    const target = await resolveTarget(input);
+    const provider = deps.providerOf?.(target.sandboxId) ?? null;
+    if (provider !== null && provider.id !== "boat") {
+      throw new TaskError(
+        `${target.kind === "sandbox" ? `Sandbox ${target.sandboxId}` : `${target.input} runs on ${provider.displayName} machine ${target.sandboxId}, which`} isn't on boat.dev: this wake is for boat.dev sandboxes.`,
+        "not_on_boat",
+        `Bring it back with \`bb boat sandbox resume ${target.sandboxId}\`, or send its task a follow-up${target.taskIds[0] ? ` (\`bb boat task followup ${target.taskIds[0]} …\`)` : ""}.`,
+      );
+    }
+    return target;
+  }
+
+  async function resolveTarget(input: string): Promise<WakeTarget> {
     const id = input.trim();
     if (id === "") throw new TaskError("Name the sandbox, chat or task to wake.", "missing_target", "bb boat sandbox wake <sandbox id | thread id | task id>");
     if (/^bx_[A-Za-z0-9]+$/.test(id)) {

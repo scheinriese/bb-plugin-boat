@@ -95,6 +95,8 @@ export interface MachineState {
   connected: boolean;
   /** bb's lifecycle message (a failed resume says why). */
   message: string | null;
+  /** bb's machine provider ("boat-sandbox", "instabox-sandbox", …; absent: not said). */
+  machineProviderId?: string | null;
 }
 
 export interface ChatRunner {
@@ -265,12 +267,13 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
         if (isNotFound(error)) return null;
         throw error;
       }
-      const host = ((raw as { host?: unknown } | null)?.host ?? raw) as { status?: string; lifecycle?: { phase?: string; message?: string | null } | null } | null;
+      const host = ((raw as { host?: unknown } | null)?.host ?? raw) as { status?: string; machineProviderId?: string | null; lifecycle?: { phase?: string; message?: string | null } | null } | null;
       if (host === null) return null;
       return {
         phase: typeof host.lifecycle?.phase === "string" ? host.lifecycle.phase : null,
         connected: host.status === "connected",
         message: typeof host.lifecycle?.message === "string" && host.lifecycle.message !== "" ? host.lifecycle.message : null,
+        ...(typeof host.machineProviderId === "string" ? { machineProviderId: host.machineProviderId } : {}),
       };
     },
 

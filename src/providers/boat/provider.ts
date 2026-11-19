@@ -33,6 +33,7 @@ export const BOAT_CAPABILITIES: SandboxCapabilities = {
   // Hard stop after (`--ttl`, `boat extend`); it counts only boat's own agents as working.
   autoStop: { extendable: true, seesBbActivity: false },
   agentBusyState: true,
+  pacedWakes: true,
   previews: "token-link",
   bbEnrollment: true,
   concurrencyUnit: "sandboxes",

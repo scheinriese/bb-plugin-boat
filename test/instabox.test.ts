@@ -25,6 +25,8 @@ import { prepareRepo } from "../src/sandbox-repos.ts";
 import { BoatService, TaskError, type BoatSettings } from "../src/service.ts";
 import { normalizeProject, toOrchestratorProject } from "../src/projects.ts";
 import { FakeBoat, defaultSettings, memoryStore } from "./fakes.ts";
+import { hostCheck, worstCheck } from "../src/paid-resume.ts";
+import type { MachineType } from "../src/providers/types.ts";
 import type { RunsOnDto, SandboxProvidersResultDto } from "../contract-providers.ts";
 // @ts-expect-error: a plain JavaScript fixture.
 import { startFakeInstaboxApi } from "../src/providers/instabox/fixtures/fake-api.mjs";
@@ -481,6 +483,13 @@ test("the plugin with Instabox on and a key in bb's secret settings: providers, 
   assert.deepEqual([sandbox.runsOn?.provider, sandbox.sshCommand], ["instabox", `instabox ssh ${task.sandboxId}`]);
   assert.match((await cli(["sandbox", "list", "--all"])).stdout, new RegExp(`Instabox {2}${task.sandboxId}`));
 
+  // boat.dev's wake procedure isn't for an Instabox machine: refused, with what brings it back.
+  const wake = await cli(["sandbox", "wake", taskId]);
+  assert.notEqual(wake.exitCode, 0);
+  assert.match(`${wake.stdout}${wake.stderr}`, new RegExp(`runs on Instabox machine ${task.sandboxId}, which isn't on boat\\.dev: this wake is for boat\\.dev sandboxes`));
+  assert.match(`${wake.stdout}${wake.stderr}`, new RegExp(`bb boat sandbox resume ${task.sandboxId}`));
+  assert.ok(!(box.state().calls as string[]).some((call) => call.startsWith("stop ")), "nothing of boat's wake ran on it");
+
   // The key: never in what the CLI printed, the page got, the logs, or the task's history.
   const everything = JSON.stringify([
     listed,
@@ -510,15 +519,23 @@ test("machine names follow Instabox's rule: lowercase letters, digits and hyphen
 });
 
 /** A service with boat.dev (FakeBoat) and Instabox (the fakes), and settings a test can change. */
-async function bothProviders(t: { after(fn: () => unknown): void }, options: { state?: Record<string, unknown>; settings?: Partial<BoatSettings> } = {}) {
+async function bothProviders(
+  t: { after(fn: () => unknown): void },
+  options: { state?: Record<string, unknown>; settings?: Partial<BoatSettings>; instabox?: (provider: SandboxProvider) => SandboxProvider; serviceHooks?: Record<string, unknown> } = {},
+) {
   const box = await instabox(t, { state: options.state });
   const fakeBoat = new FakeBoat();
   const store = memoryStore();
   let settings = defaultSettings({ maxActiveSandboxes: 0, ...options.settings });
-  const registry = createProviderRegistry([createBoatProvider(fakeBoat as unknown as BoatApi), box.provider]);
-  const service = new BoatService(registry, store, { ...hooks({ projects: () => [WEB] }).hooks, settings: async () => settings });
+  const registry = createProviderRegistry([createBoatProvider(fakeBoat as unknown as BoatApi), options.instabox?.(box.provider) ?? box.provider]);
+  const service = new BoatService(registry, store, {
+    ...hooks({ projects: () => [WEB] }).hooks,
+    settings: async () => settings,
+    sizeTiming: { checkMs: 2_000, pollMs: 1, stopMs: 5_000, startMs: 5_000, reconnectMs: 2_000 },
+    ...options.serviceHooks,
+  });
   const project = toOrchestratorProject(normalizeProject({ id: "web", name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }] }));
-  return { box, fakeBoat, store, service, project, setSettings: (next: Partial<BoatSettings>) => void (settings = { ...settings, ...next }) };
+  return { box, fakeBoat, store, service, registry, project, setSettings: (next: Partial<BoatSettings>) => void (settings = { ...settings, ...next }) };
 }
 
 test("a stopped Instabox machine resumes at the plan's machine limit (it's counted already); a new one doesn't", async (t) => {
@@ -587,4 +604,108 @@ test("an automatic review of an Instabox task reads Instabox's room: at its limi
   assert.equal(own.sandboxProvider, "instabox");
   assert.notEqual(own.sandboxId, parent.sandboxId);
   assert.match(own.sandboxId ?? "", /^m_/);
+});
+
+/** A move of the task's sandbox to another size, from the page. */
+const resizeTo = (taskId: string, type: MachineType) => ({ taskId, type, message: null, userApproved: true, notifyThreadId: null, waitMs: 20_000, by: "page" as const });
+
+test("resizing an Instabox machine at its plan's machine limit is a restart, not a new machine: it moves", async (t) => {
+  const env = await bothProviders(t, { state: { autoReply: REPORT, maxMachines: 1 } });
+  const { task } = await env.service.launchTask({ title: "Fix it", role: "implement", brief: "x", project: env.project }, 10_000);
+  await env.service.sweep();
+  assert.equal(env.store.get(task.id)!.status, "idle");
+  assert.equal((await env.box.provider.capacity()).canStart, false, "no new machine fits the plan");
+  // The dialog: nothing blocks the move.
+  const info = await env.service.sizes.info(task.id);
+  assert.equal(info.blocker, null, JSON.stringify(info.blocker));
+  // The move: stopped, resized, started again; the same machine, now Large.
+  const result = await env.service.sizes.resize(resizeTo(task.id, "large"));
+  assert.equal(result.sent, false);
+  const calls = env.box.state().calls as string[];
+  assert.ok(calls.includes(`stop ${task.sandboxId} --json`), calls.join("\n"));
+  assert.ok(calls.includes(`resize ${task.sandboxId} --vcpus 8 --mem-mib 16384 --json`));
+  assert.ok(calls.includes(`start ${task.sandboxId} --json`));
+  assert.equal((await env.box.provider.info(task.sandboxId!)).machineType, "large");
+  assert.equal(Object.keys(env.box.state().machines).length, 1);
+});
+
+test("a move of an Instabox machine reserves no slot of boat.dev's (nor the other way round)", async (t) => {
+  let held: Promise<void> | null = null;
+  let release = () => undefined as void;
+  const env = await bothProviders(t, {
+    state: { autoReply: REPORT },
+    settings: { maxActiveSandboxes: 1 },
+    // The move's first look at the machine waits until the test lets it go.
+    instabox: (provider) => ({ ...provider, findInfo: async (id, signal) => ((held !== null ? await held : undefined), provider.findInfo(id, signal)) }),
+  });
+  const { task } = await env.service.launchTask({ title: "Fix it", role: "implement", brief: "x", project: env.project }, 10_000);
+  await env.service.sweep();
+  const boat = env.registry.default;
+  assert.deepEqual(pick(await env.service.capacity(undefined, undefined, boat)), { active: 0, free: 1 });
+  held = new Promise<void>((resolve) => (release = resolve));
+  const moving = env.service.sizes.resize(resizeTo(task.id, "large"));
+  for (let tries = 0; !env.service.sizes.isResizing(task.sandboxId!) && tries < 200; tries += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(env.service.sizes.isResizing(task.sandboxId!));
+  // boat.dev's room doesn't change for an Instabox move.
+  assert.deepEqual(pick(await env.service.capacity(undefined, undefined, boat)), { active: 0, free: 1 });
+  held = null;
+  release();
+  await moving;
+});
+
+function pick(room: { active: unknown[]; free: number | null }) {
+  return { active: room.active.length, free: room.free };
+}
+
+test("only boat.dev's wakes take a slot of the wake pacer: an Instabox resume takes none and holds nothing", async (t) => {
+  const acquired: string[][] = [] as string[][];
+  const pacer = {
+    acquire: async (options: { ids?: string[] }) => {
+      acquired.push(options.ids ?? []);
+      return { succeeded: async () => undefined, failed: async () => undefined };
+    },
+  };
+  const env = await bothProviders(t, { state: { autoReply: REPORT }, serviceHooks: { wakes: { pacer, forget: async () => undefined } } });
+  const { task } = await env.service.launchTask({ title: "Fix it", role: "implement", brief: "x", project: env.project }, 10_000);
+  await env.service.sweep();
+  await env.box.provider.stop(task.sandboxId!);
+  await env.service.bringUp(task.sandboxId!);
+  assert.deepEqual(acquired, [], "no slot for an Instabox machine");
+  // boat.dev's are paced as before.
+  const sandbox = env.fakeBoat.addSandbox("bx_9", "default", "stopped");
+  await env.service.bringUp(sandbox.id);
+  assert.equal(acquired.length, 1);
+  assert.ok((acquired[0] as string[]).some((id: string) => id.includes("bx_9")), JSON.stringify(acquired));
+});
+
+test("paid resume wakes an Instabox machine without a slot of boat.dev's pacer", () => {
+  const instaboxHost = hostCheck({ phase: "suspended", connected: false, message: null, machineProviderId: INSTABOX_MACHINE_PROVIDER_ID }, "host:h_1");
+  assert.deepEqual(instaboxHost, { state: "asleep", ids: ["host:h_1"], unpaced: true });
+  const boatHost = hostCheck({ phase: "suspended", connected: false, message: null, machineProviderId: "boat-sandbox" }, "host:h_2");
+  assert.deepEqual(boatHost, { state: "asleep", ids: ["host:h_2"] }, "boat.dev's machine is paced as before");
+  assert.deepEqual(hostCheck({ phase: "suspended", connected: false, message: null }, "host:h_3"), { state: "asleep", ids: ["host:h_3"] }, "a machine bb doesn't name stays paced");
+  // One paced machine in the mix: the wake is paced.
+  assert.deepEqual(worstCheck([instaboxHost, boatHost]), { state: "asleep", ids: ["host:h_1", "host:h_2"] });
+  assert.deepEqual(worstCheck([instaboxHost]), { state: "asleep", ids: ["host:h_1"], unpaced: true });
+});
+
+test("Instabox's own plan sizes apply to its machines; boat.dev's plan doesn't", async (t) => {
+  // boat.dev's plan has no Large (and its reading must not decide an Instabox size); Instabox's Pro plan has up to Large.
+  const boatPlan = [{ type: "small", available: true, reason: null }, { type: "default", available: true, reason: null }, { type: "large", available: false, reason: "needs a bigger boat plan" }, { type: "xlarge", available: false, reason: "needs a bigger boat plan" }];
+  const pro = [{ vcpus: 2, memMiB: 4096 }, { vcpus: 4, memMiB: 8192 }, { vcpus: 8, memMiB: 16384 }];
+  const env = await bothProviders(t, { state: { autoReply: REPORT, machineSpecs: pro }, serviceHooks: { sizePlan: async () => boatPlan, sizePlanNow: () => boatPlan } });
+  const capacity = await env.box.provider.capacity();
+  assert.deepEqual(capacity.machineTypes?.map((entry) => [entry.type, entry.available]), [["small", true], ["default", true], ["large", true], ["xlarge", false]]);
+  // A new Large machine is fine on Instabox; boat.dev's plan has no say.
+  const { task } = await env.service.launchTask({ title: "Big", role: "implement", brief: "x", project: env.project, machineType: "large" }, 10_000);
+  assert.equal(task.status, "running", task.error ?? "");
+  await env.service.sweep();
+  // XLarge isn't on the Instabox plan: refused in Instabox's words, before anything stops.
+  await assert.rejects(env.service.sizes.resize(resizeTo(task.id, "xlarge")), (error: unknown) => {
+    assert.ok(error instanceof TaskError);
+    assert.equal(error.code, "size_not_on_plan");
+    assert.match(error.message, /^Your Instabox plan doesn't include XLarge sandboxes: your Instabox plan doesn't include this size\.$/);
+    return true;
+  });
+  assert.ok(!(env.box.state().calls as string[]).some((call) => call.startsWith("stop ")));
 });

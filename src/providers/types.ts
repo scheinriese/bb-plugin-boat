@@ -117,6 +117,13 @@ export interface SandboxCapabilities {
   } | null;
   /** The state says when the provider's own agent works ("running"). */
   agentBusyState: boolean;
+  /**
+   * Its wakes go through the plugin's wake pacer (src/wake-pacer.ts: 2 a
+   * minute account-wide, a pause after a failed one): boat.dev restores a
+   * woken disk lazily and limits starts. Absent: its wakes aren't paced,
+   * and never take or hold one of boat.dev's.
+   */
+  pacedWakes?: boolean;
   /** How a sandbox port is opened: a link that carries its own token. */
   previews: "token-link";
   /** bb can run its daemon there (task chats and cloud orchestrators). */
@@ -155,6 +162,11 @@ export interface CapacityReport {
   extraStartsEnabled?: boolean | null;
   /** What the next start costs, in dollars (0: included; null: not said). */
   nextStartDollars?: number | null;
+  /**
+   * The sizes the plan allows, when the provider says so here (boat.dev's
+   * come from its setup reading instead). Absent or null: not said.
+   */
+  machineTypes?: { type: MachineType; available: boolean; reason: string | null }[] | null;
 }
 
 /** The plan's included hours this period (null: the provider doesn't say). */

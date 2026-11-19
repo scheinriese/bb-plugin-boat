@@ -875,7 +875,8 @@ export function registerRpc(runtime: Runtime): void {
     sandboxAction: ({ id, action }) =>
       refuse(async () => {
         const settings = await service.settings();
-        const { limits } = await service.capacity();
+        // The sandbox's own provider's limits (its auto-stop cap), never another's.
+        const { limits } = await service.capacity(undefined, id);
         const hours = autoStopHours(settings.sandboxTtlHours, limits?.autoStopCapHours ?? null);
         if (action !== "delete") await service.sandboxAction(id, action, Math.round(hours * 3600));
         else {

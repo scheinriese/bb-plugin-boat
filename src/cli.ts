@@ -378,7 +378,8 @@ export function buildCli(runtime: Runtime) {
         async run({ positionals, options }, ctx) {
           return guard(async () => {
             const settings = await service.settings();
-            const { limits } = await service.capacity(ctx.signal);
+            // The sandbox's own provider's limits (its auto-stop cap), never another's.
+            const { limits } = await service.capacity(ctx.signal, positionals.id);
             const ttl = Math.round(autoStopHours(settings.sandboxTtlHours, limits?.autoStopCapHours ?? null) * 3600);
             await service.sandboxAction(positionals.id, "resume", ttl, ctx.signal);
             runtime.changed();
@@ -1819,7 +1820,8 @@ function assertProjectSizeAllowed(size: string | undefined, userApproved: boolea
 /** A project size the plan doesn't allow (yet): what happens until it does. */
 async function projectSizeNote(runtime: Runtime, project: BoatProject): Promise<string | null> {
   if (project.machineType === null) return null;
-  const verdict = await runtime.service.sizes.projectSizeVerdict(project.machineType);
+  // Its own provider's plan (boat.dev's; another's isn't known ahead, and that provider refuses in its words).
+  const verdict = await runtime.service.sizes.projectSizeVerdict(project.machineType, runtime.service.sandboxProviders.forProject(project));
   if (verdict.allowed) return null;
   const label = SIZE_SPECS[project.machineType].label;
   return `Note: your boat plan doesn't include ${label} right now (${(verdict.reason ?? "").replace(/[.\s]+$/, "")}). Until it does, this project's tasks start on the Default sandbox size setting.`;
