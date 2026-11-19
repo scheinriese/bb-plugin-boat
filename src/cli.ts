@@ -1,8 +1,8 @@
 import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidelity.ts";
 // `bb boat …` — the agent- and human-facing command line.
 import { PluginCliError, cliCommand, defineCli, type PluginCliContext } from "@get-bb/plugin-sdk";
-import { MACHINE_TYPES, autoStopHours, dashboardUrl, type MachineType } from "./providers/boat/api.ts";
-import { BoatError } from "./providers/boat/cli.ts";
+import { dashboardUrl } from "./providers/boat/api.ts";
+import { MACHINE_TYPES, ProviderError, autoStopHours, type MachineType } from "./providers/types.ts";
 import { describeClose } from "./close-outcome.ts";
 import {
   agentLine,
@@ -29,7 +29,7 @@ import { AGENT_NAME, effectiveRelay, onlyAgent, otherAgent, relayNote } from "./
 import { SIZE_SPECS } from "./memory.ts";
 import { wakeText } from "./sandbox-wake.ts";
 import { resizeText } from "./sandbox-size.ts";
-import { doctorText, explainBoatError, testTaskInput, type SetupStatus } from "./providers/boat/setup.ts";
+import { doctorText, testTaskInput, type SetupStatus } from "./providers/boat/setup.ts";
 import { ALL_SETTINGS, ORCHESTRATOR_EFFORTS, parseSettingText, type SettingKey } from "./settings.ts";
 import { choiceSummary } from "./orchestrator-agent.ts";
 import { SettingsError, settingRows, settingsText, type SettingRow } from "./settings-store.ts";
@@ -73,8 +73,8 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
   } catch (error) {
     if (error instanceof PluginCliError) throw error;
     if (error instanceof TaskError) throw new PluginCliError(error.message, { code: error.code, hint: error.hint });
-    if (error instanceof BoatError) {
-      const explained = explainBoatError(error);
+    if (error instanceof ProviderError) {
+      const explained = error.explain();
       throw new PluginCliError(explained.message, { code: explained.code, ...(explained.hint ? { hint: explained.hint } : {}) });
     }
     throw error;
@@ -185,8 +185,8 @@ export function buildCli(runtime: Runtime) {
             try {
               capacity = await service.capacity(ctx.signal);
             } catch (error) {
-              if (!(error instanceof BoatError) || setup === null) throw error;
-              boatProblem = explainBoatError(error).message;
+              if (!(error instanceof ProviderError) || setup === null) throw error;
+              boatProblem = error.explain().message;
               // boat just failed: the cached checks may be out of date.
               setup = await setupStatus(runtime, true).catch(() => setup);
             }
@@ -236,7 +236,7 @@ export function buildCli(runtime: Runtime) {
         options: { all: { type: "boolean", description: "Include stopped and failed sandboxes" }, json },
         async run({ options }, ctx) {
           return guard(async () => {
-            const sandboxes = await service.boat.list({ all: options.all, signal: ctx.signal });
+            const sandboxes = await service.sandboxProviders.default.list({ all: options.all, signal: ctx.signal });
             return out(sandboxes, options.json, () =>
               sandboxes.length === 0
                 ? "No sandboxes."
@@ -281,14 +281,14 @@ export function buildCli(runtime: Runtime) {
             if (repo !== null) {
               const always = alwaysProtectedBranches((await service.settings()).extraProtectedBranches);
               try {
-                checkout = await service.boat.prepareRepo(
+                checkout = await service.sandboxProviders.forSandbox(sandbox.id).prepareRepo(
                   sandbox.id,
                   repo,
                   branch ? { kind: "new-branch", branch, base } : { kind: "default-branch", base },
                   { signal: ctx.signal, protect: protectedBranches(null, [base, ...service.projectBaseBranches([repo])], always), alwaysProtect: always },
                 );
               } catch (error) {
-                await service.boat.delete(sandbox.id).catch(() => undefined);
+                await service.sandboxProviders.forSandbox(sandbox.id).delete(sandbox.id).catch(() => undefined);
                 throw error;
               }
             }
@@ -313,7 +313,7 @@ export function buildCli(runtime: Runtime) {
         options: { json },
         async run({ positionals, options }, ctx) {
           return guard(async () => {
-            const sandbox = await service.boat.info(positionals.id, ctx.signal);
+            const sandbox = await service.sandboxProviders.forSandbox(positionals.id).info(positionals.id, ctx.signal);
             const tasks = service.store.list({ limit: 1000 }).filter((task) => task.sandboxId === sandbox.id);
             return out({ sandbox, tasks }, options.json, () =>
               [
@@ -515,7 +515,7 @@ export function buildCli(runtime: Runtime) {
               passthrough.length === 1
                 ? passthrough[0]!
                 : passthrough.map((part) => `'${part.replace(/'/g, `'\\''`)}'`).join(" ");
-            const result = await service.boat.exec(positionals.id, command, {
+            const result = await service.sandboxProviders.forSandbox(positionals.id).exec(positionals.id, command, {
               timeoutMs: options.timeout,
               signal: ctx.signal,
             });
@@ -747,7 +747,7 @@ export function buildCli(runtime: Runtime) {
             if (task.sandboxId === null || task.conversationId === null) {
               throw new PluginCliError(`Task ${task.id} has no conversation yet.`, { code: "task_not_dispatched" });
             }
-            const events = (await service.boat.events(task.sandboxId, task.conversationId, ctx.signal)).slice(-options.limit);
+            const events = (await service.sandboxProviders.forTask(task).events(task.sandboxId, task.conversationId, ctx.signal)).slice(-options.limit);
             const moved =
               task.runner === "chat" && task.threadId !== null
                 ? `Task ${task.id} now runs as the task chat @thread:${task.threadId}; below is its headless conversation from before the move.\n`

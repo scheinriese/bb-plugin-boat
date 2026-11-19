@@ -3,13 +3,11 @@ import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidel
 // with schemas (no shell quoting for long briefs) and timeline labels.
 import type { PluginAgentToolResult } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { MACHINE_TYPES, type MachineType } from "./providers/boat/api.ts";
-import { BoatError } from "./providers/boat/cli.ts";
+import { MACHINE_TYPES, ProviderError, type MachineType } from "./providers/types.ts";
 import { describeClose } from "./close-outcome.ts";
 import { agentLine, ago, decisionLines, limitsLine, overviewLink, taskDetail, taskNote, taskTable, tasksAtOnceLine, queuedStartMarker } from "./format.ts";
 import { parseProjectRef, type Runtime } from "./runtime.ts";
 import { TaskError } from "./service.ts";
-import { explainBoatError } from "./providers/boat/setup.ts";
 import { OPEN_STATUSES, PROVIDERS, TASK_ROLES, TASK_STATUSES, type Provider, type Task, type TaskStatus } from "./store.ts";
 import { EFFORTS, TIERS, type Tier } from "./tiers.ts";
 import { resizeText } from "./sandbox-size.ts";
@@ -37,7 +35,7 @@ export const TOOL_NAMES = [
 ] as const;
 
 function failure(error: unknown): PluginAgentToolResult {
-  const explained = error instanceof BoatError ? explainBoatError(error) : null;
+  const explained = error instanceof ProviderError ? error.explain() : null;
   const message =
     error instanceof TaskError
       ? `${error.message}${error.hint ? `\nHint: ${error.hint}` : ""}`
@@ -401,7 +399,7 @@ export function registerTools(runtime: Runtime): void {
           ].join("\n");
         }
         if (task.sandboxId === null || task.conversationId === null) return `Task ${task.id} has no conversation yet.`;
-        const all = await service.boat.events(task.sandboxId, task.conversationId, ctx.signal);
+        const all = await service.sandboxProviders.forTask(task).events(task.sandboxId, task.conversationId, ctx.signal);
         const events = all.slice(-(params.limit ?? 40));
         const times = all.map((event) => event.timestamp).filter((time): time is number => time !== null && time > 0);
         // The "stuck for 20+ minutes" check needs the worker's last activity, not the task's last status change.
