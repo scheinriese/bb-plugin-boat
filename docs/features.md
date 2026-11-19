@@ -427,18 +427,25 @@ the pieces above, in the order that worked by hand:
 1. A stopped sandbox is resumed with a wake slot, within the boat start
    limit. When no included start is left it says so; a paid extra start needs
    `--allow-paid-start`, and the plugin never turns paid extra starts on.
+   Limits that don't show a start is included (unreadable, or partial with
+   paid extra starts not known to be off) count as possibly paid.
 2. It waits until boat's exec answers, then looks at the disk, the SSH login
-   and bb's install there.
-3. A disk that's unreadable or stuck, an exec that never answers, or an `npm
-   install` zombie: it stops the sandbox and starts it again, boat.dev's fix
-   for a stuck sandbox. That's a plain stop first, followed by its status
-   (never a second stop), and `--force` only when nothing there could be lost,
-   checked as for a move to a new node. Otherwise it stops with the facts and
-   the commands. Still unreadable after that: Needs you.
-4. Login message scripts off, bb's safe update when it's older than the server
-   or broken (not while bb's machine is connected), bb's service restarted,
-   then `bb machine resume` if bb has the machine suspended, and a wait until
-   it connects. Without bb's download on the sandbox it says so, and gives the
+   and bb's install there. A read waiting on the disk is waited for first, up
+   to 2 minutes.
+3. A disk that's unreadable, reads still stuck after that wait, an exec that
+   never answers, or an `npm install` zombie: it stops the sandbox and starts
+   it again, boat.dev's fix for a stuck sandbox. That's a plain stop first,
+   followed by its status (never a second stop). `--force` comes only as for a
+   move to a new node: nothing there could be lost, and a test fork of the
+   snapshot reads fine on another node. Never under a running turn: a
+   headless agent, or a chat on a machine that's connected or that the plugin
+   can't read. Otherwise it stops with the facts and the commands. Still
+   unreadable after that: Needs you.
+4. Login message scripts off. When bb has the machine suspended, only `bb
+   machine resume` (bb's own resume updates bb safely and starts it). When it's
+   disconnected but not suspended, bb's safe update if it's older than the
+   server or broken, and bb's service restarted. Then a wait until it
+   connects. Without bb's download on the sandbox it says so, and gives the
    npm registry install as a manual step only.
 5. The chat: a pending provider retry is sent now, a failed turn is retried
    (not one stopped at a usage limit), and a queue that's already sending is
@@ -446,6 +453,14 @@ the pieces above, in the order that worked by hand:
 
 `--dry-run` only looks and prints the plan, `--json` gives the report. When it
 stops for safety it exits 1 with "Needs you" and the commands to run.
+
+One wake per sandbox runs at a time (a second one shows the first one's
+progress), for at most 25 minutes; no stop goes out without time left to
+start the sandbox again. The command waits up to 90 seconds, then the wake
+goes on in the plugin: `bb boat sandbox wake <id> --status` shows it, and the
+chat that asked gets a `[boat]` message when it's done. A wake cut off
+between its stop and its start (a reload) leaves a note in the plugin's
+storage, and the next check starts the sandbox again.
 
 ![A task chat: the worker's brief and progress, its parent orchestrator, and the boat sandbox it runs on](screenshots/worker-chat.png)
 

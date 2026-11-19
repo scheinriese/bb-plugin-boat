@@ -25,23 +25,36 @@ sandbox by hand (no `pkill`, no new `boat stop` to read a stop's state, no
 2. Waits until boat's exec answers, then looks at it: the disk restoring or
    failing (`HYDRATOR FAILED … 503`, "Input/output error"), SSH logins that
    hang, bb's daemon broken or older than the server, an `npm install` zombie.
-3. A disk that's unreadable or stuck, or an npm zombie: it stops the sandbox
-   and starts it again, boat.dev's fix for a stuck sandbox. A plain stop
-   first (a fresh snapshot, nothing lost), followed by its status; `--force`
-   only when nothing there could be lost (no turn running, no unpushed
-   commits, changes or stashes in any checkout). Otherwise it stops and
-   prints the facts and the exact commands.
-4. Turns off the login message scripts, updates bb there safely when it's old
-   or broken (from the server's download on the sandbox; without one it says
-   so, with the npm registry as a manual step only), restarts bb's service,
-   resumes bb's machine if it's suspended and waits until it connects.
+   A read waiting on the disk is waited for first (up to 2 minutes).
+3. A disk that's unreadable, reads still stuck after that wait, or an npm
+   zombie: it stops the sandbox and starts it again, boat.dev's fix for a
+   stuck sandbox. A plain stop first (a fresh snapshot, nothing lost),
+   followed by its status. `--force` only when nothing there could be lost
+   (no turn running, no unpushed commits, changes or stashes in any checkout)
+   and a test fork of its snapshot reads fine on another node. Otherwise it
+   stops and prints the facts and the exact commands.
+4. Turns off the login message scripts. bb's machine suspended: only `bb
+   machine resume` (bb's own resume updates bb safely and starts it). Not
+   suspended but disconnected: updates bb there safely when it's old or broken
+   (from the server's download on the sandbox; without one it says so, with
+   the npm registry as a manual step only) and restarts bb's service. Then it
+   waits until the machine connects.
 5. Retries the chat: sends its pending provider retry now, retries its failed
    turn, or leaves it when its queue is already sending.
+
+One wake per sandbox runs at a time; a second one shows the first one's
+progress. A wake takes at most 25 minutes. The command waits up to 90
+seconds, then the wake goes on: `bb boat sandbox wake <id> --status` shows
+it, and the chat that asked gets a `[boat]` message when it's done. A wake
+cut off between its stop and its start (a reload) is finished by the plugin:
+it starts the sandbox again.
 
 ## Options
 
 - `--dry-run`: only looks and prints the plan; changes nothing.
 - `--json`: the report as JSON (steps, the diagnosis, what needs you).
+- `--status`: the running or last wake of that sandbox; starts nothing.
+  Orchestrators: `boat_wake` with `status: true`.
 - `--allow-paid-start`: allow a paid extra boat start when no included start
   is left. Only when the user agreed in this chat. Without it, the command
   stops and says so. Boat never turns on paid extra starts.
@@ -49,7 +62,16 @@ sandbox by hand (no `pkill`, no new `boat stop` to read a stop's state, no
 ## When it stops
 
 It exits 1 with **Needs you** and the commands to run when it stops for
-safety: a stop it won't force (and why), a disk still unreadable after a stop
-and a start, no boat start left, a paid start without `--allow-paid-start`,
-or bb's machine not connecting. Tell the user what it says; don't work around
-it.
+safety:
+
+- a turn is running there (a headless agent, or a chat on a machine that's
+  connected or that Boat can't read): a stop would interrupt it;
+- a stop it won't force, and why (work that could be lost, or a test fork
+  that couldn't read the snapshot);
+- a disk still unreadable after a stop and a start;
+- no boat start left, or a paid start without `--allow-paid-start`;
+- too little of its 25 minutes left to stop the sandbox and start it again
+  (nothing is stopped then);
+- bb's machine not connecting.
+
+Tell the user what it says; don't work around it.
