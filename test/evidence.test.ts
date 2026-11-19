@@ -32,7 +32,7 @@ import { PLUGIN_SETTINGS } from "../src/settings.ts";
 import { notificationText, taskDetail } from "../src/format.ts";
 import { TaskError, clipResult } from "../src/service.ts";
 import { contentsPath } from "../src/github.ts";
-import { testTaskInput } from "../src/setup.ts";
+import { testTaskInput } from "../src/providers/boat/setup.ts";
 import { makeService } from "./fakes.ts";
 
 const LINK =

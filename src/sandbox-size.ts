@@ -8,7 +8,7 @@
 // plugin (no database migration). BoatService builds one SandboxSizes and
 // calls it from a few places (marked "sizes" there).
 import type { TaskMemoryDto, ResizeInfoDto } from "../contract-size.ts";
-import { ACTIVE_STATES, type BoatApi, type MachineType, type Sandbox } from "./boat-api.ts";
+import { ACTIVE_STATES, type MachineType, type SandboxInfo as Sandbox, type SandboxProvider } from "./providers/types.ts";
 import { trimFreedBlocks } from "./disk-trim.ts";
 import {
   DATA_KIND,
@@ -63,7 +63,8 @@ type DataOf<T extends MemoryData["type"]> = Extract<MemoryData, { type: T }>;
 type FollowupOptions = NonNullable<Parameters<BoatService["followup"]>[2]>;
 
 export interface SizesDeps {
-  boat: BoatApi;
+  /** A sandbox's provider (BoatService.sandboxProvider). */
+  sandboxProvider(sandboxId: string): SandboxProvider;
   store: TaskStore;
   hooks: ServiceHooks;
   settings(): Promise<BoatSettings>;
@@ -285,7 +286,7 @@ export class SandboxSizes {
     const started = Date.now();
     try {
       const signal = AbortSignal.any([this.deps.hooks.lifecycle, AbortSignal.timeout(cap), ...(options.signal ? [options.signal] : [])]);
-      const result = await within(this.deps.boat.exec(sandboxId, script, { timeoutMs: Math.min(15_000, cap), signal }), cap);
+      const result = await within(this.deps.sandboxProvider(sandboxId).exec(sandboxId, script, { timeoutMs: Math.min(15_000, cap), signal }), cap);
       if (result === null) {
         this.deps.hooks.log.warn(`memory check ${sandboxId}: no answer within ${Math.round(cap / 1000)}s`);
         return null;
@@ -351,7 +352,7 @@ export class SandboxSizes {
 
   private async startSampler(task: Task, sandboxId: string, signal: AbortSignal): Promise<void> {
     try {
-      const started = await within(this.deps.boat.execDetached(sandboxId, samplerScript(task.id), AbortSignal.any([signal, AbortSignal.timeout(this.timing.checkMs)])), this.timing.checkMs);
+      const started = await within(this.deps.sandboxProvider(sandboxId).execDetached(sandboxId, samplerScript(task.id), AbortSignal.any([signal, AbortSignal.timeout(this.timing.checkMs)])), this.timing.checkMs);
       if (started === null) throw new Error("no answer");
       this.record(task.id, { type: "sampler", sandboxId, turn: task.turns + 1, pid: started.pid });
       this.say(task.id, MEMORY_KIND, "Measuring peak memory during this turn.");
@@ -503,7 +504,7 @@ export class SandboxSizes {
     const sandboxId = task.sandboxId!;
     const left = () => Math.max(0, context.deadline - Date.now());
     // Only a sandbox that's up: a stopped one (idle stop, a suspended machine) is never resumed for this.
-    const sandbox = context.sandbox ?? (await within(this.deps.boat.findInfo(sandboxId, this.deps.hooks.lifecycle), left()).catch(() => null));
+    const sandbox = context.sandbox ?? (await within(this.deps.sandboxProvider(sandboxId).findInfo(sandboxId, this.deps.hooks.lifecycle), left()).catch(() => null));
     if (sandbox === null || sandbox === undefined || !ACTIVE_STATES.has(sandbox.state)) return;
     const events = this.deps.store.events(task.id, 1000);
     const window = turnWindow(events, chatSentAt(task));
@@ -716,7 +717,7 @@ export class SandboxSizes {
 
   /** A sandbox's size from boat, else from the plugin's own last move of it (null: not known that way). */
   private async trustedType(sandboxId: string, taskId: string): Promise<MachineType | null> {
-    const info = await within(this.deps.boat.findInfo(sandboxId, this.deps.hooks.lifecycle), this.timing.checkMs).catch(() => null);
+    const info = await within(this.deps.sandboxProvider(sandboxId).findInfo(sandboxId, this.deps.hooks.lifecycle), this.timing.checkMs).catch(() => null);
     if (info?.machineType) return info.machineType;
     const moved = this.data(taskId)
       .map((entry) => entry.data)
@@ -881,7 +882,7 @@ export class SandboxSizes {
     facts: { active: boolean } = { active: true },
   ): Promise<{ blocker: TaskError | null; startsLeft: number | null; current: MachineType | null }> {
     const sandboxId = task.sandboxId!;
-    const info = await this.deps.boat.findInfo(sandboxId, this.deps.hooks.lifecycle).catch(() => undefined);
+    const info = await this.deps.sandboxProvider(sandboxId).findInfo(sandboxId, this.deps.hooks.lifecycle).catch(() => undefined);
     facts.active = info === undefined || (info !== null && ACTIVE_STATES.has(info.state));
     if (info === null) {
       return { blocker: new TaskError(`Task ${task.id}'s sandbox no longer exists.`, "sandbox_gone", `Start a new task (\`boat_dispatch\` with \`context_from\` ${task.id}).`), startsLeft: null, current: null };
@@ -911,7 +912,7 @@ export class SandboxSizes {
       }
     }
     // The move resumes the sandbox: that's a boat start. Know it's there before stopping anything.
-    const limits = await this.deps.boat.limits(this.deps.hooks.lifecycle).catch(() => null);
+    const limits = await this.deps.sandboxProvider(sandboxId).capacity(this.deps.hooks.lifecycle).catch(() => null);
     const startsLeft = limits === null ? null : [limits.startsLeftToday, limits.startsLeftThisHour].filter((n): n is number => n !== null).reduce<number | null>((min, n) => (min === null ? n : Math.min(min, n)), null);
     if (limits !== null) {
       if (limits.checkoutRequired || !limits.canStart) {
@@ -1051,7 +1052,8 @@ export class SandboxSizes {
 
   private async run(job: Job, request: ResizeRequest): Promise<Outcome> {
     const { sandboxId, to } = job;
-    const { boat, store, hooks } = this.deps;
+    const { store, hooks } = this.deps;
+    const sandboxProvider = this.deps.sandboxProvider(sandboxId);
     const chat = hooks.chat;
     const signal = hooks.lifecycle;
     const affected = store.liveSandboxTasks(sandboxId);
@@ -1074,11 +1076,11 @@ export class SandboxSizes {
           if (state?.phase !== "suspended" && state?.phase !== "suspending") await chat.suspendMachine(hostId);
           this.deps.markSuspended(hostId);
         } else {
-          const info = await boat.findInfo(sandboxId, signal);
+          const info = await sandboxProvider.findInfo(sandboxId, signal);
           if (info !== null && ACTIVE_STATES.has(info.state)) {
             // Trimmed first, so boat counts only what's really there: a smaller size may refuse it otherwise (src/disk-trim.ts).
-            await trimFreedBlocks(boat, sandboxId, { state: info.state, signal, log: (line) => this.deps.hooks.log.debug?.(line) });
-            await boat.stop(sandboxId, signal);
+            await trimFreedBlocks(sandboxProvider, sandboxId, { state: info.state, signal, log: (line) => this.deps.hooks.log.debug?.(line) });
+            await sandboxProvider.stop(sandboxId, signal);
           }
         }
       } catch (error) {
@@ -1087,7 +1089,7 @@ export class SandboxSizes {
       const stopped =
         stopError === null &&
         (await this.until(async () => {
-          const info = await boat.findInfo(sandboxId, signal);
+          const info = await sandboxProvider.findInfo(sandboxId, signal);
           if (info === null || (info.state !== "stopped" && info.state !== "archived")) return false;
           if (chat === undefined || hostId === null) return true;
           const state = await chat.machineState(hostId);
@@ -1120,7 +1122,7 @@ export class SandboxSizes {
         if (startError === null) {
           const up = await this.until(async () => {
             if (this.resumeErrors.has(sandboxId)) return true;
-            const info = await boat.findInfo(sandboxId, signal);
+            const info = await sandboxProvider.findInfo(sandboxId, signal);
             if (info !== null && ACTIVE_STATES.has(info.state)) return true;
             const state = await chat.machineState(hostId);
             if (state?.phase === "suspended" && state.message) {
@@ -1193,7 +1195,7 @@ export class SandboxSizes {
     const probe = read?.probe ?? null;
     const measured = this.sizeFromProbe(probe);
     if (measured?.type || options.boat !== true) return { size: measured, probe };
-    const info = await within(this.deps.boat.findInfo(sandboxId, this.deps.hooks.lifecycle), this.timing.checkMs).catch(() => null);
+    const info = await within(this.deps.sandboxProvider(sandboxId).findInfo(sandboxId, this.deps.hooks.lifecycle), this.timing.checkMs).catch(() => null);
     const type = info?.machineType ?? null;
     return { size: type === null ? measured : { type, cpus: null, memTotalKb: null }, probe };
   }

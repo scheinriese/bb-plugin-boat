@@ -8,6 +8,7 @@ import { START_QUEUE_MIGRATIONS } from "./start-queue-migrations.ts";
 import { CHAT_RECOVERY_MIGRATIONS } from "./chat-recovery-migrations.ts";
 import { PAID_RESUME_MIGRATIONS } from "./paid-resume-migrations.ts";
 import type Database from "better-sqlite3";
+import { DEFAULT_PROVIDER_ID } from "./providers/types.ts";
 import { normalizeDecisionOptions, type DecisionOption, type DecisionOptionInput, historyInputSchema, type HistoryEventDto } from "../contract-fidelity.ts";
 
 export const TASK_ROLES = ["implement", "review", "custom"] as const;
@@ -102,6 +103,11 @@ export interface Task {
    * the user hasn't seen; cleared once the task ships or closes.
    */
   shipApproval: ShipApproval | null;
+  /**
+   * The sandbox provider its sandbox is on (src/providers/registry.ts).
+   * Absent: boat.dev, the only one so far (so tasks read as before).
+   */
+  sandboxProvider?: string;
 }
 
 /** "What changed since you approved": compared in the sandbox after the turn that followed a conflict. */
@@ -259,6 +265,9 @@ const MIGRATIONS = [
   ...START_QUEUE_MIGRATIONS,
   ...CHAT_RECOVERY_MIGRATIONS,
   ...PAID_RESUME_MIGRATIONS,
+  // The sandbox provider a task's sandbox is on (src/providers/registry.ts);
+  // tasks from before there were providers are on boat.dev.
+  `ALTER TABLE tasks ADD COLUMN sandbox_provider TEXT NOT NULL DEFAULT 'boat'`,
 ];
 
 export const DECISION_STATUSES = ["open", "answered", "withdrawn"] as const;
@@ -400,6 +409,7 @@ const COLUMN_BY_FIELD: Record<keyof Task, string> = {
   notifiedAt: "notified_at",
   unshipped: "unshipped",
   shipApproval: "ship_approval",
+  sandboxProvider: "sandbox_provider",
 };
 
 function nullableString(value: unknown): string | null {
@@ -451,6 +461,8 @@ function toTask(row: Row): Task {
     notifiedAt: nullableString(row.notified_at),
     unshipped: row.unshipped === null || row.unshipped === undefined ? null : Number(row.unshipped),
     shipApproval: parseShipApproval(row.ship_approval),
+    // Only another provider's: a task on boat.dev reads as it did before the column.
+    ...(typeof row.sandbox_provider === "string" && row.sandbox_provider !== DEFAULT_PROVIDER_ID ? { sandboxProvider: row.sandbox_provider } : {}),
   };
 }
 
@@ -502,6 +514,7 @@ function parseRepos(value: unknown): { repo: string; baseBranch: string; path?: 
 
 function toColumnValue(field: keyof Task, value: unknown): unknown {
   if (field === "ownsSandbox") return value === true ? 1 : 0;
+  if (field === "sandboxProvider") return typeof value === "string" && value !== "" ? value : DEFAULT_PROVIDER_ID;
   if (field === "extraRepos") return JSON.stringify(Array.isArray(value) ? value : []);
   if (field === "shipApproval") return value === null || value === undefined ? null : JSON.stringify(value);
   return value ?? null;
@@ -699,6 +712,12 @@ export class TaskStore {
   queuedGuards(): { queuedMessageId: string; threadId: string; createdAt: number }[] {
     const rows = this.db().prepare(`SELECT queued_message_id, thread_id, at FROM queue_guards WHERE state != 'removed'`).all() as { queued_message_id: string; thread_id: string; at: string }[];
     return rows.map((row) => ({ queuedMessageId: row.queued_message_id, threadId: row.thread_id, createdAt: Date.parse(row.at) || 0 }));
+  }
+
+  /** The sandbox provider its newest task recorded for a sandbox (null: no task has it). */
+  sandboxProviderOf(sandboxId: string): string | null {
+    const row = this.db().prepare(`SELECT sandbox_provider FROM tasks WHERE sandbox_id = ? ORDER BY updated_at DESC LIMIT 1`).get(sandboxId) as { sandbox_provider?: unknown } | undefined;
+    return typeof row?.sandbox_provider === "string" ? row.sandbox_provider : null;
   }
 
   liveSandboxTasks(sandboxId: string): Task[] {

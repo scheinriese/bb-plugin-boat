@@ -1,7 +1,7 @@
 // Why a sandbox didn't wake: boat.dev's real error texts, the check over boat's exec API, the plain message.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BoatError } from "../src/boat.ts";
+import { BoatError } from "../src/providers/boat/cli.ts";
 import {
   DISK_CHECK_SCRIPT,
   classifyWakeText,

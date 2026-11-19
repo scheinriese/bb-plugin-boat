@@ -6,8 +6,9 @@ import { shipPresentation } from "./ship-presentation.ts";
 import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import { TAGS, rpcContract, type PreviewDto, type SandboxDto, type TaskDetailDto, type TaskDto, type TaskSourceDto, type ThreadRoleDto } from "../contract.ts";
 import type { PreviewView } from "./previews.ts";
-import { MACHINE_TYPES, assertBranch, autoStopHours, dashboardUrl, normalizeRepo, type MachineType, type Sandbox } from "./boat-api.ts";
-import { BoatError, resolveBoatBinary } from "./boat.ts";
+import { assertBranch, dashboardUrl, normalizeRepo } from "./providers/boat/api.ts";
+import { resolveBoatBinary } from "./providers/boat/cli.ts";
+import { MACHINE_TYPES, ProviderError, autoStopHours, type ExplainedError, type MachineType, type SandboxInfo as Sandbox } from "./providers/types.ts";
 import { describeClose } from "./close-outcome.ts";
 import { uiStateHandlers } from "./ui-state.ts";
 import { orchestratorChoiceHandlers } from "./orchestrator-agent.ts";
@@ -26,10 +27,9 @@ import { CHAT_PROVIDER } from "./chat.ts";
 import { OPEN_STATUSES, PROVIDERS, type Provider, type Task } from "./store.ts";
 import { extraUsageDto, poolExtraUsage } from "./quota.ts";
 import { automaticPaidClaude, effectiveRelay, onlyAgent, relayNote } from "./relay.ts";
-import { explainBoatError, sandboxSizes, testTaskInput, type ExplainedError } from "./setup.ts";
+import { sandboxSizes, testTaskInput } from "./providers/boat/setup.ts";
 import { SettingsError, settingRows } from "./settings-store.ts";
 import { SETTING_SECTIONS } from "./settings.ts";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import { HIDDEN_EVENT_KINDS } from "./memory.ts";
 import { sizeHandlers } from "./rpc-size.ts";
 import { usageHandlers } from "./rpc-usage.ts";
@@ -173,9 +173,9 @@ function toSandboxDto(sandbox: Sandbox, taskIds: string[], uses: SandboxDto["use
 }
 
 function message(error: unknown): string {
-  if (error instanceof BoatError) {
-    // boat's failures in plain words, with what to do (signed out, no CLI, …).
-    const explained = explainBoatError(error);
+  if (error instanceof ProviderError) {
+    // A provider's failures in plain words, with what to do (signed out, no CLI, …).
+    const explained = error.explain();
     return explained.hint ? `${explained.message} ${explained.hint}` : explained.message;
   }
   return error instanceof Error ? error.message : String(error);
@@ -206,7 +206,7 @@ export async function refuse<T>(fn: () => Promise<T>): Promise<T> {
     if (error instanceof TaskError) {
       throw refusal(error.code === "task_not_found" ? "not_found" : "conflict", { code: error.code, message: error.message, hint: error.hint ?? null });
     }
-    if (error instanceof BoatError) throw refusal(error.status === 404 ? "not_found" : "conflict", explainBoatError(error));
+    if (error instanceof ProviderError) throw refusal(error.status === 404 ? "not_found" : "conflict", error.explain());
     throw error;
   }
 }
@@ -219,7 +219,7 @@ export function registerShipRpc(runtime: Runtime): void {
     getTask: (id) => service.mustGet(id),
     latestReview: (id) => service.store.latestEvent(id, "review")?.text ?? null,
     async snapshot(task, targets, signal) {
-      const result = await service.boat.exec(task.sandboxId!, shipSnapshotScript(targets), { timeoutMs: 30_000, signal });
+      const result = await service.sandboxProviders.forTask(task).exec(task.sandboxId!, shipSnapshotScript(targets), { timeoutMs: 30_000, signal });
       if (result.exitCode !== 0) throw new TaskError("Couldn't check a clean checkout. Resume the sandbox, commit any changes, and request shipping again.", "ship_check_failed");
       return parseShipSnapshot(result.stdout, targets.length);
     },
@@ -282,7 +282,7 @@ export function registerRpc(runtime: Runtime): void {
       const raw = (await bb.sdk.hosts.list()) as unknown;
       const hosts = (Array.isArray(raw) ? raw : ((raw as { hosts?: unknown[] } | null)?.hosts ?? [])) as { id?: string; machineProviderId?: string | null }[];
       for (const host of hosts) {
-        if (!host.id || host.machineProviderId !== MACHINE_PROVIDER_ID) continue;
+        if (!host.id || service.sandboxProviders.forMachine(host.machineProviderId) === null) continue;
         const resource = (await bb.experimental_machines.getResource(host.id).catch(() => null)) as { sandboxId?: unknown } | null;
         if (typeof resource?.sandboxId !== "string") continue;
         const rows = rowsOf(await bb.sdk.threads.list({ hostId: host.id } as never).catch(() => []));
@@ -370,7 +370,7 @@ export function registerRpc(runtime: Runtime): void {
     projectCatalog: (() => {
       let cached: { at: number; value: ReturnType<typeof readProjectCatalog> } | null = null;
       return () => {
-        if (!cached || Date.now() - cached.at > 60_000) cached = { at: Date.now(), value: readProjectCatalog(bb, service.boat) };
+        if (!cached || Date.now() - cached.at > 60_000) cached = { at: Date.now(), value: readProjectCatalog(bb, service.sandboxProviders.default) };
         return cached.value;
       };
     })(),
@@ -418,7 +418,7 @@ export function registerRpc(runtime: Runtime): void {
 
     sandboxes: async ({ all }) => {
       try {
-        const [sandboxes, chats] = await Promise.all([service.boat.list({ all }), machineChats()]);
+        const [sandboxes, chats] = await Promise.all([service.sandboxProviders.default.list({ all }), machineChats()]);
         const tasks = service.store.list({ limit: 1000 });
         const orchestrators = service.store.orchestratorThreadIds().current;
         return {
@@ -479,7 +479,7 @@ export function registerRpc(runtime: Runtime): void {
         return { events: [], error: task === null ? `No task ${id}` : null };
       }
       try {
-        const events = await service.boat.events(task.sandboxId, task.conversationId);
+        const events = await service.sandboxProviders.forTask(task).events(task.sandboxId, task.conversationId);
         return {
           events: events.slice(-limit).map((event) => ({
             type: event.type,
@@ -812,14 +812,14 @@ export function registerRpc(runtime: Runtime): void {
         if (repo !== null) {
           const always = alwaysProtectedBranches((await service.settings()).extraProtectedBranches);
           try {
-            await service.boat.prepareRepo(
+            await service.sandboxProvider(sandbox.id).prepareRepo(
               sandbox.id,
               repo,
               branch ? { kind: "new-branch", branch, base: null } : { kind: "default-branch" },
               { protect: protectedBranches(null, service.projectBaseBranches([repo]), always), alwaysProtect: always },
             );
           } catch (error) {
-            await service.boat.delete(sandbox.id).catch(() => undefined);
+            await service.sandboxProvider(sandbox.id).delete(sandbox.id).catch(() => undefined);
             throw error;
           }
         }

@@ -78,7 +78,7 @@ export const TAGS = {
 } as const;
 
 // ------------------------------------------------------------- setup checks
-// Mirrors src/setup.ts (the app can't import server modules).
+// Mirrors src/providers/boat/setup.ts (the app can't import server modules).
 
 export const SETUP_CHECK_IDS = ["cli", "signed-in", "plan", "agents", "environment", "boat-credentials", "github", "connect", "gh"] as const;
 export const SETUP_CHECK_STATES = ["ok", "missing", "warning", "unknown", "optional"] as const;

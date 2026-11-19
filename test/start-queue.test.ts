@@ -5,7 +5,7 @@ import type Database from "better-sqlite3";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { TaskStore } from "../src/store.ts";
 import { BoatService, TaskError, type StartTaskInput } from "../src/service.ts";
-import type { BoatApi } from "../src/boat-api.ts";
+import type { BoatApi } from "../src/providers/boat/api.ts";
 import { createStartQueue } from "../src/start-queue.ts";
 import { StartQueueStore, durableStartInput } from "../src/start-queue-store.ts";
 import { createPaidStartInteractions } from "../src/start-queue-interaction.ts";
@@ -189,7 +189,7 @@ test("a post-insertion provider failure keeps a terminal receipt and never autom
 });
 test("actual dispatch tool, task-start CLI and New Task RPC all return durable queued receipts without allocating",async t=>{
  const dir=mkdtempSync(join(tmpdir(),"boat-queue-plugin-"));process.env.FAKE_BOAT_STATE=join(dir,"state.json");
- const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:fileURLToPath(new URL("./fixtures/fake-boat.mjs",import.meta.url)),evidenceUploader:"",agents:"both",relayEnabled:true,avoidExtraUsage:true}});t.after(()=>harness.lifecycle.dispose());
+ const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs",import.meta.url)),evidenceUploader:"",agents:"both",relayEnabled:true,avoidExtraUsage:true}});t.after(()=>harness.lifecycle.dispose());
  harness.sdk.stub("threads.get",async()=>({id:"thr_orch",environmentId:null,archivedAt:null,deletedAt:null}));harness.sdk.stub("threads.getPluginMetadata",async()=>({role:"orchestrator"}));harness.sdk.stub("threads.send",async()=>({ok:true,delivery:"sent"}));harness.sdk.stub("system.config",async()=>({primaryHostId:"host_1"}));
  harness.sdk.stub("plugins.callRpc",async({pluginId,method,input}:{pluginId:string;method:string;input:{resourceId?:string}})=>{
   if(pluginId!=="account-pool")throw Error("Fake source unavailable");

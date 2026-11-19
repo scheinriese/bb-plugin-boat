@@ -5,7 +5,7 @@ import type Database from "better-sqlite3";
 import {createFakePluginHost} from "@get-bb/plugin-sdk/testing";
 import {TaskStore, type Provider, type TaskStatus} from "../src/store.ts";
 import {BoatService} from "../src/service.ts";
-import type {BoatApi} from "../src/boat-api.ts";
+import type {BoatApi} from "../src/providers/boat/api.ts";
 import {StartQueueStore} from "../src/start-queue-store.ts";
 import {createStartQueue} from "../src/start-queue.ts";
 import {fidelityHandlers} from "../src/rpc-fidelity.ts";

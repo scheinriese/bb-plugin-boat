@@ -5,8 +5,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { BoatApi, lastCompletedSnapshot, stopReport } from "../src/boat-api.ts";
-import { BoatCli, BoatError } from "../src/boat.ts";
+import { BoatApi, lastCompletedSnapshot, stopReport } from "../src/providers/boat/api.ts";
+import { BoatCli, BoatError } from "../src/providers/boat/cli.ts";
 import { chmodSync } from "node:fs";
 import {
   CHECKOUTS_SCRIPT,

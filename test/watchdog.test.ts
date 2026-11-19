@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { makeMessageDispatchHookContext, makeQueueEntry } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server.ts";
-import type { BoatApi } from "../src/boat-api.ts";
+import type { BoatApi } from "../src/providers/boat/api.ts";
 import { RESUME_NOTE_PREFIX, WATCHDOG_PREFIX } from "../src/format.ts";
 import { KEEP_LIMIT_MS } from "../src/activity.ts";
 import { RESUME_RETRY_MAX_MS, createWatchdog, resumeNoteKey, resumeRetryMs, type QueuedRow, type WatchdogDeps } from "../src/watchdog.ts";
@@ -742,7 +742,7 @@ test("in the plugin: the dispatch hook answers at once, and a message queued for
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-watchdog-")), "state.json");
   const { bb, harness } = await createTestHost({
     pluginId: "boat",
-    settings: { boatPath: fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "" },
+    settings: { boatPath: fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "" },
     agentSkillIds: ["boat", "boat-orchestrator"],
   });
   t.after(() => harness.lifecycle.dispose());

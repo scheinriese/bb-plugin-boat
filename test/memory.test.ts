@@ -28,7 +28,7 @@ import {
   victimLabel,
   type MemoryData,
 } from "../src/memory.ts";
-import { SIZE_FACTS } from "../src/setup.ts";
+import { SIZE_FACTS } from "../src/providers/boat/setup.ts";
 import { oomLines, probeOutput } from "./fakes.ts";
 
 const BOOT = "0f3c1d2e-aaaa-bbbb-cccc-123456789abc";

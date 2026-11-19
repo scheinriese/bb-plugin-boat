@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { MachineExecutor } from "@get-bb/plugin-sdk";
 import { BootstrapNpmEvidence, bootstrapExecutor, bootstrapFailureMessage, retryableBootstrap } from "../src/bootstrap.ts";
-import { sshExecutor } from "../src/machine.ts";
-import type { BoatCli } from "../src/boat.ts";
+import { sshExecutor } from "../src/providers/boat/ssh.ts";
+import type { BoatCli } from "../src/providers/boat/cli.ts";
 
 const installing = "⠋ Installing the server's bb-app build\n";
 const missing = "npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/example-pkg/-/example-pkg-1.0.1.tgz - Not found\n";

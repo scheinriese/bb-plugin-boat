@@ -8,11 +8,14 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { TAGS } from "./contract.ts";
-import { BoatApi, parseBranchList, type MachineType } from "./src/boat-api.ts";
-import { BoatCli, resolveBoatBinary } from "./src/boat.ts";
+import { BoatApi, parseBranchList } from "./src/providers/boat/api.ts";
+import { BoatCli, resolveBoatBinary } from "./src/providers/boat/cli.ts";
 import { buildCli } from "./src/cli.ts";
-import { registerBoatMachine } from "./src/machine.ts";
-import { createSandboxKeeper } from "./src/keeper.ts";
+import { registerBoatMachine } from "./src/providers/boat/machine.ts";
+import { createBoatProvider } from "./src/providers/boat/provider.ts";
+import { createSandboxKeeper } from "./src/providers/boat/keeper.ts";
+import { createProviderRegistry } from "./src/providers/registry.ts";
+import type { MachineType } from "./src/providers/types.ts";
 import { createWatchdog, type QueuedRow, type Watchdog } from "./src/watchdog.ts";
 import { notificationText } from "./src/format.ts";
 import { DEFAULT_TASKS_BEFORE_ASKING, isOrchestratorMetadata, orchestratorInstructions, projectInstructions } from "./src/orchestrator.ts";
@@ -28,7 +31,7 @@ import { ProtocolStore } from "./src/protocol.ts";
 import { createQuotaReader } from "./src/quota.ts";
 import { DEFAULT_LIMIT_MS, PROVIDER_OF_ID, createLimitTracker, limitFromErrorText, limitFromTurnFailure, type TurnFailure } from "./src/limits.ts";
 import { createEvidenceSource, parseEvidenceSource } from "./src/evidence.ts";
-import { CLI_MISSING_STATUS, createSetup, effectiveAgents, parseAgentsSetting, type SetupSettings } from "./src/setup.ts";
+import { CLI_MISSING_STATUS, createBoatSetup, effectiveAgents, parseAgentsSetting, type SetupSettings } from "./src/providers/boat/setup.ts";
 import { runnersFor } from "./src/settings.ts";
 import { createMigratingSettingsStore } from "./src/settings-store.ts";
 import { createAttentionNotifications, type AttentionNotifications } from "./src/attention-notifications.ts";
@@ -98,6 +101,8 @@ export default async function plugin(bb: BbPluginApi) {
   // boat CLI
   const cli = new BoatCli(async () => resolveBoatBinary((await settings.get()).boatPath));
   const boat = new BoatApi(cli);
+  // Sandbox providers: boat.dev, the only one so far (src/providers/registry.ts).
+  const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli })]);
   // Worker chats and cloud orchestrators need bb Connect.
   const connect = createConnectCheck(bb);
 
@@ -123,9 +128,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   // Setup checks: read-only boat commands, cached about a minute.
-  const setup = createSetup({
-    binary: async () => resolveBoatBinary((await settings.get()).boatPath),
-    run: (args, options) => cli.run(args, options),
+  const setup = createBoatSetup(cli, async () => (await settings.get()).boatPath, {
     settings: setupSettings,
     connect,
     repoAccess: () => store.latestRepoAccess(),
@@ -282,7 +285,7 @@ export default async function plugin(bb: BbPluginApi) {
   const wakes = createWakeGuard({
     pacer: wakePacer,
     kv: bb.storage.kv,
-    boat,
+    boat: sandboxProviders.default,
     store,
     orchestratorOn: async (hostId) => {
       const current = store.orchestratorThreadIds().current;
@@ -298,7 +301,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   const chatRunner = createChatRunner(bb);
-  const service = new BoatService(boat, store, {
+  const service = new BoatService(sandboxProviders, store, {
     wakes,
     settings: readSettings,
     lifecycle: lifecycle.signal,
@@ -373,7 +376,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   // A chat's queue, failed turn and retries, and the machine it runs on (the paid resume and `bb boat sandbox wake`).
   const resumeThreads = bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(), { error: (line) => bb.log.error(line) });
-  const machineReader = bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await boat.findInfo(sandboxId))?.state ?? null);
+  const machineReader = bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await service.sandboxProvider(sandboxId).findInfo(sandboxId))?.state ?? null);
   // Chats stopped at a usage limit continue once paid Claude is available (its own timer, below).
   const paidResume = createPaidResume({
     threads: resumeThreads,
@@ -455,11 +458,11 @@ export default async function plugin(bb: BbPluginApi) {
   bb.cli.register(buildCli(runtime));
   // Before bb's setup on a resumed sandbox: read bb's files first, and update bb there in a fresh prefix.
   const prepareHost = createBbUpdater({
-    boat,
+    boat: sandboxProviders.default,
     kv: bb.storage.kv,
     // The server's own bb-app version: what its machines run (bb's setup installs the server's build).
     serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
-    prefetch: (sandboxId, request, signal) => prefetchBbFiles(boat, sandboxId, request, { signal, log: (line) => bb.log.info(line) }),
+    prefetch: (sandboxId, request, signal) => prefetchBbFiles(service.sandboxProvider(sandboxId), sandboxId, request, { signal, log: (line) => bb.log.info(line) }),
     tell: (sandboxId, text) => {
       const tasks = store.liveSandboxTasks(sandboxId);
       for (const task of tasks) store.addEvent(task.id, WAKE_EVENT, text);
@@ -472,7 +475,7 @@ export default async function plugin(bb: BbPluginApi) {
   // A stuck sandbox and its chat back in one go, composed from the wake pacer and guard, the login
   // scripts, bb's safe update and the chat retries above (src/sandbox-wake.ts).
   sandboxWaker = createSandboxWaker({
-    boat,
+    boat: sandboxProviders.default,
     kv: bb.storage.kv,
     // A wake runs under the plugin's lifetime, not the CLI's request: the call waits 90 s, then it goes on.
     lifecycle: lifecycle.signal,
@@ -485,7 +488,7 @@ export default async function plugin(bb: BbPluginApi) {
     bringUp: (sandboxId, signal, wake) => service.bringUp(sandboxId, signal, wake),
     pacer: wakePacer,
     guard: wakes,
-    quietLogins: createLoginQuieter(boat, (line) => bb.log.warn(line)),
+    quietLogins: createLoginQuieter(sandboxProviders.default, (line) => bb.log.warn(line)),
     updateBb: prepareHost,
     serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
     tasks: {
@@ -718,7 +721,7 @@ export default async function plugin(bb: BbPluginApi) {
   // The watchdog: bb's record of Boat sandbox machines true to boat, chats
   // waiting on a stopped machine resumed, and a [boat] notice per incident.
   const watchdog = createWatchdog(bb, {
-    boat,
+    boat: sandboxProviders.default,
     store: service.store,
     kv: bb.storage.kv,
     // Its resumes take slots from the same wake pacer (it waits out the hold, never sets it).

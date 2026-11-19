@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { KEEP_LIMIT_MS, NO_WORK, describeWork, readMachineActivity, rowWork, type ThreadRow } from "../src/activity.ts";
-import { busyProcesses, isInfrastructure, parseProcessSample } from "../src/boat-api.ts";
+import { busyProcesses, isInfrastructure, parseProcessSample } from "../src/providers/boat/api.ts";
 import { createChatRunner } from "../src/chat.ts";
 import { makeService } from "./fakes.ts";
 

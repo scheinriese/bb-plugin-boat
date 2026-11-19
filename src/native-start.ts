@@ -5,7 +5,7 @@ import type {
   MessageDispatchHookDecision,
 } from "@get-bb/plugin-sdk";
 import { reviewerSchema } from "../contract-review.ts";
-import { normalizeRepo } from "./boat-api.ts";
+import { normalizeRepo } from "./providers/boat/api.ts";
 import { newTaskId } from "./store.ts";
 import type { Runtime } from "./runtime.ts";
 import type { QuotaReader } from "./quota.ts";

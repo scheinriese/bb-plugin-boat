@@ -14,7 +14,7 @@
 // (~/.nvm/versions/node/<current>; a system node isn't read).
 // Bounded in time (60 s), in total size (1.5 GiB) and per file (256 MiB);
 // it never fails or holds up the wake past its limit, whatever the disk does.
-import type { BoatApi } from "./boat-api.ts";
+import type { SandboxProvider } from "./providers/types.ts";
 import type { PrefetchRequest } from "./bb-update.ts";
 
 export const PREFETCH_SECONDS = 60;
@@ -72,7 +72,7 @@ export function parsePrefetch(stdout: string): PrefetchResult | null {
  * leaves its exec behind.
  */
 export async function prefetchBbFiles(
-  boat: Pick<BoatApi, "exec">,
+  boat: Pick<SandboxProvider, "exec">,
   sandboxId: string,
   request: PrefetchRequest,
   options: { signal: AbortSignal; seconds?: number; log?: (line: string) => void; maxBytes?: number; maxFileKb?: number },

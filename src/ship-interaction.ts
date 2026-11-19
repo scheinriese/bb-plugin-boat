@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import type { PluginInteractionRequest, PluginInteractionResult } from "@get-bb/plugin-sdk";
 import { SHIP_RENDERER_ID, shipChoiceSchema, type ShipForm } from "../contract-ship.ts";
-import { shellQuote } from "./boat-api.ts";
+import { shellQuote } from "./providers/shell.ts";
 import { reviewState } from "./board.ts";
 import { currentChanges } from "./ship-approval.ts";
 import { TaskError } from "./service.ts";

@@ -1,9 +1,9 @@
-// Setup checks: boat's JSON (real shapes in fixtures/boat-json), the
+// Setup checks: boat's JSON (real shapes in src/providers/boat/fixtures/boat-json), the
 // checklist, the checks before a sandbox, and the cached reader.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BoatError, type BoatCli, type BoatRunResult, type JsonRecord } from "../src/boat.ts";
+import { BoatError, type BoatCli, type BoatRunResult, type JsonRecord } from "../src/providers/boat/cli.ts";
 import {
   AGENTS_URL,
   INSTALL_COMMAND,
@@ -30,11 +30,11 @@ import {
   type BoatFacts,
   type CheckContext,
   type SetupSettings,
-} from "../src/setup.ts";
+} from "../src/providers/boat/setup.ts";
 import { TaskError } from "../src/service.ts";
-import { BoatApi, TRIAL_AUTO_STOP_HOURS, aiProxyPrice, autoStopCapFromLimits, autoStopCapFromText, parseAiProxy, withinAutoStopCap } from "../src/boat-api.ts";
+import { BoatApi, TRIAL_AUTO_STOP_HOURS, aiProxyPrice, autoStopCapFromLimits, autoStopCapFromText, parseAiProxy, withinAutoStopCap } from "../src/providers/boat/api.ts";
 
-const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/boat-json/${name}`, import.meta.url), "utf8")) as JsonRecord;
+const fixture = (name: string) => JSON.parse(readFileSync(new URL(`../src/providers/boat/fixtures/boat-json/${name}`, import.meta.url), "utf8")) as JsonRecord;
 
 /** Facts from the real shapes: signed in, Standard plan, both agents, a "base" default environment. */
 function facts(overrides: Partial<BoatFacts> = {}): BoatFacts {

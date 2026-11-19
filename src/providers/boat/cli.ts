@@ -8,22 +8,23 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
+import { ProviderError, type ExplainedError } from "../types.ts";
+import { explainBoatError } from "./words.ts";
 
 export type JsonRecord = Record<string, unknown>;
 
-export class BoatError extends Error {
-  readonly code: string;
-  readonly status: number | null;
-  readonly exitCode: number | null;
+export class BoatError extends ProviderError {
   constructor(
     message: string,
     options: { code?: string; status?: number | null; exitCode?: number | null } = {},
   ) {
-    super(message);
+    super(message, { ...options, code: options.code ?? "boat_failed" });
     this.name = "BoatError";
-    this.code = options.code ?? "boat_failed";
-    this.status = options.status ?? null;
-    this.exitCode = options.exitCode ?? null;
+  }
+
+  /** boat's failures in plain words, with what to do (signed out, no CLI, …). */
+  override explain(): ExplainedError {
+    return explainBoatError(this);
   }
 }
 

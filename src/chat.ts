@@ -2,7 +2,8 @@
 // The service decides what to do; this is how it asks bb to do it.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { hasWork, readMachineActivity, rowWork, type MachineActivity, type ThreadRow } from "./activity.ts";
-import { MACHINE_PROVIDER_ID, keepSandboxKey } from "./machine.ts";
+import { MACHINE_PROVIDER_ID } from "./providers/boat/provider.ts";
+import { keepSandboxKey } from "./providers/machine.ts";
 import { createProjectSources, type EnsuredProjectSource, type OwnProjectSource, type RemovedProjectSource } from "./project-sources.ts";
 import { threadSection } from "./sections.ts";
 import { TURN_EVENT_TYPES, type TurnEventRow } from "./steer-retry.ts";

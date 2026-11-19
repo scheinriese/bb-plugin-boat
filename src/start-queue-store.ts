@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { QueuedStartDto } from "../contract-start-queue.ts";
-import { MACHINE_TYPES } from "./boat-api.ts";
+import { MACHINE_TYPES } from "./providers/types.ts";
 import { newTaskId, type Task } from "./store.ts";
 import type { StartTaskInput } from "./service.ts";
 import { TIERS } from "./tiers.ts";

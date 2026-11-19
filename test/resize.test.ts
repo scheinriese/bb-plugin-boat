@@ -3,7 +3,7 @@
 // follow-up with the new size, and every way it can fail.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BoatError } from "../src/boat.ts";
+import { BoatError } from "../src/providers/boat/cli.ts";
 import { encodeData } from "../src/memory.ts";
 import type { ResizeRequest } from "../src/sandbox-size.ts";
 import { TaskError } from "../src/service.ts";

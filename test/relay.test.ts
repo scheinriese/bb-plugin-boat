@@ -309,7 +309,7 @@ async function relayHost(t: { after(fn: () => unknown): void }, usage: { claude:
   const { bb, harness } = await createTestHost({
     pluginId: "boat",
     // The relay is off by default (opt-in); these tests turn it on unless they say otherwise.
-    settings: { boatPath: fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "", relayEnabled: true, ...settings },
+    settings: { boatPath: fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url)), evidenceUploader: "", relayEnabled: true, ...settings },
     agentSkillIds: ["boat", "boat-orchestrator"],
   });
   t.after(() => harness.lifecycle.dispose());

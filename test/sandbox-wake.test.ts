@@ -3,7 +3,7 @@
 // the start limit. Fakes only: no boat CLI, no bb.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Limits, Sandbox, StopReport } from "../src/boat-api.ts";
+import type { Limits, Sandbox, StopReport } from "../src/providers/boat/api.ts";
 import { createBbUpdater, parseInspection } from "../src/bb-update.ts";
 import type { MachineState } from "../src/chat.ts";
 import type { QueuedFacts, ThreadFacts } from "../src/paid-resume.ts";
@@ -16,7 +16,7 @@ import { WAKE_MARKERS_KEY, WAKE_RETRY_REASON, createSandboxWaker, finishedNotice
 import { composeProtocol } from "../src/protocol.ts";
 import { makeService } from "./fakes.ts";
 import { createChatRunner } from "../src/chat.ts";
-import { MACHINE_PROVIDER_ID } from "../src/machine.ts";
+import { MACHINE_PROVIDER_ID } from "../src/providers/boat/provider.ts";
 
 const T0 = Date.parse("2026-11-19T09:00:00Z");
 const HYDRATOR = "[lazyfs] [ERROR] HYDRATOR FAILED attempt 32 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";
@@ -133,7 +133,7 @@ function world(options: WorldOptions = {}) {
     async findInfo(id: string) {
       return sandboxes.get(id) ?? null;
     },
-    async limits(): Promise<Limits> {
+    async capacity(): Promise<Limits> {
       if (options.limits === null) throw new Error("boat didn't answer");
       return { ...LIMITS, ...options.limits };
     },

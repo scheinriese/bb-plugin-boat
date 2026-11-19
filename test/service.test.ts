@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BoatError } from "../src/boat.ts";
+import { BoatError } from "../src/providers/boat/cli.ts";
 import { TaskError } from "../src/service.ts";
 import { makeService } from "./fakes.ts";
 

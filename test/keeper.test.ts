@@ -3,9 +3,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type { BoatApi, Sandbox } from "../src/boat-api.ts";
-import { BLOCKED_GRACE_MS, KEEP_LIMIT_MS, KEPT_ON_EVENT, STOPPING_GRACE_MS, createSandboxKeeper, threadWorking, type KeeperDeps } from "../src/keeper.ts";
-import { MACHINE_PROVIDER_ID } from "../src/machine.ts";
+import type { BoatApi, Sandbox } from "../src/providers/boat/api.ts";
+import { BLOCKED_GRACE_MS, KEEP_LIMIT_MS, KEPT_ON_EVENT, STOPPING_GRACE_MS, createSandboxKeeper, threadWorking, type KeeperDeps } from "../src/providers/boat/keeper.ts";
+import { MACHINE_PROVIDER_ID } from "../src/providers/boat/provider.ts";
 import { FakeBoat, defaultSettings, makeService, memoryStore } from "./fakes.ts";
 
 const MINUTE = 60_000;

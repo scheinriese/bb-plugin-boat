@@ -30,8 +30,7 @@ import type { SandboxWaker, WakeCall, WakeReport } from "./sandbox-wake.ts";
 import type { ConnectCheck, ConnectStatus } from "./connect.ts";
 import type { ConfigDeps } from "./config.ts";
 import type { SettingsStore } from "./settings-store.ts";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
-import type { Setup } from "./setup.ts";
+import type { Setup } from "./providers/boat/setup.ts";
 import {
   AGENT_NAME,
   COOLDOWN_MS,
@@ -390,7 +389,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     try {
       const listed = (await bb.sdk.hosts.list()) as unknown;
       const hosts = (Array.isArray(listed) ? listed : ((listed as { hosts?: unknown[] }).hosts ?? [])) as { id?: string; machineProviderId?: string | null }[];
-      return hosts.some((host) => host.id === hostId && host.machineProviderId === MACHINE_PROVIDER_ID);
+      return hosts.some((host) => host.id === hostId && service.sandboxProviders.forMachine(host.machineProviderId) !== null);
     } catch {
       return false;
     }

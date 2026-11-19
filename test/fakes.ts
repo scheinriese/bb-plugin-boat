@@ -5,7 +5,7 @@ import { PLUGIN_SETTINGS_KEY } from "../src/settings-store.ts";
 import { isDeclaredKey, isPluginKey } from "../src/settings.ts";
 import type { Quotas } from "../src/quota.ts";
 import type { EvidenceSource } from "../src/evidence.ts";
-import type { PreflightInput } from "../src/setup.ts";
+import type { PreflightInput } from "../src/providers/boat/setup.ts";
 import { DatabaseSync } from "node:sqlite";
 import type Database from "better-sqlite3";
 import type {
@@ -19,10 +19,10 @@ import type {
   PrepareOptions,
   ProcessSample,
   Sandbox,
-} from "../src/boat-api.ts";
-import { BoatError } from "../src/boat.ts";
+} from "../src/providers/boat/api.ts";
+import { BoatError } from "../src/providers/boat/cli.ts";
 import { SIZE_SPECS, isMachineType, type SizedProject } from "../src/memory.ts";
-import type { MachineTypeFacts } from "../src/setup.ts";
+import type { MachineTypeFacts } from "../src/providers/boat/setup.ts";
 import { PERSONAL_PROJECT, type ChatRunner, type ChatSpawn, type ChatState, type MachineState, type SendResult } from "../src/chat.ts";
 import type { OwnProjectSource, RemovedProjectSource } from "../src/project-sources.ts";
 import type { TurnEventRow } from "../src/steer-retry.ts";

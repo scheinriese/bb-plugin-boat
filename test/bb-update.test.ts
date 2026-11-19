@@ -9,8 +9,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type { BoatApi } from "../src/boat-api.ts";
-import type { BoatCli } from "../src/boat.ts";
+import type { BoatApi } from "../src/providers/boat/api.ts";
+import type { BoatCli } from "../src/providers/boat/cli.ts";
 import {
   BB_UPDATES_KEY,
   BbUpdateHung,
@@ -28,7 +28,7 @@ import {
   type BbInstall,
   type HostPrep,
 } from "../src/bb-update.ts";
-import { registerBoatMachine } from "../src/machine.ts";
+import { registerBoatMachine } from "../src/providers/boat/machine.ts";
 import { retriesLater } from "../src/wake-diagnosis.ts";
 import { WakePacer } from "../src/wake-pacer.ts";
 import { createWakeGuard } from "../src/wake-retry.ts";

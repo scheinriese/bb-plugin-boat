@@ -10,7 +10,7 @@ import { createTestHost, makeService } from "./fakes.ts";
 
 test("explicit tools trigger device pushes without another task turn or monitor cycle", async (t) => {
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-attention-")), "state.json");
-  const { bb, harness } = await createTestHost({ pluginId: "boat", settings: { boatPath: fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url)), agents: "both", evidenceUploader: "", pushNotifications: true }, agentSkillIds: ["boat", "boat-orchestrator"] });
+  const { bb, harness } = await createTestHost({ pluginId: "boat", settings: { boatPath: fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url)), agents: "both", evidenceUploader: "", pushNotifications: true }, agentSkillIds: ["boat", "boat-orchestrator"] });
   t.after(() => harness.lifecycle.dispose());
   const notices: { title: string; threadId: string }[] = [];
   harness.sdk.stub("plugins.callRpc", async ({ pluginId, method, input }: { pluginId: string; method: string; input: { title: string; threadId: string } }) => {

@@ -7,11 +7,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { rpcErrorInfo } from "../contract.ts";
-import { MACHINE_PROVIDER_ID } from "../src/machine.ts";
+import { MACHINE_PROVIDER_ID } from "../src/providers/boat/provider.ts";
 import plugin from "../server.ts";
 import { createTestHost } from "./fakes.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 const REPORT = "Done.\n=== REPORT ===\nSTATUS: done\nPR: https://github.com/acme/web/pull/4\n=== END REPORT ===";
 
 async function setup(t: { after(fn: () => unknown): void }, options: { settings?: Record<string, unknown>; boat?: Record<string, unknown>; boatPath?: string } = {}) {

@@ -21,7 +21,7 @@
 // unpushed commits (any branch), changes (untracked too) or stashes.
 // Otherwise the user decides (Needs you, with the commands and what's lost).
 import { hasWork, isOpen, rowWork, turnRuns, type ThreadRow } from "./activity.ts";
-import type { BoatApi, StopReport } from "./boat-api.ts";
+import type { SandboxProvider, StopReport } from "./providers/types.ts";
 import { clockTime } from "./format.ts";
 import type { Task } from "./store.ts";
 import { DISK_CHECK_SCRIPT, parseDiskCheck } from "./wake-diagnosis.ts";
@@ -208,7 +208,7 @@ export function moveDecision(facts: MoveFacts): { auto: boolean; reasons: string
 
 /** The facts for moveDecision: the live tasks from the plugin's records, the checkouts and chats from the sandbox and bb. */
 export async function moveFacts(
-  boat: Pick<BoatApi, "exec">,
+  boat: Pick<SandboxProvider, "exec">,
   sandboxId: string,
   tasks: readonly Task[],
   threads: (() => Promise<ThreadRow[]>) | null,
@@ -238,7 +238,7 @@ export async function moveFacts(
 /** What a test fork says about the snapshot: it restores and reads fine, it doesn't, or couldn't tell. */
 export type ForkCheck = "healthy" | "unreadable" | "unknown" | "skipped";
 
-export type MoveBoat = Pick<BoatApi, "exec" | "fork" | "delete" | "stop" | "stopStatus" | "lastSnapshotAt">;
+export type MoveBoat = Pick<SandboxProvider, "exec" | "fork" | "delete" | "stop" | "stopStatus" | "lastSnapshotAt">;
 
 /**
  * Restore the sandbox's latest snapshot on another node (a fork that's never

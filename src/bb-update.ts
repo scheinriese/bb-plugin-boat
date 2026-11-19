@@ -41,7 +41,7 @@
 //    service stuck stopping, or an npm install whose read of the disk made no
 //    progress: "disk-restoring", Boat's own retries later.
 import { setTimeout as delay } from "node:timers/promises";
-import type { BoatApi } from "./boat-api.ts";
+import type { SandboxProvider } from "./providers/types.ts";
 import { clockTime } from "./format.ts";
 import type { WakeDiagnosis } from "./wake-diagnosis.ts";
 
@@ -563,7 +563,8 @@ export interface PrefetchRequest {
 }
 
 export interface BbUpdaterDeps {
-  boat: Pick<BoatApi, "exec">;
+  /** The sandbox provider (boat.dev; the key keeps its old name). */
+  boat: Pick<SandboxProvider, "exec">;
   kv: { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void> };
   /** The bb version the server installs on its machines (null: unknown). */
   serverVersion(): Promise<string | null>;

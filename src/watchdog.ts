@@ -25,10 +25,11 @@
 import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { KEEP_LIMIT_MS, NO_WORK, addWork, describeWork, hasWork, messagesWaiting, rowWork, threadsOnMachine, type BackgroundWork, type ThreadRow } from "./activity.ts";
-import { ACTIVE_STATES, busyProcesses, type BoatApi, type Sandbox } from "./boat-api.ts";
+import { busyProcesses } from "./providers/boat/api.ts";
+import { ACTIVE_STATES, type SandboxInfo as Sandbox, type SandboxProvider } from "./providers/types.ts";
 import { wakeIds, type WakePacer } from "./wake-pacer.ts";
 import { RESUME_NOTE_PREFIX, WATCHDOG_PREFIX, quietNotice, resumeNoteText, stoppedNotice, waitingNotice, type NoticeSubject } from "./format.ts";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
+import { MACHINE_PROVIDER_ID } from "./providers/boat/provider.ts";
 import { OPEN_STATUSES, type Task, type TaskStore } from "./store.ts";
 
 /** Messages waiting this long on a stopped or disconnected machine: the orchestrator hears of it. */
@@ -108,7 +109,8 @@ export interface QueuedRow {
 }
 
 export interface WatchdogDeps {
-  boat: Pick<BoatApi, "list" | "events" | "processes">;
+  /** The sandbox provider (boat.dev, the only one so far; the key keeps its old name). */
+  boat: Pick<SandboxProvider, "list" | "events" | "processes">;
   /**
    * Whether processes a headless task's finished agent left still compute
    * in its sandbox (the service's reading: "maybe" after a first busy one).
@@ -212,6 +214,7 @@ function rowsOf(raw: unknown): QueuedRow[] {
 }
 
 export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
+  const sandboxProvider = deps.boat;
   const now = () => deps.now?.() ?? Date.now();
   /** Host id → background work seen while it was up. */
   const seen = new Map<string, Seen>();
@@ -765,7 +768,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
 
   async function computingNow(sandboxId: string): Promise<boolean> {
     if (deps.computing !== undefined) return (await deps.computing(sandboxId).catch(() => "no" as const)) !== "no";
-    return busyProcesses(await deps.boat.processes(sandboxId, deps.signal).catch(() => null)).length > 0;
+    return busyProcesses(await sandboxProvider.processes(sandboxId, deps.signal).catch(() => null)).length > 0;
   }
 
   /**
@@ -848,7 +851,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       return typeof at === "number" ? at : null;
     }
     if (task.sandboxId === null || task.conversationId === null) return null;
-    const events = await deps.boat.events(task.sandboxId, task.conversationId, deps.signal);
+    const events = await sandboxProvider.events(task.sandboxId, task.conversationId, deps.signal);
     const stamps = events.map((entry) => entry.timestamp).filter((value): value is number => value !== null);
     return stamps.length > 0 ? Math.max(...stamps) : null;
   }
@@ -903,7 +906,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
         urgent = false;
         machinesAt = at;
         try {
-          const sandboxes = new Map((await deps.boat.list({ all: true, signal: deps.signal })).map((sandbox) => [sandbox.id, sandbox]));
+          const sandboxes = new Map((await sandboxProvider.list({ all: true, signal: deps.signal })).map((sandbox) => [sandbox.id, sandbox]));
           await machines(at, sandboxes).catch((error: unknown) => deps.log(`watchdog: machines: ${message(error)}`));
           await headless(at, sandboxes).catch((error: unknown) => deps.log(`watchdog: headless sandboxes: ${message(error)}`));
         } catch (error) {

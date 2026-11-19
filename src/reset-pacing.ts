@@ -29,7 +29,7 @@
 import type { defineRpcContract as DefineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { clockTime } from "./format.ts";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
+import { MACHINE_PROVIDER_ID } from "./providers/boat/provider.ts";
 import { WAKES_PER_WINDOW, WAKE_WINDOW_MS } from "./wake-pacer.ts";
 
 const defineRpcContract = ((contract: unknown) => contract) as typeof DefineRpcContract;

@@ -50,7 +50,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isOpen, turnRuns, type ThreadRow } from "./activity.ts";
-import { ACTIVE_STATES, type BoatApi, type Limits, type Sandbox, type StopReport } from "./boat-api.ts";
+import { ACTIVE_STATES, type CapacityReport as Limits, type SandboxInfo as Sandbox, type SandboxProvider, type StopReport } from "./providers/types.ts";
 import { BbUpdateHung, compareVersions, decideBbUpdate, inspectScript, isVersion, parseInspection, type BbInstall, type BbUpdatePlan, type HostPrep, type HostPrepResult } from "./bb-update.ts";
 import type { MachineState } from "./chat.ts";
 import { clockTime } from "./format.ts";
@@ -216,7 +216,8 @@ export interface WakeMarker {
 type Kv = { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void> };
 
 export interface SandboxWakeDeps {
-  boat: Pick<BoatApi, "findInfo" | "exec" | "stop" | "stopStatus" | "limits" | "lastSnapshotAt" | "fork" | "delete">;
+  /** The sandbox provider (boat.dev; the key keeps its old name). */
+  boat: Pick<SandboxProvider, "findInfo" | "exec" | "stop" | "stopStatus" | "capacity" | "lastSnapshotAt" | "fork" | "delete">;
   /** Resume it within the slot limit with this wake slot (BoatService.bringUp). */
   bringUp(sandboxId: string, signal: AbortSignal, wake: { permit: WakePermit; paidStart: boolean }): Promise<unknown>;
   pacer: WakePacer;
@@ -866,7 +867,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
      */
     async function start(how: "resume" | "start-again"): Promise<void> {
       const step: WakeStepId = how === "resume" ? "resume" : "restart";
-      const check = startCheck(await deps.boat.limits(signal).catch(() => null), allowPaid);
+      const check = startCheck(await deps.boat.capacity(signal).catch(() => null), allowPaid);
       if (!check.ok) {
         if (how === "start-again" && !dry) stop(`Boat stopped sandbox ${id}, but can't start it again now: ${lower(check.text)} Boat starts it again once it can (every few minutes), or run \`bb boat sandbox resume ${id}\`.`, check.commands, { step: "start-limit" });
         stop(how === "resume" ? check.text : `The sandbox would be stopped, but Boat couldn't start it again: ${lower(check.text)}`, check.commands, { step: "start-limit" });
@@ -1016,7 +1017,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         stop(`${capitalize(why)}, still after a stop and a start. Leave it until boat.dev has recovered and try again later, or report it to boat.dev with the error above.`, [`boat stop ${id}`, again]);
       }
       // Nothing is stopped before Boat knows it can start it again, and has the time to.
-      const check = startCheck(await deps.boat.limits(signal).catch(() => null), allowPaid);
+      const check = startCheck(await deps.boat.capacity(signal).catch(() => null), allowPaid);
       if (!check.ok) stop(`${capitalize(why)}. boat.dev's fix is to stop it and start it again, but ${lower(check.text)}`, check.commands, { step: "start-limit" });
       if (!dry && left() < timing.restartBudgetMs) {
         stop(`${capitalize(why)}. This wake has run for ${minutes(now() - startedAt)}, too long to stop the sandbox and still start it again within its limit of about ${minutes(timing.maxMs)}, so nothing was stopped.`, [again], { step: "restart" });
@@ -1115,7 +1116,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       const keeps = `Forcing the stop keeps only ${snapshotText(snapshotAt, now())}, so what changed since is lost, files git ignores included.`;
       if (!recheck.auto) await giveUp(`${refused}. ${keeps} Boat won't force it because ${recheck.reasons.join("; ")}.`, [`boat stop ${id} --force`, again]);
       if (left() < timing.restartBudgetMs) await giveUp(`${refused}. This wake has run for ${minutes(now() - startedAt)}, too long for a test fork, a forced stop and a start within its limit of about ${minutes(timing.maxMs)}; the sandbox is still running.`, [again]);
-      const two = startCheck(await deps.boat.limits(signal).catch(() => null), allowPaid, 2);
+      const two = startCheck(await deps.boat.capacity(signal).catch(() => null), allowPaid, 2);
       if (!two.ok) await giveUp(`${refused}. Forcing it needs a test fork of its snapshot first and then a start, but ${lower(two.text)}`, [...two.commands, again]);
       // forkCheck takes its own wake slot without waiting: wait for one first.
       const slotBy = now() + 2 * WAKE_WINDOW_MS;
@@ -1571,7 +1572,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         await putMarker(sandboxId, (current) => (current === null ? null : { ...current, restart: null }));
         continue;
       }
-      const check = startCheck(await deps.boat.limits(lifecycle).catch(() => null), paidStart);
+      const check = startCheck(await deps.boat.capacity(lifecycle).catch(() => null), paidStart);
       if (!check.ok) {
         deps.log?.(`sandbox wake ${sandboxId}: a wake stopped it and couldn't start it again yet: ${check.text}`);
         continue;

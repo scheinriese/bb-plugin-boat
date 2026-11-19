@@ -3,8 +3,8 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { ProjectCatalogDto } from "../contract-projects.ts";
-import type { BoatApi } from "./boat-api.ts";
-import { normalizeRepo } from "./boat-api.ts";
+import type { EnvironmentInfo, SandboxProvider } from "./providers/types.ts";
+import { normalizeRepo } from "./providers/boat/api.ts";
 
 interface NativeProject { id: string; name: string; gitRemoteUrl?: string | null; sources?: { hostId: string; path: string; isDefault?: boolean; type?: string }[] }
 export async function nativeProjectRows(bb: Pick<BbPluginApi, "sdk">, signal = AbortSignal.timeout(4000)): Promise<NativeProject[]> {
@@ -27,13 +27,13 @@ export async function repoMetadata(repo: string, signal: AbortSignal): Promise<{
   const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   return { language: typeof record.language === "string" ? record.language.slice(0, 60) : null, updatedAt: typeof record.updated_at === "string" && Number.isFinite(Date.parse(record.updated_at)) ? record.updated_at : null, baseBranch: typeof record.default_branch === "string" ? record.default_branch.slice(0, 200) : null };
 }
-export async function readProjectCatalog(bb: Pick<BbPluginApi, "sdk">, boat: Pick<BoatApi, "defaultEnvironment" | "environments" | "environmentInfo">, metadata = repoMetadata): Promise<ProjectCatalogDto> {
+export async function readProjectCatalog(bb: Pick<BbPluginApi, "sdk">, provider: Pick<SandboxProvider, "defaultEnvironment" | "environments" | "environmentInfo">, metadata = repoMetadata): Promise<ProjectCatalogDto> {
   const signal = AbortSignal.timeout(15_000);
-  const [rows, config, names, defaultName] = await Promise.all([nativeProjectRows(bb, signal).catch(() => []), bb.sdk.system.config({ signal }).catch(() => null), boat.environments(signal).catch((): string[] => []), boat.defaultEnvironment(signal).catch(() => null)]);
+  const [rows, config, names, defaultName] = await Promise.all([nativeProjectRows(bb, signal).catch(() => []), bb.sdk.system.config({ signal }).catch(() => null), provider.environments(signal).catch((): string[] => []), provider.defaultEnvironment(signal).catch(() => null)]);
   const ordered = defaultName && names.includes(defaultName) ? [defaultName, ...names.filter(name => name !== defaultName)] : names;
   const repos = new Map<string, ProjectCatalogDto["repos"][number]>(); let cursor = 0; let failed = false;
-  const environments: (Awaited<ReturnType<BoatApi["environmentInfo"]>> | null)[] = Array(Math.min(ordered.length, 8)).fill(null);
-  await Promise.all(Array.from({ length: 2 }, async () => { while (cursor < environments.length) { const index = cursor++; try { environments[index] = await boat.environmentInfo(ordered[index]!, signal); } catch { failed = true; } } }));
+  const environments: (EnvironmentInfo | null)[] = Array(Math.min(ordered.length, 8)).fill(null);
+  await Promise.all(Array.from({ length: 2 }, async () => { while (cursor < environments.length) { const index = cursor++; try { environments[index] = await provider.environmentInfo(ordered[index]!, signal); } catch { failed = true; } } }));
   // Completion order of concurrent CLI reads must not choose the default repo.
   for (const env of environments) for (const entry of env?.repos.slice(0, 200) ?? []) { const repo = repoOf(entry.repo); if (repo && !repos.has(repo.toLowerCase()) && repos.size < 200) repos.set(repo.toLowerCase(), { repo, baseBranch: entry.baseBranch, language: null, updatedAt: null }); }
   const entries = [...repos.values()]; cursor = 0;
