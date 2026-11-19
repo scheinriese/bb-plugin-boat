@@ -239,7 +239,13 @@ export interface SandboxWakeDeps {
     /** bb's machine on a sandbox, from the plugin's tasks (null: none known). */
     hostForSandbox?(sandboxId: string): string | null;
   };
-  threads: Pick<ResumeThreads, "get" | "stopEvents" | "queued" | "sendQueued" | "retry">;
+  threads: Pick<ResumeThreads, "get" | "stopEvents" | "queued" | "sendQueued" | "retry"> & {
+    /**
+     * Cancel a pending provider retry (`bb provider-retry cancel`): its queued
+     * row is withdrawn, confirmed by bb's queue ("stuck": it's still there).
+     */
+    cancelRetry(threadId: string, queuedMessageId: string): Promise<"removed" | "stuck">;
+  };
   machines: {
     /** The bb machine a workspace is on (null: none). */
     hostOf(environmentId: string): Promise<string | null>;
@@ -259,8 +265,8 @@ export interface SandboxWakeDeps {
   lifecycle?: AbortSignal;
   /** Tell a chat (the one that asked, when a wake outlives its wait). */
   notify?(threadId: string, text: string): Promise<void>;
-  /** Tell the sandbox's tasks (a sandbox a cut-off wake left stopped). */
-  tell?(sandboxId: string, text: string): void;
+  /** Tell the sandbox's tasks (a sandbox a cut-off wake left stopped); closedToo: every task that ran there, closed ones included. */
+  tell?(sandboxId: string, text: string, options?: { closedToo?: boolean }): void;
   now?(): number;
   sleep?(ms: number, signal?: AbortSignal): Promise<unknown>;
   log?(line: string): void;
@@ -724,21 +730,66 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
     /** Boat started the sandbox in this run (its disk is still being restored). */
     let woke = false;
     let forgotten = false;
-    const again = `bb boat sandbox wake ${request.target.trim()}`;
+    let quieted = false;
+    // Run again with the same choice to wake closed work (a paid start is asked for each time).
+    const again = `bb boat sandbox wake ${request.target.trim()}${request.forceWake === true ? " --force-wake" : ""}`;
     const deadline = startedAt + timing.maxMs;
     const left = () => deadline - now();
     /** A wait cut to the run's time left (a start after a stop isn't cut). */
     const within = (ms: number) => Math.max(0, Math.min(ms, left()));
 
     /**
-     * Asked for explicitly: Boat's own retry plan and hydrator track for it start
-     * over, so bb's machine resume isn't held back. Only once the checks passed
-     * and Boat is about to act: a run that stops before keeps them.
+     * Right before Boat's first change, once the checks passed (a run that stops
+     * before keeps all this as it was): the chats of closed tasks on the machine
+     * lose their pending provider retries first (bringing the machine back would
+     * send them), then Boat's own retry plan and hydrator track start over, so
+     * bb's machine resume isn't held back.
      */
-    async function forgetOnce(): Promise<void> {
-      if (forgotten || dry) return;
+    async function beforeActing(): Promise<void> {
+      if (dry) return;
+      if (!quieted) {
+        quieted = true;
+        await quietClosedChats();
+      }
+      if (forgotten) return;
       forgotten = true;
       await deps.guard?.forget(id).catch(() => undefined);
+    }
+
+    /**
+     * Chats on the machine whose Boat task is cancelled or closed: their pending
+     * provider retries are cancelled (a retry could push superseded work), their
+     * other queued messages are left to the user and listed. One that can't be
+     * cancelled stops the wake before the machine comes back.
+     */
+    async function quietClosedChats(): Promise<void> {
+      const onMachine = target.hostId === null ? [] : await deps.machines.threadsOn(target.hostId).then((rows) => rows.filter((row) => isOpen(row) && typeof row.id === "string").map((row) => row.id!), () => null);
+      if (onMachine === null) say("chat", "info", "Boat couldn't list the chats on bb's machine to check for closed tasks' queued retries; only the chats named here were checked.");
+      for (const threadId of [...new Set([...target.threadIds, ...(onMachine ?? [])])]) {
+        const task = await deps.tasks.forThread(threadId).catch(() => null);
+        if (task === null || !closed(task)) continue;
+        const name = `chat ${threadId}`;
+        const over = `task ${task.id} is ${task.status === "cancelled" ? "cancelled" : "closed"}`;
+        const rows = await deps.threads.queued(threadId).catch(() => UNKNOWN);
+        if (rows === UNKNOWN) {
+          if (!dry) stop(`Boat couldn't read the queue of ${name} (${over}), so it can't tell whether a provider retry would go out once the machine is back. Check it in bb (cancel a stale retry with \`bb provider-retry cancel ${threadId}\`), then wake the sandbox again.`, [`bb provider-retry cancel ${threadId}`, again], { step: "chat" });
+          say("chat", "planned", `Check the queue of ${name} (${over}); Boat couldn't read it.`);
+          continue;
+        }
+        for (const row of rows.filter((entry) => entry.retry)) {
+          if (dry) {
+            say("chat", "planned", `Cancel the pending provider retry of ${name}: ${over}.`);
+            continue;
+          }
+          const result = await deps.threads.cancelRetry(threadId, row.id).catch((): "stuck" => "stuck");
+          if (result !== "removed") {
+            stop(`Boat couldn't cancel the pending provider retry of ${name} (${over}), and it would go out once the machine is back. Cancel it in bb, then wake the sandbox again.`, [`bb provider-retry cancel ${threadId}`, again], { step: "chat" });
+          }
+          say("chat", "done", `Cancelled the pending provider retry of ${name}: ${over}.`);
+        }
+        const others = rows.filter((entry) => !entry.retry).length;
+        if (others > 0) say("chat", "info", `bb will still deliver ${others} queued message${others === 1 ? "" : "s"} to ${name} of closed task ${task.id}; cancel them in bb if they're stale.`);
+      }
     }
 
     async function machineNow(): Promise<MachineNow> {
@@ -825,7 +876,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         say(step, "planned", `${how === "resume" ? "Resume it" : "Start it again"}: ${check.text}, with a wake slot ${at <= now() ? "free now" : `at ${clockTime(at, now())}`}.`);
         return;
       }
-      await forgetOnce();
+      await beforeActing();
       let permit: WakePermit;
       try {
         permit = await deps.pacer.acquire({ signal, ...(how === "start-again" ? { maxWaitMs: RESTART_SLOT_WAIT_MS } : {}), onWait: (until, reason) => say(step, "info", `${waitStep(until, reason, now())}.`) });
@@ -1001,7 +1052,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         await start("start-again");
         return;
       }
-      await forgetOnce();
+      await beforeActing();
       // The why was just said (the look's line, or the update's).
       say("restart", "info", "Stopping it to start it again: boat.dev's fix for a stuck sandbox.");
       // Before the stop: a wake cut off from here leaves the sandbox to the monitor's pass, which starts it again.
@@ -1134,7 +1185,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         say("bb-update", look.plan.kind === "none" && !noDownload(look) ? "skipped" : "planned", bbPlanText(look, id));
         return false;
       }
-      await forgetOnce();
+      await beforeActing();
       // Asked for explicitly: an earlier failed update's wait starts over.
       await deps.updateBb.forget?.(id).catch(() => undefined);
       let result: HostPrepResult;
@@ -1208,7 +1259,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         return;
       }
       if (suspended) {
-        await forgetOnce();
+        await beforeActing();
         try {
           await deps.machines.resume(hostId);
           say("machine", "done", `Asked bb to resume its machine (\`bb machine resume ${hostId}\`); bb's own resume starts bb there.`);
@@ -1219,7 +1270,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       } else if (serviceStarted) say("bb-service", "skipped", "bb's update started bb's service again.");
       else if (unit === null) say("bb-service", "skipped", "Boat couldn't find bb's service on the sandbox; bb's own setup starts it.");
       else {
-        await forgetOnce();
+        await beforeActing();
         try {
           const said = /BOAT_UNIT (\S+)/.exec((await deps.boat.exec(id, serviceRestartScript(unit), { timeoutMs: 90_000, signal, login: false })).stdout)?.[1] ?? "unknown";
           const up = said === "active" || said === "activating";
@@ -1342,6 +1393,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         say("login-scripts", "planned", "Turn off the login message scripts, if any are still on.");
         if (target.hostId !== null) say("machine", "planned", "Then bb's machine: resume it if it's suspended (bb's own resume updates bb safely and starts it), else restart bb's service, and wait until it connects.");
         else if (lookupFailed !== null) machineUnknown();
+        await quietClosedChats();
         await retryChats();
         return report("planned", null);
       }
@@ -1369,7 +1421,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       } else {
         if (dry) say("login-scripts", "planned", next.problem === "ssh-login-hang" ? "Turn off the login message scripts: they hang SSH logins while the disk restores." : "Turn off the login message scripts, if any are still on.");
         else {
-          await forgetOnce();
+          await beforeActing();
           const quiet = await deps.quietLogins(id, signal);
           if (quiet === "disabled") say("login-scripts", "done", "Turned off the login message scripts.");
           else if (quiet === "failed") say("login-scripts", "failed", "Boat couldn't turn off the login message scripts (no sudo there?); bb's setup goes ahead.");
@@ -1379,6 +1431,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         const serviceStarted = await updateBb(bb, next, await machineNow());
         await machineBack(bb, serviceStarted);
       }
+      if (dry) await quietClosedChats();
       await retryChats();
       return report(dry ? "planned" : "awake", null);
     } catch (error) {
@@ -1505,7 +1558,8 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         await putMarker(sandboxId, (current) => (current === null ? null : { ...current, restart: null }));
         const why = expired ? "couldn't start it again within a day" : `its tasks are over (${over.map(closedText).join(", ")})`;
         deps.log?.(`sandbox wake ${sandboxId}: a wake stopped it at ${new Date(stoppedAt).toISOString()} and ${why}; Boat no longer starts it on its own`);
-        deps.tell?.(sandboxId, `A wake stopped this sandbox at ${clockTime(stoppedAt, now())} and ${why}, so Boat no longer starts it on its own. Start it with \`bb boat sandbox wake ${sandboxId}\` when it's needed.`);
+        // On the record of every task that ran there, closed ones too (they may all be).
+        deps.tell?.(sandboxId, `A wake stopped this sandbox at ${clockTime(stoppedAt, now())} and ${why}, so Boat no longer starts it on its own. Start it with \`bb boat sandbox wake ${sandboxId}\` when it's needed.`, { closedToo: true });
         continue;
       }
       const paidStart = marker.restart.paidStart;

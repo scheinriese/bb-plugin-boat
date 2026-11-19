@@ -479,8 +479,8 @@ export default async function plugin(bb: BbPluginApi) {
     // A wake runs under the plugin's lifetime, not the CLI's request: the call waits 90 s, then it goes on.
     lifecycle: lifecycle.signal,
     notify: (threadId, text) => runtime.tellOrchestrator(threadId, text),
-    tell: (sandboxId, text) => {
-      const tasks = store.liveSandboxTasks(sandboxId);
+    tell: (sandboxId, text, options) => {
+      const tasks = options?.closedToo === true ? store.sandboxTasks(sandboxId) : store.liveSandboxTasks(sandboxId);
       for (const task of tasks) store.addEvent(task.id, WAKE_EVENT, text);
       if (tasks.length > 0) changed();
     },
@@ -504,7 +504,8 @@ export default async function plugin(bb: BbPluginApi) {
       },
       hostForSandbox: (id) => store.hostForSandbox(id),
     },
-    threads: resumeThreads,
+    // A pending provider retry is cancelled by withdrawing its queued row, confirmed by bb's queue.
+    threads: { ...resumeThreads, cancelRetry: (threadId, queuedMessageId) => chatRunner.withdraw(threadId, queuedMessageId) },
     machines: {
       hostOf: (environmentId) => machineReader.hostOf(environmentId),
       sandboxOf: async (hostId) => {

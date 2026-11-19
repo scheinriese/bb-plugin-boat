@@ -83,6 +83,10 @@ interface WorldOptions {
   hostLookup?: "throw";
   /** The task's state (default failed). */
   taskStatus?: string;
+  /** Another chat on the machine, of an older task that was cancelled (thr_old, task t_0ld00000). */
+  oldChat?: boolean;
+  /** Withdrawing a provider retry's row doesn't take (it stays in bb's queue). */
+  cancelStuck?: boolean;
   limits?: Partial<Limits> | null;
   disk?: string[];
   /** The disk check once the sandbox was stopped and started (default: the disk list goes on). */
@@ -201,6 +205,10 @@ function world(options: WorldOptions = {}) {
   const updater = createBbUpdater({ boat, kv, serverVersion: async () => options.serverVersion ?? "0.50.1", now, sleep: async (ms) => sleep(ms) });
   const notices: { threadId: string; text: string }[] = [];
   const told: string[] = [];
+  /** Whether each note went to closed tasks too. */
+  const toldClosedToo: boolean[] = [];
+  const oldTask = { id: "t_0ld00000", title: "Old attempt", status: "cancelled", sandboxId: "bx_demo1", hostId: "host_1", threadId: "thr_old", runner: "chat", repoPath: "/home/user/work/web", delivery: "pr", unshipped: null, orchestratorThreadId: null } as unknown as Task;
+  if (options.oldChat) threads.set("thr_old", thread("thr_old", { title: "Old attempt", status: "idle" }));
   const makeWaker = (extra: Partial<SandboxWakeDeps> = {}) =>
     createSandboxWaker({
       boat,
@@ -228,8 +236,8 @@ function world(options: WorldOptions = {}) {
       tasks: {
         resolve: (id) => (task.id.startsWith(id) && id.length >= 4 ? task : null),
         liveSandboxTasks: (id) => (id === "bx_demo1" && !["done", "cancelled"].includes(task.status) ? [task] : []),
-        sandboxTasks: (id) => (id === "bx_demo1" ? [task] : []),
-        forThread: async (id) => (id === "thr_task" ? task : null),
+        sandboxTasks: (id) => (id === "bx_demo1" ? [...(options.oldChat ? [oldTask] : []), task] : []),
+        forThread: async (id) => (id === "thr_task" ? task : id === "thr_old" && options.oldChat ? oldTask : null),
         hostForSandbox: () => null,
       },
       threads: {
@@ -237,6 +245,12 @@ function world(options: WorldOptions = {}) {
         stopEvents: async (id) => events.get(id) ?? [],
         queued: async (id) => queues.get(id!) ?? [],
         sendQueued: async (id, rowId) => void calls.push(`send queued ${id} ${rowId}`),
+        cancelRetry: async (id, rowId) => {
+          calls.push(`cancel retry ${id} ${rowId}`);
+          if (options.cancelStuck) return "stuck";
+          queues.set(id, (queues.get(id) ?? []).filter((row) => row.id !== rowId));
+          return "removed";
+        },
         retry: async (id, requestId, reason) => {
           assert.equal(reason, WAKE_RETRY_REASON);
           calls.push(`retry ${id} ${requestId}`);
@@ -258,11 +272,17 @@ function world(options: WorldOptions = {}) {
           calls.push(`bb machine resume ${hostId}`);
           machine.state = { phase: "active", connected: true, message: null };
         },
-        threadsOn: async () => [{ id: "thr_task", status: threads.get("thr_task")?.status ?? "idle", title: "Fix the login test" }],
+        threadsOn: async () => [
+          { id: "thr_task", status: threads.get("thr_task")?.status ?? "idle", title: "Fix the login test" },
+          ...(options.oldChat ? [{ id: "thr_old", status: "idle", title: "Old attempt" }] : []),
+        ],
       },
       kv,
       notify: async (threadId, text) => void notices.push({ threadId, text }),
-      tell: (_sandboxId, text) => void told.push(text),
+      tell: (_sandboxId, text, tellOptions) => {
+        told.push(text);
+        toldClosedToo.push(tellOptions?.closedToo === true);
+      },
       now,
       sleep: async (ms) => sleep(ms),
       ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
@@ -270,7 +290,7 @@ function world(options: WorldOptions = {}) {
       ...extra,
     });
   const waker = makeWaker();
-  return { waker, makeWaker, calls, scripts, sandboxes, pacer, paid, machine, threads, queues, events, store, notices, told, stopsMade: () => stops, now, advance: (ms: number) => void (clock += ms) };
+  return { waker, makeWaker, calls, scripts, sandboxes, pacer, paid, machine, threads, queues, events, store, notices, told, toldClosedToo, stopsMade: () => stops, now, advance: (ms: number) => void (clock += ms) };
 }
 
 function stepTexts(report: WakeReport, status?: string): string[] {
@@ -927,12 +947,16 @@ test("a restart marker older than a day isn't acted on: a note on the tasks inst
   assert.equal(w.sandboxes.get("bx_demo1")?.state, "stopped");
   assert.equal((w.store.get(WAKE_MARKERS_KEY) as Record<string, WakeMarker>).bx_demo1?.restart ?? null, null, "no auto-resume left");
   assert.match(w.told.at(-1)!, /^A wake stopped this sandbox at 2026-11-18 08:00 UTC and couldn't start it again within a day, so Boat no longer starts it on its own\. Start it with `bb boat sandbox wake bx_demo1` when it's needed\.$/);
+  assert.equal(w.toldClosedToo.at(-1), true, "on the record of every task that ran there, closed ones too");
 
   // Its tasks are over: not started again either.
   const closedWorld = world({ state: "stopped", taskStatus: "cancelled" });
   closedWorld.store.set(WAKE_MARKERS_KEY, { bx_demo1: { ...marker, restart: { at: T0 - 60_000, paidStart: false, triedAt: null } } });
   assert.deepEqual(await closedWorld.waker.recover(), []);
   assert.ok(!closedWorld.calls.includes("resume"));
+  // Every task there is closed: the note still lands, on the closed tasks' record.
+  assert.match(closedWorld.told.at(-1)!, /its tasks are over \(t_1a2b3c4d cancelled\), so Boat no longer starts it on its own/);
+  assert.equal(closedWorld.toldClosedToo.at(-1), true);
 });
 
 test("findMachine strict: a machine whose resource bb couldn't read makes the lookup fail, not read as \"none\"", async () => {
@@ -949,6 +973,57 @@ test("findMachine strict: a machine whose resource bb couldn't read makes the lo
   assert.equal(await chat.findMachine("bx_demo1"), null, "the other callers keep their answer");
   await assert.rejects(chat.findMachine("bx_demo1", { strict: true }), /bb couldn't read machine host_a/);
   assert.equal(await chat.findMachine("bx_other1", { strict: true }), "host_b", "a match still answers");
+});
+
+test("--force-wake on a closed task's machine: its pending provider retry is cancelled before the machine comes back, its other queued messages are listed", async () => {
+  const w = world({ state: "stopped", taskStatus: "cancelled" });
+  w.queues.set("thr_task", [
+    { id: "q_retry", threadId: "thr_task", retry: true, sendAt: null },
+    { id: "q_user", threadId: "thr_task", retry: false, sendAt: null },
+  ]);
+  const report = await w.waker.run({ target: "bx_demo1", forceWake: true });
+  assert.equal(report.outcome, "awake", wakeText(report));
+  // Cancelled first: before the sandbox's resume, and so before bb's machine resume.
+  assert.ok(w.calls.indexOf("cancel retry thr_task q_retry") >= 0 && w.calls.indexOf("cancel retry thr_task q_retry") < w.calls.indexOf("resume"), w.calls.join(", "));
+  assert.ok(w.calls.indexOf("resume") < w.calls.indexOf("bb machine resume host_1"));
+  assert.deepEqual(w.queues.get("thr_task")!.map((row) => row.id), ["q_user"], "the user's own message is left alone");
+  assert.ok(!w.calls.some((call) => /^(retry|send queued) /.test(call)));
+  assert.ok(stepTexts(report, "done").includes("Cancelled the pending provider retry of chat thr_task: task t_1a2b3c4d is cancelled."));
+  assert.ok(stepTexts(report, "info").includes("bb will still deliver 1 queued message to chat thr_task of closed task t_1a2b3c4d; cancel them in bb if they're stale."));
+
+  // The dry run plans it, and cancels nothing.
+  const dry = world({ state: "stopped", taskStatus: "cancelled" });
+  dry.queues.set("thr_task", [{ id: "q_retry", threadId: "thr_task", retry: true, sendAt: null }]);
+  const planned = await dry.waker.run({ target: "bx_demo1", forceWake: true, dryRun: true });
+  assert.equal(planned.outcome, "planned");
+  assert.deepEqual(dry.calls, []);
+  assert.ok(stepTexts(planned, "planned").includes("Cancel the pending provider retry of chat thr_task: task t_1a2b3c4d is cancelled."));
+
+  // Without --force-wake nothing changes: the sandbox isn't woken, and nothing is cancelled.
+  const plain = world({ state: "stopped", taskStatus: "cancelled" });
+  plain.queues.set("thr_task", [{ id: "q_retry", threadId: "thr_task", retry: true, sendAt: null }]);
+  assert.equal((await plain.waker.run({ target: "bx_demo1" })).outcome, "needs-you");
+  assert.deepEqual(plain.calls, []);
+});
+
+test("a pending provider retry that can't be cancelled stops the wake before the machine comes back", async () => {
+  const w = world({ state: "stopped", taskStatus: "done", cancelStuck: true });
+  w.queues.set("thr_task", [{ id: "q_retry", threadId: "thr_task", retry: true, sendAt: T0 + 60_000 }]);
+  const report = await w.waker.run({ target: "thr_task", forceWake: true });
+  assert.equal(report.outcome, "needs-you");
+  assert.deepEqual(w.calls, ["cancel retry thr_task q_retry"], "no resume, no forget");
+  assert.match(report.needsYou!.reason, /^Boat couldn't cancel the pending provider retry of chat thr_task \(task t_1a2b3c4d is closed\), and it would go out once the machine is back\./);
+  assert.deepEqual(report.needsYou!.commands, ["bb provider-retry cancel thr_task", "bb boat sandbox wake thr_task --force-wake"]);
+});
+
+test("another chat on the machine of a cancelled task: its retry is cancelled too, while the open task's chat is retried", async () => {
+  const w = world({ state: "stopped", oldChat: true });
+  w.queues.set("thr_old", [{ id: "q_old", threadId: "thr_old", retry: true, sendAt: null }]);
+  const report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "awake", wakeText(report));
+  assert.ok(w.calls.indexOf("cancel retry thr_old q_old") < w.calls.indexOf("resume"), w.calls.join(", "));
+  assert.ok(w.calls.includes("retry thr_task req_1"), "the open task's chat is still retried");
+  assert.ok(stepTexts(report, "done").includes("Cancelled the pending provider retry of chat thr_old: task t_0ld00000 is cancelled."));
 });
 
 // ---------------------------------------------------------------- the protocol
