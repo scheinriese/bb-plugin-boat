@@ -423,10 +423,15 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   server's own build over it in place, unless that build is the one the
   digest already names; that install only reads files the plugin has just
   written. A broken install the registry couldn't replace is moved aside
-  first, as before, so bb installs into an empty folder, but only once a
-  new look after the failed fetch still finds it broken: an install bb
-  completed meanwhile is left as it is, and bb's own update running then
-  is waited for and never stopped. When the server's
+  first, as before, so bb installs into an empty folder. The prefetch and
+  the fetch take a while, and bb may repair or update its install
+  meanwhile, so nothing is stopped or moved on the first look: right before
+  bb's service stops, the plugin reads the install again. When it's the
+  server's version by then, nothing is stopped or installed; when it's
+  complete, that's what a failed install keeps and starts again. A broken
+  install goes aside only when a new look, and a last check right before
+  the stop, still find it broken; bb's own update running then is waited
+  for and never stopped. When the server's
   version is unknown, bb's own update runs.
 - **bb's own update is never stopped half way.** When bb's service is
   updating itself right now (an `npm install` into its folder, in any
