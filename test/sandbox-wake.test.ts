@@ -397,6 +397,22 @@ test("safety stop: boat refuses the plain stop and a checkout has unpushed work,
   assert.equal(report.steps.filter((step) => step.status === "needs-you").length, 1);
 });
 
+test("safety stop: a stop would interrupt a turn running there, so it's left to the user", async () => {
+  // A chat mid-turn on a connected machine.
+  let w = world({ state: "idle", disk: [UNREADABLE_DISK], host: { phase: "active", connected: true } });
+  w.threads.set("thr_task", thread("thr_task", { status: "active" }));
+  let report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.equal(w.stopsMade(), 0);
+  assert.match(report.needsYou!.reason, /, but the chat "Fix the login test" is mid-turn, and a stop would interrupt it\./);
+
+  // The same chat on a paused machine: nothing runs there, so it's stopped and started again.
+  w = world({ state: "idle", disk: [UNREADABLE_DISK, HEALTHY_DISK] });
+  w.threads.set("thr_task", thread("thr_task", { status: "active" }));
+  report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(w.stopsMade(), 1, wakeText(report));
+});
+
 test("a stop still pending after the wait: its status command, never a second stop", async () => {
   const { waker, stopsMade } = world({ state: "idle", disk: [UNREADABLE_DISK], stop: () => ({ status: "pending", stopId: "stop_7", forced: null }), stopStatus: () => ({ status: "pending", stopId: "stop_7", forced: null }) });
   const report = await waker.run({ target: "bx_demo1" });

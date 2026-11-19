@@ -33,7 +33,7 @@
 // command line). --dry-run only looks and prints the plan. A stop for safety
 // ends with "Needs you" and the commands to run.
 import { setTimeout as delay } from "node:timers/promises";
-import { isOpen, type ThreadRow } from "./activity.ts";
+import { isOpen, turnRuns, type ThreadRow } from "./activity.ts";
 import { ACTIVE_STATES, type BoatApi, type Limits, type Sandbox, type StopReport } from "./boat-api.ts";
 import { BbUpdateHung, compareVersions, decideBbUpdate, inspectScript, isVersion, parseInspection, type BbInstall, type BbUpdatePlan, type HostPrep, type HostPrepResult } from "./bb-update.ts";
 import type { MachineState } from "./chat.ts";
@@ -658,7 +658,23 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       const check = startCheck(await deps.boat.limits(signal).catch(() => null), allowPaid);
       if (!check.ok) stop(`${capitalize(why)}. boat.dev's fix is to stop it and start it again, but ${check.text.charAt(0).toLowerCase()}${check.text.slice(1)}`, check.commands, { step: "start-limit" });
       const facts = () => moveFacts(deps.boat, id, deps.tasks.liveSandboxTasks(id), target.hostId !== null ? () => deps.machines.threadsOn(target.hostId!) : null, signal);
-      const safe = moveDecision(await facts());
+      const first = await facts();
+      // Even a plain stop interrupts what runs there: a headless agent mid-turn, or a chat mid-turn on a
+      // connected machine (on a paused or disconnected one, nothing runs), is left to the user.
+      const host = target.hostId === null ? null : await deps.machines.host(target.hostId).catch(() => null);
+      const connected = host?.connected === true && host.phase !== "suspended";
+      const busy = [
+        ...deps.tasks
+          .liveSandboxTasks(id)
+          .filter((task) => (task.status === "running" || task.status === "starting") && (task.runner === "boat" || connected))
+          .map((task) => `task ${task.id} is mid-turn`),
+        ...(connected ? (first.threads ?? []).filter((row) => turnRuns(row) || (isOpen(row) && row.hasPendingInteraction === true)).map((row) => `${row.title ? `the chat "${clip(row.title)}"` : "a chat there"} is mid-turn`) : []),
+      ];
+      if (busy.length > 0) {
+        const running = deps.tasks.liveSandboxTasks(id).filter((task) => task.status === "running" || task.status === "starting");
+        stop(`${capitalize(why)}, but ${[...new Set(busy)].join("; ")}, and a stop would interrupt it. Let it finish or interrupt it, then wake the sandbox again.`, [...running.map((task) => `bb boat task interrupt ${task.id}`), again], { step: "restart" });
+      }
+      const safe = moveDecision(first);
       if (dry) {
         say(
           "restart",
