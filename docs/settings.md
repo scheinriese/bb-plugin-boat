@@ -214,33 +214,58 @@ With the fallback on, `resumeStoppedChats` (on by default) continues Claude
 Code chats whose latest turn stopped at a usage limit (a 429, such as the
 Account Pooler's "No Account Pooler account is currently eligible") once paid
 Claude is available. That uses the same check a start makes. It covers any
-Claude Code chat on this bb, not only Boat tasks, and runs on the relay's
-one-minute check. It also runs a few seconds after a chat stops while paid
-Claude is already available.
+Claude Code chat on this bb, not only Boat tasks. It runs on its own
+one-minute timer, apart from the relay and the task checks, and once a few
+seconds after chats stop while paid Claude is already available. A burst of
+stops makes one check.
+
+Which chats it finds: the ones bb reported stopped at a limit while this
+version of the plugin was running, and any chat with a provider retry waiting
+in bb's queue. A chat that stopped before this version was installed, or while
+the plugin was off, and has no retry waiting, isn't found; continue it by hand
+(`bb thread retry <id>`).
 
 - A retry bb's provider-retry plugin queued for the reset is sent now, the same
   as `bb provider-retry retry`. A retry that goes out within ten minutes anyway
   is left alone.
 - A turn provider-retry skipped (`beyond-maximum-wait`), or one with no
   decision a minute after it failed, is retried like `bb thread retry`. A
-  retry that someone cancelled stays cancelled.
+  retry that someone cancelled stays cancelled. If provider-retry can't be
+  asked, or bb answers in a shape this version doesn't know, the chat is left
+  alone (the plugin log says so), never retried on a guess.
 - Not continued: archived chats, chats with a turn running or a message
   queued, Codex chats, an orchestrator that is being handed over or was taken
   over, an older chat of a task, and failures that aren't a usage limit
   (authentication, credits, a spend limit).
 - Each stopped turn is continued once. A continued turn that stops again
-  stays stopped, so a spend limit can't cause a loop. A pass continues at most
-  ten chats, three seconds apart; the rest wait for the next pass.
+  stays stopped, so a spend limit can't cause a loop.
 - Nothing is continued while the reading is stale, Claude is on hold after a
   refused turn, or extra usage is rejected.
 - Headless Boat tasks that stopped at a limit in the last week get a
-  follow-up, only with `paidClaudeHeadless`.
+  follow-up, only with `paidClaudeHeadless`, at most one a check.
 - A project can stay on included usage: **Never continue on paid Claude** in
   its settings, or `bb boat project set <id> --paid-claude never`. It applies
   to the project's task chats, its orchestrators and every chat in its linked
-  bb project.
+  bb project. A backup restores it as it was, on or off.
 
-A task records a `paid-resume` event. `bb boat relay check` and the plugin
-log list each chat that continued, and an orchestrator gets one message per
-pass naming its workers that continued. The next step line in Settings ›
-Usage limits counts the stopped chats continued on paid Claude in the last day.
+Pacing, so that continuing many chats never becomes a burst of wakes that
+boat.dev's start limit or its storage can't take:
+
+- A check makes at most ten attempts, three seconds apart; failed attempts
+  count too. The rest wait for the next check.
+- The first failure ends the check, and the next one waits 5 minutes, doubling
+  up to an hour (this survives a restart). A failed stopped turn gets three
+  tries in all; a refusal that proves nothing was sent (the turn moved on, or
+  the chat is gone) doesn't use one. A headless follow-up that failed while
+  its sandbox is up isn't tried again, as it may have reached the agent.
+- The chat's machine is checked first. One that is starting, stopping, being
+  created or removed, offline or failed is left alone. Waking a suspended
+  machine or a stopped sandbox takes one of two wakes a minute, a budget the
+  watchdog's own resumes share (kept across restarts). After a machine fails
+  to start, or a wake fails, no machine is woken for 15 minutes.
+
+A task records a `paid-resume` event. `bb boat relay check` (which also runs
+a check now) and the plugin log list each chat that continued, and an
+orchestrator gets one message per check naming its workers that continued.
+The next step line in Settings › Usage limits counts the stopped chats
+continued on paid Claude in the last day.
