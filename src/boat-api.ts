@@ -1018,11 +1018,12 @@ export class BoatApi {
   async exec(
     id: string,
     command: string,
-    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+    /** login false: a plain `bash -c` that never reads ~/.profile (it may not be restored yet). */
+    options: { timeoutMs?: number; signal?: AbortSignal; login?: boolean } = {},
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     const remoteSeconds = Math.max(5, Math.min(600, Math.round((options.timeoutMs ?? 120_000) / 1000)));
     const result = await this.cli.run(
-      ["exec", id, "--timeout", String(remoteSeconds), "--", "bash", "-lc", command],
+      ["exec", id, "--timeout", String(remoteSeconds), "--", "bash", options.login === false ? "-c" : "-lc", command],
       { timeoutMs: remoteSeconds * 1000 + 30_000, signal: options.signal, allowFailure: true },
     );
     const record = result.records.at(-1);
