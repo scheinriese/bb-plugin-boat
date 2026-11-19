@@ -260,16 +260,20 @@ boat.dev's start limit or its storage can't take:
   tries in all; a refusal that proves nothing was sent (the turn moved on, or
   the chat is gone) doesn't use one. A chat's try cut off by a restart may go
   again after ten minutes, as bb refuses a retry that already went out. A
-  headless follow-up that failed while its sandbox is up, or was cut off,
-  isn't tried again, as it may have reached the agent.
+  failed or cut-off try goes again only while the request it re-submitted is
+  still the chat's failed one; a newer failed request in the same chain means
+  it went out. A headless follow-up that failed while its sandbox is up, or
+  was cut off, isn't tried again, as it may have reached the agent.
 - The chat's machine is checked first. One that is starting, stopping, being
   created or removed, offline or failed is left alone. Waking a suspended
   machine or a stopped sandbox takes one of two wakes a minute, a budget the
   watchdog's own resumes share (kept across restarts). A machine bb couldn't
   start is left alone on its own (bb keeps that message until it starts
   again), never holding the others. Only when a wake the plugin made fails
-  (the call, or the machine failing to start within 15 minutes of it) is no
-  machine woken for 15 minutes.
+  is no machine woken for 15 minutes: the call fails, or the machine fails to
+  start. Each check first looks again at the machines it woke in the last 15
+  minutes, whether or not their chats are still waiting. A failed watchdog
+  resume holds wakes the same way.
 
 A task records a `paid-resume` event. `bb boat relay check` (which also runs
 a check now) and the plugin log list each chat that continued, and an

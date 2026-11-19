@@ -14,7 +14,7 @@
 - Tasks record the resume, orchestrators hear once per pass which workers continued, and the usage view counts the chats resumed in the last day.
 - Pace resumes so they can't become a burst of wakes: failed attempts count toward the ten per check and wait their turn, a failure ends the check and backs off (5 minutes, doubling to an hour), machines that are starting, stopping or failed are left alone, and waking one takes one of two wakes a minute, shared with the watchdog.
 - Leave a chat alone when provider-retry or bb's queue answers in a shape this version doesn't know, instead of retrying on a guess.
-- A machine that failed to start long ago is skipped on its own instead of holding every wake; only a failure of a wake the plugin made holds them. A chat's try cut off by a restart may go again after ten minutes.
+- A machine that failed to start long ago is skipped on its own instead of holding every wake; only a failure of a wake the plugin made holds them, found by looking again at each machine it woke in the last 15 minutes. A failed watchdog resume holds wakes too. A chat's try cut off by a restart may go again after ten minutes, only while the request it tried is still the failed one.
 
 ## 0.2.8
 
