@@ -457,10 +457,14 @@ stops for safety it exits 1 with "Needs you" and the commands to run.
 Work that's over isn't woken for. A chat whose Boat task is cancelled or
 closed is never retried. A sandbox whose tasks are all cancelled or closed, a
 closed task, or a closed task's chat isn't woken unless you add
-`--force-wake`. A bb machine the plugin couldn't look up counts as one that
+`--force-wake`. Before a wake brings a machine back, the chats of cancelled
+or closed tasks on it lose their pending provider retry (like `bb
+provider-retry cancel`); their other queued messages are left alone and
+listed, to cancel in bb if they're stale. A retry that can't be cancelled
+stops the wake first. A bb machine the plugin couldn't look up counts as one that
 may be running chats: nothing is stopped there, and the wake ends with Needs
 you. A sandbox a cut-off wake left stopped is started again for a day; after
-that, its tasks get a note instead.
+that, every task that ran there, closed ones included, gets a note instead.
 
 One wake per sandbox runs at a time (a second one shows the first one's
 progress), for about 25 minutes; no stop goes out without time left to

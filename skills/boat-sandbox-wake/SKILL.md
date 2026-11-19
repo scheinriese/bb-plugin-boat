@@ -57,7 +57,9 @@ it starts the sandbox again.
   Orchestrators: `boat_wake` with `status: true`.
 - `--force-wake`: wake a sandbox whose tasks are all cancelled or closed (or
   a closed task's, or its chat's). Only when the user asks. A chat of a task
-  that's cancelled or closed is never retried, with or without it.
+  that's cancelled or closed is never retried, with or without it: before the
+  machine comes back, its pending provider retry is cancelled, and its other
+  queued messages are listed for the user to cancel in bb if they're stale.
 - `--allow-paid-start`: allow a paid extra boat start when no included start
   is left. Only when the user agreed in this chat. Without it, the command
   stops and says so. Boat never turns on paid extra starts.
@@ -79,6 +81,8 @@ safety:
   checked;
 - the sandbox's tasks are all cancelled or closed (wake it anyway with
   `--force-wake` only when the user asks; their chats are never retried);
+- a closed task's pending provider retry Boat couldn't cancel (cancel it with
+  `bb provider-retry cancel <chat id>` first);
 - bb's machine not connecting.
 
 Tell the user what it says; don't work around it.
