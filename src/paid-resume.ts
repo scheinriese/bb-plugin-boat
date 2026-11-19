@@ -29,7 +29,7 @@
 // budget the watchdog shares (src/wake-budget.ts: 2 a minute). A wake this
 // plugin made that failed, at once or found failed when a later pass looks
 // at the machines it woke, holds every wake (the budget's hold, which the
-// watchdog's failed resumes set too). One headless follow-up a pass.
+// watchdog waits out but never sets). One headless follow-up a pass.
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -802,8 +802,11 @@ export function createPaidResume(deps: PaidResumeDeps) {
   /** One pass: resume what stopped at a limit when paid Claude is available. */
   async function runPass(quotas: Quotas, settings: BoatSettings): Promise<ResumeReport> {
     const report: ResumeReport = { resumed: [], skipped: [], deferred: [], told: [], attempts: 0, backoffUntil: null };
-    if (!resumeEnabled(settings)) return report;
     const at = now();
+    // The machines earlier passes woke, before any early return (paid Claude gone, a backoff) and before
+    // anything is woken now: one that failed to start holds every wake.
+    await checkWoken(at);
+    if (!resumeEnabled(settings)) return report;
     const chatRoom: SubscriptionRoom = subscriptionRoom("claude", quotas, settings, { runner: "chat", now: at });
     const headlessRoom: SubscriptionRoom = subscriptionRoom("claude", quotas, settings, { runner: "boat", now: at });
     if (chatRoom !== "paid" && headlessRoom !== "paid") return report;
@@ -831,8 +834,6 @@ export function createPaidResume(deps: PaidResumeDeps) {
     for (const row of pendingRows === UNKNOWN ? [] : pendingRows) if (row.retry && !ids.includes(row.threadId)) ids.push(row.threadId);
 
     let stopped = false;
-    // The machines earlier passes woke, before anything is woken now: one that failed to start holds every wake.
-    await checkWoken(at);
     let wakesHeld = (await deps.wakes.heldUntil()) > at;
     /** The machine check before an attempt: up goes; asleep goes with a wake (if one is left); else why not. */
     const ready = async (check: MachineCheck): Promise<{ go: true; wake: boolean } | { go: false; reason: string; defer: boolean }> => {

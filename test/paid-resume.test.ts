@@ -906,6 +906,21 @@ for (const [variant, stopAgain] of [
   });
 }
 
+test("the machines a pass woke are looked at even by a pass that has nothing else to do", async () => {
+  const env = setup();
+  skippedStop(env, "thr_woken");
+  env.machines.hosts.set("host_thr_woken", { phase: "suspended", connected: false, message: null });
+  await env.resume.pass(fresh(env), settings());
+  assert.deepEqual(env.threads.calls, ["thr_woken"]);
+  env.machines.hosts.set("host_thr_woken", { phase: "suspended", connected: false, message: "Machine resume failed: Please reduce your request rate" });
+  env.advance(10 * 60_000);
+  // Paid Claude isn't available now (the reading is stale): the pass ends early, after the look.
+  const early = await env.resume.pass(usage(), settings());
+  assert.equal(early.attempts, 0);
+  assert.equal(await env.wakes.heldUntil(), NOW + 10 * 60_000 + WAKE_HOLD_MS);
+  assert.deepEqual(env.store.woken(0), []);
+});
+
 test("the machines a pass woke: one still starting is looked at again, one that came up is done with", async () => {
   const env = setup();
   const host = (id: string, state: Partial<MachineState>) => env.machines.hosts.set(`host_${id}`, { phase: "suspended", connected: false, message: null, ...state });
