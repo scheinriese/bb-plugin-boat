@@ -81,6 +81,7 @@ import type { PreflightInput } from "./setup.ts";
 import type { PlanSize, SizedProject } from "./memory.ts";
 import type { WakePacer, WakePermit } from "./wake-pacer.ts";
 import { SandboxSizes } from "./sandbox-size.ts";
+import { trimFreedBlocks } from "./disk-trim.ts";
 import { completedReview, isReady, resolveTaskStatus, reviewState, type StatusContext, type TaskPublicStatus } from "./board.ts";
 import { taskMarker } from "./format.ts";
 import {
@@ -197,7 +198,8 @@ export interface ServiceHooks {
   changed(taskIds: string[]): void;
   /** Deliver finished-turn notices to the threads that dispatched the tasks. */
   notify(notification: Notification): Promise<void>;
-  log: { info(message: string): void; warn(message: string): void };
+  /** debug: the trim before a stop (src/disk-trim.ts); absent, it isn't logged. */
+  log: { info(message: string): void; warn(message: string): void; debug?(message: string): void };
   /** Runs workers as bb chats; without it every task is a boat conversation. */
   chat?: ChatRunner;
   /** How the project that has this repo runs its workers (null: not in any project). */
@@ -904,6 +906,7 @@ export class BoatService {
           this.suspendedHosts.add(hostId);
           this.hooks.machineSuspended?.(hostId, false);
         } else {
+          await this.trimBeforeStop(victim.sandbox.id, signal, victim.sandbox.state);
           await this.boat.stop(victim.sandbox.id, signal);
           this.hooks.sandboxStopped?.(victim.sandbox.id);
         }
@@ -982,6 +985,14 @@ export class BoatService {
       "environment_missing",
       `Create it on boat.dev (Dashboard → Environment → +) or with \`boat env new ${name}\`, or clear the project's environment to use your default.`,
     );
+  }
+
+  /**
+   * Before a stop Boat makes on purpose: give boat.dev back the blocks deleted
+   * files freed (src/disk-trim.ts). At most a minute; it never fails the stop.
+   */
+  private async trimBeforeStop(sandboxId: string, signal?: AbortSignal, state?: string): Promise<void> {
+    await trimFreedBlocks(this.boat, sandboxId, { signal, ...(state === undefined ? {} : { state }), log: (line) => this.hooks.log.debug?.(line) });
   }
 
   /**
@@ -3152,8 +3163,10 @@ export class BoatService {
     // Asked for explicitly: the sandbox's retry plan starts over (src/wake-retry.ts).
     if (action === "resume" && options.keepPlan !== true) await this.hooks.wakes?.forget(sandboxId);
     if (hostId === null) {
-      if (action === "stop") await this.boat.stop(sandboxId, signal);
-      else if (action === "resume") await this.pacedResume(() => withinAutoStopCap(ttlSeconds, (ttl) => this.boat.resume(sandboxId, ttl, signal)), signal);
+      if (action === "stop") {
+        await this.trimBeforeStop(sandboxId, signal);
+        await this.boat.stop(sandboxId, signal);
+      } else if (action === "resume") await this.pacedResume(() => withinAutoStopCap(ttlSeconds, (ttl) => this.boat.resume(sandboxId, ttl, signal)), signal);
       else await this.boat.delete(sandboxId, signal);
       this.observedSandboxStates.set(sandboxId, action === "stop" ? "stopped" : action === "resume" ? "running" : "deleted");
       return;
@@ -4103,6 +4116,7 @@ export class BoatService {
       await this.hooks.chat!.suspendMachine(hostId);
       this.suspendedHosts.add(hostId);
     } else {
+      await this.trimBeforeStop(sandboxId, signal);
       await this.boat.stop(sandboxId, signal);
     }
     this.observedSandboxStates.set(sandboxId, "stopped");
@@ -5326,6 +5340,7 @@ export class BoatService {
       }
       this.backgroundSince.delete(sandboxId);
       try {
+        await this.trimBeforeStop(sandboxId, this.hooks.lifecycle, sandboxes.get(sandboxId)?.state);
         await this.boat.stop(sandboxId, this.hooks.lifecycle);
         const hours = Math.round(KEEP_LIMIT_MS / 3_600_000);
         for (const entry of tasks) {
