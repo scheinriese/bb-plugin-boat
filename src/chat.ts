@@ -3,6 +3,10 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { hasWork, readMachineActivity, rowWork, type MachineActivity, type ThreadRow } from "./activity.ts";
 import { MACHINE_PROVIDER_ID } from "./providers/boat/provider.ts";
+import { INSTABOX_MACHINE_PROVIDER_ID } from "./providers/instabox/provider.ts";
+
+/** The bb machine providers this plugin registers: its task chats' machines are on one of them. */
+const PLUGIN_MACHINE_PROVIDERS: ReadonlySet<string> = new Set([MACHINE_PROVIDER_ID, INSTABOX_MACHINE_PROVIDER_ID]);
 import { keepSandboxKey } from "./providers/machine.ts";
 import { createProjectSources, type EnsuredProjectSource, type OwnProjectSource, type RemovedProjectSource } from "./project-sources.ts";
 import { threadSection } from "./sections.ts";
@@ -91,6 +95,8 @@ export interface MachineState {
   connected: boolean;
   /** bb's lifecycle message (a failed resume says why). */
   message: string | null;
+  /** bb's machine provider ("boat-sandbox", "instabox-sandbox", …; absent: not said). */
+  machineProviderId?: string | null;
 }
 
 export interface ChatRunner {
@@ -100,7 +106,8 @@ export interface ChatRunner {
    * (Continue as a chat): a new key per try, and the sandbox outlives the
    * machine until settleMachine.
    */
-  attachMachine(args: { taskId: string; sandboxId: string; signal?: AbortSignal; keepSandbox?: boolean }): Promise<{ hostId: string; key: string }>;
+  /** machineProviderId: the sandbox's provider's bb machine provider (default: boat.dev's). */
+  attachMachine(args: { taskId: string; sandboxId: string; signal?: AbortSignal; keepSandbox?: boolean; machineProviderId?: string }): Promise<{ hostId: string; key: string }>;
   /** Undo an attach made with keepSandbox: bb forgets the machine, the sandbox stays. */
   detachMachine(hostId: string, key: string): Promise<void>;
   /** Keep a machine's sandbox when the machine goes (for a move that reuses it). Returns false when it was kept already. */
@@ -195,12 +202,12 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
   const backoffMs = options.withdrawBackoffMs ?? WITHDRAW_BACKOFF_MS;
   const sources = createProjectSources(bb);
   return {
-    async attachMachine({ taskId, sandboxId, signal, keepSandbox }) {
+    async attachMachine({ taskId, sandboxId, signal, keepSandbox, machineProviderId }) {
       const key = keepSandbox ? `task-${taskId}-m${Date.now().toString(36)}` : `task-${taskId}`;
       // Before bb runs the provider: a failed or cut-short creation can't delete the sandbox.
       if (keepSandbox) await bb.storage.kv.set(keepSandboxKey(key), sandboxId);
       const host = (await bb.sdk.hosts.experimental_create({
-        machineProviderId: MACHINE_PROVIDER_ID,
+        machineProviderId: machineProviderId ?? MACHINE_PROVIDER_ID,
         inputs: keepSandbox ? { sandboxId, taskId, keepSandbox: true } : { sandboxId, taskId },
         key,
         wait: true,
@@ -260,12 +267,13 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
         if (isNotFound(error)) return null;
         throw error;
       }
-      const host = ((raw as { host?: unknown } | null)?.host ?? raw) as { status?: string; lifecycle?: { phase?: string; message?: string | null } | null } | null;
+      const host = ((raw as { host?: unknown } | null)?.host ?? raw) as { status?: string; machineProviderId?: string | null; lifecycle?: { phase?: string; message?: string | null } | null } | null;
       if (host === null) return null;
       return {
         phase: typeof host.lifecycle?.phase === "string" ? host.lifecycle.phase : null,
         connected: host.status === "connected",
         message: typeof host.lifecycle?.message === "string" && host.lifecycle.message !== "" ? host.lifecycle.message : null,
+        ...(typeof host.machineProviderId === "string" ? { machineProviderId: host.machineProviderId } : {}),
       };
     },
 
@@ -276,7 +284,7 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
     },
 
     machineActivity(hostId) {
-      return readMachineActivity(bb, hostId, { providerId: MACHINE_PROVIDER_ID });
+      return readMachineActivity(bb, hostId, { providerId: PLUGIN_MACHINE_PROVIDERS });
     },
 
     async findMachine(sandboxId, options = {}) {
@@ -284,7 +292,7 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
       const hosts = (Array.isArray(raw) ? raw : ((raw as { hosts?: unknown[] }).hosts ?? [])) as { id: string; machineProviderId?: string | null }[];
       const unread: string[] = [];
       for (const host of hosts) {
-        if (host.machineProviderId !== MACHINE_PROVIDER_ID) continue;
+        if (!PLUGIN_MACHINE_PROVIDERS.has(host.machineProviderId ?? "")) continue;
         const resource = (await bb.experimental_machines.getResource(host.id).catch(() => {
           unread.push(host.id);
           return null;

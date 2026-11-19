@@ -65,13 +65,19 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
     const signal = AbortSignal.timeout(20_000);
     const now = new Date(); const windows = usageWindows(now, input.timezoneOffsetMinutes);
     const missing: FidelityUsageDto["missing"] = [];
-    // Usage is the default provider's (boat.dev, the only one so far).
+    // The plan's included hours are the default provider's (boat.dev); machine time is every enabled provider's.
     const sandboxProvider = service.sandboxProviders.default;
     const plan = await sandboxProvider.usagePlan(signal).catch(() => null);
     if (!plan) missing.push({ metric: "plan", capability: "boat limits --json: planIncluded.vmHoursRemaining, vmHours and periodEnd" });
     if (plan) for (const field of ["hoursRemaining", "hoursTotal", "resetsAt"] as const) if (plan[field] === null) missing.push({ metric: `plan.${field}`, capability: "boat limits --json: planIncluded.vmHoursRemaining, vmHours and periodEnd" });
     let listed = true;
-    const all = await sandboxProvider.list({ all: true, signal }).catch(() => { listed = false; return []; });
+    const all = await service
+      .listSandboxes({ all: true, signal })
+      .then((result) => {
+        if (result.failed.length > 0) listed = false;
+        return result.sandboxes;
+      })
+      .catch(() => { listed = false; return []; });
     const sandboxes = all.slice(0, 100);
     async function aggregate(window: { since: string; until: string }) {
       const values: (SandboxUsage & { sandboxId: string })[] = [];
@@ -80,7 +86,7 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
       await Promise.all(Array.from({ length: 4 }, async () => {
         while (index < sandboxes.length) {
           const sandbox = sandboxes[index++]!;
-          const usage = await sandboxProvider.usage(sandbox.id, window, signal).catch(() => null);
+          const usage = await (service.sandboxProviders.get(sandbox.provider) ?? sandboxProvider).usage(sandbox.id, window, signal).catch(() => null);
           if (!usage || usage.hours === null || usage.dollars === null) complete = false;
           if (usage) values.push({ sandboxId: sandbox.id, ...usage });
         }

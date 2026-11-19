@@ -44,7 +44,9 @@ function failure(error: unknown): PluginAgentToolResult {
         : error instanceof Error
           ? error.message
           : String(error);
-  return { content: [{ type: "text", text: message }], isError: true };
+  // Never an empty failure: say at least what kind of error it was.
+  const text = message.trim() !== "" ? message : `The call failed without a reason (${error instanceof Error ? error.name : typeof error}). Run \`bb boat status\` and try again.`;
+  return { content: [{ type: "text", text }], isError: true };
 }
 
 async function attempt(fn: () => Promise<string>): Promise<PluginAgentToolResult> {

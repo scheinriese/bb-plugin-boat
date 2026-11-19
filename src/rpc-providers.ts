@@ -99,6 +99,9 @@ export type Connections = ReadonlyMap<string, SandboxProviderDto["connection"]>;
 /** Each enabled provider's prices as it states them (absent: it doesn't say). */
 export type Prices = ReadonlyMap<string, string>;
 
+/** Whether a key is stored in bb's secrets, for providers that sign in with one (absent: not known). */
+export type Keys = ReadonlyMap<string, boolean>;
+
 /** The systems a provider can start sandboxes on now (null: the provider isn't here). */
 function implementedSystems(provider: SandboxProvider | null): readonly string[] {
   if (provider === null) return [];
@@ -133,9 +136,13 @@ function boatRow(provider: SandboxProvider, reading: BoatReading, isDefault: boo
   };
 }
 
-function catalogRow(entry: CatalogEntry, provider: SandboxProvider | null, connection: SandboxProviderDto["connection"], isDefault: boolean, pricing: string | null): SandboxProviderDto {
+/**
+ * `provider`: enabled (it can take work); `here`: this version has it, on or
+ * off (its systems and its key's setting are known even while it's off).
+ */
+function catalogRow(entry: CatalogEntry, provider: SandboxProvider | null, connection: SandboxProviderDto["connection"], isDefault: boolean, pricing: string | null, here: SandboxProvider | null = provider): SandboxProviderDto {
   const available = entry.unsupported === undefined;
-  const implemented = implementedSystems(provider);
+  const implemented = implementedSystems(here);
   return {
     id: entry.id,
     label: providerLabel(entry.id, provider),
@@ -149,12 +156,12 @@ function catalogRow(entry: CatalogEntry, provider: SandboxProvider | null, conne
     pricing,
     // Ready only where this version can start sandboxes; a system the provider is here without says so.
     systems: entry.systems.map((system) => {
-      const here = implemented.includes(system.os);
-      const note = system.note ?? (provider !== null && !here ? "coming next" : null);
-      return { ...system, note, ready: connection === "connected" && here && note === null };
+      const offered = implemented.includes(system.os);
+      const note = system.note ?? (here !== null && !offered ? "coming next" : null);
+      return { ...system, note, ready: connection === "connected" && provider !== null && offered && note === null };
     }),
-    // No setting holds the key until the provider is here: the row says so instead of pointing at nothing.
-    apiKey: entry.apiKey ? { setting: provider === null ? null : `${entry.label} API key` } : null,
+    // No setting holds the key until this version has the provider: the row says so instead of pointing at nothing.
+    apiKey: entry.apiKey ? { setting: here === null ? null : `${entry.label} API key` } : null,
     status: available ? null : "Not available yet",
   };
 }
@@ -188,6 +195,7 @@ export function providersView(input: {
   boat: BoatReading;
   connections?: Connections;
   prices?: Prices;
+  keys?: Keys;
   projects: readonly BoatProject[];
 }): SandboxProvidersResultDto {
   const { registry } = input;
@@ -201,8 +209,11 @@ export function providersView(input: {
       if (provider !== null) rows.push(boatRow(provider, input.boat, defaultId === entry.id));
       continue;
     }
-    const connection = provider === null ? (entry.apiKey ? "key-missing" : "not-connected") : (input.connections?.get(entry.id) ?? "not-connected");
-    rows.push(catalogRow(entry, provider, connection, defaultId === entry.id, input.prices?.get(entry.id) ?? null));
+    // Here but off: with its key stored it's only turned off ("not-connected"); without, the key is what's missing.
+    const here = registry.all.find((candidate) => candidate.id === entry.id) ?? null;
+    const connection =
+      provider === null ? (entry.apiKey && input.keys?.get(entry.id) !== true ? "key-missing" : "not-connected") : (input.connections?.get(entry.id) ?? "not-connected");
+    rows.push(catalogRow(entry, provider, connection, defaultId === entry.id, input.prices?.get(entry.id) ?? null, here));
   }
   // A provider the catalog doesn't know yet still gets its row.
   for (const provider of registry.enabled) {
@@ -263,7 +274,11 @@ export function providerHandlers(runtime: Runtime) {
   async function view(): Promise<SandboxProvidersResultDto> {
     const reading = runtime.setup ? (runtime.setup.peek()?.facts ?? (await runtime.setup.reading().catch(() => null))) : null;
     const { connections, prices } = await others();
-    return providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, projects: runtime.projects.list() });
+    const keys = new Map(service.sandboxProviders.all.flatMap((provider) => {
+      const stored = runtime.providers?.keyPresent(provider.id) ?? null;
+      return stored === null ? [] : [[provider.id, stored] as const];
+    }));
+    return providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, keys, projects: runtime.projects.list() });
   }
 
   return {

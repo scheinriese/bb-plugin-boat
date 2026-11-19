@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parsePreview } from "../src/briefs.ts";
-import { parseShipOutput } from "../src/providers/boat/api.ts";
+import { parseShipOutput } from "../src/sandbox-repos.ts";
 import { notificationText, taskDetail } from "../src/format.ts";
 import { checkPreview, previewLink } from "../src/previews.ts";
 import { toTaskDto } from "../src/rpc.ts";

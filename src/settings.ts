@@ -87,7 +87,7 @@ export const SETTINGS = {
   maxActiveSandboxes: {
     type: "number",
     label: "Sandboxes at once",
-    description: "The most sandboxes running at the same time. Each one uses sandbox hours on your boat plan. 0: your plan's limit.",
+    description: "The most sandboxes running at the same time, on each provider. Each one uses sandbox hours on your plan. 0: your plan's limit. On Instabox the plan's limit counts stopped and paused machines too, so new work there can wait even when few run.",
     experimental_schema: range("maxActiveSandboxes"),
     default: 3,
   },
@@ -359,7 +359,7 @@ export const PLUGIN_SETTINGS = {
     section: "advanced",
     type: "number",
     label: "Hard stop after (hours)",
-    description: "boat stops a sandbox after this long unless an agent is working. Your plan may stop sandboxes sooner.",
+    description: "boat stops a sandbox after this long unless an agent is working. Your plan may stop sandboxes sooner. Doesn't apply on Instabox, which has no deadline: it pauses a machine after 30 idle minutes instead.",
     experimental_schema: range("sandboxTtlHours"),
     default: 2,
   },
@@ -414,7 +414,40 @@ export const PLUGIN_SETTINGS = {
     experimental_schema: z.string().max(1000),
     default: "",
   },
+  // Sandbox providers (boat.dev is always on; projects choose where they run)
+  instaboxEnabled: {
+    section: "advanced",
+    type: "boolean",
+    label: "Instabox",
+    description:
+      "Lets projects run on Instabox Linux machines instead of boat.dev (a project's Runs on). Needs the instabox CLI and your Instabox API key, stored in bb's settings for this plugin (Instabox API key). Task chats on Instabox are offered once the plugin reloads. Hard stop after doesn't apply there (Instabox pauses idle machines instead), and Instabox's own machine limit counts stopped machines too.",
+    default: false,
+  },
+  instaboxPath: {
+    section: "advanced",
+    type: "string",
+    label: "Instabox CLI location",
+    description: "Leave empty to find it on PATH (`npm install -g instabox`).",
+    experimental_schema: z.string().max(1000),
+    default: "",
+  },
 } satisfies Record<string, PluginSettingSpec>;
+
+/**
+ * Secret settings: kept in bb's secret store (a 0600 file under bb's data
+ * folder), never in the plugin's database, a settings backup, the page or a
+ * log. bb's settings page for the plugin (Settings → Plugins → Boat Cloud
+ * Agents) is where the owner enters them; only the server reads them.
+ */
+export const SECRET_SETTINGS = {
+  instaboxApiKey: {
+    type: "string",
+    label: "Instabox API key",
+    description: "An API key from `instabox keys create --name bb` (ibk_…), for Instabox machines. Only needed with Instabox turned on in the plugin's settings.",
+    secret: true,
+  },
+} satisfies Record<string, PluginSettingDescriptor>;
+export type SecretKey = keyof typeof SECRET_SETTINGS;
 
 export type DeclaredKey = keyof typeof SETTINGS;
 export type PluginKey = keyof typeof PLUGIN_SETTINGS;

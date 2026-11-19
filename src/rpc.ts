@@ -8,7 +8,8 @@ import { TAGS, rpcContract, type PreviewDto, type RunsOnDto, type SandboxDto, ty
 import type { PreviewView } from "./previews.ts";
 import { assertBranch, dashboardUrl, normalizeRepo } from "./providers/boat/api.ts";
 import { resolveBoatBinary } from "./providers/boat/cli.ts";
-import { MACHINE_TYPES, ProviderError, autoStopHours, type ExplainedError, type MachineType, type SandboxInfo as Sandbox } from "./providers/types.ts";
+import { MACHINE_TYPES, PROVIDER_NAMES, ProviderError, autoStopHours, type ExplainedError, type MachineType, type SandboxInfo as Sandbox } from "./providers/types.ts";
+import { DASHBOARD_URL as INSTABOX_DASHBOARD_URL } from "./providers/instabox/words.ts";
 import { describeClose } from "./close-outcome.ts";
 import { uiStateHandlers } from "./ui-state.ts";
 import { orchestratorChoiceHandlers } from "./orchestrator-agent.ts";
@@ -157,7 +158,8 @@ export function sandboxUses(
   ];
 }
 
-function toSandboxDto(sandbox: Sandbox, taskIds: string[], uses: SandboxDto["uses"] = [], runsOn?: RunsOnDto): SandboxDto {
+function toSandboxDto(sandbox: Sandbox & { provider?: string }, taskIds: string[], uses: SandboxDto["uses"] = [], runsOn?: RunsOnDto): SandboxDto {
+  const onInstabox = sandbox.provider === "instabox";
   return {
     id: sandbox.id,
     name: sandbox.name,
@@ -167,8 +169,8 @@ function toSandboxDto(sandbox: Sandbox, taskIds: string[], uses: SandboxDto["use
     createdAt: sandbox.createdAt,
     archiveAfter: sandbox.archiveAfter,
     machineType: sandbox.machineType ?? null,
-    dashboardUrl: dashboardUrl(sandbox.id),
-    sshCommand: `boat ssh ${sandbox.id}`,
+    dashboardUrl: onInstabox ? INSTABOX_DASHBOARD_URL : dashboardUrl(sandbox.id),
+    sshCommand: onInstabox ? `instabox ssh ${sandbox.id}` : `boat ssh ${sandbox.id}`,
     taskIds,
     uses,
     ...(runsOn ? { runsOn } : {}),
@@ -401,7 +403,9 @@ export function registerRpc(runtime: Runtime): void {
     projectCatalog: (() => {
       let cached: { at: number; value: ReturnType<typeof readProjectCatalog> } | null = null;
       return () => {
-        if (!cached || Date.now() - cached.at > 60_000) cached = { at: Date.now(), value: readProjectCatalog(bb, service.sandboxProviders.default) };
+        // Repos come from named environments, which only some providers have (boat.dev).
+        const withEnvironments = service.sandboxProviders.enabled.find((provider) => provider.caps.environments) ?? service.sandboxProviders.default;
+        if (!cached || Date.now() - cached.at > 60_000) cached = { at: Date.now(), value: readProjectCatalog(bb, withEnvironments) };
         return cached.value;
       };
     })(),
@@ -451,7 +455,9 @@ export function registerRpc(runtime: Runtime): void {
 
     sandboxes: async ({ all }) => {
       try {
-        const [sandboxes, chats] = await Promise.all([service.sandboxProviders.default.list({ all }), machineChats()]);
+        // Every enabled provider's (one that can't be read is named in error; the others still show).
+        const [listed, chats] = await Promise.all([service.listSandboxes({ all }), machineChats()]);
+        const sandboxes = listed.sandboxes;
         const tasks = service.store.list({ limit: 1000 });
         const orchestrators = service.store.orchestratorThreadIds().current;
         return {
@@ -466,7 +472,7 @@ export function registerRpc(runtime: Runtime): void {
               runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id),
             );
           }),
-          error: null,
+          error: listed.failed.length === 0 ? null : listed.failed.map((entry) => `${PROVIDER_NAMES[entry.provider as keyof typeof PROVIDER_NAMES] ?? entry.provider}: ${entry.error}`).join("; "),
         };
       } catch (error) {
         return { sandboxes: [], error: message(error) };
@@ -822,7 +828,7 @@ export function registerRpc(runtime: Runtime): void {
       try {
         const result = await service.snapshots();
         return {
-          snapshots: result.snapshots.map(({ name, sizeBytes, createdAt, type, status }) => ({ name, sizeBytes, createdAt, type, status })),
+          snapshots: result.snapshots.map(({ name, sizeBytes, createdAt, type, status, provider }) => ({ name, sizeBytes, createdAt, type, status, ...(provider === "boat" ? {} : { provider }) })),
           included: result.included,
           used: result.used,
           error: null,
@@ -849,7 +855,7 @@ export function registerRpc(runtime: Runtime): void {
         if (repo !== null) {
           const always = alwaysProtectedBranches((await service.settings()).extraProtectedBranches);
           try {
-            await service.sandboxProvider(sandbox.id).prepareRepo(
+            await service.prepareRepo(
               sandbox.id,
               repo,
               branch ? { kind: "new-branch", branch, base: null } : { kind: "default-branch" },
@@ -869,7 +875,8 @@ export function registerRpc(runtime: Runtime): void {
     sandboxAction: ({ id, action }) =>
       refuse(async () => {
         const settings = await service.settings();
-        const { limits } = await service.capacity();
+        // The sandbox's own provider's limits (its auto-stop cap), never another's.
+        const { limits } = await service.capacity(undefined, id);
         const hours = autoStopHours(settings.sandboxTtlHours, limits?.autoStopCapHours ?? null);
         if (action !== "delete") await service.sandboxAction(id, action, Math.round(hours * 3600));
         else {

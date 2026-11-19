@@ -10,7 +10,7 @@ import { createStartQueue } from "../src/start-queue.ts";
 import { StartQueueStore, durableStartInput } from "../src/start-queue-store.ts";
 import { createPaidStartInteractions } from "../src/start-queue-interaction.ts";
 import { createQuotaReader, type Quotas, type QuotaReader } from "../src/quota.ts";
-import { defaultSettings, FakeBoat, FakeChat } from "./fakes.ts";
+import { defaultSettings, fakeRepos, FakeBoat, FakeChat } from "./fakes.ts";
 import { createTestHost } from "./fakes.ts";
 import { registerStartQueueRpc } from "../src/start-queue-rpc.ts";
 import type { Runtime } from "../src/runtime.ts";
@@ -34,7 +34,7 @@ function setup(asChat = false) {
   harness.sdk.stub("threads.get", async ({threadId}:{threadId:string})=>({id:threadId,archivedAt:closed?1:null,deletedAt:null}));
   const reader:QuotaReader={async read(_signal,options){if(options?.fresh){await onFresh?.(++readCount);}return new Map([...usage].map(([k,v])=>[k,{...v}]));}};
   const lifecycle = new AbortController();
-  const service=new BoatService(boat as unknown as BoatApi,registry,{settings:async()=>settings,lifecycle:lifecycle.signal,changed(){if(afterInsertFailure){afterInsertFailure=false;throw Error("Simulated reload after registry insertion");}},notify:async()=>{},log:{info(){},warn(){}},...(chat?{chat}:{}),quotas:reader,usageRefused:async provider=>{const q=usage.get(provider);if(q)q.blockedUntil=Date.now()+3600000;},preflight:async()=>{await preflight?.();},checkPreview:async()=>"up"});
+  const service=new BoatService(boat as unknown as BoatApi,registry,{repos:fakeRepos(boat),settings:async()=>settings,lifecycle:lifecycle.signal,changed(){if(afterInsertFailure){afterInsertFailure=false;throw Error("Simulated reload after registry insertion");}},notify:async()=>{},log:{info(){},warn(){}},...(chat?{chat}:{}),quotas:reader,usageRefused:async provider=>{const q=usage.get(provider);if(q)q.blockedUntil=Date.now()+3600000;},preflight:async()=>{await preflight?.();},checkPreview:async()=>"up"});
   const controllers:ReturnType<typeof createStartQueue>[]=[];
   const start=()=>{const q=createStartQueue({bb,service,store,quotas:reader,changed(){},wake(){},now:()=>clock,projectCurrent:()=>projectValid});controllers.push(q);return q;};
   const queue=start();

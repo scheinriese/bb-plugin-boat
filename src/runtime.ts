@@ -56,6 +56,8 @@ import { StartQueueStore, queueDigest } from "./start-queue-store.ts";
 import type { StartTaskInput } from "./service.ts";
 import { START_QUEUE_TAG } from "../contract-start-queue.ts";
 import { CONTINUATION_GOAL, continuationGoalSchema, continuationGoalText, readContinuationGoal, type ContinuationGoal } from "./goal-handoff.ts";
+import type { ProviderState } from "./provider-status.ts";
+import type { InstaboxSetupStatus } from "./providers/instabox/setup.ts";
 
 /** How a caller names a project: a configured one, or a local bb project. */
 export type ProjectRef = { kind: "boat"; id: string } | { kind: "local"; bbProjectId: string };
@@ -142,6 +144,8 @@ export interface Runtime {
   connectStatus(): Promise<ConnectStatus>;
   /** The setup checks (null in tests that don't wire them). */
   setup: Setup | null;
+  /** The sandbox providers' states and Instabox's checks (null in tests that don't wire them). */
+  providers: ProviderStatusSource | null;
   /** Every setting, wherever it lives (bb's list or the plugin's own). */
   settings: SettingsStore;
   /** Back up and restore: settings, projects, tiers and protocol (src/config.ts). */
@@ -172,6 +176,16 @@ export type RelayAction =
 const PROVIDER_FROM_ID: Record<string, Provider> = { "claude-code": "claude", codex: "codex" };
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/** What the CLI and the page read of the sandbox providers (src/provider-status.ts). */
+export interface ProviderStatusSource {
+  /** Every provider with its state (force: check again now). */
+  states(options?: { force?: boolean }): Promise<ProviderState[]>;
+  /** Instabox's own checks (`bb boat doctor`). */
+  instabox(options?: { force?: boolean }): Promise<InstaboxSetupStatus>;
+  /** A key is stored in bb's secrets for this provider (never the key); null: it signs in another way. */
+  keyPresent(providerId: string): boolean | null;
+}
+
 export interface RuntimeDeps {
   bb: BbPluginApi;
   service: BoatService;
@@ -191,6 +205,8 @@ export interface RuntimeDeps {
   setup?: Setup;
   /** Chats stopped at a usage limit continue on paid Claude (src/paid-resume.ts). */
   paidResume?: PaidResume;
+  /** The sandbox providers' states (src/provider-status.ts). */
+  providers?: ProviderStatusSource;
   /** `bb boat sandbox wake` (src/sandbox-wake.ts); a getter: it's made after the runtime (null: not available). */
   sandboxWaker?(): SandboxWaker | null;
   changed(): void;
@@ -975,6 +991,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
 
     connectStatus,
     setup: deps.setup ?? null,
+    providers: deps.providers ?? null,
     settings: deps.settings,
     config: {
       settings: deps.settings,

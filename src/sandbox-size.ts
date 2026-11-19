@@ -8,8 +8,7 @@
 // plugin (no database migration). BoatService builds one SandboxSizes and
 // calls it from a few places (marked "sizes" there).
 import type { TaskMemoryDto, ResizeInfoDto } from "../contract-size.ts";
-import { ACTIVE_STATES, type MachineType, type SandboxInfo as Sandbox, type SandboxProvider } from "./providers/types.ts";
-import { trimFreedBlocks } from "./disk-trim.ts";
+import { ACTIVE_STATES, DEFAULT_PROVIDER_ID, type MachineType, type SandboxInfo as Sandbox, type SandboxProvider } from "./providers/types.ts";
 import {
   DATA_KIND,
   MEMORY_KIND,
@@ -254,8 +253,14 @@ export class SandboxSizes {
     for (const id of taskIds) this.record(id, data);
   }
 
-  /** The plan's sizes from the newest boat reading, without waiting (null: unknown). */
-  private planNow(): PlanSize[] | null {
+  /**
+   * The plan's sizes from the newest boat reading, without waiting (null:
+   * unknown). Only boat.dev's sandboxes go by boat's plan: another provider's
+   * (`provider`) are unknown here, and that provider refuses a size it lacks
+   * in its own words.
+   */
+  private planNow(provider?: Pick<SandboxProvider, "id"> | null): PlanSize[] | null {
+    if (provider != null && provider.id !== DEFAULT_PROVIDER_ID) return null;
     try {
       return this.deps.hooks.sizePlanNow?.() ?? null;
     } catch {
@@ -263,9 +268,24 @@ export class SandboxSizes {
     }
   }
 
-  /** The plan's sizes read from boat now (a refusal or a move shouldn't rest on an old reading). */
-  private async planFresh(): Promise<PlanSize[] | null> {
+  /**
+   * The plan's sizes read now (a refusal or a move shouldn't rest on an old
+   * reading): boat.dev's from boat, another provider's from its own
+   * capacity report, when it says.
+   */
+  private async planFresh(provider?: Pick<SandboxProvider, "id" | "capacity"> | null): Promise<PlanSize[] | null> {
+    if (provider != null && provider.id !== DEFAULT_PROVIDER_ID) return (await provider.capacity(this.deps.hooks.lifecycle).catch(() => null))?.machineTypes ?? null;
     return (await this.deps.hooks.sizePlan?.({ fresh: true }).catch(() => null)) ?? this.planNow();
+  }
+
+  /** Whose plan a size refusal names: "boat" for boat.dev (as it always said), else the provider's name. */
+  private planOwner(provider?: Pick<SandboxProvider, "id" | "displayName"> | null): string {
+    return provider == null || provider.id === DEFAULT_PROVIDER_ID ? "boat" : provider.displayName;
+  }
+
+  /** The provider of a task's sandbox (null: none yet). */
+  private providerOf(task: Pick<Task, "sandboxId">): SandboxProvider | null {
+    return task.sandboxId === null ? null : this.deps.sandboxProvider(task.sandboxId);
   }
 
   // ---------------------------------------------------------------- the probe
@@ -427,7 +447,7 @@ export class SandboxSizes {
     const confirmed = oom !== null && oom.data.certain && oom.data.cause && oom.moved === null && oom.data.sandboxId === task.sandboxId;
     if (!confirmed) return { outOfMemory: false, recoveryCostsMore: false };
     const next = oom.data.machineType ? nextSize(oom.data.machineType) : oom.data.next;
-    const plan = this.planNow();
+    const plan = this.planNow(this.providerOf(task));
     const allowed = next !== null && (plan === null ? oom.data.nextAllowed : planVerdict(next, plan).allowed);
     const canResize = task.sandboxId !== null && this.deps.store.pluginOwnsSandbox(task.sandboxId) && !this.jobs.has(task.sandboxId) && (task.runner === "chat" ? task.threadId !== null : task.conversationId !== null);
     return { outOfMemory: true, recoveryCostsMore: allowed && canResize };
@@ -557,7 +577,7 @@ export class SandboxSizes {
     const now = this.deps.store.get(task.id);
     if (now === null) return;
     const next = context.current === null ? null : nextSize(context.current);
-    const verdict = next === null ? { allowed: false, reason: null } : planVerdict(next, this.planNow());
+    const verdict = next === null ? { allowed: false, reason: null } : planVerdict(next, this.planNow(this.providerOf(task)));
     // By title: the page shows it as is.
     const others = this.deps.store
       .liveSandboxTasks(task.sandboxId!)
@@ -601,7 +621,7 @@ export class SandboxSizes {
       this.say(task.id, MEMORY_KIND, "Couldn't measure peak memory during this turn (the measurement stopped early).");
       return;
     }
-    const recommendation = recommendSize({ peakKb: peak.peakKb, memTotalKb: peak.memTotalKb, oom: context.oom, current: context.current, plan: this.planNow() });
+    const recommendation = recommendSize({ peakKb: peak.peakKb, memTotalKb: peak.memTotalKb, oom: context.oom, current: context.current, plan: this.planNow(this.providerOf(task)) });
     // Another task working on the sandbox meanwhile makes the peak partly its.
     const shared = this.deps.store
       .liveSandboxTasks(task.sandboxId!)
@@ -653,12 +673,16 @@ export class SandboxSizes {
     settings: BoatSettings;
     /** The user said yes (the page, --user-approved, user_approved): an XLarge sandbox needs it. */
     userApproved: boolean;
+    /** Where a new sandbox goes (absent: boat.dev): its plan's sizes apply. */
+    provider?: Pick<SandboxProvider, "id" | "displayName" | "capacity"> | null;
   }): Promise<{ type: MachineType; note: string | null }> {
     this.settingType = input.settings.machineType;
+    const provider = input.provider ?? null;
+    const owner = this.planOwner(provider);
     const allowed = async (type: MachineType) => {
-      let verdict = planVerdict(type, this.planNow());
-      // A refusal reads boat again first: the user may have just upgraded.
-      if (!verdict.allowed) verdict = planVerdict(type, await this.planFresh());
+      let verdict = planVerdict(type, this.planNow(provider));
+      // A refusal reads the plan again first: the user may have just upgraded.
+      if (!verdict.allowed) verdict = planVerdict(type, await this.planFresh(provider));
       return verdict;
     };
     if (input.requested !== null) {
@@ -674,9 +698,9 @@ export class SandboxSizes {
         const verdict = await allowed(input.requested);
         if (!verdict.allowed) {
           throw new TaskError(
-            `Your boat plan doesn't include ${LABEL(input.requested)} sandboxes: ${trimDot(verdict.reason ?? "")}.`,
+            `Your ${owner} plan doesn't include ${LABEL(input.requested)} sandboxes: ${trimDot(verdict.reason ?? "")}.`,
             "size_not_on_plan",
-            "Pick another size, or change your plan (`boat billing plan`).",
+            owner === "boat" ? "Pick another size, or change your plan (`boat billing plan`)." : "Pick another size, or change your plan.",
           );
         }
       }
@@ -691,8 +715,8 @@ export class SandboxSizes {
         type = project.machineType;
         note = `${LABEL(type)} sandbox, from project ${project.name}`;
       } else {
-        type = await this.fallback(project.machineType, input.settings.machineType);
-        note = `${project.name} uses ${LABEL(project.machineType)} sandboxes, but your boat plan doesn't include ${LABEL(project.machineType)} (${trimDot(verdict.reason ?? "")}). This sandbox is ${LABEL(type)}.`;
+        type = await this.fallback(project.machineType, input.settings.machineType, provider);
+        note = `${project.name} uses ${LABEL(project.machineType)} sandboxes, but your ${owner} plan doesn't include ${LABEL(project.machineType)} (${trimDot(verdict.reason ?? "")}). This sandbox is ${LABEL(type)}.`;
       }
     }
     // A review in a new sandbox runs the same tests: on less, they'd fail.
@@ -700,7 +724,7 @@ export class SandboxSizes {
     // sandbox's own answer; and XLarge needs the user's OK for each sandbox.
     if (input.role === "review" && input.parent?.sandboxId) {
       const parentType = await this.trustedType(input.parent.sandboxId, input.parent.id);
-      if (parentType !== null && compareSizes(parentType, type) > 0 && planVerdict(parentType, this.planNow()).allowed) {
+      if (parentType !== null && compareSizes(parentType, type) > 0 && planVerdict(parentType, this.planNow(provider)).allowed) {
         const capped = parentType === "xlarge" && !input.userApproved;
         const inherited: MachineType = capped ? "large" : parentType;
         if (compareSizes(inherited, type) > 0) {
@@ -727,16 +751,18 @@ export class SandboxSizes {
   }
 
   /** The setting when the plan has it, else the largest size the plan has below `wanted`. */
-  private async fallback(wanted: MachineType, setting: MachineType): Promise<MachineType> {
-    const plan = this.planNow();
+  private async fallback(wanted: MachineType, setting: MachineType, provider: Pick<SandboxProvider, "id"> | null = null): Promise<MachineType> {
+    const plan = this.planNow(provider);
     if (planVerdict(setting, plan).allowed) return setting;
     const below = (["xlarge", "large", "default", "small"] as const).filter((type) => compareSizes(type, wanted) < 0 && planVerdict(type, plan).allowed);
     return below[0] ?? setting;
   }
 
   /** The plan's verdict on a project's size (for the save's note); reads boat when there's no reading yet. */
-  async projectSizeVerdict(type: MachineType | null): Promise<{ allowed: boolean; reason: string | null }> {
+  /** `provider`: where the project runs (absent: boat.dev); another provider's plan is unknown here. */
+  async projectSizeVerdict(type: MachineType | null, provider: Pick<SandboxProvider, "id"> | null = null): Promise<{ allowed: boolean; reason: string | null }> {
     if (type === null) return { allowed: true, reason: null };
+    if (provider !== null && provider.id !== DEFAULT_PROVIDER_ID) return { allowed: true, reason: null };
     const plan = this.planNow() ?? (await this.deps.hooks.sizePlan?.().catch(() => null)) ?? null;
     return planVerdict(type, plan);
   }
@@ -754,9 +780,10 @@ export class SandboxSizes {
   }
 
   /** Sandboxes stopped for a move count as active, so their slot isn't given away (except to their own resume). */
-  reservedSlots(active: readonly Pick<Sandbox, "id">[], forSandbox?: string | null): number {
+  reservedSlots(active: readonly Pick<Sandbox, "id">[], forSandbox?: string | null, providerId?: string): number {
     const ids = new Set(active.map((sandbox) => sandbox.id));
-    return [...this.jobs.keys()].filter((id) => !ids.has(id) && id !== forSandbox).length;
+    // Only moves of this provider's sandboxes: another provider's aren't in its list, and take none of its slots.
+    return [...this.jobs.keys()].filter((id) => !ids.has(id) && id !== forSandbox && (providerId === undefined || this.deps.sandboxProvider(id).id === providerId)).length;
   }
 
   /** Refuses work on a sandbox that's moving (a follow-up, a close, a ship). The move's own follow-up goes through. */
@@ -901,22 +928,37 @@ export class SandboxSizes {
       }
       if (busy) return { blocker: new TaskError("A chat on this sandbox is still working.", "sandbox_busy", "Wait for its turn to end, or interrupt it, then change the size."), startsLeft: null, current };
     }
+    const provider = this.deps.sandboxProvider(sandboxId);
+    const onBoat = provider.id === DEFAULT_PROVIDER_ID;
     if (type !== null) {
-      const verdict = planVerdict(type, await this.planFresh());
+      // The sandbox's own provider's plan (boat.dev's from boat; another's from its capacity report, when it says).
+      const verdict = planVerdict(type, await this.planFresh(provider));
       if (!verdict.allowed) {
         return {
-          blocker: new TaskError(`Your boat plan doesn't include ${LABEL(type)} sandboxes: ${trimDot(verdict.reason ?? "")}.`, "size_not_on_plan", "Pick another size, or change your plan (`boat billing plan`)."),
+          blocker: new TaskError(
+            `Your ${this.planOwner(provider)} plan doesn't include ${LABEL(type)} sandboxes: ${trimDot(verdict.reason ?? "")}.`,
+            "size_not_on_plan",
+            onBoat ? "Pick another size, or change your plan (`boat billing plan`)." : "Pick another size, or change your plan.",
+          ),
           startsLeft: null,
           current,
         };
       }
     }
     // The move resumes the sandbox: that's a boat start. Know it's there before stopping anything.
-    const limits = await this.deps.sandboxProvider(sandboxId).capacity(this.deps.hooks.lifecycle).catch(() => null);
+    const limits = await provider.capacity(this.deps.hooks.lifecycle).catch(() => null);
     const startsLeft = limits === null ? null : [limits.startsLeftToday, limits.startsLeftThisHour].filter((n): n is number => n !== null).reduce<number | null>((min, n) => (min === null ? n : Math.min(min, n)), null);
     if (limits !== null) {
-      if (limits.checkoutRequired || !limits.canStart) {
-        return { blocker: new TaskError(`boat won't start a sandbox right now${limits.blockedReason ? `: ${trimDot(limits.blockedReason)}` : ""}, so a moved sandbox couldn't start again.`, "boat_start_blocked", "Run `boat limits --all` for details."), startsLeft, current };
+      // Where the plan's limit counts the machines it keeps (Instabox), starting this one again adds none: only the account matters.
+      const restartCounts = provider.caps.concurrencyUnit !== "kept-sandboxes";
+      if (limits.checkoutRequired || (!limits.canStart && restartCounts)) {
+        return {
+          blocker: onBoat
+            ? new TaskError(`boat won't start a sandbox right now${limits.blockedReason ? `: ${trimDot(limits.blockedReason)}` : ""}, so a moved sandbox couldn't start again.`, "boat_start_blocked", "Run `boat limits --all` for details.")
+            : new TaskError(`${provider.displayName} won't start a machine right now${limits.blockedReason ? `: ${trimDot(limits.blockedReason)}` : ""}, so a moved sandbox couldn't start again.`, "provider_start_blocked"),
+          startsLeft,
+          current,
+        };
       }
       if (startsLeft === 0) {
         return { blocker: new TaskError("The boat start limit is used up for now, and a move starts the sandbox again.", "boat_start_limit", "Wait for the window to roll over, or upgrade the plan (`boat billing plan`)."), startsLeft, current };
@@ -952,7 +994,7 @@ export class SandboxSizes {
       blocker = checked.blocker;
       startsLeft = checked.startsLeft;
     }
-    const plan = this.planNow();
+    const plan = this.planNow(this.providerOf(task));
     let suggested: MachineType | null = null;
     for (let next = size?.type ? nextSize(size.type) : null; next !== null; next = nextSize(next)) {
       if (planVerdict(next, plan).allowed) {
@@ -1078,8 +1120,10 @@ export class SandboxSizes {
         } else {
           const info = await sandboxProvider.findInfo(sandboxId, signal);
           if (info !== null && ACTIVE_STATES.has(info.state)) {
-            // Trimmed first, so boat counts only what's really there: a smaller size may refuse it otherwise (src/disk-trim.ts).
-            await trimFreedBlocks(sandboxProvider, sandboxId, { state: info.state, signal, log: (line) => this.deps.hooks.log.debug?.(line) });
+            // The provider's step first (boat.dev: trimmed, so boat counts only what's really there: a smaller size may refuse it otherwise, src/disk-trim.ts).
+            await sandboxProvider
+              .machineHooks?.({ warn: (line) => this.deps.hooks.log.warn(line), debug: (line) => this.deps.hooks.log.debug?.(line) })
+              .beforeStop?.(sandboxId, { state: info.state, signal });
             await sandboxProvider.stop(sandboxId, signal);
           }
         }
@@ -1349,7 +1393,7 @@ export class SandboxSizes {
   async view(task: Task): Promise<TaskMemoryDto | null> {
     try {
       const setting = await this.settingNow();
-      const plan = this.planNow();
+      const plan = this.planNow(this.providerOf(task));
       const size = this.knownSize(task);
       const running = task.status === "running" || task.status === "starting";
       const closed = task.status === "done" || task.status === "cancelled";

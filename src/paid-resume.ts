@@ -35,6 +35,7 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { ACTIVE_STATES } from "./providers/types.ts";
+import { MACHINE_PROVIDER_ID as BOAT_MACHINE_PROVIDER_ID } from "./providers/boat/provider.ts";
 import type { MachineState } from "./chat.ts";
 import { USAGE_LIMIT_TEXT } from "./limits.ts";
 import type { BoatProject } from "./projects.ts";
@@ -376,15 +377,19 @@ export function backoffMs(failures: number): number {
  */
 export type MachineCheck =
   | { state: "up" }
-  /** `ids`: the machines a resume wakes (host:<id>, sandbox:<id>). */
-  | { state: "asleep"; ids?: string[] }
+  /**
+   * `ids`: the machines a resume wakes (host:<id>, sandbox:<id>).
+   * `unpaced`: none of them is on boat.dev (src/wake-pacer.ts paces boat's
+   * wakes only), so the wake takes no slot and a failure holds nothing.
+   */
+  | { state: "asleep"; ids?: string[]; unpaced?: boolean }
   /** `failure`: it shows a failed start (perhaps old); `id`: which machine. */
   | { state: "skip"; why: string; failure?: boolean; id?: string };
 
-/** bb's machine record (hosts.get). */
+/** bb's machine record (hosts.get). One bb names as another provider's than boat.dev isn't paced. */
 export function hostCheck(machine: MachineState | null, id?: string): MachineCheck {
-  const check = hostState(machine);
-  return withId(check, id);
+  const check = withId(hostState(machine), id);
+  return check.state === "asleep" && machine?.machineProviderId != null && machine.machineProviderId !== BOAT_MACHINE_PROVIDER_ID ? { ...check, unpaced: true } : check;
 }
 
 function withId(check: MachineCheck, id: string | undefined): MachineCheck {
@@ -418,7 +423,9 @@ export function worstCheck(checks: readonly MachineCheck[]): MachineCheck {
   const asleep = checks.filter((check): check is Extract<MachineCheck, { state: "asleep" }> => check.state === "asleep");
   if (asleep.length === 0) return { state: "up" };
   const ids = asleep.flatMap((check) => check.ids ?? []);
-  return ids.length > 0 ? { state: "asleep", ids } : { state: "asleep" };
+  // Paced if any of them is (boat.dev's).
+  const unpaced = asleep.every((check) => check.unpaced === true);
+  return { state: "asleep", ...(ids.length > 0 ? { ids } : {}), ...(unpaced ? { unpaced: true } : {}) };
 }
 
 /** What the machine check reads. */
@@ -429,13 +436,18 @@ export interface MachineReader {
   host(hostId: string): Promise<MachineState | null>;
   /** A boat sandbox's state (null: gone). */
   sandbox(sandboxId: string): Promise<string | null>;
+  /** The sandbox's wakes go through boat.dev's pacer (absent: they do). */
+  sandboxPaced?(sandboxId: string): boolean;
 }
 
 /** The machine a chat's or a headless task's resume runs on. A read that fails skips it. */
 export async function readMachine(reader: MachineReader, thread: Pick<ThreadFacts, "environmentId"> | null, task: Pick<Task, "runner" | "hostId" | "sandboxId"> | null): Promise<MachineCheck> {
   try {
     const checks: MachineCheck[] = [];
-    if (task?.sandboxId) checks.push(sandboxCheck(await reader.sandbox(task.sandboxId), `sandbox:${task.sandboxId}`));
+    if (task?.sandboxId) {
+      const check = sandboxCheck(await reader.sandbox(task.sandboxId), `sandbox:${task.sandboxId}`);
+      checks.push(check.state === "asleep" && reader.sandboxPaced?.(task.sandboxId) === false ? { ...check, unpaced: true } : check);
+    }
     if (task?.runner !== "boat") {
       const hostId = task?.hostId ?? (thread?.environmentId ? await reader.hostOf(thread.environmentId) : null);
       checks.push(hostId === null ? { state: "skip", why: "its machine is unknown" } : hostCheck(await reader.host(hostId), `host:${hostId}`));
@@ -841,6 +853,8 @@ export function createPaidResume(deps: PaidResumeDeps) {
       // A failure a machine shows may be days old (bb keeps it until the machine starts again): only this machine is left alone.
       if (check.state === "skip") return { go: false, reason: check.why, defer: false };
       if (check.state === "up") return { go: true, wake: false };
+      // Not boat.dev's: no slot of boat's pacer, and its failure holds no boat wake (wake: false).
+      if (check.unpaced === true) return { go: true, wake: false };
       if (wakesHeld) return { go: false, reason: "machines aren't woken for now (a wake failed)", defer: true };
       // The slot is claimed for this machine: bb's resume of it uses that slot, not a second one.
       if ((await deps.wakes.take(check.ids ?? []).catch(() => null)) === null) return { go: false, reason: "waiting for a wake (at most 2 a minute)", defer: true };

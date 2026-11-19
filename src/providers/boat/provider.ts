@@ -2,11 +2,15 @@
 // CLI (BoatApi, ./api.ts). Each member hands its call to the boat client as
 // the plugin made it before the provider layer, so boat sees the same
 // commands; boat's own rules stay here (the auto-stop cap's retry, the git
-// hooks' environment, the `boat ssh` executor).
+// hooks' environment, the `boat ssh` executor, the login scripts quieted
+// before bb's setup and the disk trimmed before a stop, boat's words for
+// GitHub access).
 import { SIZE_SPECS } from "../../memory.ts";
-import { MACHINE_TYPES, type MachineSpec, type SandboxCapabilities, type SandboxProvider, type SizeOption } from "../types.ts";
+import { createLoginQuieter } from "../../login-scripts.ts";
+import { trimFreedBlocks } from "../../disk-trim.ts";
+import { MACHINE_TYPES, type MachineHookContext, type MachineHooks, type MachineSpec, type RepoWords, type SandboxCapabilities, type SandboxProvider, type SizeOption } from "../types.ts";
 import { BOAT_GIT_ENV, withinAutoStopCap, type BoatApi } from "./api.ts";
-import type { BoatCli } from "./cli.ts";
+import { BoatError, type BoatCli } from "./cli.ts";
 import { sshExecutor } from "./ssh.ts";
 
 /** The boat client the provider calls: the plugin's BoatApi, or a test's stand-in for it. */
@@ -29,10 +33,40 @@ export const BOAT_CAPABILITIES: SandboxCapabilities = {
   // Hard stop after (`--ttl`, `boat extend`); it counts only boat's own agents as working.
   autoStop: { extendable: true, seesBbActivity: false },
   agentBusyState: true,
+  pacedWakes: true,
   previews: "token-link",
   bbEnrollment: true,
   concurrencyUnit: "sandboxes",
+  environments: true,
+  idlePause: null,
 };
+
+/** GitHub access in boat sandboxes, and how to fix it on boat.dev (src/sandbox-repos.ts). */
+export const BOAT_REPO_WORDS: RepoWords = {
+  cantSee: (repo) =>
+    `boat's GitHub access can't see ${repo}. Connect GitHub on boat.dev → Environment and give boat access to ${repo} (GitHub → Settings → Applications → boat → Repository access, on ${repo.split("/")[0] ?? repo}), or check the repo name. Then try again.`,
+  denied: (repo, detail) => `GitHub refused boat's access to ${repo}: ${detail}.`,
+  noLogin: (environment) =>
+    `The sandbox has no GitHub login. Connect GitHub on boat.dev → Environment and give boat access to this repo (or turn off "Safe for third parties" for ${environment ? `\`${environment}\`` : "the sandbox's boat environment"}), then try again.`,
+  expired: (environment) =>
+    `The sandbox's GitHub login has expired (boat's GitHub tokens last about 8 hours). Run \`boat env upgrade ${environment ?? "<environment>"}\` to give sandboxes fresh credentials, or start the work in a new sandbox.`,
+  error: (message, options) => new BoatError(message, options),
+};
+
+/**
+ * boat's steps around bb's setup and planned stops: the login message scripts
+ * off before bb's SSH setup (a script can hang on a disk boat.dev is still
+ * restoring, src/login-scripts.ts), and freed disk blocks trimmed before a
+ * stop (boat's snapshot counts them, src/disk-trim.ts).
+ */
+export function boatMachineHooks(boat: Pick<SandboxProvider, "exec" | "findInfo">, context: MachineHookContext): MachineHooks {
+  const quietLogins = createLoginQuieter(boat, (line) => context.warn(line));
+  return {
+    beforeBootstrap: (sandboxId, signal) => quietLogins(sandboxId, signal),
+    beforeStop: (sandboxId, { state, signal }) =>
+      trimFreedBlocks(boat, sandboxId, { signal, ...(state === undefined ? {} : { state }), ...(context.stopStepTimeoutMs === undefined ? {} : { timeoutMs: context.stopStepTimeoutMs }), log: (line) => context.debug(line) }),
+  };
+}
 
 /** boat's sizes (`--type`), as `boat new --help` describes them. */
 export const BOAT_SIZES: readonly SizeOption[] = MACHINE_TYPES.map((id) => ({
@@ -83,7 +117,7 @@ export const BOAT_MACHINE: MachineSpec = {
  * machines); without it, the client's.
  */
 export function createBoatProvider(client: BoatClient, options: { cli?: Pick<BoatCli, "binary"> } = {}): SandboxProvider {
-  return {
+  const provider: SandboxProvider = {
     id: "boat",
     displayName: "boat.dev",
     caps: BOAT_CAPABILITIES,
@@ -128,10 +162,6 @@ export function createBoatProvider(client: BoatClient, options: { cli?: Pick<Boa
     execDetached: (sandboxId, script, signal) => client.execDetached(sandboxId, script, signal),
     processes: (sandboxId, signal) => client.processes(sandboxId, signal),
 
-    prepareRepo: (sandboxId, repo, checkout, options) => client.prepareRepo(sandboxId, repo, checkout, options),
-    githubLogin: (sandboxId, signal) => client.githubLogin(sandboxId, signal),
-    ship: (sandboxId, targets, signal, shippedBy) => client.ship(sandboxId, targets, signal, shippedBy),
-
     host: (sandboxId, port, title, signal) => client.host(sandboxId, port, title, signal),
     snapshot: (sandboxId, name, signal) => client.snapshot(sandboxId, name, signal),
     snapshots: (signal) => client.snapshots(signal),
@@ -147,5 +177,8 @@ export function createBoatProvider(client: BoatClient, options: { cli?: Pick<Boa
     interrupt: (sandboxId, conversationId, signal) => client.interrupt(sandboxId, conversationId, signal),
 
     executor: (sandboxId) => sshExecutor(options.cli ?? client.cli, sandboxId),
+    machineHooks: (context) => boatMachineHooks(provider, context),
+    repoWords: BOAT_REPO_WORDS,
   };
+  return provider;
 }
