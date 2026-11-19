@@ -313,8 +313,10 @@ export class WakePacer {
 
   /** When the next wake may start (now or later). `held`: a wake take() gives, so the hold counts too. */
   async nextWakeAt(options: { held?: boolean } = {}): Promise<number> {
+    const state = await this.state();
+    // The time after the read, as in take and acquire: an earlier one would drop a slot taken during a slow read.
     const now = this.now();
-    return this.slot(await this.state(), now, options.held === true).at;
+    return this.slot(state, now, options.held === true).at;
   }
 
   /** A copy of what the pacer holds (for tests and status lines). */

@@ -319,3 +319,25 @@ test("the old wake budget's hold is taken over once, and its key goes", async ()
   assert.equal(await reloaded.heldUntil(), time.now() + 10 * 60_000);
   assert.equal(kv.values.has("wakeBudget"), false);
 });
+
+test("nextWakeAt goes by the time after the read: a slow first read never drops a slot taken meanwhile", async () => {
+  const time = clock();
+  const start = time.now();
+  let loaded: (value: unknown) => void = () => undefined;
+  const pacer = new WakePacer({
+    now: time.now,
+    sleep: time.sleep,
+    storage: { load: () => new Promise((resolve) => (loaded = resolve)), save: async () => undefined },
+  });
+  // A take and a look at the next slot both wait on the first read, which takes over a minute.
+  const taking = pacer.take(["host:h1"]);
+  const looking = pacer.nextWakeAt();
+  time.advance(61_000);
+  loaded(undefined);
+  assert.notEqual(await taking, null);
+  // The take finished first: its slot is still there, and counts.
+  assert.equal(await looking, start + 61_000);
+  const state = await pacer.snapshot();
+  assert.deepEqual(state.taken, [start + 61_000]);
+  assert.deepEqual(state.claims, [{ at: start + 61_000, ids: ["host:h1"] }]);
+});
