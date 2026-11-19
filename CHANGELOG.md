@@ -6,6 +6,7 @@
 - Turn off Ubuntu's login message scripts over boat's exec API before bb's SSH setup; one could hang on a file not restored yet, so SSH sessions never started.
 - Tell why a sandbox didn't wake (boat.dev still restoring its disk, a refused restore, a stuck SSH session, SSH unreachable) on bb's machine card and the sandbox's tasks. Retry later by itself (2 to 16 minutes), and after 5 failures put it under Needs you.
 - Back off stopping and deleting a sandbox after boat.dev fails one.
+- Move a sandbox off a boat.dev node that keeps failing its disk: a test fork first, then `boat stop --force` and a resume. This happens on its own only when nothing unsaved could be lost; otherwise it goes under Needs you, with the commands and the last snapshot's time.
 
 ## 0.2.8
 

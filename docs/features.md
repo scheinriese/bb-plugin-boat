@@ -325,6 +325,18 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   failures it stops and puts it under Needs you for the orchestrator,
   with the sandbox and boat.dev's error. `bb boat sandbox resume <id>`
   tries again at once.
+- **Off a node that keeps failing.** When the node keeps failing the same
+  file (the same hydrator failure for more than 15 minutes, or 5 attempts
+  or more), or boat refuses a plain stop because it can't snapshot the
+  disk, the plugin checks the snapshot with a short-lived test fork (never
+  snapshotted, deleted right after) and then moves the sandbox to a new
+  node: `boat stop --force`, which keeps the last completed snapshot, then
+  a resume. That drops what was written since the snapshot, so it does
+  this itself only for an orchestrator's or a plain bb machine's sandbox,
+  or when no task there is mid-turn or has unpushed commits or uncommitted
+  changes. Otherwise it's under Needs you, with the commands and the time
+  of the last completed snapshot. If the test fork can't read the files
+  either, nothing is forced: the snapshot itself is the problem.
 - **Teardown backs off too.** After boat.dev fails to stop or delete a
   sandbox, bb's retries in between fail at once, without asking boat.dev
   again (30 seconds, doubling up to 15 minutes).
