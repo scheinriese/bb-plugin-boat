@@ -1097,6 +1097,7 @@ export class BoatService {
     /** Where it goes (default: the default provider). */
     sandboxProvider?: SandboxProvider;
     system?: "linux" | "macos";
+    allocateOnly?: boolean;
     signal?: AbortSignal;
   }): Promise<Sandbox> {
     const settings = await this.settings();
@@ -1111,7 +1112,8 @@ export class BoatService {
       // Snapshot errors in plain words, only when a snapshot was asked for.
       const plain = (error: unknown) => (options.snapshot ? snapshotError(error, options.snapshot) : null) ?? error;
       try {
-        return await sandboxProvider.create({
+        const create = options.allocateOnly && sandboxProvider.allocate ? sandboxProvider.allocate.bind(sandboxProvider) : sandboxProvider.create.bind(sandboxProvider);
+        return await create({
           name: options.name,
           ...(options.system ? { system: options.system } : {}),
           type: options.type ?? settings.machineType,
@@ -1124,6 +1126,9 @@ export class BoatService {
           signal: options.signal,
         });
       } catch (error) {
+        const code = (error as {code?:string}).code;
+        const rejected = ["creation_rejected","no_capacity","at_capacity","quota_exceeded","key_missing","unauthorized","unauthenticated","template_not_allowed","spec_not_allowed","unsupported","size_unavailable","instabox_not_found","instabox_spawn_failed"].includes(code ?? "");
+        if (options.system === "macos" && !rejected && code !== "creation_unknown" && code !== "creation_allocated") throw new ProviderError(`${sandboxProvider.displayName} create outcome is unknown. Check its machines before retrying; Boat will not rent another Mac.`,{code:"creation_unknown"});
         throw plain(error);
       }
     });
@@ -1942,6 +1947,7 @@ export class BoatService {
               this.store.macLeases.schedule(lease.id, null);
             }
           }
+          await this.sandboxProvider(task).assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:reuse,signal});
           release = this.claim(reuse);
           sandbox = await this.ensureRunning(reuse, signal);
           task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: false }) ?? task;
@@ -1958,6 +1964,7 @@ export class BoatService {
           task = this.store.get(id) ?? task;
           if ((sandbox.system === "macos") !== (task.sandboxSystem === "macos")) throw new TaskError("The created sandbox system does not match this task.", "invalid_task");
           createdSandbox = sandbox.id;
+          if (task.sandboxSystem === "macos" && this.sandboxProvider(task).allocate && this.sandboxProvider(task).waitReady) this.macPreparing.add(sandbox.id);
           release = this.claim(sandbox.id);
           task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: true }) ?? task;
           this.store.addEvent(id, "sandbox", `Created sandbox ${sandbox.id}${task.snapshot ? ` from snapshot ${task.snapshot}` : ""}`);
@@ -1973,6 +1980,13 @@ export class BoatService {
       if (task.sandboxSystem === "macos") await this.withMacLock(place); else await place();
       this.hooks.changed([id]);
       stillWanted();
+      // Allocation, ledger recording and task reservation were serialized.
+      // SSH readiness and tooling installation must not block other placements
+      // or the monitor's idle hand-back pass.
+      if (createdSandbox && this.macPreparing.has(createdSandbox)) {
+        try { sandbox = await this.sandboxProvider(task).waitReady!(createdSandbox,signal); stillWanted(); }
+        finally { this.macPreparing.delete(createdSandbox); }
+      }
 
       // 2. Repository checkout. A reviewer sharing the implementer's sandbox
       // reads the implementer's checkout as is; checking out again could
@@ -2177,6 +2191,7 @@ export class BoatService {
       await this.discardNew(id, createdSandbox, createdHost);
       throw failure;
     } finally {
+      if (createdSandbox) this.macPreparing.delete(createdSandbox);
       release();
       input.signal?.removeEventListener("abort", onOuterAbort);
       if (this.dispatches.get(id) === controller) this.dispatches.delete(id);
@@ -2462,6 +2477,7 @@ export class BoatService {
 
   // Future routing stages: eligible own Mac, then an enrolled monthly Mac.
   // Both must return null before held day leases and a dispatched new lease.
+  private readonly macPreparing = new Set<string>();
   private macLock: Promise<unknown> = Promise.resolve();
   private withMacLock<T>(run: () => Promise<T>): Promise<T> {
     const next = this.macLock.then(run, run);
@@ -2484,7 +2500,7 @@ export class BoatService {
       this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
       const need = macTaskResources(provider, type);
       for (const lease of this.store.macLeases.held()) {
-        if (lease.provider !== provider.id || this.isMovingSandbox(lease.machineId) || this.sizes.isResizing(lease.machineId)) continue;
+        if (lease.provider !== provider.id || this.macPreparing.has(lease.machineId) || this.isMovingSandbox(lease.machineId) || this.sizes.isResizing(lease.machineId)) continue;
         if (!machines.some(m => m.id === lease.machineId && (ACTIVE_STATES.has(m.state) || m.state === "stopped"))) continue;
         if (parent?.sandboxId === lease.machineId && await this.sandboxWorkRuns(lease.machineId)) continue;
         const open = new Set(this.store.liveSandboxTasks(lease.machineId).map(t => t.id));
@@ -2492,6 +2508,8 @@ export class BoatService {
         // Unknown attached tasks consume the whole machine until reconciled.
         if (open.size > reservations.length) continue;
         if (reservations.reduce((n,t) => n+t.cpus,0)+need.vcpus > lease.cpus || reservations.reduce((n,t) => n+t.memoryMiB,0)+need.memMiB > lease.memoryMiB) continue;
+        try { await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:lease.machineId,signal}); }
+        catch (error) { this.store.addEvent(task.id,"sandbox-provider",`${provider.displayName} held Mac cannot run this task: ${errorText(error)}`); continue; }
         if (provider.id !== task.sandboxProvider) {
           this.store.update(task.id, { sandboxProvider: provider.id });
           this.store.addEvent(task.id, "sandbox-provider", `Using a held ${provider.displayName} Mac lease before renting another.`);
@@ -2515,8 +2533,9 @@ export class BoatService {
         if (unlisted.has(provider.id)) throw new TaskError(`${provider.displayName} machine list could not be confirmed.`, "provider_unavailable");
         if (!this.sandboxProviders.get(provider.id)) throw new TaskError(`${provider.displayName} is not configured.`, "provider_unavailable");
         if (provider.caps.headlessAgentRunner === false && task.runner !== "chat") throw new TaskError(`${provider.displayName} needs task chats and bb Connect. Enable Run tasks as chats for this project.`, "chat_required");
+        await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),signal});
         if (!canHostMac(provider) || (provider.macModels && !(await provider.macModels(signal)).length)) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
-        const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", environment: task.environment, snapshot: task.snapshot, sandboxProvider: provider, signal });
+        const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", environment: task.environment, snapshot: task.snapshot, sandboxProvider: provider, allocateOnly: Boolean(provider.allocate && provider.waitReady), signal });
         this.store.update(task.id, { sandboxProvider: provider.id });
         if (failures.length) this.store.addEvent(task.id, "sandbox-provider", `Mac provider fallback: ${failures.join("; ")} Using ${provider.displayName}.`);
         return sandbox;

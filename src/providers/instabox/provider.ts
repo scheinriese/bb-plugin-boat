@@ -353,9 +353,16 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       if (create.snapshot) args.push("--snapshot", create.snapshot);
       if (create.system === "macos") args.push("--env", "BOAT_HOOKS_DIR=/var/tmp/boat-hooks");
       if (create.gitGuard) for (const [key, value] of Object.entries(create.system === "macos" ? { ...INSTABOX_GIT_ENV, GIT_CONFIG_VALUE_0: "/var/tmp/boat-hooks" } : INSTABOX_GIT_ENV)) args.push("--env", `${key}=${value}`);
-      const record = await cli.json(args, { signal: create.signal, timeoutMs: 11 * 60_000 });
+      let record;
+      try { record = await cli.json(args, { signal: create.signal, timeoutMs: 11 * 60_000 }); }
+      catch (error) {
+        if (create.system !== "macos") throw error;
+        const code = (error as {code?:string}).code;
+        if (["no_capacity","quota_exceeded","unauthenticated","key_missing","template_not_allowed","spec_not_allowed","instabox_not_found","instabox_spawn_failed"].includes(code ?? "")) throw error;
+        throw new InstaboxError("Instabox may have allocated a Mac before create failed. Check its machine list before retrying; Boat will not rent a fallback Mac.",{code:"creation_unknown"});
+      }
       const sandbox = toSandbox(rec(record.machine) ?? record);
-      if (sandbox.id === "") throw new InstaboxError("instabox create did not report a machine id", { code: "instabox_bad_output" });
+      if (sandbox.id === "") throw new InstaboxError("instabox create did not report a machine id", { code: create.system === "macos" ? "creation_unknown" : "instabox_bad_output" });
       return remember(sandbox);
     },
     async delete(sandboxId, signal, deleteOptions) {

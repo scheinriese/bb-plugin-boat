@@ -5,9 +5,8 @@ import { ProviderError } from "../types.ts";
 export const fail = (message: string, code = "scaleway_failed", status: number | null = null) => new ProviderError(message, { code, status });
 export const serverSchema = z.object({
   zone: z.enum(["fr-par-1", "fr-par-3"]), id: z.string().uuid(), name: z.string(), type: z.string(), project_id: z.string(),
-  status: z.string(), delivered: z.boolean(), ip: z.string().default(""), ssh_username: z.string().default("m1"),
+  status: z.string(), delivered: z.boolean(), ip: z.string().default(""), ssh_username: z.string().min(1),
   created_at: z.string().datetime(), deletable_at: z.string().datetime(), deletion_scheduled: z.boolean().default(false),
-  tags: z.array(z.string()).default([]),
 });
 export type Server = z.infer<typeof serverSchema>;
 export const typeSchema = z.object({ name: z.string(), stock: z.string(), cpu: z.object({ core_count: z.number().positive() }), memory: z.object({ capacity: z.coerce.number().positive() }), default_os: z.object({ id: z.string(), name: z.string(), is_beta: z.boolean().optional() }) });
@@ -32,7 +31,7 @@ export class ScalewayApi {
       // A create with an unknown outcome must never trigger another rental.
       throw fail(method === "POST" && path.endsWith("/servers") ? "Scaleway create outcome is unknown. Check its console before retrying." : "Could not reach Scaleway.", method === "POST" && path.endsWith("/servers") ? "creation_unknown" : "host_unavailable");
     }
-    if (!response.ok) throw fail(`Scaleway refused the request (HTTP ${response.status}).`, method === "POST" && path.endsWith("/servers") && (response.status >= 500 || response.status === 408) ? "creation_unknown" : response.status === 404 ? "not_found" : response.status === 401 || response.status === 403 ? "unauthorized" : "scaleway_failed", response.status);
+    if (!response.ok) throw fail(`Scaleway refused the request (HTTP ${response.status}).`, method === "POST" && path.endsWith("/servers") && (response.status >= 500 || response.status === 408) ? "creation_unknown" : method === "POST" && path.endsWith("/servers") ? "creation_rejected" : response.status === 404 ? "not_found" : response.status === 401 || response.status === 403 ? "unauthorized" : "scaleway_failed", response.status);
     if (response.status === 204) return {};
     try { return await response.json(); } catch { throw fail("Scaleway returned an invalid response.", method === "POST" && path.endsWith("/servers") ? "creation_unknown" : "bad_response"); }
   }

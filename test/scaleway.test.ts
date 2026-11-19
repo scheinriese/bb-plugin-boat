@@ -15,7 +15,8 @@ import { SECRET_SETTINGS } from "../src/settings.ts";
 import { providersView, providerHandlers } from "../src/rpc-providers.ts";
 import { normalizeProject, toOrchestratorProject } from "../src/projects.ts";
 import { macRunsOn } from "../src/mac-lease-view.ts";
-import type { SandboxProvider } from "../src/providers/types.ts";
+import { providerGlyph } from "../web/providers-logic.ts";
+import { ProviderError, type SandboxProvider } from "../src/providers/types.ts";
 const macTaskProject = () => ({ ...toOrchestratorProject(normalizeProject({id:"mac",name:"Mac app",repos:[{repo:"acme/mac",baseBranch:"main"}]})), repos: [] });
 const projectId = "10000000-0000-4000-8000-000000000001";
 const serverId = "20000000-0000-4000-8000-000000000001";
@@ -27,7 +28,7 @@ async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25) {
   const dir = await mkdtemp(join(tmpdir(), "scaleway-test-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const store = memoryStore(), keys = new ScalewayKeys(dir);
   const calls: { method: string; path: string; body: any }[] = [], ssh: SshRequest[] = [];
-  let servers: any[] = [], quota = 2, available = true, beta = false, failSetup = false, ambiguousCreate = false, poll = 0;
+  let servers: any[] = [], quota = 2, available = true, beta = false, failSetup = false, ambiguousCreate = false, ambiguousAbsent = false, failList = false, failSchedule = false, noAgentLogin = false, noGithubLogin = false, poll = 0;
   const api = new ScalewayApi({ key: async () => secret, config: async () => ({ projectId, zone: "fr-par-3" }), fetch: (async (url: string, init: RequestInit) => {
     assert.equal(new Headers(init.headers).get("X-Auth-Token"), secret);
     const u = new URL(url), method = init.method!, path = u.pathname, body = init.body ? JSON.parse(String(init.body)) : null;
@@ -40,28 +41,36 @@ async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25) {
     if (path.endsWith("ssh-keys") && method === "POST") return json({ id: keyId });
     if (path.includes("ssh-keys/") && method === "DELETE") return new Response(null,{ status: 204 });
     if (path.endsWith("/servers") && method === "POST") {
+      const allowed=["name","project_id","type","os_id","enable_vpc","commitment_type","public_bandwidth_bps","runner_configuration","applied_runner_configurations","enable_kext"];
+      if(Object.keys(body).some(key=>!allowed.includes(key)) || body.commitment_type!=="duration_24h") return new Response("invalid create fields",{status:400});
+      if(ambiguousAbsent) throw new Error(secret);
       const start = Date.now()-ageHours*3600000;
-      const server = { zone: "fr-par-3", id: serverId, name: body.name, type: body.type, project_id: projectId, status: "starting", delivered: false, ip: "192.0.2.1", ssh_username: "m1", created_at: new Date(start).toISOString(), deletable_at: new Date(start+86400000).toISOString(), tags: body.tags };
+      const server = { zone: "fr-par-3", id: serverId, name: body.name, type: body.type, project_id: projectId, status: "starting", delivered: false, ip: "192.0.2.1", ssh_username: "m1", created_at: new Date(start).toISOString(), deletable_at: new Date(start+86400000).toISOString(), tags: [] };
       servers.push(server); if (ambiguousCreate) throw new Error(secret); return json(server);
     }
-    if (path.endsWith("/servers") && method === "GET") return json({ servers, total_count: servers.length });
-    if (method === "PATCH") { Object.assign(servers[0], body); return json(servers[0]); }
+    if (path.endsWith("/servers") && method === "GET") { if(failList)return new Response("unavailable",{status:503}); return json({ servers, total_count: servers.length }); }
+    if (method === "PATCH") {
+      if(Object.keys(body).some(key=>!["schedule_deletion","name","enable_vpc","commitment_type","public_bandwidth_bps","runner_configuration","applied_runner_configurations"].includes(key)))return new Response("invalid update fields",{status:400});
+      if(failSchedule)return new Response("schedule rejected",{status:503});
+      if(body.schedule_deletion!==undefined)servers[0].deletion_scheduled=body.schedule_deletion;
+      return json(servers[0]);
+    }
     if (method === "DELETE") { servers = []; return new Response(null,{status:204}); }
     if (method === "GET" && servers[0]) { poll++; if (poll >= 2) Object.assign(servers[0], { status: "ready", delivered: true }); return json(servers[0]); }
     return new Response(JSON.stringify({ message: secret }), {status:404});
   }) as typeof fetch });
   const provider = createScalewayProvider({ api, keys, ledger: store.macLeases, pollMs: 1, ssh: async (_target, request) => {
     ssh.push(request); request.onOutput?.("bb installed");
-    return { exitCode: failSetup && request.stdin === BOOTSTRAP ? 1 : 0, stdout: "ok", stderr: "" };
+    return { exitCode: (failSetup && request.stdin === BOOTSTRAP) || (noAgentLogin && /codex.*login status|claude.*auth status/.test(JSON.stringify(request.command))) || (noGithubLogin && /gh.*auth status/.test(JSON.stringify(request.command))) ? 1 : 0, stdout: "ok", stderr: "" };
   } });
   const create = () => provider.create({ name: "bb-task", type: "default", system: "macos", ttlSeconds: 3600, gitGuard: true });
-  return { api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, beta: () => { beta=true; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, servers: () => servers };
+  return { api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, beta: () => { beta=true; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, ambiguousAbsent:()=>{ambiguousAbsent=true;}, listFailure:(value:boolean)=>{failList=value;}, scheduleFailure:()=>{failSchedule=true;}, noAgentLogin:()=>{noAgentLogin=true;}, noGithubLogin:()=>{noGithubLogin=true;}, servers: () => servers };
 }
 test("Scaleway create waits for delivered and SSH, bootstraps tools, stores a private key and releases it", async t => {
   const f=await fixture(t); const sandbox=await f.create();
   assert.equal(sandbox.state,"idle"); assert.equal(sandbox.system,"macos");
   const create=f.calls.find(c=>c.path.endsWith("/servers") && c.method==="POST")!;
-  assert.equal(create.body.commitment_type,"none"); assert.equal(create.body.os_id,"macos-stable"); assert.equal(create.body.enable_vpc,false);
+  assert.equal(create.body.commitment_type,"duration_24h"); assert.equal(create.body.os_id,"macos-stable"); assert.equal(create.body.enable_vpc,false);
   const record=(await f.keys.records())[0]!;
   assert.equal((await stat(f.keys.path(record.token))).mode & 0o777,0o600);
   assert.match(await readFile(f.keys.path(record.token),"utf8"),/BEGIN OPENSSH PRIVATE KEY/);
@@ -93,7 +102,7 @@ test("Scaleway refuses release inside the minimum, keeps SSH keys and never powe
 test("failed Scaleway bootstrap records the allocation and schedules deletion instead of silently falling back",async t=>{
   const f=await fixture(t); f.failSetup(); await assert.rejects(f.create(),{code:"creation_allocated"});
   assert.equal(f.store.macLeases.held().length,1);
-  assert.ok(f.calls.some(c=>c.method==="PATCH"&&c.body.deletion_scheduled===true));
+  assert.ok(f.calls.some(c=>c.method==="PATCH"&&c.body.schedule_deletion===true));
   assert.equal((await f.provider.list())[0]?.scheduledReleaseAt,f.servers()[0]!.deletable_at);
 });
 test("Scaleway pricing uses hourly EUR catalog entries only; external deletion cleans keys on reconciliation",async t=>{
@@ -122,7 +131,7 @@ async function routing(preferred:string, options:{disabled?:string; fail?:string
   const store=memoryStore(),chat=new FakeChat(),boat=new FakeBoat(),creates:string[]=[];
   const providers=["instabox","scaleway"].map(id=>{
     const inert=unavailableProvider(id);
-    const p:SandboxProvider={...inert,displayName:id==="instabox"?"Instabox":"Scaleway",caps:{...inert.caps,os:"macos",bbEnrollment:true,headlessAgentRunner:id!=="scaleway"},sizes:[{id:"default",label:"Standard",cpus:id==="scaleway"?2:4,memoryGb:id==="scaleway"?4:8}],machine:{id:`${id}-sandbox`} as never,exec:async()=>({exitCode:0,stdout:"",stderr:""}),findInfo:async sid=>({id:sid,state:"idle",system:"macos"} as never),macModels:async()=>[{minimumHours:24,id:"M1-M",label:"M1-M",cpus:8,memoryMiB:16384,minimumCost:10,hourPrice:10/24,currency:"EUR"}],list:async()=>{if(options.listFail===id)throw new Error("List unavailable");return options.held===id?[{id:`${id}_held`,state:"idle"} as never]:[];},capacity:async()=>({canStart:true,activeSandboxes:0,maxActiveSandboxes:4} as never),create:async()=>{creates.push(id);if(options.fail===id)throw Object.assign(new Error("No Mac free"),{code:options.ambiguous?"creation_unknown":"at_capacity"}); const start=Date.now();store.macLeases.record({id:`${id}:lease`,provider:id,machineId:`${id}_new`,size:"M1-M",startedAt:new Date(start).toISOString(),paidUntil:new Date(start+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"EUR",cpus:8,memoryMiB:16384});return {id:`${id}_new`,state:"idle",system:"macos"} as never;},info:async id=>({id,state:"idle",system:"macos"} as never)};
+    const p:SandboxProvider={...inert,idPattern:new RegExp(`^${id}_`),displayName:id==="instabox"?"Instabox":"Scaleway",caps:{...inert.caps,os:"macos",bbEnrollment:true,headlessAgentRunner:id!=="scaleway"},sizes:[{id:"default",label:"Standard",cpus:id==="scaleway"?2:4,memoryGb:id==="scaleway"?4:8}],machine:{id:`${id}-sandbox`} as never,exec:async()=>({exitCode:0,stdout:"",stderr:""}),findInfo:async sid=>({id:sid,state:"idle",system:"macos"} as never),macModels:async()=>[{minimumHours:24,id:"M1-M",label:"M1-M",cpus:8,memoryMiB:16384,minimumCost:10,hourPrice:10/24,currency:"EUR"}],list:async()=>{if(options.listFail===id)throw new Error("List unavailable");return options.held===id?[{id:`${id}_held`,state:"idle"} as never]:[];},capacity:async()=>({canStart:true,activeSandboxes:0,maxActiveSandboxes:4} as never),create:async()=>{creates.push(id);if(options.fail===id)throw Object.assign(new Error("No Mac free"),{code:options.ambiguous?"creation_unknown":"at_capacity"}); const start=Date.now();store.macLeases.record({id:`${id}:lease`,provider:id,machineId:`${id}_new`,size:"M1-M",startedAt:new Date(start).toISOString(),paidUntil:new Date(start+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"EUR",cpus:8,memoryMiB:16384});return {id:`${id}_new`,state:"idle",system:"macos"} as never;},info:async id=>({id,state:"idle",system:"macos"} as never)};
     return p;
   });
   const registry=createProviderRegistry([createBoatProvider(boat as never),...providers],{isEnabled:p=>p.id!==options.disabled});
@@ -131,7 +140,7 @@ async function routing(preferred:string, options:{disabled?:string; fail?:string
   const task=store.update(initial.id,{sandboxProvider:preferred,sandboxSystem:"macos",runner:"chat",sandboxId:null})!;
   if(options.held)store.macLeases.record({id:`${options.held}:held`,provider:options.held,machineId:`${options.held}_held`,size:"M1-M",startedAt:new Date().toISOString(),paidUntil:new Date(Date.now()+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"EUR",cpus:8,memoryMiB:16384});
   const seam=service as unknown as {createMacFor(task:import("../src/store.ts").Task,type:"default",signal:AbortSignal):Promise<{id:string}>;heldMacFor(task:import("../src/store.ts").Task,type:"default",parent:null):Promise<string|null>};
-  return {store,creates,task,seam,service,chat};
+  return {store,creates,task,seam,service,chat,providers};
 }
 for(const preferred of ["instabox","scaleway"]) for(const kind of ["fail","disabled"] as const) test(`Mac routing falls back from ${preferred} when ${kind}`,async()=>{
   const other=preferred==="instabox"?"scaleway":"instabox";const f=await routing(preferred,{[kind]:preferred});
@@ -147,7 +156,7 @@ test("ambiguous Mac create fails closed without a second rental",async()=>{
 test("Scaleway settings, Runs on and task lease lines use existing UI contracts",async()=>{
   const boat=unavailableProvider("boat"),scw=unavailableProvider("scaleway");const registry=createProviderRegistry([boat,{...scw,caps:{...scw.caps,os:"macos",systems:["macos"]}}]);
   const view=providersView({registry,boat:null,connections:new Map([["scaleway","connected"]]),projects:[]});const row=view.providers.find(r=>r.id==="scaleway")!;
-  assert.equal(row.apiKey?.setting,"Scaleway secret key");assert.equal(row.systems[0]?.ready,true);assert.equal(view.options.find(o=>o.provider==="scaleway")?.disabledReason,null);
+  assert.equal(row.apiKey?.setting,"Scaleway secret key");assert.equal(row.systems[0]?.ready,true);assert.equal(view.options.find(o=>o.provider==="scaleway"),undefined);assert.equal(providerGlyph(row),"box");
   assert.deepEqual(view.options.find(o=>o.provider==="scaleway-macos"),{provider:"scaleway-macos",label:"Scaleway · Mac",disabledReason:null});
   const f=await routing("scaleway",{held:"scaleway"});assert.equal(macRunsOn(f.store.macLeases,"scaleway_held",[])?.label,"Scaleway");
 });
@@ -167,28 +176,23 @@ for (const preferred of ["instabox", "scaleway"]) for (const unavailable of ["di
   assert.deepEqual(f.creates,unavailable==="disabled"?[chosen]:[preferred,chosen]);
 });
 
-test("Instabox unconfigured dispatch reaches the Scaleway adapter API, SSH bootstrap and bb task chat",async t=>{
+test("Scaleway task dispatch refuses to spend without an agent and repository login path",async t=>{
   const f=await fixture(t);
   const inert=unavailableProvider("instabox");
   const instabox={...inert,caps:{...inert.caps,systems:["linux","macos"] as const},macModels:async()=>{assert.fail("unconfigured provider must not be queried");}};
   const registry=createProviderRegistry([createBoatProvider(new FakeBoat() as never),instabox,f.provider],{isEnabled:p=>p.id!=="instabox"});
   const chat=new FakeChat();
   const service=new BoatService(registry,f.store,{projects:()=>[{id:"mac",name:"Mac app",repos:[],machineType:null,sandboxProvider:"instabox",sandboxSystem:"macos"}],settings:async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:""}),chat,lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
-  const task=await service.startTask({title:"Mac task",brief:"Check Xcode",role:"custom",runner:"chat",project:macTaskProject()});
-  assert.equal(task.status,"running",task.error??"");assert.equal(task.sandboxProvider,"scaleway");
-  assert.equal((await f.provider.info(task.sandboxId!)).system,"macos");
-  assert.equal(f.calls.filter(c=>c.method==="POST"&&c.path.endsWith("/servers")).length,1);
-  assert.ok(f.ssh.some(request=>request.stdin===BOOTSTRAP));
-  assert.equal(chat.spawns.at(-1)?.where.kind,"machine");
-  assert.equal(f.store.macLeases.held(task.sandboxId!)[0]?.billingIncrementSeconds,3600);
-  assert.ok(f.store.events(task.id).some(e=>/fallback/.test(e.text)));
+  await assert.rejects(service.startTask({title:"Mac task",brief:"Check Xcode",role:"custom",runner:"chat",project:macTaskProject()}),/credentials are not configured/);
+  assert.equal(f.calls.filter(c=>c.method==="POST"&&c.path.endsWith("/servers")).length,0);
+  assert.equal(f.ssh.length,0);assert.equal(chat.spawns.length,0);
 });
 
 test("an uncertain Scaleway create preserves its key and blocks another rental until listing recovers it",async t=>{
   const f=await fixture(t);f.ambiguousCreate();
   await assert.rejects(f.create(),error=>{assert.equal((error as {code:string}).code,"creation_unknown");assert.doesNotMatch(String(error),new RegExp(secret));return true;});
   assert.equal((await f.keys.records())[0]?.serverId,undefined);
-  await assert.rejects(f.create(),{code:"creation_unknown"});
+  await assert.rejects(f.create(),{code:"creation_allocated"});
   assert.equal(f.calls.filter(c=>c.method==="POST"&&c.path.endsWith("/servers")).length,1);
   await f.provider.list();assert.equal((await f.keys.records())[0]?.serverId,serverId);assert.equal(f.store.macLeases.held().length,1);
 });
@@ -245,6 +249,103 @@ test("Scaleway Runs on saves through the generalized provider Mac option",async(
   const handlers=providerHandlers({service:f.service,projects,bb:{rpc:{experimental_invalidate:()=>{}}},changed:()=>{}} as unknown as import("../src/runtime.ts").Runtime);
   const saved=await handlers.setProjectRunsOn({projectId:"mac",provider:"scaleway-macos"});
   assert.equal(project.sandboxProvider,"scaleway");assert.equal(project.sandboxSystem,"macos");assert.equal(saved.provider,"scaleway-macos");
-  await handlers.setProjectRunsOn({projectId:"mac",provider:"scaleway"});
-  assert.equal(project.sandboxSystem,"macos","Mac-only providers retain their system when selected by their plain id");
+  await assert.rejects(handlers.setProjectRunsOn({projectId:"mac",provider:"scaleway"}),/isn.t a sandbox provider/);
+});
+
+test("review repro: untagged Scaleway servers remain tracked and SSH works by name then recorded ID",async t=>{
+  const f=await fixture(t);const sandbox=await f.create();
+  assert.deepEqual(f.servers()[0].tags,[]);
+  assert.match(f.servers()[0].name,/^bb-boat-[0-9a-f-]{36}$/);
+  assert.ok(f.ssh.length>0);
+  f.servers()[0].name="renamed-mac";
+  const listed=await f.provider.list();assert.equal(listed.length,1);
+  f.store.macLeases.reconcile("scaleway",new Set(listed.map(s=>s.id)));
+  assert.equal(f.store.macLeases.held().length,1);
+  await f.provider.exec(sandbox.id,"true");
+  assert.equal(f.calls.filter(c=>c.method==="POST"&&c.path.endsWith("/servers")).length,1);
+});
+test("review repro: ambiguous POST without allocation clears only after a complete successful list",async t=>{
+  const f=await fixture(t);f.ambiguousAbsent();await assert.rejects(f.create(),{code:"creation_unknown"});
+  assert.equal((await f.keys.records()).length,1);
+  f.listFailure(true);await assert.rejects(f.provider.list());assert.equal((await f.keys.records()).length,1);
+  f.listFailure(false);assert.deepEqual(await f.provider.recoverCreations!(),{recovered:0,cleared:1});
+  assert.deepEqual(await f.keys.records(),[]);assert.deepEqual(await f.provider.recoverCreations!(),{recovered:0,cleared:0});
+});
+test("schedule API uses schedule_deletion, and failed bootstrap surfaces a failed safety schedule",async t=>{
+  const f=await fixture(t);f.failSetup();f.scheduleFailure();
+  await assert.rejects(f.create(),error=>{assert.equal((error as {code:string}).code,"creation_allocated");assert.match(String(error),/automatic deletion could not be scheduled/);return true;});
+  assert.ok(f.calls.some(c=>c.method==="PATCH"&&c.body.schedule_deletion===true));
+  assert.ok(!f.calls.some(c=>c.method==="PATCH"&&"deletion_scheduled" in c.body));
+  assert.equal(f.store.macLeases.held().length,1);assert.equal((await f.provider.list()).length,1);
+});
+test("held Scaleway Macs require verified agent and GitHub logins before use",async t=>{
+  const f=await fixture(t);const sandbox=await f.create();
+  await f.provider.assertTaskReady!({agent:"codex",repos:["acme/private"],sandboxId:sandbox.id});
+  f.noGithubLogin();await assert.rejects(f.provider.assertTaskReady!({agent:"codex",repos:["acme/private"],sandboxId:sandbox.id}),/GitHub login/);
+  f.noAgentLogin();await assert.rejects(f.provider.assertTaskReady!({agent:"codex",repos:[],sandboxId:sandbox.id}),/agent login/);
+  await assert.rejects(f.provider.assertTaskReady!({agent:"codex",repos:["acme/private"]}),/will not rent/);
+});
+
+test("Scaleway allocation records its lease before the separate slow readiness phase",async t=>{
+  const f=await fixture(t);const sandbox=await f.provider.allocate!({name:"task",type:"default",system:"macos",ttlSeconds:3600,gitGuard:true});
+  assert.equal(sandbox.state,"starting");assert.equal(f.ssh.length,0);assert.equal(f.store.macLeases.held().length,1);
+  await assert.rejects(f.provider.allocate!({name:"second",type:"default",system:"macos",ttlSeconds:3600,gitGuard:true}),{code:"creation_allocated"});
+  assert.equal((await f.provider.waitReady!(sandbox.id)).state,"idle");assert.ok(f.ssh.length>0);
+});
+test("an Instabox create timeout cannot trigger a second rental on Scaleway",async()=>{
+  const f=await routing("instabox");
+  f.providers[0]!.create=async()=>{f.creates.push("instabox");throw new ProviderError("allocated, but ready timed out",{code:"instabox_timeout"});};
+  await assert.rejects(f.service.startTask({title:"Mac",brief:"Check tools",role:"custom",runner:"chat",project:macTaskProject()}),/outcome is unknown/);
+  assert.deepEqual(f.creates,["instabox"]);
+});
+test("a slow Mac bootstrap leaves the placement lock free for hand-back and held-lease reuse",async()=>{
+  const f=await routing("scaleway");const scw=f.providers[1]!,ibx=f.providers[0]!;
+  let finish!:()=>void,entered!:()=>void;
+  const ready=new Promise<void>(resolve=>{finish=resolve;}),waiting=new Promise<void>(resolve=>{entered=resolve;});
+  scw.list=async()=>f.creates.includes("scaleway")?[{id:"scaleway_new",state:"idle",system:"macos"} as never]:[];
+  scw.allocate=scw.create.bind(scw);scw.create=async()=>{throw new Error("must allocate in two phases");};
+  scw.waitReady=async id=>{entered();await ready;return scw.info(id);};
+  const first=f.service.startTask({title:"Slow Mac",brief:"Check tools",role:"custom",runner:"chat",project:macTaskProject()});
+  await waiting;
+  const machines:string[]=["instabox_empty"];
+  ibx.list=async()=>machines.map(id=>({id,state:"idle",system:"macos"} as never));
+  ibx.delete=async id=>{machines.splice(machines.indexOf(id),1);};
+  const record=(id:string,start:number)=>f.store.macLeases.record({id:`instabox:${id}`,provider:"instabox",machineId:id,size:"m2",startedAt:new Date(start).toISOString(),paidUntil:new Date(start+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"USD",cpus:8,memoryMiB:16384});
+  record("instabox_empty",Date.now()-25*3600000);
+  const bounded=async<T>(work:Promise<T>)=>{let timer:ReturnType<typeof setTimeout>;try{return await Promise.race([work,new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error("placement lock was held by readiness")),2000);})]);}finally{clearTimeout(timer!);}};
+  try {
+    await bounded(f.service.processMacLeases());assert.equal(f.store.macLeases.held("instabox_empty").length,0);
+    machines.push("instabox_shared");record("instabox_shared",Date.now());
+    const next=await bounded(f.service.startTask({title:"Shared Mac",brief:"Check tools",role:"custom",runner:"chat",project:macTaskProject()}));
+    assert.equal(next.status,"running",next.error??"");assert.equal(next.sandboxId,"instabox_shared");
+    assert.equal(f.store.get((f.store.macLeases.tasks(f.store.macLeases.held("scaleway_new")[0]!.id)[0]!).taskId)?.status,"starting");
+  } finally {finish();await first;}
+});
+
+test("the fake rejects response-only fields in real Scaleway create and update requests",async t=>{
+  const f=await fixture(t);
+  await assert.rejects(f.api.request("POST","/apple-silicon/v1alpha1/zones/fr-par-3/servers",{name:"bad",project_id:projectId,type:"M1-M",commitment_type:"duration_24h",tags:["not-supported"]}),{code:"creation_rejected"});
+  const sandbox=await f.create();
+  await assert.rejects(f.api.request("PATCH",`/apple-silicon/v1alpha1/zones/fr-par-3/servers/${serverId}`,{deletion_scheduled:true}));
+  assert.equal((await f.provider.info(sandbox.id)).scheduledReleaseAt,null);
+});
+test("providers recover clears absent unresolved keys from the supported plugin database directory",async t=>{
+  const {createTestHost}=await import("./fakes.ts");const {default:plugin}=await import("../server.ts");
+  const {fileURLToPath}=await import("node:url");const {dirname}=await import("node:path");
+  const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs",import.meta.url)),evidenceUploader:"",scalewayProjectId:projectId,scalewaySecretKey:secret}});
+  t.after(()=>harness.lifecycle.dispose());
+  const keys=new ScalewayKeys(join(dirname(bb.storage.database().name),"scaleway-keys"));
+  const key=await keys.generate();await keys.save({token:key.token,sshKeyId:keyId,zone:"fr-par-3",projectId});
+  const oldFetch=globalThis.fetch;const calls:string[]=[];
+  globalThis.fetch=async(url,init)=>{
+    const path=new URL(String(url)).pathname;calls.push(`${init?.method} ${path}`);
+    if(init?.method==="GET"&&path.endsWith("/servers"))return new Response(JSON.stringify({servers:[],total_count:0}));
+    if(init?.method==="DELETE"&&path.endsWith(keyId))return new Response(null,{status:204});
+    throw new Error("Unexpected recovery request");
+  };
+  try {
+    await plugin(bb);const result=await harness.runCli(["providers","recover","scaleway","--json"]);
+    assert.equal(result.exitCode,0,result.stderr);assert.deepEqual(JSON.parse(result.stdout),{recovered:0,cleared:1});
+    assert.deepEqual(await keys.records(),[]);assert.equal(calls.filter(call=>call.startsWith("POST")).length,0);
+  } finally {globalThis.fetch=oldFetch;await keys.remove(key.token);}
 });

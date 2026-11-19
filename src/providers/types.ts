@@ -630,6 +630,14 @@ export interface AgentRunner {
 /** For later providers: not called yet. */
 export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string }
 export interface LaterMembers {
+  /** Allocate and record a lease quickly; readiness/bootstrap is a separate step outside the placement lock. */
+  allocate?(options: CreateSandboxOptions): Promise<SandboxInfo>;
+  waitReady?(sandboxId: string, signal?: AbortSignal): Promise<SandboxInfo>;
+  /** Verify credentials before allocation, or on an existing machine before reuse. */
+  assertTaskReady?(input: { agent: Provider; repos: readonly string[]; sandboxId?: string; signal?: AbortSignal }): Promise<void>;
+  /** Reconcile ambiguous creates against complete provider lists, clearing only absent recovery records. */
+  recoverCreations?(signal?: AbortSignal): Promise<{ recovered: number; cleared: number }>;
+
   macModels?(signal?: AbortSignal): Promise<MacModel[]>;
   /** Release an empty lease exactly when its paid minimum ends. Omit if the provider cannot schedule; Boat waits until the minimum ends instead. */
   scheduleLeaseRelease?(sandboxId: string, at: string, signal?: AbortSignal): Promise<void>;

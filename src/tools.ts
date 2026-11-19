@@ -167,7 +167,7 @@ export function registerTools(runtime: Runtime): void {
       effort: effortParam,
       model: modelParam,
       user_approved: approvedParam,
-      sandbox_system: z.enum(["linux", "macos"]).optional().describe("Task system; defaults to the project. Macs require an enabled Instabox account."),
+      sandbox_system: z.enum(["linux", "macos"]).optional().describe("Task system; defaults to the project. Macs require an enabled Mac provider with verified task credentials."),
       sandbox: z.string().optional().describe('"new" (default) or an existing sandbox id'),
       machine_type: z.enum(MACHINE_TYPES).optional().describe('Size for a new sandbox (default: the project\'s, else the setting); "xlarge" only with user_approved'),
       context_from: z.array(z.string()).optional().describe("Task ids whose brief, branch, PR and report the agent should see"),

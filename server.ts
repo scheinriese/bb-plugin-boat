@@ -119,7 +119,7 @@ export default async function plugin(bb: BbPluginApi) {
   const instaboxCli = new InstaboxCli(async () => resolveInstaboxBinary((await settings.get()).instaboxPath), () => providerSecrets.instaboxKey());
   const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
   const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases });
-  const scaleway = createScalewayProvider({ api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(bb.server.experimental_dataDir, "plugins", bb.pluginId, "scaleway-keys")), ledger: store.macLeases });
+  const scaleway = createScalewayProvider({ api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(dirname(bb.storage.database().name), "scaleway-keys")), ledger: store.macLeases });
   let scalewayOn = Boolean((await settings.get()).scalewayProjectId);
   settings.onChange(() => { void settings.get().then(values => { scalewayOn = Boolean(values.scalewayProjectId); }); });
   let instaboxOn = (await settings.get()).instaboxEnabled;

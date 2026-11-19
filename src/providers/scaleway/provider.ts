@@ -1,10 +1,8 @@
-import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { unavailableProvider } from "../registry.ts";
 import { isNotFound, type SandboxProvider, type SandboxInfo, type MacModel, type MachineSpec } from "../types.ts";
 import type { MacLeaseLedger } from "../../mac-leases.ts";
-import { LEASE_DAY_MS } from "../../mac-leases.ts";
 import { SIZE_SPECS } from "../../memory.ts";
 import { shellQuote } from "../shell.ts";
 import { ScalewayApi, serverSchema, typeSchema, productSchema, quotaSchema, fail, type Server } from "./api.ts";
@@ -13,7 +11,8 @@ import { ScalewayKeys, sshExec, type SshExec, type SshRequest } from "./ssh.ts";
  * and prices remain live; aliases follow Boat's existing task size choices. */
 export const SCALEWAY_TASK_SIZES = Object.entries(SIZE_SPECS).map(([id, spec]) => ({ id: id as "small" | "default" | "large" | "xlarge", label: spec.label, cpus: spec.cpus, memoryGb: spec.memoryGb }));
 export const SCALEWAY_ID_PATTERN = /^scw_(fr-par-[13])_([0-9a-f-]{36})$/;
-const TAG = "bb-boat-key:";
+const NAME_PREFIX = "bb-boat-";
+const nameToken = (name: string) => /^bb-boat-([0-9a-f-]{36})$/.exec(name)?.[1] ?? null;
 const uuid = (id: string) => { const match = SCALEWAY_ID_PATTERN.exec(id); if (!match) throw fail("Invalid Scaleway machine ID."); return match[2]!; };
 const machine: MachineSpec = {
   id: "scaleway-sandbox", displayName: "Scaleway Mac", description: "A Paris Apple silicon Mac for bb task chats", icon: "ComputerCloud",
@@ -58,7 +57,7 @@ git config --global core.hooksPath "$HOME/.boat-hooks"
 export function createScalewayProvider(options: { api: ScalewayApi; keys: ScalewayKeys; ledger: MacLeaseLedger; ssh?: SshExec; pollMs?: number; readyTimeoutMs?: number }): SandboxProvider {
   const { api, keys, ledger } = options;
   const ssh = options.ssh ?? sshExec;
-  const caps: SandboxProvider["caps"] = { os: "macos", systems: [], shell: "bash", homeDir: posix.join("/", "Users", "m1"), execMaxSeconds: 3600, stopKeepsDisk: true, retentionAfterStopSeconds: null, environments: false, autoStop: null, agentBusyState: false, previews: "token-link", bbEnrollment: true, headlessAgentRunner: false, concurrencyUnit: "kept-sandboxes" };
+  const caps: SandboxProvider["caps"] = { os: "macos", systems: [], shell: "bash", homeDir: "~", execMaxSeconds: 3600, stopKeepsDisk: true, retentionAfterStopSeconds: null, environments: false, autoStop: null, agentBusyState: false, previews: "token-link", bbEnrollment: true, headlessAgentRunner: false, concurrencyUnit: "kept-sandboxes" };
   const unsupported = async (): Promise<never> => { throw fail("Scaleway Macs run tasks as bb chats. This operation is not available.", "unsupported"); };
   async function models(signal?: AbortSignal, stockOnly = false): Promise<MacModel[]> {
     caps.systems = [];
@@ -99,26 +98,93 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     const zone = SCALEWAY_ID_PATTERN.exec(id)![1]!;
     return api.parse(serverSchema, "GET", `/apple-silicon/v1alpha1/zones/${zone}/servers/${serverId}`, undefined, signal);
   }
+  async function keyFor(server: Server) {
+    const records = await keys.records();
+    const recorded = records.find(record => record.serverId === server.id);
+    if (recorded) return recorded;
+    const token = nameToken(server.name);
+    if (!token) return null;
+    const record = records.find(record => record.token === token && !record.serverId);
+    if (!record) return null;
+    const bound = { ...record, serverId: server.id, zone: server.zone, projectId: server.project_id };
+    await keys.save(bound);
+    return bound;
+  }
   async function run(server: Server, request: SshRequest) {
-    const token = server.tags.find(t => t.startsWith(TAG))?.slice(TAG.length);
-    if (!token) throw fail("This Scaleway Mac has no Boat SSH key.", "key_missing");
-    await keys.load(token);
-    return ssh({ ip: server.ip, user: server.ssh_username, key: keys.path(token) }, { ...request, command: ["bash", "-lc", request.command.map(shellQuote).join(" ")] });
+    const record = await keyFor(server);
+    if (!record) throw fail("This Scaleway Mac has no recorded Boat SSH key.", "key_missing");
+    return ssh({ ip: server.ip, user: server.ssh_username, key: keys.path(record.token) }, { ...request, command: ["bash", "-lc", request.command.map(shellQuote).join(" ")] });
   }
   async function view(server: Server, signal?: AbortSignal): Promise<SandboxInfo> {
     const id = `scw_${server.zone}_${server.id}`;
-    const token = server.tags.find(t => t.startsWith(TAG))?.slice(TAG.length);
-    if (token) {
-      const record = await keys.load(token);
-      if (!record.serverId) await keys.save({ ...record, serverId: server.id, zone: server.zone, projectId: server.project_id });
-    }
+    await keyFor(server);
     let lease = ledger.held(id)[0];
-    if (!lease && server.tags.some(t => t.startsWith(TAG))) {
+    if (!lease && (nameToken(server.name) || (await keys.records()).some(record => record.serverId === server.id))) {
       const model = (await models(signal)).find(m => m.id === server.type);
       if (!model) throw fail("Scaleway Mac pricing could not be confirmed.", "lease_unknown");
       lease = ledger.record({ id: `scaleway:${server.id}`, provider: "scaleway", machineId: id, size: model.id, startedAt: server.created_at, paidUntil: server.deletable_at, minimumCost: model.minimumCost, hourPrice: model.hourPrice, billingIncrementSeconds: 3600, currency: "EUR", cpus: model.cpus, memoryMiB: model.memoryMiB });
     }
     return { id, name: server.name, system: "macos", scheduledReleaseAt: server.deletion_scheduled ? server.deletable_at : null, state: server.status === "ready" && server.delivered ? "idle" : server.status === "error" || server.status === "locked" ? "error" : "starting", health: null, url: null, desktopUrl: null, environment: null, createdAt: server.created_at, archiveAfter: null, stoppedAt: null, setupStatus: null, error: null };
+  }
+  async function forgetKey(record: Awaited<ReturnType<ScalewayKeys["load"]>>, signal?: AbortSignal) {
+    await api.request("DELETE", `/iam/v1alpha1/ssh-keys/${record.sshKeyId}`, undefined, signal).catch(error => { if (!isNotFound(error)) throw error; });
+    await keys.remove(record.token);
+  }
+  async function managedServers(signal?: AbortSignal) {
+    const config = await api.config();
+    const records = await keys.records();
+    const scopes = new Map<string,{zone:string;projectId:string}>();
+    for (const scope of [config,...records.map(record => ({zone:record.zone ?? config.zone,projectId:record.projectId ?? config.projectId}))]) scopes.set(`${scope.zone}:${scope.projectId}`,scope);
+    const all: Server[] = [];
+    // Every page in the recorded project/zone must succeed before absence can
+    // clear an unresolved POST. A failed list never deletes recovery records.
+    for (const scope of scopes.values()) all.push(...await api.pages(`/apple-silicon/v1alpha1/zones/${scope.zone}/servers?project_id=${scope.projectId}`,"servers",serverSchema,signal));
+    let recovered = 0, cleared = 0;
+    for (const record of records) {
+      let found = all.find(server => server.id === record.serverId || (!record.serverId && server.name === `${NAME_PREFIX}${record.token}`));
+      if (!found && record.serverId && record.zone) {
+        try { found = await raw(`scw_${record.zone}_${record.serverId}`,signal); all.push(found); }
+        catch (error) { if (!isNotFound(error)) throw error; }
+      }
+      if (found) { if (!record.serverId) { await keyFor(found); recovered++; } }
+      else { await forgetKey(record,signal); cleared++; }
+    }
+    const ids = new Set(records.map(record => record.serverId).filter(Boolean));
+    const managed = all.filter(server => nameToken(server.name) || ids.has(server.id) || ledger.held(`scw_${server.zone}_${server.id}`).length);
+    return { servers: [...new Map(managed.map(server=>[server.id,server])).values()], recovered, cleared };
+  }
+  async function prepare(id: string, signal?: AbortSignal): Promise<SandboxInfo> {
+    let server: Server;
+    const zone = SCALEWAY_ID_PATTERN.exec(id)?.[1];
+    const serverId = uuid(id);
+    const deadline = Date.now() + (options.readyTimeoutMs ?? 30*60_000);
+    try {
+      server = await raw(id,signal);
+      while (Date.now() < deadline) {
+        signal?.throwIfAborted();
+        server = await raw(id,signal);
+        if (["error", "locked"].includes(server.status)) throw fail("Scaleway Mac provisioning failed.");
+        if (server.status === "ready" && server.delivered && server.ip) {
+          try {
+            const probe = await run(server, { command: ["bash", "-lc", "true"], timeoutMs: 20_000, signal });
+            if (probe.exitCode === 0) {
+              const setup = await run(server, { command: ["bash", "-s"], stdin: BOOTSTRAP, timeoutMs: 15*60_000, signal });
+              if (setup.exitCode !== 0) throw fail("Scaleway Mac tooling installation failed.", "bootstrap_failed");
+              const record = await keyFor(server);
+              if (record) await keys.save({...record,prepared:true});
+              return view(server,signal);
+            }
+          } catch (error) { if ((error as {code?:string}).code !== "host_unavailable") throw error; }
+        }
+        await delay(options.pollMs ?? 10_000, undefined, { signal });
+      }
+      throw fail("Scaleway Mac did not become SSH-ready in time.");
+    } catch {
+      if (ledger.held(id).some(lease=>lease.kept)) throw fail("Scaleway Mac setup was interrupted; this lease is explicitly kept and automatic deletion is off.","creation_allocated");
+      try { await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${zone}/servers/${serverId}`, { schedule_deletion: true }); }
+      catch { throw fail("Scaleway allocated a Mac but setup failed, and automatic deletion could not be scheduled. The lease is tracked; delete it manually after its minimum.", "creation_allocated"); }
+      throw fail("Scaleway allocated a Mac but setup failed. Deletion is scheduled after its minimum; its lease remains tracked.", "creation_allocated");
+    }
   }
   const provider: SandboxProvider = {
     ...unavailableProvider("scaleway"), id: "scaleway", displayName: "Scaleway", caps, idPattern: SCALEWAY_ID_PATTERN, machine,
@@ -131,62 +197,49 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       return { tier: "Apple silicon · hourly", summary: "24 h minimum, then hourly; billed until deleted", activeSandboxes: servers.length, maxActiveSandboxes: choices.some(c => c.max === null) ? null : servers.length + choices.reduce((n,c) => n+Math.max(0,(c.max ?? 0)-c.used),0), startsLeftToday: null, startsLeftThisHour: null, canStart, blockedReason: canStart ? null : "Scaleway Mac stock or quota is unavailable.", checkoutRequired: false, autoStopCapHours: null };
     },
     usagePlan: async () => null, usage: async () => ({ seconds: null, hours: null, dollars: null, since: null, until: null, running: null }),
-    async list({ signal } = {}) { const listed = await servers(signal);
-      for (const record of await keys.records()) if (record.serverId && record.zone && !listed.servers.some(s => s.id === record.serverId)) {
-        try { listed.servers.push(await raw(`scw_${record.zone}_${record.serverId}`, signal)); continue; }
-        catch (error) { if (!isNotFound(error)) throw error; }
-        await api.request("DELETE", `/iam/v1alpha1/ssh-keys/${record.sshKeyId}`, undefined, signal).catch(error => { if (!isNotFound(error)) throw error; });
-        await keys.remove(record.token);
-      }
-      return Promise.all(listed.servers.filter(s => s.tags.some(t => t.startsWith(TAG))).map(s => view(s,signal))); },
+    async list({ signal } = {}) { const listed = await managedServers(signal); return Promise.all(listed.servers.map(server=>view(server,signal))); },
+    async recoverCreations(signal) {
+      const result = await managedServers(signal);
+      for (const server of result.servers) await view(server,signal);
+      return { recovered: result.recovered, cleared: result.cleared };
+    },
     async info(id, signal) { return view(await raw(id,signal),signal); },
     async findInfo(id, signal) { try { return await provider.info(id,signal); } catch (error) { if (isNotFound(error)) return null; throw error; } },
-    async create(input) {
+    async assertTaskReady({ agent, repos, sandboxId, signal }) {
+      if (!sandboxId) throw fail("Scaleway task credentials are not configured. Boat will not rent a Mac without a supported agent login and GitHub authentication path. Use Instabox, or a held Mac with verified logins.", "task_credentials_missing");
+      const command = agent === "claude" ? "claude auth status" : "codex login status";
+      const server = await raw(sandboxId,signal);
+      if ((await run(server,{command:["bash","-lc",`${command} >/dev/null 2>&1`],timeoutMs:30_000,signal})).exitCode !== 0) throw fail("The held Scaleway Mac has no verified agent login.","task_credentials_missing");
+      if (repos.length && (await run(server,{command:["bash","-lc","gh auth status >/dev/null 2>&1"],timeoutMs:30_000,signal})).exitCode !== 0) throw fail("The held Scaleway Mac has no verified GitHub login for repository tasks.","task_credentials_missing");
+    },
+    async allocate(input) {
       if (input.system !== "macos" || input.snapshot) throw fail("Scaleway supports new Mac task leases only.", "unsupported");
+      const recovery = await managedServers(input.signal);
+      if (recovery.recovered) { for (const server of recovery.servers) await view(server,input.signal); throw fail("Recovered an earlier Scaleway allocation. Reuse its tracked lease before renting another Mac.","creation_allocated"); }
+      const recorded = await keys.records();
+      if (recovery.servers.some(server=>!recorded.find(record=>record.serverId===server.id)?.prepared)) throw fail("A Scaleway allocation is still awaiting setup. Reconcile or prepare its tracked lease before renting another Mac.","creation_allocated");
       const { choices } = await available(input.signal);
       const need = SCALEWAY_TASK_SIZES.find(size => size.id === (input.type ?? "default"))!;
       const choice = choices.find(c => c.ready && c.model.cpus >= need.cpus && c.model.memoryMiB >= need.memoryGb*1024);
       if (!choice) throw fail("Scaleway has no Mac with enough stock, quota and room.", "at_capacity");
-      if ((await keys.records()).some(record => !record.serverId)) throw fail("A previous Scaleway create is unresolved. Check its console before retrying.", "creation_unknown");
       const generated = await keys.generate();
-      let sshKeyId: string | null = null, created: Server | null = null;
+      let sshKeyId: string | null = null;
+      let allocated = false;
       try {
         const { projectId, zone } = await api.config();
-        const key = await api.parse(z.object({ id: z.string().uuid() }), "POST", "/iam/v1alpha1/ssh-keys", { name: `bb-boat-${generated.token}`, project_id: projectId, public_key: generated.publicKey }, input.signal);
+        const key = await api.parse(z.object({ id: z.string().uuid() }), "POST", "/iam/v1alpha1/ssh-keys", { name: `${NAME_PREFIX}${generated.token}`, project_id: projectId, public_key: generated.publicKey }, input.signal);
         sshKeyId = key.id;
-        await keys.save({ token: generated.token, sshKeyId });
+        await keys.save({ token: generated.token, sshKeyId, zone, projectId });
         const types = await api.parse(z.object({ server_types: z.array(typeSchema) }), "GET", `${await api.base()}/server-types`, undefined, input.signal);
         const os = types.server_types.find(t => t.name === choice.model.id)!.default_os.id;
-        created = await api.parse(serverSchema, "POST", `${await api.base()}/servers`, { project_id: projectId, name: input.name, type: choice.model.id, os_id: os, commitment_type: "none", enable_vpc: false, tags: [`${TAG}${generated.token}`] }, input.signal);
-        await keys.save({ token: generated.token, sshKeyId, serverId: created.id, zone, projectId });
-        // Record the charge immediately, before readiness/bootstrap can fail.
-        const id = `scw_${zone}_${created.id}`;
-        ledger.record({ id: `scaleway:${created.id}`, provider: "scaleway", machineId: id, size: choice.model.id, startedAt: created.created_at, paidUntil: created.deletable_at, minimumCost: choice.model.minimumCost, hourPrice: choice.model.hourPrice, billingIncrementSeconds: 3600, currency: "EUR", cpus: choice.model.cpus, memoryMiB: choice.model.memoryMiB });
-        const deadline = Date.now() + (options.readyTimeoutMs ?? 30*60_000);
-        while (Date.now() < deadline) {
-          input.signal?.throwIfAborted();
-          created = await raw(id,input.signal);
-          if (["error", "locked"].includes(created.status)) throw fail("Scaleway Mac provisioning failed.");
-          if (created.status === "ready" && created.delivered && created.ip) {
-            try {
-              const probe = await run(created, { command: ["bash", "-lc", "true"], timeoutMs: 20_000, signal: input.signal });
-              if (probe.exitCode === 0) {
-                const setup = await run(created, { command: ["bash", "-s"], stdin: BOOTSTRAP, timeoutMs: 15*60_000, signal: input.signal });
-                if (setup.exitCode !== 0) throw fail("Scaleway Mac tooling installation failed.", "bootstrap_failed");
-                return view(created,input.signal);
-              }
-            } catch (error) { if ((error as { code?: string }).code !== "host_unavailable") throw error; }
-          }
-          await delay(options.pollMs ?? 10_000, undefined, { signal: input.signal });
-        }
-        throw fail("Scaleway Mac did not become SSH-ready in time.");
+        const server = await api.parse(serverSchema, "POST", `${await api.base()}/servers`, { project_id: projectId, name: `${NAME_PREFIX}${generated.token}`, type: choice.model.id, os_id: os, commitment_type: "duration_24h", enable_vpc: false }, input.signal);
+        allocated = true;
+        await keys.save({ token: generated.token, sshKeyId, serverId: server.id, zone, projectId });
+        const id = `scw_${zone}_${server.id}`;
+        ledger.record({ id: `scaleway:${server.id}`, provider: "scaleway", machineId: id, size: choice.model.id, startedAt: server.created_at, paidUntil: server.deletable_at, minimumCost: choice.model.minimumCost, hourPrice: choice.model.hourPrice, billingIncrementSeconds: 3600, currency: "EUR", cpus: choice.model.cpus, memoryMiB: choice.model.memoryMiB });
+        return view(server,input.signal);
       } catch (error) {
-        if (created) {
-          // The minimum cannot be cancelled; schedule deletion to prevent an
-          // orphan failed bootstrap from continuing to bill after it.
-          await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${created.zone}/servers/${created.id}`, { deletion_scheduled: true }).catch(() => undefined);
-          throw fail("Scaleway allocated a Mac but setup failed. Its lease is recorded; check scheduled deletion in the console.", "creation_allocated");
-        }
+        if (allocated) throw fail("Scaleway allocated a Mac but local lease registration failed. Recovery files are preserved; reconcile before retrying.","creation_allocated");
         if ((error as { code?: string }).code !== "creation_unknown") {
           if (sshKeyId) await api.request("DELETE", `/iam/v1alpha1/ssh-keys/${sshKeyId}`).catch(() => undefined);
           await keys.remove(generated.token);
@@ -194,23 +247,25 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
         throw error;
       }
     },
+    waitReady: prepare,
+    async create(input) { const server = await provider.allocate!(input); return prepare(server.id,input.signal); },
     async delete(id, signal, endOptions) {
       let server: Server;
       try { server = await raw(id,signal); } catch (error) { if (!isNotFound(error)) throw error; return; }
       if (Date.now() < Date.parse(server.deletable_at)) throw fail("Scaleway cannot release this Mac before its 24 h minimum ends.", "minimum_lease");
       await api.request("DELETE", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, undefined, signal);
-      const token = server.tags.find(t => t.startsWith(TAG))?.slice(TAG.length);
-      if (token) { const record = await keys.load(token); await api.request("DELETE", `/iam/v1alpha1/ssh-keys/${record.sshKeyId}`, undefined, signal).catch(error => { if (!isNotFound(error)) throw error; }); await keys.remove(token); }
+      const record = await keyFor(server);
+      if (record) await forgetKey(record,signal);
       for (const lease of ledger.held(id)) ledger.end(lease.id,endOptions?.leaseEndReason ?? "deleted",endOptions?.leaseEndAt);
     },
     async scheduleLeaseRelease(id, at, signal) {
       const server = await raw(id,signal);
       if (Date.parse(at) !== Date.parse(server.deletable_at)) throw fail("Scaleway only schedules deletion at its minimum boundary.", "minimum_lease");
-      await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, { deletion_scheduled: true }, signal);
+      await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, { schedule_deletion: true }, signal);
     },
     async cancelLeaseRelease(id, signal) {
       const server = await raw(id,signal);
-      await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, { deletion_scheduled: false }, signal);
+      await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, { schedule_deletion: false }, signal);
     },
     // A suspend releases no money and must not shut down a shared Mac. Keep
     // it up for later task attachment; only the ledger's hand-back deletes it.

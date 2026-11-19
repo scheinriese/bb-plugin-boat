@@ -255,6 +255,17 @@ export function buildCli(runtime: Runtime) {
       }),
 
       // ---------------------------------------------------------------- sandboxes
+      "providers recover": cliCommand({
+        summary: "Reconcile unresolved provider creates against a complete machine list",
+        description: "Scaleway: recover matching server names and IDs, or clear absent recovery records and their unused SSH keys. A failed list never clears a record.",
+        positionals: [{name:"provider",description:"Provider id (scaleway)",required:true}], options:{json},
+        async run({positionals,options},ctx) { return guard(async()=>{
+          const provider=service.sandboxProviders.all.find(provider=>provider.id===positionals.provider);
+          if (!provider?.recoverCreations) throw new PluginCliError("This provider has no create recovery command.",{code:"unsupported"});
+          const result=await provider.recoverCreations(ctx.signal);runtime.changed();
+          return out(result,options.json,()=>`Recovered ${result.recovered} allocation(s); cleared ${result.cleared} absent recovery record(s).`);
+        }); },
+      }),
       "sandbox list": cliCommand({
         summary: "List sandboxes on every enabled provider (running by default)",
         options: { all: { type: "boolean", description: "Include stopped and failed sandboxes" }, json },
@@ -562,7 +573,7 @@ export function buildCli(runtime: Runtime) {
           "Creates (or reuses) a sandbox, checks out the repository, and sends the brief to the agent. Returns in under ~90 s; the invoking thread is messaged when the agent's turn finishes. `--test` starts a small task with no repo that only reports the sandbox's tools: it proves sign-in, plan and agent login (one sandbox start, a minute or two of a small sandbox).",
         options: {
           title: { type: "string", description: "Short task title (required unless --test)" },
-          system: { type: "enum", values: ["linux", "macos"], description: "Task system (default: the project); Macs use Instabox day leases" },
+          system: { type: "enum", values: ["linux", "macos"], description: "Task system (default: the project); Macs use an enabled Mac day-lease provider" },
           "compact-title": { type: "string", description: "Authored short subject for mobile task chips (at most 120 characters)" },
           test: { type: "boolean", description: "Start the test task: no repo, changes nothing, reports uname, node, git and GitHub access" },
           brief: { type: "string", description: "Self-contained task brief (goal, context, acceptance criteria)" },

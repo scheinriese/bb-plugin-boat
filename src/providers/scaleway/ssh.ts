@@ -23,7 +23,7 @@ export const sshExec: SshExec = async (target, request) => {
     child.stdin.end(request.stdin ?? "");
   });
 };
-export interface KeyRecord { token: string; sshKeyId: string; serverId?: string; zone?: string; projectId?: string }
+export interface KeyRecord { token: string; sshKeyId: string; serverId?: string; zone?: string; projectId?: string; prepared?: boolean }
 /** Private keys and recovery metadata stay in the plugin data directory. */
 export class ScalewayKeys {
   readonly dir: string;
@@ -37,7 +37,7 @@ export class ScalewayKeys {
     return { token, publicKey: (await readFile(`${path}.pub`, "utf8")).trim() };
   }
   async save(record: KeyRecord) { await writeFile(`${this.path(record.token)}.json`, JSON.stringify(record), { mode: 0o600 }); }
-  async load(token: string): Promise<KeyRecord> { try { return z.object({ token: z.string().uuid(), sshKeyId: z.string().uuid(), serverId: z.string().uuid().optional(), zone: z.enum(["fr-par-1", "fr-par-3"]).optional(), projectId: z.string().uuid().optional() }).parse(JSON.parse(await readFile(`${this.path(token)}.json`, "utf8"))); } catch { throw fail("The Scaleway machine's SSH key is missing from this plugin's data directory.", "key_missing"); } }
+  async load(token: string): Promise<KeyRecord> { try { return z.object({ token: z.string().uuid(), sshKeyId: z.string().uuid(), serverId: z.string().uuid().optional(), zone: z.enum(["fr-par-1", "fr-par-3"]).optional(), projectId: z.string().uuid().optional(), prepared: z.boolean().optional() }).parse(JSON.parse(await readFile(`${this.path(token)}.json`, "utf8"))); } catch { throw fail("The Scaleway machine's SSH key is missing from this plugin's data directory.", "key_missing"); } }
   async records(): Promise<KeyRecord[]> {
     const files = await readdir(this.dir).catch(() => [] as string[]);
     return Promise.all(files.filter(file => /^[0-9a-f-]{36}\.json$/.test(file)).map(file => this.load(file.slice(0,-5))));

@@ -6,7 +6,7 @@ import { MACHINE_PROVIDER_ID } from "./providers/boat/provider.ts";
 import { INSTABOX_MACHINE_PROVIDER_ID } from "./providers/instabox/provider.ts";
 
 /** The bb machine providers this plugin registers: its task chats' machines are on one of them. */
-const PLUGIN_MACHINE_PROVIDERS: ReadonlySet<string> = new Set([MACHINE_PROVIDER_ID, INSTABOX_MACHINE_PROVIDER_ID]);
+const PLUGIN_MACHINE_PROVIDERS: ReadonlySet<string> = new Set([MACHINE_PROVIDER_ID, INSTABOX_MACHINE_PROVIDER_ID, "scaleway-sandbox"]);
 import { keepSandboxKey } from "./providers/machine.ts";
 import { createProjectSources, type EnsuredProjectSource, type OwnProjectSource, type RemovedProjectSource } from "./project-sources.ts";
 import { threadSection } from "./sections.ts";

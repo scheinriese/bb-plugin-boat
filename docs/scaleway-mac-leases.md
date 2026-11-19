@@ -8,8 +8,12 @@ No API secret belongs in a command, task prompt, backup or log.
 
 Only a dispatched task rents a Mac. The adapter does not offer a new-machine
 environment picker, buy a monthly commitment, change a plan, or rent ahead.
-Tasks on Scaleway use bb chats, with the existing trusted-project rules,
-bb Connect, and the owner's agent authentication in bb. Instabox's
+Tasks on Scaleway use bb chats, with the existing trusted-project rules and
+bb Connect. **New Scaleway task rentals are currently refused before allocation:**
+there is no supported way to provision GitHub and agent logins onto a fresh Mac.
+Instabox's organization Secrets do not apply to Scaleway, and bb enrollment alone
+is not proof of either login. Existing held Macs can be reused after SSH checks
+verify the selected agent login and, for repository tasks, GitHub login. Instabox's
 headless runner stays available. If a headless task reaches the Scaleway
 routing step, it reports that task chats are required and tries Instabox.
 
@@ -21,10 +25,11 @@ Catalog on 2026-11-19:
 - [Apple silicon API and schema](https://www.scaleway.com/en/developers/api/apple-silicon):
   `GET /apple-silicon/v1alpha1/zones/{zone}/server-types` supplies hardware,
   stock and default OS; `POST .../servers` creates a server with the explicit
-  `os_id`, `commitment_type: none`, VPC disabled and a Boat recovery tag.
+  `os_id`, `commitment_type: duration_24h`, VPC disabled and a recovery token in
+  its name (`bb-boat-<token>`). Create/update requests have no tags field.
   `GET .../servers/{id}` polls `status: ready` and `delivered`; the list API
   is paginated. `DELETE .../servers/{id}` releases it. Failed bootstrap uses
-  `PATCH .../servers/{id}` with `deletion_scheduled: true`.
+  `PATCH .../servers/{id}` with `schedule_deletion: true` (`deletion_scheduled` is response-only).
 - [Public Product Catalog](https://www.scaleway.com/en/developers/api/product-catalog/public-catalog):
   `GET /product-catalog/v2alpha1/public-catalog/products?product_types=apple_silicon&zone={zone}`
   supplies live server-type prices. Only matching-zone, EUR, hourly retail
@@ -55,14 +60,17 @@ No Asahi Linux image or beta OS is selected.
 ## SSH and bb bootstrap
 
 Generate an Ed25519 pair with local `ssh-keygen`. Keep each private key in
-`<plugin data>/scaleway-keys/<random-id>`, mode 0600, in a 0700 directory.
+`<dirname(plugin database)>/scaleway-keys/<random-id>`, mode 0600, in a 0700 directory.
 Recovery metadata contains only the public-key resource ID, server ID,
-zone and project ID. No Scaleway API secret is persisted there.
+zone, project ID and whether bootstrap completed. The directory comes from
+`dirname(bb.storage.database().name)`, not the server data-root hint. No Scaleway
+API secret is persisted there.
 
 Register the public key using `POST /iam/v1alpha1/ssh-keys`. Scaleway SSH
 keys are project-scoped, although Boat generates and uses one pair per
 machine. See [SSH access](https://www.scaleway.com/en/docs/apple-silicon/how-to/connect-to-mac-mini-ssh/).
-SSH uses the API-reported address and username, batch authentication and
+SSH uses the API-reported address and username, its login environment for the
+actual home directory, batch authentication and
 only that identity. Host keys use OpenSSH accept-new into a per-machine
 known-hosts file; a later mismatch is refused. No passwords are logged or
 used. Server passwords/VNC URLs are discarded at the API boundary.
@@ -72,14 +80,23 @@ published SHA256), Claude Code, Codex and GitHub CLI into the user home.
 bb's existing shared machine registration installs/enrolls bb through a
 stdin-capable SSH executor. Enrollment input is never put on a command line
 or in shell history. Existing task workspace and checkout logic is reused.
-Fresh machines still require GitHub authentication for private repositories;
-Boat does not silently copy the host's GitHub token to a new provider.
+Fresh task rentals fail closed while credential provisioning is unavailable.
+Boat does not copy the host's GitHub or agent tokens to a new provider.
 
 Delete the IAM public-key resource and local private/public/known-hosts files
-when releasing the server. A successful list also checks recorded machines
-before cleaning keys for external or scheduled deletions; changing project
-or zone cannot discard an existing machine's key. An ambiguous create
-preserves recovery files and stops routing, requiring console reconciliation.
+when releasing the server. Ownership is matched by the name token, then the
+recorded server ID, so renaming a recorded server does not lose its lease/key.
+Successful complete lists cover every recorded project/zone before treating an
+allocation as absent. Changing project or zone does not discard an existing key.
+
+An ambiguous create preserves recovery files and stops fallback. A clean list
+recovers its matching name and binds the server ID; if no matching server exists,
+it automatically deletes the unused IAM key and local recovery files. A failed
+or incomplete list clears nothing. The operator can run
+`bb boat providers recover scaleway` to invoke the same reconciliation. Recovered
+allocations awaiting setup cannot authorize another rental. Failed bootstrap
+requests `schedule_deletion`; a failed safety schedule is surfaced explicitly
+with a tracked lease and manual-release instruction, never swallowed.
 
 ## Routing and verification
 
@@ -88,7 +105,12 @@ project's preferred Mac provider, then the other provider when the first
 is unconfigured, has no capacity, or rejects creation. History records each
 attempt and the chosen fallback. An unknown create outcome or an allocated
 machine whose setup failed stops fallback to avoid paying for two Macs.
-The shared ledger, placement lock, hand-back and keep-sandbox policy apply.
+Allocation and task/lease reservation run under the shared placement lock.
+Readiness and SSH/bootstrap use the separate `waitReady` phase outside it, while
+the task's reservation/claim protects the machine. Other placements and hand-back
+therefore continue. Instabox timeouts and malformed create responses are unknown
+allocation outcomes and never authorize a second rental; only explicit refusals
+allow fallback. The shared ledger, hand-back and keep-sandbox policy apply.
 Scaleway records `minimumCost`, immutable `paidUntil`, `hourPrice` and
 `billingIncrementSeconds: 3600`. The ledger charges the minimum plus begun
 hours after it, splitting billable time and costs across UTC months. The
@@ -102,6 +124,11 @@ pending automatic release. These policies are the merged PR #24 logic,
 with no separate Scaleway hand-back loop.
 
 Automated tests use fake HTTP and SSH, never real rentals. A live account
-must verify quota names/localities, OS delivery, SSH propagation, package
+must verify `duration_24h` acceptance, quota names/localities, OS delivery, SSH propagation, package
 installation, bb enrollment, GitHub/agent authentication, Xcode execution,
 minimum enforcement, scheduled deletion, key removal and invoice rounding.
+
+Request shapes were checked against the official generated
+[Apple silicon SDK](https://github.com/scaleway/scaleway-sdk-go/blob/master/api/applesilicon/v1alpha1/applesilicon_sdk.go).
+The test API rejects unsupported create/update fields and always returns untagged
+servers, including ambiguous create and failed scheduling scenarios.

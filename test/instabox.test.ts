@@ -1045,3 +1045,12 @@ test("stopped Mac leases end at stoppedAt rather than the later list time",async
   assert.equal(store.macLeases.list()[0]!.endedAt,stoppedAt);
   assert.ok(Math.abs(store.macLeases.between(0,Infinity,Date.parse(stoppedAt)+86400000).costs.USD!-(lease.minimumCost+lease.hourPrice))<1e-8);
 });
+
+test("a Mac create readiness timeout is an unknown allocation outcome, never a safe fallback",async t=>{
+  const {box}=await macEnv(t);const json=box.cli.json.bind(box.cli);
+  box.cli.json=async(args,options)=>{
+    if(args[0]==="create")throw new InstaboxError("ready timeout after allocation",{code:"instabox_timeout"});
+    return json(args,options);
+  };
+  await assert.rejects(box.provider.create({name:"mac",type:"default",system:"macos",ttlSeconds:3600,gitGuard:true}),{code:"creation_unknown"});
+});

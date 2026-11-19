@@ -57,7 +57,7 @@ export const PROVIDER_CATALOG: readonly CatalogEntry[] = [
     ],
     apiKey: true,
   },
-  { id: "scaleway", label: "Scaleway", kind: "cloud", summary: "Paris Apple silicon · 24 h minimum, then hourly until deleted.", systems: [{ os: "macos", label: "Mac", note: null }], apiKey: true },
+  { id: "scaleway", label: "Scaleway", kind: "cloud", summary: "Paris Apple silicon · 24 h minimum, then hourly. New task rentals are blocked until credentials can be provisioned.", systems: [{ os: "macos", label: "Mac", note: null }], apiKey: true },
   { id: "your-mac", label: "Your Mac", kind: "own-mac", summary: `Agents on your own Mac, enrolled in bb. ${NO_MACS}`, systems: [], apiKey: false, unsupported: NO_MACS },
   {
     id: "monthly-mac",
@@ -179,7 +179,7 @@ function pickProblem(row: SandboxProviderDto): string | null {
 /** The line under the providers: where work goes first. */
 function routingLine(rows: readonly SandboxProviderDto[], defaultLabel: string): string {
   const macs = rows.some((row) => row.kind !== "cloud" && row.available);
-  if (macs) return "Mac tasks go to your Mac first, then a monthly Mac, then an Instabox day lease. Boat never rents or cancels anything for you.";
+  if (macs) return "Mac tasks go to your Mac first, then a monthly Mac, then an enabled Mac day-lease provider. Boat rents only for dispatched tasks.";
   return `New work runs on ${defaultLabel} unless a project picks another provider below.`;
 }
 
@@ -228,11 +228,11 @@ export function providersView(input: {
   const options: RunsOnOptionDto[] = rows
     // A monthly Mac is a choice once one is enrolled.
     .filter((row) => row.kind !== "monthly-mac" || (row.available && row.connection === "connected"))
-    .map((row) => ({ provider: row.id, label: row.label, disabledReason: pickProblem(row) }));
+    .map((row) => { const macOnly=registry.all.find(provider=>provider.id===row.id)?.caps.os==="macos"; return {provider:macOnly?`${row.id}-macos`:row.id,label:macOnly?`${row.label} · Mac`:row.label,disabledReason:pickProblem(row)}; });
   for (const provider of registry.enabled) {
     const row = rows.find(row => row.id === provider.id);
     const ready = input.macReady?.has(provider.id) ?? (provider.caps.systems ?? [provider.caps.os]).includes("macos");
-    if (row?.available && row.connection === "connected" && ready) options.push({ provider: `${provider.id}-macos`, label: `${providerLabel(provider.id,provider)} · Mac`, disabledReason: null });
+    if (row?.available && row.connection === "connected" && ready && !options.some(option=>option.provider===`${provider.id}-macos`)) options.push({ provider: `${provider.id}-macos`, label: `${providerLabel(provider.id,provider)} · Mac`, disabledReason: null });
   }
   const projects = input.projects.map((project) => projectRow(project, registry));
   // A pick this version doesn't know (a backup from a newer one) still shows, greyed out.

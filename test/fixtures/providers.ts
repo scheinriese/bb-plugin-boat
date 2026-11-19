@@ -67,7 +67,7 @@ export const INSTABOX_NOT_CONNECTED: SandboxProviderDto = {
 
 export const SCALEWAY_NOT_CONNECTED: SandboxProviderDto = {
   id: "scaleway", label: "Scaleway", kind: "cloud", isDefault: false, available: true, enabled: false,
-  connection: "key-missing", meta: null, summary: "Paris Apple silicon · 24 h minimum, then hourly until deleted.",
+  connection: "key-missing", meta: null, summary: "Paris Apple silicon · 24 h minimum, then hourly. New task rentals are blocked until credentials can be provisioned.",
   pricing: null, systems: [{ os: "macos", label: "Mac", note: null, ready: false }], apiKey: { setting: null }, status: null,
 };
 
