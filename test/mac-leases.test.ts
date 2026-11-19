@@ -77,10 +77,21 @@ test("scheduled release is durable and missing machines end at the scheduled ins
 test("unpublished lease schema creates billing, keep, reminder and attachment indexes directly", () => {
   const {db}=fixture();
   const columns=(db.prepare("PRAGMA table_info(mac_leases)").all() as {name:string}[]).map(row=>row.name);
-  for(const name of ["minimum_cost","hour_price","kept","release_at","notice_at"])assert.ok(columns.includes(name));
+  for(const name of ["minimum_cost","hour_price","kept","release_at","notice_at","notice_text"])assert.ok(columns.includes(name));
   assert.ok(!columns.includes("day_price"));
   assert.ok(!TaskStore.migrations().some(sql=>/ALTER TABLE mac_leases|UPDATE mac_leases/.test(sql)));
   assert.equal((db.prepare("PRAGMA index_info(mac_lease_tasks_task)").get() as {name:string}).name,"task_id");
+});
+test("close outcomes and page notices persist together with the reminder throttle", () => {
+  const {ledger,db}=fixture();const lease=record(ledger);ledger.attach(lease.id,"t_1",4,8192,at);
+  ledger.resolveTask(lease.id,"t_1","shipped",2);
+  assert.equal(ledger.warn(lease.id,at+LEASE_DAY_MS,true,"[boat] Compute cost $10.80"),true);
+  const restarted=new MacLeaseLedger(()=>db as unknown as Database.Database);
+  const attached=restarted.tasks(lease.id)[0]!;
+  assert.equal(attached.workOutcome,"shipped");assert.equal(attached.workTurns,2);
+  assert.equal(restarted.held()[0]!.noticeText,"[boat] Compute cost $10.80");
+  assert.equal(restarted.warn(lease.id,at+LEASE_DAY_MS+1,true,"too soon"),false);
+  assert.equal(restarted.held()[0]!.noticeText,"[boat] Compute cost $10.80");
 });
 test("Mac lines batch their reads and format local instants with singular lease-day", () => {
   const {ledger,db}=fixture(); const lease=record(ledger);

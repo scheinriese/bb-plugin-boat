@@ -292,7 +292,12 @@ export function providerHandlers(runtime: Runtime) {
 
   return {
     sandboxProviders: () => view(),
-    macUsage: () => service.store.macLeases.summary(),
+    macUsage: () => {
+      const summary = service.store.macLeases.summary();
+      const label = (id: string) => providerLabel(id, service.sandboxProviders.all.find(provider=>provider.id===id));
+      return { ...summary, providers: summary.providers.map(id=>({id,label:label(id)})),
+        notices: summary.held.flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []) };
+    },
 
     setProjectRunsOn: async ({ projectId, provider }: { projectId: string; provider: string }) => {
       const missing = () => new experimental_PluginRpcRefusal({ code: "not_found", message: `No project "${projectId}".` });

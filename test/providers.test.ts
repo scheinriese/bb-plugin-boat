@@ -650,3 +650,12 @@ test("a provider whose stopped sandboxes still count makes no room by stopping o
   await service.createSandbox({ name: "y", environment: "web", sandboxProvider: other });
   assert.deepEqual(created, [null]);
 });
+
+test("boat.dev sandbox reuse does not add a Mac-system info probe",async()=>{
+  const boat=new FakeBoat(),store=memoryStore();
+  boat.addSandbox("bx_reuse","default","idle");let info=0;
+  const original=boat.info.bind(boat);boat.info=async id=>{info++;return original(id)};
+  const service=new BoatService(boat as unknown as BoatApi,store,hooks());
+  const task=await service.startTask({title:"Reuse",brief:"Check",role:"custom",sandbox:"bx_reuse"});
+  assert.equal(task.status,"running");assert.equal(info,0);
+});

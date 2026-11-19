@@ -64,3 +64,9 @@ test("Mac Runs on choices and persistence use the chosen provider, including liv
   await handlers.setProjectRunsOn({projectId:"mac",provider:"orchard-macos"});
   assert.equal(env.projects.get("mac")!.sandboxProvider,"orchard");assert.equal(env.projects.get("mac")!.sandboxSystem,"macos");
 });
+
+test("Mac usage includes the provider's display name",async()=>{
+  const env=fixture();await env.start();
+  const view=providerHandlers({service:env.service,bb:{}} as unknown as Runtime).macUsage();
+  assert.deepEqual(view.providers,[{id:"orchard",label:"Orchard"}]);
+});

@@ -123,6 +123,8 @@ export type SandboxProvidersResultDto = z.infer<typeof sandboxProvidersResultSch
 const macUsageWindowSchema = z.object({ leaseDays: z.number(), costs: z.record(z.string(),z.number()) });
 export const macUsageSchema = z.object({
   month: macUsageWindowSchema, rolling30: macUsageWindowSchema,
+  providers: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
+  notices: z.array(z.object({ id: z.string(), provider: z.string(), label: z.string(), machineId: z.string(), at: z.string(), text: z.string() })).optional(),
   held: z.array(z.object({ provider: z.string().optional(), billingIncrementSeconds: z.number().optional(), machineId: z.string(), size: z.string(), paidUntil: z.string(), minimumCost: z.number(), hourPrice: z.number(), kept: z.boolean(), releaseAt: z.string().nullable(), currency: z.string() })),
 });
 export type MacUsageDto = z.infer<typeof macUsageSchema>;
