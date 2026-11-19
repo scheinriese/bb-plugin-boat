@@ -625,6 +625,35 @@ test("a project's sandbox size: exported, kept by older files, listed when it ch
 });
 
 
+test("a project's Never continue on paid Claude: a backup turns it on, and one taken with it off turns it off again", async (t) => {
+  const { harness, exported, importFile } = await setup();
+  t.after(() => harness.lifecycle.dispose());
+  assert.equal((await importFile(ownerFile())).exitCode, 0);
+  // Off: not even written down, in the store or the backup.
+  const off = await exported();
+  assert.equal(off.projects.some((project) => "neverPaidClaude" in project), false);
+
+  // A backup with it on turns it on, as a change of that field.
+  const on = PROJECTS.map((project) => (project.id === "web" ? { ...project, neverPaidClaude: true } : project));
+  const turnedOn = await importFile({ format: CONFIG_FORMAT, version: 2, projects: on });
+  assert.equal(turnedOn.exitCode, 0, turnedOn.stderr);
+  assert.match(turnedOn.stdout, /Update web \(Web app\): neverPaidClaude/);
+  const withOptOut = await exported();
+  assert.equal(withOptOut.projects.find((project) => project.id === "web")?.neverPaidClaude, true);
+
+  // The backup taken while it was off (no key) restores it off.
+  const restored = await importFile({ format: CONFIG_FORMAT, version: 2, projects: off.projects });
+  assert.equal(restored.exitCode, 0, restored.stderr);
+  assert.match(restored.stdout, /Update web \(Web app\): neverPaidClaude/);
+  assert.equal("neverPaidClaude" in (await exported()).projects.find((project) => project.id === "web")!, false);
+
+  // Round trip: the backup taken with it on gives it back on, and then changes nothing.
+  assert.equal((await importFile({ format: CONFIG_FORMAT, version: 2, projects: withOptOut.projects })).exitCode, 0);
+  assert.equal((await exported()).projects.find((project) => project.id === "web")?.neverPaidClaude, true);
+  const again = await importFile({ format: CONFIG_FORMAT, version: 2, projects: withOptOut.projects }, ["--dry-run"]);
+  assert.match(again.stdout, /Projects: 0 added, 0 updated, 3 unchanged/);
+});
+
 test("local bb project links survive backup roundtrip and unrelated legacy imports", async (t) => {
   const { harness, exported, importFile } = await setup();
   t.after(() => harness.lifecycle.dispose());

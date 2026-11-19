@@ -321,16 +321,18 @@ export async function planImport(deps: ConfigDeps, text: string, options: { repl
     }
     seen.add(id);
     const before = deps.projects.get(id);
+    // A project is exported with Never continue on paid Claude only when it's on: absent means off.
+    const input = { ...entry, id, neverPaidClaude: entry.neverPaidClaude ?? false } as ProjectInput & { id: string };
     let normalized: BoatProject;
     try {
-      normalized = normalizeProject({ ...entry, id } as ProjectInput, before);
+      normalized = normalizeProject(input, before);
     } catch (error) {
       const reason = error instanceof z.ZodError ? issueLines(error).join("; ") : error instanceof Error ? error.message : String(error);
       problems.push(`${label}: ${reason}`);
       continue;
     }
     const fields = before === null ? [] : PROJECT_FIELDS.filter((field) => !sameValue(before[field], normalized[field]));
-    save.push({ input: { ...entry, id } as ProjectInput & { id: string }, change: before === null ? "added" : fields.length > 0 ? "updated" : "unchanged", fields });
+    save.push({ input, change: before === null ? "added" : fields.length > 0 ? "updated" : "unchanged", fields });
   }
   const removed: ProjectChange[] = [];
   const blocked: (ProjectChange & { reason: string })[] = [];
