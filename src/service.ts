@@ -78,6 +78,7 @@ import type { ConnectCheck } from "./connect.ts";
 import { renderBoatTranscript, transcriptDir, transcriptPath } from "./transcript.ts";
 import type { PreflightInput } from "./setup.ts";
 import type { PlanSize, SizedProject } from "./memory.ts";
+import type { WakePacer, WakePermit } from "./wake-pacer.ts";
 import { SandboxSizes } from "./sandbox-size.ts";
 import { completedReview, isReady, resolveTaskStatus, reviewState, type StatusContext, type TaskPublicStatus } from "./board.ts";
 import { taskMarker } from "./format.ts";
@@ -257,6 +258,12 @@ export interface ServiceHooks {
   sizeTiming?: { checkMs?: number; pollMs?: number; stopMs?: number; startMs?: number; reconnectMs?: number };
   /** Tests: how often and how far apart a failed chat turn's event log is read again (ms). */
   steerRetryTiming?: { rereads?: number; rereadMs?: number };
+  /**
+   * Sandbox wakes (src/wake-pacer.ts, src/wake-retry.ts): every boat resume
+   * takes a slot from the account's pacer; an explicit resume starts the
+   * sandbox's retry plan over. Absent: resumes go out at once.
+   */
+  wakes?: { pacer: WakePacer; forget(sandboxId: string): Promise<void> };
 }
 
 export interface StartTaskInput {
@@ -552,6 +559,14 @@ export function defaultModelFor(provider: Provider, settings: BoatSettings): str
 /** States a sandbox passes through on its way up or down. */
 const TRANSITIONAL_STATES = new Set(["provisioning", "starting", "stopping", "archiving", "resuming", "pending"]);
 const TRANSITION_WAIT_MS = 120_000;
+
+/**
+ * boat resumes it: stopped or archived, or a resume that failed (boat's state
+ * "error" with "Resume failed: …", its snapshot still there).
+ */
+function resumable(sandbox: Sandbox): boolean {
+  return sandbox.state === "stopped" || sandbox.state === "archived" || (sandbox.state === "error" && /resume failed|restore/i.test(sandbox.error ?? ""));
+}
 /** How long a turn may look finished in one endpoint but not the other. */
 const SETTLE_MS = 30_000;
 /** How long a `boat ps` reading of a sandbox is reused. */
@@ -956,28 +971,36 @@ export class BoatService {
     );
   }
 
-  /** Make sure a sandbox is up (resuming it within the slot limit). */
-  bringUp(sandboxId: string, signal?: AbortSignal): Promise<Sandbox> {
-    return this.ensureRunning(sandboxId, signal);
+  /**
+   * Make sure a sandbox is up (resuming it within the slot limit). `wake.permit`:
+   * the caller already took the wake slot and reports the outcome itself.
+   */
+  bringUp(sandboxId: string, signal?: AbortSignal, wake?: { permit?: WakePermit }): Promise<Sandbox> {
+    return this.ensureRunning(sandboxId, signal, wake?.permit);
   }
 
   /**
    * Bring a sandbox up before sending it work: wait out stop/start
-   * transitions, and resume a stopped one (one resume at a time).
+   * transitions, and resume a stopped one (one resume at a time, each
+   * within the account's wake pacing).
    */
-  private async ensureRunning(sandboxId: string, signal?: AbortSignal): Promise<Sandbox> {
+  private async ensureRunning(sandboxId: string, signal?: AbortSignal, given?: WakePermit): Promise<Sandbox> {
     const deadline = Date.now() + TRANSITION_WAIT_MS;
+    // The wake slot, taken once before the slot lock (a wait there would hold up creates).
+    let permit: WakePermit | null = given ?? null;
     for (;;) {
       const sandbox = await this.boat.findInfo(sandboxId, signal);
       if (sandbox === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
       this.observedSandboxStates.set(sandboxId, sandbox.state);
       if (ACTIVE_STATES.has(sandbox.state)) return sandbox;
-      if (sandbox.state === "stopped" || sandbox.state === "archived") {
+      if (resumable(sandbox)) {
+        if (permit === null && this.hooks.wakes !== undefined) permit = await this.hooks.wakes.pacer.acquire({ signal });
+        const owned = given === undefined ? permit : null;
         const resumed = await this.withSlotLock(async () => {
           const current = await this.boat.findInfo(sandboxId, signal);
           if (current === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
           if (ACTIVE_STATES.has(current.state)) return current;
-          if (current.state !== "stopped" && current.state !== "archived") return null;
+          if (!resumable(current)) return null;
           const { limits } = await this.ensureSlot(signal, sandboxId);
           // A move to another size resumes onto it, whoever resumes (sizes).
           const type = this.sizes.pendingType(sandboxId);
@@ -985,8 +1008,10 @@ export class BoatService {
             await withinAutoStopCap(ttlSeconds(await this.settings(), limits), (ttl) => this.boat.resume(sandboxId, ttl, signal, type));
           } catch (error) {
             if (type !== null) this.sizes.resumeFailed(sandboxId, error);
+            if (signal?.aborted !== true) await owned?.failed();
             throw error;
           }
+          await owned?.succeeded();
           this.store.resetPreviewHealthForSandbox(sandboxId);
           return (await this.boat.findInfo(sandboxId, signal)) ?? current;
         });
@@ -2921,15 +2946,30 @@ export class BoatService {
     }
   }
 
+  /** A boat resume within the account's wake pacing (src/wake-pacer.ts). */
+  private async pacedResume<T>(resume: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const permit = await this.hooks.wakes?.pacer.acquire({ signal });
+    try {
+      const result = await resume();
+      await permit?.succeeded();
+      return result;
+    } catch (error) {
+      if (signal?.aborted !== true) await permit?.failed();
+      throw error;
+    }
+  }
+
   async sandboxAction(sandboxId: string, action: "stop" | "resume" | "delete", ttlSeconds: number, signal?: AbortSignal): Promise<void> {
     if (this.isMovingSandbox(sandboxId)) {
       throw new TaskError(`A task is moving to a task chat in sandbox ${sandboxId}.`, "task_busy", "Try again once the chat is open (in about a minute).");
     }
     this.sizes.assertSandboxNotResizing(sandboxId); // sizes
     const hostId = this.hooks.chat === undefined ? null : this.store.hostForSandbox(sandboxId);
+    // Asked for explicitly: the sandbox's retry plan starts over (src/wake-retry.ts).
+    if (action === "resume") await this.hooks.wakes?.forget(sandboxId);
     if (hostId === null) {
       if (action === "stop") await this.boat.stop(sandboxId, signal);
-      else if (action === "resume") await withinAutoStopCap(ttlSeconds, (ttl) => this.boat.resume(sandboxId, ttl, signal));
+      else if (action === "resume") await this.pacedResume(() => withinAutoStopCap(ttlSeconds, (ttl) => this.boat.resume(sandboxId, ttl, signal)), signal);
       else await this.boat.delete(sandboxId, signal);
       this.observedSandboxStates.set(sandboxId, action === "stop" ? "stopped" : action === "resume" ? "running" : "deleted");
       return;

@@ -836,6 +836,8 @@ export function makeService(
     sizeTiming?: ServiceHooks["sizeTiming"];
     /** Another service's store, chat and boat: the plugin after a reload. */
     reuse?: { store: TaskStore; chat?: FakeChat; boat?: FakeBoat };
+    /** Sandbox wakes: the account's pacer and the retry plans (default: none, resumes go out at once). */
+    wakes?: ServiceHooks["wakes"];
   } = {},
 ) {
   const boat = options.reuse?.boat ?? new FakeBoat();
@@ -886,6 +888,7 @@ export function makeService(
     ...(options.repoWorkerMode ? { repoWorkerMode: options.repoWorkerMode } : {}),
     ...(options.projectReviewer ? { projectReviewer: options.projectReviewer } : {}),
     checkPreview: options.checkPreview ?? (async () => "up" as const),
+    ...(options.wakes ? { wakes: options.wakes } : {}),
   });
   if (chat && options.linkedMachines) chat.link(boat, (sandboxId) => service.bringUp(sandboxId));
   return {

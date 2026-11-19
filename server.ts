@@ -43,6 +43,9 @@ import { createRuntime, type Runtime } from "./src/runtime.ts";
 import { BoatService, DeliveryDeferred, type BoatSettings, type Notification } from "./src/service.ts";
 import { TaskStore, type Provider } from "./src/store.ts";
 import { TOOL_NAMES, registerTools } from "./src/tools.ts";
+import { WakePacer, kvWakeStorage } from "./src/wake-pacer.ts";
+import { createWakeGuard } from "./src/wake-retry.ts";
+import { threadsOnMachine } from "./src/activity.ts";
 
 const REALTIME_CHANNEL = "boat-changed";
 /** bb thread states with a turn under way. */
@@ -261,8 +264,26 @@ export default async function plugin(bb: BbPluginApi) {
     await attentionNotifications?.flush();
   }
 
+  // Sandbox wakes: at most 2 a minute account-wide, a pause after a failure, and
+  // Boat's own later retry while boat.dev is still restoring a disk.
+  const wakePacer = new WakePacer({ storage: kvWakeStorage(bb.storage.kv), log: (line) => bb.log.warn(line) });
+  const wakes = createWakeGuard({
+    pacer: wakePacer,
+    kv: bb.storage.kv,
+    boat,
+    store,
+    orchestratorOn: async (hostId) => {
+      const current = store.orchestratorThreadIds().current;
+      return (await threadsOnMachine(bb, hostId)).map((row) => row.id).find((id): id is string => id !== undefined && current.has(id)) ?? null;
+    },
+    resumeHost: (hostId) => bb.sdk.hosts.experimental_resume({ hostId } as never),
+    changed: () => changed(),
+    log: (line) => bb.log.warn(line),
+  });
+
   const chatRunner = createChatRunner(bb);
   const service = new BoatService(boat, store, {
+    wakes,
     settings: readSettings,
     lifecycle: lifecycle.signal,
     changed,
@@ -374,7 +395,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.cli.register(buildCli(runtime));
-  registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect });
+  registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect, wakes });
   registerTools(runtime);
   registerRpc(runtime);
   registerMergeRpc(runtime);
@@ -717,6 +738,12 @@ export default async function plugin(bb: BbPluginApi) {
           await watchdog.tick();
         } catch (error) {
           bb.log.warn(`watchdog failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        // Boat's own later wake of a sandbox boat.dev couldn't restore (one a pass, paced).
+        try {
+          await wakes.tick();
+        } catch (error) {
+          bb.log.warn(`wake retries failed: ${error instanceof Error ? error.message : String(error)}`);
         }
         // Running turns are checked often; waiting tasks (idle-stop, notices) slowly.
         const intervalMs = service.hasActiveWork() ? POLL_INTERVAL_MS : 60_000;

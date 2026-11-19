@@ -1,6 +1,13 @@
 // "Boat sandbox" as a bb machine: bb threads (for example a cloud
 // orchestrator) can run inside a boat.dev sandbox. bb installs its daemon
 // there through `boat ssh`; the daemon connects back over bb Connect.
+//
+// bb's setup stays on `boat ssh`, with no fallback to boat's exec API: the
+// setup sends bb's enrollment secret on stdin, `boat exec` takes no stdin,
+// and boat keeps every exec command line in the sandbox's history (`boat
+// history`). While boat.dev is still restoring the disk, the setup would
+// also block on files not restored yet over exec; what helps is waiting
+// (src/wake-retry.ts) and keeping SSH logins from hanging (src/login-scripts.ts).
 import { spawn } from "node:child_process";
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -11,6 +18,9 @@ import type { BoatService, BoatSettings } from "./service.ts";
 import type { ConnectCheck } from "./connect.ts";
 import { machineProblem, type Setup, type SetupSettings } from "./setup.ts";
 import { bootstrapExecutor, bootstrapFailureMessage, retryableBootstrap } from "./bootstrap.ts";
+import { directWakes, type WakeGuard } from "./wake-retry.ts";
+import { createLoginQuieter, type QuietLogin } from "./login-scripts.ts";
+import { TeardownBackoff } from "./teardown-backoff.ts";
 
 export const MACHINE_PROVIDER_ID = "boat-sandbox";
 
@@ -115,9 +125,17 @@ export function registerBoatMachine(
     setup?: Setup;
     setupSettings?: () => Promise<SetupSettings>;
     connect?: ConnectCheck;
+    /** Paced wakes, diagnosed failures and Boat's own retries (src/wake-retry.ts); absent: resumes go out at once. */
+    wakes?: Pick<WakeGuard, "machine">;
+    /** Turn off the login message scripts before bb's SSH setup (src/login-scripts.ts). */
+    quietLogins?: (sandboxId: string, signal?: AbortSignal) => Promise<QuietLogin>;
   },
 ): void {
   const { boat, cli, service } = deps;
+  const wakes = deps.wakes ?? directWakes;
+  const quietLogins = deps.quietLogins ?? createLoginQuieter(boat, (line) => bb.log?.warn?.(line));
+  /** After boat.dev fails a stop or delete, bb's retries wait (src/teardown-backoff.ts). */
+  const teardown = new TeardownBackoff();
 
   /** The machine's sandbox holds a headless task's work: bb forgets the machine, the sandbox stays. */
   async function keptSandbox(key: string): Promise<boolean> {
@@ -199,6 +217,7 @@ export function registerBoatMachine(
         }
         await checkpoint({ sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) });
         report.log(`boat sandbox ${sandbox.id}`);
+        await quietLogins(sandbox.id, signal);
         report.step("Installing bb on the sandbox");
         const { hostId } = await bb.experimental_machines.bootstrap({
           key,
@@ -214,46 +233,67 @@ export function registerBoatMachine(
       }
     },
     async reconcileCleanup({ key }) {
+      const held = teardown.held(`key:${key}`, "delete");
+      if (held !== null) return { status: "failed" as const, message: held };
       try {
         if (await keptSandbox(key)) return { status: "removed" as const };
         const sandbox = await findByKey(key);
         if (sandbox !== null) await boat.delete(sandbox.id);
+        teardown.succeeded(`key:${key}`, "delete");
         return { status: "removed" as const };
       } catch (error) {
-        return { status: "failed" as const, message: message(error) };
+        return { status: "failed" as const, message: teardown.failed(`key:${key}`, "delete", error) };
       }
     },
     async suspend({ resource }) {
       const { sandboxId } = resourceSchema.parse(resource);
-      const sandbox = await boat.findInfo(sandboxId);
-      // Already stopped (for example by boat's auto-stop) is fine: the disk is kept.
-      if (sandbox !== null && ACTIVE_STATES.has(sandbox.state)) await boat.stop(sandboxId);
+      const held = teardown.held(sandboxId, "stop");
+      if (held !== null) throw new Error(held);
+      try {
+        const sandbox = await boat.findInfo(sandboxId);
+        // Already stopped (for example by boat's auto-stop) is fine: the disk is kept.
+        if (sandbox !== null && ACTIVE_STATES.has(sandbox.state)) await boat.stop(sandboxId);
+      } catch (error) {
+        throw new Error(teardown.failed(sandboxId, "stop", error));
+      }
+      teardown.succeeded(sandboxId, "stop");
       return { resource };
     },
-    async resume({ resource, report, signal }) {
+    async resume({ resource, report, signal, hostId }) {
       const { sandboxId, key } = resourceSchema.parse(resource);
-      const sandbox = await boat.findInfo(sandboxId, signal);
-      if (sandbox === null) throw new Error(`boat sandbox ${sandboxId} no longer exists`);
-      if (!ACTIVE_STATES.has(sandbox.state)) {
-        report.step("Resuming the boat sandbox");
-        await service.bringUp(sandboxId, signal);
-      }
-      report.step("Restarting bb on the sandbox");
-      await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(sshExecutor(cli, sandboxId), report), report, signal });
+      // Paced, with failures diagnosed and retried by Boat later (src/wake-retry.ts).
+      await wakes.machine({ sandboxId, hostId: hostId ?? null, signal, report }, async (permit) => {
+        const sandbox = await boat.findInfo(sandboxId, signal);
+        if (sandbox === null) throw new Error(`boat sandbox ${sandboxId} no longer exists`);
+        if (!ACTIVE_STATES.has(sandbox.state)) {
+          const slot = await permit();
+          report.step("Resuming the boat sandbox");
+          await service.bringUp(sandboxId, signal, { permit: slot });
+        }
+        await quietLogins(sandboxId, signal);
+        report.step("Restarting bb on the sandbox");
+        await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(sshExecutor(cli, sandboxId), report), report, signal });
+      });
       return { resource };
     },
     async remove({ resource }) {
+      let sandboxId: string | null = null;
       try {
-        const { sandboxId, key } = resourceSchema.parse(resource);
-        if (await keptSandbox(key)) return { status: "removed" as const };
+        const parsed = resourceSchema.parse(resource);
+        sandboxId = parsed.sandboxId;
+        if (await keptSandbox(parsed.key)) return { status: "removed" as const };
+        const held = teardown.held(sandboxId, "delete");
+        if (held !== null) return { status: "failed" as const, message: held };
         await boat.delete(sandboxId);
-        await bb.storage.kv.delete(adoptedKey(key)).catch(() => undefined);
+        teardown.succeeded(sandboxId, "delete");
+        await bb.storage.kv.delete(adoptedKey(parsed.key)).catch(() => undefined);
         return { status: "removed" as const };
       } catch (error) {
         if (error instanceof BoatError && (error.status === 404 || error.code === "not_found")) {
+          if (sandboxId !== null) teardown.succeeded(sandboxId, "delete");
           return { status: "removed" as const };
         }
-        return { status: "failed" as const, message: message(error) };
+        return { status: "failed" as const, message: sandboxId === null ? message(error) : teardown.failed(sandboxId, "delete", error) };
       }
     },
   });
