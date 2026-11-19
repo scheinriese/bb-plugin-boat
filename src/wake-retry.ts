@@ -20,7 +20,7 @@ import type { ThreadRow } from "./activity.ts";
 import { ACTIVE_STATES, type BoatApi, type StopReport } from "./boat-api.ts";
 import { clockTime } from "./format.ts";
 import type { TaskStore } from "./store.ts";
-import { tooLargeQuestion } from "./disk-trim.ts";
+import { resizeRefused, tooLargeQuestion } from "./disk-trim.ts";
 import { DISK_CHECK_SCRIPT, daemonRepairQuestion, diagnoseWakeFailure, parseDiskCheck, retriesLater, wakeFailureMessage, type DiskCheckRunner, type RetriedKind, type WakeDiagnosis } from "./wake-diagnosis.ts";
 import { WakeDeferred, type WakePacer, type WakePermit, type WakeWait } from "./wake-pacer.ts";
 import {
@@ -506,8 +506,14 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
         // A failure can come already diagnosed (bb's own update hung there: src/bb-update.ts).
         const diagnosis = diagnosedBy(error) ?? (await diagnoseWakeFailure(error, diskCheck(wake.sandboxId, wake.signal)));
         const hostId = wake.hostId ?? entry?.hostId ?? null;
+        // A resize boat refused onto the smaller size: the resize says so and rolls back (src/sandbox-size.ts).
+        if (diagnosis.kind === "disk-too-large" && resizeRefused(error)) {
+          if (entry !== null) await update(wake.sandboxId, null);
+          throw error;
+        }
         if (byHand(diagnosis.kind)) {
-          // A fix by hand: Needs you once, no retries, nothing held. Too large: never a larger size on its own (it costs more).
+          // A fix by hand: Needs you once, no retries, nothing held. Too large: never a larger size on its own (it costs more);
+          // without a size in boat's words, it was asked for its own (no resize here).
           const kind = diagnosis.kind;
           const next: WakeRetry = { sandboxId: wake.sandboxId, hostId, kind, failures: (entry?.failures ?? 0) + 1, retryAt: null, detail: diagnosis.detail, lastAt: at, firedAt: null, decisionId: entry?.kind === kind ? entry.decisionId : null };
           if (next.decisionId === null) {

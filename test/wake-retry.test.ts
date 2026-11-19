@@ -6,6 +6,7 @@ import { GIVE_UP_AFTER, RETRY_MAX_MS, WAKE_EVENT, createWakeGuard, nextFailure, 
 import type { ThreadRow } from "../src/activity.ts";
 import { makeService } from "./fakes.ts";
 import { BoatError } from "../src/boat.ts";
+import { markResize } from "../src/disk-trim.ts";
 
 const HYDRATOR = "ascii-agents-server[812]: [lazyfs] [ERROR] HYDRATOR FAILED attempt 32 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";
 const KEY_STEP = "Machine bootstrap command failed: grep: /home/user/.ssh/authorized_keys: Input/output error";
@@ -613,4 +614,18 @@ test("too large, with only boat's code: the size in the commands is the sandbox'
   const decision = e.store.decisions({ statuses: ["open"] })[0]!;
   assert.match(decision.question, /Bring it back to Default with one start on Large\?$/);
   assert.equal(decision.context!.split("\n").at(-1), `boat resume ${e.sandboxId} --type default`);
+});
+
+test("a resize onto a smaller size boat refuses: boat's own error back, no Needs you and no plan (the resize rolls back)", async () => {
+  const e = await env();
+  // On a resume with --type, boat answers with its other wording; the resize's resume marks it.
+  const typed = "This sandbox uses 84.1 GB of disk, which does not fit a 'small' machine (76.0 GB). … or resume it as 'large' or larger.";
+  const refused = markResize(new BoatError(typed, { code: "type_too_small" }), "small");
+  await assert.rejects(e.guard.machine(e.wake(), async () => { throw refused; }), (error: unknown) => error === refused);
+  assert.equal(e.store.decisions({ statuses: ["open"] }).length, 0);
+  assert.equal(await e.guard.scheduled(e.sandboxId), null);
+  assert.ok(!e.store.events(e.task.id, 200).some((event) => event.kind === WAKE_EVENT), "no \"won't start\" on the task");
+  // The same words on a plain resume are the sandbox's own size: Needs you.
+  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new BoatError(typed, { code: "type_too_small" }); }), /too large for its size \(Small fits 76\.0 GB\)/);
+  assert.equal(e.store.decisions({ statuses: ["open"] }).length, 1);
 });

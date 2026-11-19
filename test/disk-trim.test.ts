@@ -6,7 +6,8 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BoatApi } from "../src/boat-api.ts";
 import { BoatError, type BoatCli } from "../src/boat.ts";
 import { registerBoatMachine } from "../src/machine.ts";
-import { TRIM_TIMEOUT_MS, diskTooLarge, parseTrim, roomierSize, tooLargeMessage, tooLargeQuestion, trimFreedBlocks, trimScript } from "../src/disk-trim.ts";
+import { TRIM_TIMEOUT_MS, diskTooLarge, markResize, parseTrim, resizeRefused, roomierSize, tooLargeMessage, tooLargeQuestion, trimFreedBlocks, trimScript } from "../src/disk-trim.ts";
+import { classifyWakeText } from "../src/wake-diagnosis.ts";
 import { defaultSettings, makeService } from "./fakes.ts";
 
 // As fstrim -av prints it (the amount seen live on a sandbox that outgrew Small).
@@ -199,17 +200,31 @@ test("Boat's other stops trim first too: the idle stop of a finished headless ta
   assert.deepEqual(env.boat.calls.filter((call) => call === `trim ${task.sandboxId}` || call === `stop ${task.sandboxId}`), [`trim ${task.sandboxId}`, `stop ${task.sandboxId}`]);
 });
 
-// boat's words when the data doesn't fit the sandbox's size (seen live on 19 Nov).
-const TOO_LARGE = "This sandbox uses 84.1 GB of disk, which does not fit any available 'small' machine (largest budget: 76.0 GB)";
+// boat's words when the data doesn't fit the sandbox's size: on a plain resume, and on one with --type (code type_too_small).
+const TOO_LARGE = "This sandbox uses 84.1 GB of disk, which does not fit any available 'small' machine (largest budget: 76.0 GB). …";
+const TOO_LARGE_TYPED = "This sandbox uses 84.1 GB of disk, which does not fit a 'default' machine (76.0 GB). … or resume it as 'small' or larger.";
 
-test("boat's size refusal: the data, the size and what it fits, from its words or its code", () => {
-  assert.deepEqual(diskTooLarge(new BoatError(TOO_LARGE, { code: "boat_failed" })), { usedGb: 84.1, type: "small", budgetGb: 76, detail: TOO_LARGE });
+test("boat's size refusal: the data, the size asked for and what it fits, from both of boat's wordings, with or without its code", () => {
+  for (const code of ["type_too_small", "boat_failed", null]) {
+    const made = (text: string) => (code === null ? new Error(text) : new BoatError(text, { code }));
+    assert.deepEqual(diskTooLarge(made(TOO_LARGE)), { usedGb: 84.1, type: "small", budgetGb: 76, detail: TOO_LARGE }, String(code));
+    assert.deepEqual(diskTooLarge(made(TOO_LARGE_TYPED)), { usedGb: 84.1, type: "default", budgetGb: 76, detail: TOO_LARGE_TYPED }, String(code));
+  }
+  // The text alone is enough for the wake diagnosis too.
+  assert.equal(classifyWakeText(TOO_LARGE), "disk-too-large");
+  assert.equal(classifyWakeText(TOO_LARGE_TYPED), "disk-too-large");
+  assert.equal(classifyWakeText("which does not fit an 'xlarge' machine (600.0 GB)"), "disk-too-large");
   assert.deepEqual(diskTooLarge(new Error(`Resume failed: ${TOO_LARGE}`))?.type, "small");
   assert.deepEqual(diskTooLarge(new BoatError("Requested machine type is too small", { code: "type_too_small" })), { usedGb: null, type: null, budgetGb: null, detail: "Requested machine type is too small" });
   assert.equal(diskTooLarge(new Error("Failed to restore snapshot: Please reduce your request rate.")), null);
   assert.equal(diskTooLarge(new BoatError("not found (404)", { code: "not_found" })), null);
   // Small and Default fit the same, so Large; then XLarge; nothing past it.
   assert.deepEqual((["small", "default", "large", "xlarge", null] as const).map(roomierSize), ["large", "large", "xlarge", null, "large"]);
+  // A resume onto another size (a resize) is marked, so its refusal stays the resize's.
+  const typed = new BoatError(TOO_LARGE_TYPED, { code: "type_too_small" });
+  assert.equal(resizeRefused(typed), false);
+  assert.equal(markResize(typed, "default"), typed);
+  assert.equal(resizeRefused(typed), true);
 });
 
 test("too large for its size: plain words, and Needs you with the exact way back by hand", () => {
@@ -229,6 +244,10 @@ test("too large for its size: plain words, and Needs you with the exact way back
     "boat stop bx_acme01",
     "boat resume bx_acme01 --type small",
   ]);
+  // boat's words with --type: the larger size from the size asked for (Default fits what Small does, so Large).
+  const typed = tooLargeQuestion({ sandboxId: "bx_acme01", size: diskTooLarge(new BoatError(TOO_LARGE_TYPED, { code: "type_too_small" })), type: "large" });
+  assert.equal(typed.question, "Sandbox bx_acme01 won't start: its data is 84.1 GB, too large for its size (Default fits 76.0 GB). Bring it back to Default with one start on Large?");
+  assert.deepEqual(typed.context.split("\n"), [`boat.dev said: ${TOO_LARGE_TYPED}.`, "boat resume bx_acme01 --type large", "boat exec bx_acme01 -- sudo fstrim -av", "boat exec bx_acme01 -- docker image prune -af", "boat stop bx_acme01", "boat resume bx_acme01 --type default"]);
   // Only boat's code: the size from what Boat knows of the sandbox.
   const bare = diskTooLarge(new BoatError("Requested machine type is too small", { code: "type_too_small" }));
   assert.equal(tooLargeMessage(bare), "This sandbox won't start: its data is too large for its size. One start on Large plus a cleanup brings it back to its size; the steps are under Needs you.");
@@ -240,3 +259,4 @@ test("too large for its size: plain words, and Needs you with the exact way back
   assert.equal(biggest.question, "Sandbox bx_big won't start: its data is 900.0 GB, too large for its size (XLarge fits 600.0 GB). No larger size fits it. What now?");
   assert.ok(!biggest.context.includes("boat resume"));
 });
+

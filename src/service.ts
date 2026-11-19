@@ -81,7 +81,7 @@ import type { PreflightInput } from "./setup.ts";
 import type { PlanSize, SizedProject } from "./memory.ts";
 import type { WakePacer, WakePermit } from "./wake-pacer.ts";
 import { SandboxSizes } from "./sandbox-size.ts";
-import { trimFreedBlocks } from "./disk-trim.ts";
+import { markResize, trimFreedBlocks } from "./disk-trim.ts";
 import { completedReview, isReady, resolveTaskStatus, reviewState, type StatusContext, type TaskPublicStatus } from "./board.ts";
 import { taskMarker } from "./format.ts";
 import {
@@ -1037,7 +1037,8 @@ export class BoatService {
           } catch (error) {
             if (type !== null) this.sizes.resumeFailed(sandboxId, error);
             if (signal?.aborted !== true) await owned?.failed();
-            throw error;
+            // A resize reports its own refusal and rolls back: the wake guard asks nothing for it.
+            throw type === null ? error : markResize(error, type);
           }
           await owned?.succeeded();
           this.store.resetPreviewHealthForSandbox(sandboxId);

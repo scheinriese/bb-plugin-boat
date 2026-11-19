@@ -131,8 +131,14 @@ export interface DiskTooLarge {
   detail: string;
 }
 
-/** boat's words for it: "This sandbox uses 84.1 GB of disk, which does not fit any available 'small' machine (largest budget: 76.0 GB)". */
-export const DISK_TOO_LARGE = /does not fit any available\b.{0,40}?\bmachine|\btype_too_small\b/i;
+/**
+ * boat's words for it, on a plain resume and on one with --type (code type_too_small):
+ * "This sandbox uses 84.1 GB of disk, which does not fit any available 'small' machine (largest budget: 76.0 GB). …"
+ * "This sandbox uses 84.1 GB of disk, which does not fit a 'default' machine (76.0 GB). … or resume it as '…' or larger."
+ */
+export const DISK_TOO_LARGE = /does not fit (?:any available|an?) '?[a-z]+'? machine|\btype_too_small\b/i;
+/** The size asked for, and what it fits: "(76.0 GB)" or "(largest budget: 76.0 GB)". */
+const DOES_NOT_FIT = /does not fit (?:any available|an?) '?([a-z]+)'? machine(?: \((?:largest budget:? *)?([\d.]+) ?GB\))?/i;
 
 function gb(text: string | undefined): number | null {
   const value = text === undefined ? NaN : Number(text);
@@ -144,18 +150,31 @@ export function diskTooLarge(error: unknown): DiskTooLarge | null {
   const text = error instanceof Error ? error.message : String(error);
   const code = error instanceof BoatError ? error.code : null;
   if (!DISK_TOO_LARGE.test(text) && code !== "type_too_small") return null;
-  const type = /\bavailable '?([a-z]+)'? machine/i.exec(text)?.[1]?.toLowerCase();
+  const fit = DOES_NOT_FIT.exec(text);
+  const type = fit?.[1]?.toLowerCase();
   const line = text.split("\n").find((entry) => DISK_TOO_LARGE.test(entry)) ?? text;
   const clean = line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+/g, " ").trim();
   return {
     usedGb: gb(/\buses ([\d.]+) ?GB\b/i.exec(text)?.[1]),
     type: isMachineType(type) ? type : null,
-    budgetGb: gb(/\bbudget:? ([\d.]+) ?GB\b/i.exec(text)?.[1]),
+    budgetGb: gb(fit?.[2] ?? /\bbudget:? ([\d.]+) ?GB\b/i.exec(text)?.[1]),
     detail: clean.length > 300 ? `${clean.slice(0, 299)}…` : clean || "type_too_small",
   };
 }
 
-/** A size its data fits: Large for Small and Default (they fit the same), XLarge for Large (null: none larger). */
+/**
+ * A resume onto another size (a resize under way, src/sandbox-size.ts): a
+ * refusal there is the resize's to report, and it rolls back, so no Needs you.
+ */
+export function markResize<T>(error: T, type: string): T {
+  if (error !== null && typeof error === "object") Object.assign(error, { resizeType: type });
+  return error;
+}
+export function resizeRefused(error: unknown): boolean {
+  return error !== null && typeof error === "object" && typeof (error as { resizeType?: unknown }).resizeType === "string";
+}
+
+/** A size its data fits, from the size boat was asked for: Large for Small and Default (they fit the same), XLarge for Large (null: none larger). */
 export function roomierSize(type: MachineType | null): MachineType | null {
   if (type === "xlarge") return null;
   return type === "large" ? "xlarge" : "large";

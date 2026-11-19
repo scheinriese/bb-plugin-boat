@@ -275,3 +275,18 @@ test("a machine resume boat refuses for the sandbox's size: plain words on the m
   assert.equal(decision.context!.split("\n")[1], `boat resume ${resource.sandboxId} --type large`);
   assert.equal((await env.pacer.snapshot()).failures, 0);
 });
+
+test("a machine resize onto a smaller size boat refuses: the resize's own error, no Needs you, nothing larger started", async () => {
+  const env = setup();
+  env.store.addOrchestrator("thr_orch");
+  const resource = await env.stoppedMachine("orch");
+  env.boat.sandboxes.get(resource.sandboxId)!.machineType = "large";
+  // A resize to Small under way (SandboxSizes sets this before it resumes; it's private, so set here).
+  (env.service.sizes as unknown as { pendingTypes: Map<string, string> }).pendingTypes.set(resource.sandboxId, "small");
+  const TYPED = "This sandbox uses 84.1 GB of disk, which does not fit a 'small' machine (76.0 GB). … or resume it as 'large' or larger.";
+  env.boat.resumeError = (type) => (type === "small" ? new BoatError(TYPED, { code: "type_too_small" }) : null);
+  await assert.rejects(env.provider().resume(env.lifecycle(resource)), (error: Error) => error.message === TYPED);
+  assert.deepEqual(resumes(env.boat.calls).map((call) => call.replace(/ ttl=\d+/, "")), [`resume ${resource.sandboxId} type=small`]);
+  assert.equal(env.store.decisions({ statuses: ["open"] }).length, 0, "the resize rolls back and says so itself");
+  assert.equal(await env.wakes.scheduled(resource.sandboxId), null);
+});
