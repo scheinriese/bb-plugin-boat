@@ -381,11 +381,19 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   (its own npm cache in `/tmp`, at most 5 minutes), checks it and swaps it
   in, keeping the old one as `npm.old-<version>-<time>`, then starts bb's
   service again; bb's setup then finds the same build and doesn't install
-  it again. If anything fails, the old bb stays, the sandbox's tasks hear
-  why, bb's own setup goes ahead, and the plugin tries again after 30
-  minutes (doubling up to 6 hours). Without a download there, bb's own
-  update runs; a broken install is moved aside first, so bb installs into
-  an empty folder.
+  it again. If anything fails, bb's service starts again, the sandbox's
+  tasks hear why and what became of the old bb (kept as it was, or, when it
+  isn't complete any more, moved aside so bb's setup installs it again),
+  bb's own setup goes ahead, and the plugin tries again after 30 minutes
+  (doubling up to 6 hours). Without a download there, bb's own update runs;
+  a broken install is moved aside first, so bb installs into an empty
+  folder.
+- **bb's own update is never stopped half way.** When bb's service is
+  updating itself right now (an `npm install` into its folder, in any
+  state), the plugin waits for it to finish, looking again every 10
+  seconds for up to 3 minutes, and then decides; still running after that,
+  it's left to the plugin's wake retries. The install checks once more
+  right before it stops bb's service.
 - **A hung update isn't fought.** When bb's own update already hangs
   there, the plugin stops nothing and installs nothing, and bb's setup
   doesn't run into it. A zombie `npm install` (seen twice, 5 seconds apart)
@@ -395,9 +403,11 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   the plugin's own retries take it, as for a disk still being restored.
 - **Usage limit resets, paced.** At a limit's reset, bb's provider retry
   retries every chat the limit stopped within the same minute. A retry
-  that would wake a Boat sandbox now waits for its own slot, 30 seconds
-  after the one before (2 a minute, the wake pace), with the time on the
-  queued message; bb still owns and sends the retry. On bb 0.49, which
+  that would wake a Boat sandbox now waits for its machine's slot, 30
+  seconds after the one before (2 a minute, the wake pace, and never
+  during the paid resume's or the watchdog's hold), with the time on the
+  queued message; every retry for the same machine goes in its slot. bb
+  still owns and sends the retry. On bb 0.49, which
   asks the sending plugin first (`provider-retry.v1.consent`), the plugin
   declines usage-limit retries of the chats it runs (task chats, reviews,
   orchestrators) and queues each stopped turn again itself for the reset,
