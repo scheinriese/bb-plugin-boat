@@ -8,6 +8,10 @@
 - Back off stopping and deleting a sandbox after boat.dev fails one.
 - Move a sandbox off a boat.dev node that keeps failing its disk, once the plugin itself has seen the same failure for over 15 minutes. It checks first with a test fork, then makes a plain stop, and forces it only if boat refuses it. All this happens on its own only when no chat or task there is busy and no git checkout has unpushed, uncommitted or stashed work. Otherwise it goes under Needs you, with the commands and the last snapshot's time.
 - Recognise bb's daemon broken by an auto-update (an npm zombie, its unit stuck stopping, a module it can't load) and put the repair by hand under Needs you.
+- With automatic paid Claude fallback on, continue Claude chats that stopped at a usage limit once paid Claude is available: a pending provider retry is sent now, a skipped one is retried. Any Claude Code chat on this bb; headless tasks only with the headless opt-in.
+- One automatic resume per stopped turn, at most ten per pass and three seconds apart. Nothing is continued on a stale, rejected or held reading, or after an auth, credit or spend-limit failure.
+- New setting, Resume chats stopped at a limit when paid Claude is available (on by default, only with the fallback on), and a per-project Never continue on paid Claude (`bb boat project set <id> --paid-claude never`).
+- Tasks record the resume, orchestrators hear once per pass which workers continued, and the usage view counts the chats resumed in the last day.
 
 ## 0.2.8
 

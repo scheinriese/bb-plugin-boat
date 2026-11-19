@@ -784,7 +784,9 @@ mobile settings page), says which agent can run now, and why:
 - One line on where new work goes, from the same checks a start makes:
   "Codex is at 99% · Claude is at its weekly limit · paid Claude is
   available, so new work goes to Claude", or "Both are at their limits ·
-  work waits until Thu 01:00".
+  work waits until Thu 01:00". When chats that stopped at a limit continued
+  on paid Claude in the last day, it adds how many: "· 3 stopped chats
+  resumed on paid Claude".
 - Each account in the Account Pooler, with a bar for every limit (model-only
   ones such as Fable are labelled; they don't stop the agent) and when it
   resets, in your local time. Claude accounts add their extra usage:

@@ -60,6 +60,7 @@ inherits the global setting; an explicit native task drawer choice wins.
 | Advanced | Don't start work on paid extra usage | `avoidExtraUsage` | on |
 | Usage limits | Allow automatic paid Claude fallback | `paidClaudeFallback` | off |
 | Usage limits | Include headless Boat tasks in paid fallback | `paidClaudeHeadless` | off |
+| Usage limits | Resume chats stopped at a limit when paid Claude is available | `resumeStoppedChats` | on (only with `paidClaudeFallback`) |
 | Advanced | Claude ↔ Codex switching for orchestrators | `relayEnabled` | off |
 | Advanced | Switch at (% of a usage limit) | `relaySwitchAt` | `90` |
 | Advanced | Switch back below (%) | `relaySwitchBackBelow` | `50` (at least 5 below Switch at) |
@@ -206,3 +207,39 @@ uses included quota or credits. Disable the policy to prevent new automatic
 paid admissions; already running turns are governed by the provider's billing
 controls. The setting persists across restarts and is included in config
 backups. Tests use fake providers, never paid requests.
+
+### Chats stopped at a limit
+
+With the fallback on, `resumeStoppedChats` (on by default) continues Claude
+Code chats whose latest turn stopped at a usage limit (a 429, such as the
+Account Pooler's "No Account Pooler account is currently eligible") once paid
+Claude is available. That uses the same check a start makes. It covers any
+Claude Code chat on this bb, not only Boat tasks, and runs on the relay's
+one-minute check. It also runs a few seconds after a chat stops while paid
+Claude is already available.
+
+- A retry bb's provider-retry plugin queued for the reset is sent now, the same
+  as `bb provider-retry retry`. A retry that goes out within ten minutes anyway
+  is left alone.
+- A turn provider-retry skipped (`beyond-maximum-wait`), or one with no
+  decision a minute after it failed, is retried like `bb thread retry`. A
+  retry that someone cancelled stays cancelled.
+- Not continued: archived chats, chats with a turn running or a message
+  queued, Codex chats, an orchestrator that is being handed over or was taken
+  over, an older chat of a task, and failures that aren't a usage limit
+  (authentication, credits, a spend limit).
+- Each stopped turn is continued once. A continued turn that stops again
+  stays stopped, so a spend limit can't cause a loop. A pass continues at most
+  ten chats, three seconds apart; the rest wait for the next pass.
+- Nothing is continued while the reading is stale, Claude is on hold after a
+  refused turn, or extra usage is rejected.
+- Headless Boat tasks get a follow-up only with `paidClaudeHeadless`.
+- A project can stay on included usage: **Never continue on paid Claude** in
+  its settings, or `bb boat project set <id> --paid-claude never`. It applies
+  to the project's task chats, its orchestrators and every chat in its linked
+  bb project.
+
+A task records a `paid-resume` event. `bb boat relay check` and the plugin
+log list each chat that continued, and an orchestrator gets one message per
+pass naming its workers that continued. The next step line in Settings ›
+Usage limits counts the stopped chats continued on paid Claude in the last day.
