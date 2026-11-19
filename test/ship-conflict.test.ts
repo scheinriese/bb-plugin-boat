@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BoatError } from "../src/providers/boat/cli.ts";
-import { conflictReason, fileList, parseConflictDetail, parseShipOutput, shipScript } from "../src/providers/boat/api.ts";
+import { conflictReason, fileList, parseConflictDetail, parseShipOutput, shipScript } from "../src/sandbox-repos.ts";
 import { notificationText, taskDetail } from "../src/format.ts";
 import type { OrchestratorProject } from "../src/projects.ts";
 import { shipApprovalDto } from "../src/rpc.ts";

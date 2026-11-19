@@ -15,6 +15,7 @@ import {
   type CapacityReport as Limits,
   type CheckoutMode,
   type MachineType,
+  type PrepareOptions,
   type PreparedRepo,
   type SandboxInfo as Sandbox,
   type SandboxProvider,
@@ -24,6 +25,7 @@ import {
 } from "./providers/types.ts";
 import { providerRegistry, type ProviderRegistry, type ProviderSource } from "./providers/registry.ts";
 import { shellQuote } from "./providers/shell.ts";
+import { SANDBOX_REPOS, type RepoSteps } from "./sandbox-repos.ts";
 import { checkPreview, previewLink, previewView, type PreviewView } from "./previews.ts";
 import { KEEP_LIMIT_MS, describeWork, hasWork } from "./activity.ts";
 import { aiProxyPrice, type AiProxyState } from "./providers/boat/api.ts";
@@ -79,7 +81,7 @@ import type { PreflightInput } from "./providers/boat/setup.ts";
 import type { PlanSize, SizedProject } from "./memory.ts";
 import { wakeIds, type WakePacer, type WakePermit } from "./wake-pacer.ts";
 import { SandboxSizes } from "./sandbox-size.ts";
-import { markResize, trimFreedBlocks } from "./disk-trim.ts";
+import { markResize } from "./disk-trim.ts";
 import { completedReview, isReady, resolveTaskStatus, reviewState, type StatusContext, type TaskPublicStatus } from "./board.ts";
 import { taskMarker } from "./format.ts";
 import {
@@ -233,6 +235,8 @@ export interface ServiceHooks {
   preflight?(input: PreflightInput): Promise<void>;
   /** Stored projects (a project's sandbox size); absent: none. */
   projects?(): SizedProject[];
+  /** The plugin's repo steps in a sandbox (src/sandbox-repos.ts; tests swap in fakes). */
+  repos?: RepoSteps;
   /** The plan's sandbox sizes from `boat limits` (fresh: read boat now); null: unknown, boat decides. */
   sizePlan?(options?: { fresh?: boolean }): Promise<PlanSize[] | null>;
   /** The same from the newest reading, never waiting (null: none yet). */
@@ -773,12 +777,15 @@ export class BoatService {
   private readonly hooks: ServiceHooks;
   /** Sandbox sizes and memory (src/sandbox-size.ts). */
   readonly sizes: SandboxSizes;
+  /** Checkout, GitHub login and ship in a sandbox, over its provider's exec (src/sandbox-repos.ts). */
+  readonly repos: RepoSteps;
 
   /** `providers`: the registry, or the boat client alone (boat.dev, the only provider so far). */
   constructor(providers: ProviderSource, store: TaskStore, hooks: ServiceHooks) {
     this.sandboxProviders = providerRegistry(providers);
     this.store = store;
     this.hooks = hooks;
+    this.repos = hooks.repos ?? SANDBOX_REPOS;
     this.sizes = new SandboxSizes({
       sandboxProvider: (sandboxId) => this.sandboxProvider(sandboxId),
       store,
@@ -1020,8 +1027,14 @@ export class BoatService {
    * Before a stop Boat makes on purpose: give boat.dev back the blocks deleted
    * files freed (src/disk-trim.ts). At most a minute; it never fails the stop.
    */
+  /** The provider's step before a planned stop (boat.dev: trim the disk, src/disk-trim.ts); never fails the stop. */
   private async trimBeforeStop(sandboxId: string, signal?: AbortSignal, state?: string, timeoutMs?: number): Promise<void> {
-    await trimFreedBlocks(this.sandboxProvider(sandboxId), sandboxId, { signal, ...(state === undefined ? {} : { state }), ...(timeoutMs === undefined ? {} : { timeoutMs }), log: (line) => this.hooks.log.debug?.(line) });
+    const hooks = this.sandboxProvider(sandboxId).machineHooks?.({
+      warn: (line) => this.hooks.log.warn(line),
+      debug: (line) => this.hooks.log.debug?.(line),
+      ...(timeoutMs === undefined ? {} : { stopStepTimeoutMs: timeoutMs }),
+    });
+    await hooks?.beforeStop?.(sandboxId, { signal, ...(state === undefined ? {} : { state }) });
   }
 
   /**
@@ -1606,6 +1619,11 @@ export class BoatService {
     return links;
   }
 
+  /** Check a repo out in a sandbox with the push guard, on the sandbox's provider (src/sandbox-repos.ts). */
+  prepareRepo(sandboxId: string, repo: string, checkout: CheckoutMode, options: PrepareOptions = {}): Promise<PreparedRepo> {
+    return this.repos.prepareRepo(this.sandboxProvider(sandboxId), sandboxId, repo, checkout, options);
+  }
+
   /**
    * Check out a repo, recording what boat's GitHub login may do there and
    * when it expires; no access or an expired login fails with what to fix.
@@ -1615,10 +1633,10 @@ export class BoatService {
     sandboxId: string,
     repo: string,
     checkout: CheckoutMode,
-    options: Parameters<SandboxProvider["prepareRepo"]>[3],
+    options: PrepareOptions,
   ): Promise<PreparedRepo> {
     try {
-      const prepared = await this.sandboxProvider(sandboxId).prepareRepo(sandboxId, repo, checkout, options);
+      const prepared = await this.prepareRepo(sandboxId, repo, checkout, options);
       if (prepared.canPush !== undefined && prepared.canPush !== null) {
         this.store.setRepoAccess(repo, prepared.canPush ? "write" : "read", null);
         this.store.addEvent(taskId, "access", `GitHub access to ${repo}: ${prepared.canPush ? "can push" : "read only"}`);
@@ -1659,7 +1677,7 @@ export class BoatService {
       if (!options.resume) return;
       sandbox = await this.resumeSandbox(task.sandboxId, options.signal);
     }
-    const login = await this.sandboxProvider(task).githubLogin(task.sandboxId, options.signal).catch(() => ({ valid: null, expiresAt: null }));
+    const login = await this.repos.githubLogin(this.sandboxProvider(task), task.sandboxId, options.signal).catch(() => ({ valid: null, expiresAt: null }));
     if (login.expiresAt) this.store.addEvent(task.id, "github-token", login.expiresAt);
     const expiresAt = login.expiresAt ?? recorded;
     const expired = login.valid === false || (login.valid !== true && Date.parse(expiresAt) <= Date.now()) || Date.parse(expiresAt) - Date.now() < 10 * 60_000;
@@ -4362,7 +4380,7 @@ export class BoatService {
       await options.beforeShip?.(this.store.get(task.id) ?? task, this.shipTargets(task));
       try {
         // Base commits another task of this plugin shipped are named with it.
-        result = await this.sandboxProvider(task).ship(task.sandboxId, this.shipTargets(task), options.signal, (sha) => this.store.shippedBy(sha, task.id));
+        result = await this.repos.ship(this.sandboxProvider(task), task.sandboxId, this.shipTargets(task), options.signal, (sha) => this.store.shippedBy(sha, task.id));
       } catch (error) {
         // Repos that landed before a later one failed are recorded as shipped.
         const partial = (error as { shipped?: ShipResult["shipped"] }).shipped ?? [];

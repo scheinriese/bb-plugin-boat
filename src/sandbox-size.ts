@@ -9,7 +9,6 @@
 // calls it from a few places (marked "sizes" there).
 import type { TaskMemoryDto, ResizeInfoDto } from "../contract-size.ts";
 import { ACTIVE_STATES, type MachineType, type SandboxInfo as Sandbox, type SandboxProvider } from "./providers/types.ts";
-import { trimFreedBlocks } from "./disk-trim.ts";
 import {
   DATA_KIND,
   MEMORY_KIND,
@@ -1078,8 +1077,10 @@ export class SandboxSizes {
         } else {
           const info = await sandboxProvider.findInfo(sandboxId, signal);
           if (info !== null && ACTIVE_STATES.has(info.state)) {
-            // Trimmed first, so boat counts only what's really there: a smaller size may refuse it otherwise (src/disk-trim.ts).
-            await trimFreedBlocks(sandboxProvider, sandboxId, { state: info.state, signal, log: (line) => this.deps.hooks.log.debug?.(line) });
+            // The provider's step first (boat.dev: trimmed, so boat counts only what's really there: a smaller size may refuse it otherwise, src/disk-trim.ts).
+            await sandboxProvider
+              .machineHooks?.({ warn: (line) => this.deps.hooks.log.warn(line), debug: (line) => this.deps.hooks.log.debug?.(line) })
+              .beforeStop?.(sandboxId, { state: info.state, signal });
             await sandboxProvider.stop(sandboxId, signal);
           }
         }

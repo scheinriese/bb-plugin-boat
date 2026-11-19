@@ -87,6 +87,7 @@ export function unavailableProvider(id: string): SandboxProvider {
       previews: "token-link",
       bbEnrollment: false,
       concurrencyUnit: "sandboxes",
+      environments: false,
     },
     // Claims no sandbox id.
     idPattern: /(?!)/,
@@ -108,9 +109,6 @@ export function unavailableProvider(id: string): SandboxProvider {
     exec: refuse,
     execDetached: refuse,
     processes: refuse,
-    prepareRepo: refuse,
-    githubLogin: refuse,
-    ship: refuse,
     host: refuse,
     snapshot: refuse,
     snapshots: refuse,

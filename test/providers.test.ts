@@ -11,6 +11,7 @@ import { ProviderError, isNotFound, type MachineSpec, type SandboxInfo, type San
 import { MACHINE_PROVIDER_ID, createBoatProvider } from "../src/providers/boat/provider.ts";
 import { BOAT_GIT_ENV, type BoatApi } from "../src/providers/boat/api.ts";
 import { BoatError } from "../src/providers/boat/cli.ts";
+import { githubLogin, prepareRepo, ship, shipScript } from "../src/sandbox-repos.ts";
 import { explainBoatError } from "../src/providers/boat/words.ts";
 import { registerSandboxMachine } from "../src/providers/machine.ts";
 import { BoatService } from "../src/service.ts";
@@ -215,9 +216,11 @@ test("each boat provider member makes the boat call the plugin made before", asy
   await boat.exec("bx_1", "ls", { timeoutMs: 5000, signal, login: false });
   await boat.execDetached("bx_1", "sleep 1", signal);
   await boat.processes("bx_1", signal);
-  await boat.prepareRepo("bx_1", "acme/web", { kind: "default-branch" }, { workDir: "t_1" });
-  await boat.githubLogin("bx_1", signal);
-  await boat.ship("bx_1", [{ path: "/home/user/work/web", baseBranch: "main" }], signal, shippedBy);
+  // The repo steps aren't members: they run over the provider's exec as BoatApi ran them (src/sandbox-repos.ts).
+  const targets = [{ path: "/home/user/work/web", baseBranch: "main" }];
+  await assert.rejects(prepareRepo(boat, "bx_1", "acme/web", { kind: "default-branch" }, { workDir: "t_1" }), (error: unknown) => error instanceof BoatError && error.code === "repo_setup_failed");
+  assert.deepEqual(await githubLogin(boat, "bx_1", signal), { valid: null, expiresAt: null });
+  await assert.rejects(ship(boat, "bx_1", targets, signal, shippedBy), (error: unknown) => error instanceof BoatError && error.code === "ship_failed");
   await boat.host("bx_1", 3000, "Fix", signal);
   await boat.snapshot("bx_1", "base-snap", signal);
   await boat.snapshots(signal);
@@ -253,9 +256,9 @@ test("each boat provider member makes the boat call the plugin made before", asy
     ["exec", "bx_1", "ls", { timeoutMs: 5000, signal, login: false }],
     ["execDetached", "bx_1", "sleep 1", signal],
     ["processes", "bx_1", signal],
-    ["prepareRepo", "bx_1", "acme/web", { kind: "default-branch" }, { workDir: "t_1" }],
-    ["githubLogin", "bx_1", signal],
-    ["ship", "bx_1", [{ path: "/home/user/work/web", baseBranch: "main" }], signal, shippedBy],
+    ["exec", "bx_1", calls[22]![2], { timeoutMs: 600_000, signal: undefined }],
+    ["exec", "bx_1", calls[23]![2], { timeoutMs: 30_000, signal }],
+    ["exec", "bx_1", shipScript(targets), { timeoutMs: 300_000, signal }],
     ["host", "bx_1", 3000, "Fix", signal],
     ["snapshot", "bx_1", "base-snap", signal],
     ["snapshots", signal],
@@ -269,6 +272,8 @@ test("each boat provider member makes the boat call the plugin made before", asy
     ["steer", "bx_1", "c_1", "Also add a test", signal],
     ["interrupt", "bx_1", null, undefined],
   ]);
+  assert.match(String(calls[22]![2]), /mkdir -p "\$HOME\/work\/t_1"[\s\S]*BOAT_SETUP path=/);
+  assert.match(String(calls[23]![2]), /BOAT_LOGIN ok/);
 });
 
 test("above the plan's auto-stop cap, the boat provider tries once more at the cap boat names", async () => {
@@ -440,6 +445,7 @@ test("any provider with bb enrollment registers as a bb machine provider, in its
   const sandboxes = new Map<string, SandboxInfo>();
   const deleted: string[] = [];
   const execs: string[] = [];
+  const hooked: string[] = [];
   const machine: MachineSpec = {
     id: "other-sandbox",
     displayName: "Other sandbox",
@@ -473,12 +479,14 @@ test("any provider with bb enrollment registers as a bb machine provider, in its
     }),
     findInfo: async (sandboxId: string) => sandboxes.get(sandboxId) ?? null,
     list: async () => [...sandboxes.values()],
-    // The login scripts are quieted over the provider's exec before bb's setup.
+    // boat.dev's steps (quiet login scripts, trim the disk) are boat's hooks: none run here.
     exec: async (sandboxId: string) => {
       execs.push(sandboxId);
       return { exitCode: 0, stdout: "BOAT_MOTD off", stderr: "" };
     },
     stop: async () => undefined,
+    // Its own step before bb's setup.
+    machineHooks: () => ({ beforeBootstrap: async (sandboxId: string) => void hooked.push(sandboxId) }),
     delete: async (sandboxId: string) => {
       if (!sandboxes.has(sandboxId)) throw new ProviderError("no such sandbox", { code: "not_found" });
       deleted.push(sandboxId);
@@ -517,7 +525,8 @@ test("any provider with bb enrollment registers as a bb machine provider, in its
   assert.deepEqual(created.map((options) => [options.name, options.type, options.gitGuard]), [["bb machine k1", "small", false]]);
   assert.deepEqual(steps.slice(0, 3), ["Creating the other sandbox", "log: other sandbox ot_1", "Installing bb on the sandbox"]);
   assert.deepEqual(executors, ["ot_1"], "bb's bootstrap ran through the provider's executor");
-  assert.deepEqual(execs, ["ot_1"], "the login scripts were quieted through the provider's exec");
+  assert.deepEqual(hooked, ["ot_1"], "the provider's own step ran before bb's setup");
+  assert.deepEqual(execs, [], "no boat.dev step (login scripts) on another provider");
   // Its own sandbox ids and sizes: a boat id or size is refused.
   assert.equal((await definition.create(args("k2", { sandboxId: "bx_1" }))).message, "Other machine options are invalid.");
   assert.equal((await definition.create(args("k3", { type: "large" }))).message, "Other machine options are invalid.");

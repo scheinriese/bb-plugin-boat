@@ -1,11 +1,12 @@
 // A sandbox provider's sandboxes as bb machines: bb threads (for example a
 // cloud orchestrator) can run inside one. bb installs its daemon there
 // through the provider's executor; the daemon connects back over bb Connect.
-// The provider supplies its words and its executor (boat.dev:
-// ./boat/machine.ts registers "Boat sandbox"). Wakes are paced, diagnosed
-// and retried (src/wake-retry.ts), login scripts are quieted before bb's
-// setup (src/login-scripts.ts), and bb is updated safely on a resume
-// (src/bb-update.ts).
+// The provider supplies its words, its executor and its own steps around
+// bb's setup and planned stops (machineHooks; boat.dev: ./boat/machine.ts
+// registers "Boat sandbox", whose hooks quiet the login scripts and trim the
+// disk). Wakes are paced, diagnosed and retried (src/wake-retry.ts), and bb
+// is updated safely on a resume (src/bb-update.ts), where the caller passes
+// those.
 import { setTimeout as delay } from "node:timers/promises";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -14,11 +15,9 @@ import { ACTIVE_STATES, isNotFound, type MachineType, type SandboxProvider, type
 import type { BoatService, BoatSettings } from "../service.ts";
 import { bootstrapExecutor, bootstrapFailureMessage, retryableBootstrap } from "../bootstrap.ts";
 import { directWakes, type WakeGuard } from "../wake-retry.ts";
-import { createLoginQuieter, type QuietLogin } from "../login-scripts.ts";
 import { TeardownBackoff } from "../teardown-backoff.ts";
 import type { HostPrep } from "../bb-update.ts";
 import { stopOutcome } from "../node-move.ts";
-import { trimFreedBlocks } from "../disk-trim.ts";
 
 const resourceSchema = z.object({ sandboxId: z.string(), key: z.string() });
 
@@ -64,8 +63,8 @@ export interface MachineDeps {
   availability: () => Promise<{ status: "available" } | { status: "setup-required"; message: string }>;
   /** Paced wakes, diagnosed failures and Boat's own retries (src/wake-retry.ts); absent: resumes go out at once. */
   wakes?: Pick<WakeGuard, "machine"> & Partial<Pick<WakeGuard, "stopRefused">>;
-  /** Turn off the login message scripts before bb's SSH setup (src/login-scripts.ts). */
-  quietLogins?: (sandboxId: string, signal?: AbortSignal) => Promise<QuietLogin>;
+  /** Before bb's setup on a sandbox that is up, instead of the provider's own step (tests; boat.dev's quiets the login scripts, src/login-scripts.ts). */
+  quietLogins?: (sandboxId: string, signal?: AbortSignal) => Promise<unknown>;
   /**
    * Before bb's setup on a resume: read bb's files, update bb there safely
    * (src/bb-update.ts); forget: the sandbox is deleted. Absent: bb's setup goes straight ahead.
@@ -75,7 +74,7 @@ export interface MachineDeps {
   now?: () => number;
   /** How long a suspend follows a pending stop, and how often it asks (default 5 s, up to 90 s). */
   stopWait?: { pollMs: number; maxMs: number };
-  /** Tests: the trim's budget before a stop (default TRIM_TIMEOUT_MS, a minute). */
+  /** Tests: the budget of the provider's step before a stop (boat.dev's trim: TRIM_TIMEOUT_MS, a minute). */
   trimTimeoutMs?: number;
 }
 
@@ -88,7 +87,13 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
   const { words } = machine;
   const inputs = inputsSchema(provider);
   const wakes = deps.wakes ?? directWakes;
-  const quietLogins = deps.quietLogins ?? createLoginQuieter(provider, (line) => bb.log?.warn?.(line));
+  // The provider's own steps around bb's setup and planned stops (boat.dev: quiet login scripts, trim the disk).
+  const hooks = provider.machineHooks?.({
+    warn: (line) => bb.log?.warn?.(line),
+    debug: (line) => bb.log?.debug?.(line),
+    ...(deps.trimTimeoutMs === undefined ? {} : { stopStepTimeoutMs: deps.trimTimeoutMs }),
+  }) ?? {};
+  const beforeBootstrap = deps.quietLogins ?? hooks.beforeBootstrap ?? (async () => undefined);
   /** After the provider fails a stop or delete, bb's retries wait (src/teardown-backoff.ts). */
   const teardown = new TeardownBackoff(deps.now);
   const stopWait = deps.stopWait ?? { pollMs: 5_000, maxMs: 90_000 };
@@ -153,7 +158,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
         }
         await checkpoint({ sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) });
         report.log(words.created(sandbox.id));
-        await quietLogins(sandbox.id, signal);
+        await beforeBootstrap(sandbox.id, signal);
         report.step("Installing bb on the sandbox");
         const { hostId } = await bb.experimental_machines.bootstrap({
           key,
@@ -194,9 +199,9 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
         const sandbox = await provider.findInfo(sandboxId);
         // Already stopped (for example by the provider's auto-stop) is fine: the disk is kept.
         if (sandbox !== null && ACTIVE_STATES.has(sandbox.state)) {
-          // Blocks deleted files freed first: the provider's snapshot counts them until they're trimmed,
-          // and the sandbox outgrows its size (src/disk-trim.ts). At most a minute; it never fails the stop.
-          await trimFreedBlocks(provider, sandboxId, { state: sandbox.state, signal, log: (line) => bb.log?.debug?.(line), ...(deps.trimTimeoutMs === undefined ? {} : { timeoutMs: deps.trimTimeoutMs }) });
+          // The provider's step first (boat.dev: blocks deleted files freed are trimmed, since its snapshot
+          // counts them until they are and the sandbox outgrows its size, src/disk-trim.ts). Bounded; it never fails the stop.
+          await hooks.beforeStop?.(sandboxId, { state: sandbox.state, signal });
           stop = await provider.stop(sandboxId);
           // The provider usually answers "pending" while it takes the final snapshot: follow that
           // stop a while (its status, never a second stop). It may refuse: it can't snapshot a disk
@@ -236,7 +241,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
           await service.bringUp(sandboxId, signal, { permit: slot });
           woke = true;
         }
-        await quietLogins(sandboxId, signal);
+        await beforeBootstrap(sandboxId, signal);
         // bb's own update can hang on a disk the provider is still restoring: Boat updates it first, safely.
         // No check for a running turn: bb calls resume() only for a suspended machine, so no turn runs
         // there, and stopping bb's unit for the install interrupts nothing.

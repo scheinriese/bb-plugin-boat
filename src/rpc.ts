@@ -849,7 +849,7 @@ export function registerRpc(runtime: Runtime): void {
         if (repo !== null) {
           const always = alwaysProtectedBranches((await service.settings()).extraProtectedBranches);
           try {
-            await service.sandboxProvider(sandbox.id).prepareRepo(
+            await service.prepareRepo(
               sandbox.id,
               repo,
               branch ? { kind: "new-branch", branch, base: null } : { kind: "default-branch" },

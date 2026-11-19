@@ -6,10 +6,11 @@
 //
 // The members are what the plugin does with boat.dev today, named and typed
 // so another provider can offer the same; each says which boat call it
-// replaces. Members marked optional are for later providers: the plugin
-// doesn't call them yet. Making today's members optional (stop, previews, the
-// agent runner, …) comes with the first provider that lacks one, together
-// with what the plugin does without it (docs/research/sandbox-providers.md).
+// replaces (Instabox, src/providers/instabox/, offers all of them too).
+// Members marked optional are what one provider has and another doesn't, or
+// for later providers. The plugin's own repo steps (checkout, GitHub login,
+// ship) aren't members: they run over any provider's exec
+// (src/sandbox-repos.ts).
 import type { MachineExecutor } from "@get-bb/plugin-sdk";
 import type { FidelityUsageDto } from "../../contract-fidelity.ts";
 import type { SandboxUsage } from "../usage.ts";
@@ -17,6 +18,10 @@ import type { Provider } from "../store.ts";
 
 /** The provider a task record without one means: boat.dev, the only one before there were providers. */
 export const DEFAULT_PROVIDER_ID = "boat";
+
+/** Every provider this plugin has an adapter for: where a project's work can run. */
+export const PROVIDER_IDS = ["boat", "instabox"] as const;
+export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 // ------------------------------------------------------------------ sizes and states
 
@@ -70,8 +75,9 @@ export interface SandboxInfo {
 // ------------------------------------------------------------------ capabilities and capacity
 
 /**
- * What a provider's sandboxes are like. The plugin doesn't branch on these
- * yet (boat.dev is the only provider); they record what it assumes.
+ * What a provider's sandboxes are like. The plugin branches on a few
+ * (environments, concurrencyUnit, retentionAfterStopSeconds, idlePause); the
+ * rest record what it assumes.
  */
 export interface SandboxCapabilities {
   os: "linux" | "macos";
@@ -91,6 +97,15 @@ export interface SandboxCapabilities {
   stopKeepsDisk: boolean;
   /** How long the provider keeps a stopped sandbox before deleting it (null: no limit). */
   retentionAfterStopSeconds: number | null;
+  /** Named environments new sandboxes start from (repos, secrets, agent logins): `environment` settings apply. */
+  environments: boolean;
+  /**
+   * The provider pauses a running sandbox on its own once it looks idle
+   * (Instabox: 30 minutes, memory kept). seesBbActivity false: a bb chat
+   * working there doesn't count, so the plugin keeps it awake while a turn
+   * runs (an activity lease).
+   */
+  idlePause?: { minutes: number; seesBbActivity: boolean } | null;
   /** The provider stops a sandbox on its own after a time limit set at create and resume. */
   autoStop: {
     /** It can be moved out while the sandbox runs (extend). */
@@ -104,8 +119,13 @@ export interface SandboxCapabilities {
   previews: "token-link";
   /** bb can run its daemon there (task chats and cloud orchestrators). */
   bbEnrollment: boolean;
-  /** What the account's limit on sandboxes at once counts. */
-  concurrencyUnit: "sandboxes";
+  /**
+   * What the account's limit on sandboxes counts: "sandboxes" the ones up
+   * (a stop frees a slot: the plugin may make room by stopping an idle one);
+   * "kept-sandboxes" every sandbox the account keeps, stopped and paused ones
+   * included (only a delete frees one: the plugin never makes room).
+   */
+  concurrencyUnit: "sandboxes" | "kept-sandboxes";
 }
 
 /** What the provider account allows now (boat limits). */
@@ -433,6 +453,41 @@ export interface MachineSpec {
   };
 }
 
+// ------------------------------------------------------------------ the plugin's own steps, in the provider's words
+
+/**
+ * How a provider words what goes wrong in the plugin's repo steps
+ * (src/sandbox-repos.ts): GitHub access in its sandboxes and how to fix it,
+ * and its own error class (whose explain() words it for the CLI and page).
+ */
+export interface RepoWords {
+  /** The sandbox's GitHub login can't see the repo (or the name is wrong). */
+  cantSee(repo: string): string;
+  /** GitHub refused it (detail: GitHub's answer). */
+  denied(repo: string, detail: string): string;
+  /** The sandbox has no GitHub login (environment: the sandbox's, if any). */
+  noLogin(environment: string | null): string;
+  /** The sandbox's GitHub login expired. */
+  expired(environment: string | null): string;
+  error(message: string, options: { code: string; exitCode?: number | null }): ProviderError;
+}
+
+/** Steps a provider adds around bb's setup and planned stops of its bb machines (./machine.ts). */
+export interface MachineHooks {
+  /** On a sandbox that is up, before bb's setup there (each create and resume); never fails it. */
+  beforeBootstrap?(sandboxId: string, signal?: AbortSignal): Promise<unknown>;
+  /** Before a planned stop of a sandbox that is up (state: what the provider said, if known); never fails it. */
+  beforeStop?(sandboxId: string, options: { state?: string; signal?: AbortSignal }): Promise<unknown>;
+}
+
+/** What the plugin gives a provider's machine hooks. */
+export interface MachineHookContext {
+  warn(line: string): void;
+  debug(line: string): void;
+  /** Tests: the budget of a step before a stop. */
+  stopStepTimeoutMs?: number;
+}
+
 // ------------------------------------------------------------------ the provider
 
 export interface CreateSandboxOptions {
@@ -520,19 +575,6 @@ export interface SandboxExec {
   processes(sandboxId: string, signal?: AbortSignal): Promise<ProcessSample>;
 }
 
-/** The plugin's repo steps in a sandbox (scripts over exec, with the sandbox's GitHub login). */
-export interface SandboxRepos {
-  /** Clone or update a checkout with the push guard; throws plain words when access is missing. */
-  prepareRepo(sandboxId: string, repo: string, checkout: CheckoutMode, options?: PrepareOptions): Promise<PreparedRepo>;
-  githubLogin(sandboxId: string, signal?: AbortSignal): Promise<GithubLogin>;
-  /**
-   * Land a task's commits on their base branches (rebase, push; nothing
-   * forced). Throws code ship_<reason>, with `shipped` and `conflict`.
-   * `shippedBy`: the task of this plugin that shipped a base commit, if any.
-   */
-  ship(sandboxId: string, targets: ShipTarget[], signal?: AbortSignal, shippedBy?: (sha: string) => string | null): Promise<ShipResult>;
-}
-
 /** Ports, saved snapshots, and the provider's environments (secrets, repos, agent logins). */
 export interface SandboxExtras {
   /** boat host <id> <port> --private --title: a link that stays the same across stop and resume. */
@@ -578,9 +620,13 @@ export interface LaterMembers {
   links?(sandboxId: string): { console: string | null; shell: string | null; desktop: string | null };
 }
 
-export interface SandboxProvider extends ProviderAccount, SandboxLifecycle, SandboxExec, SandboxRepos, SandboxExtras, AgentRunner, LaterMembers {
+export interface SandboxProvider extends ProviderAccount, SandboxLifecycle, SandboxExec, SandboxExtras, AgentRunner, LaterMembers {
   /** bb machines in its sandboxes (absent: the provider has no bb enrollment). */
   readonly machine?: MachineSpec;
   /** boat ssh: runs bb's bootstrap commands in a sandbox, with stdin and streamed output (with machine). */
   executor?(sandboxId: string): MachineExecutor;
+  /** Its own steps around bb's setup and planned stops (boat.dev: quiet login scripts, trim the disk); absent: none. */
+  machineHooks?(context: MachineHookContext): MachineHooks;
+  /** Its words for the plugin's repo steps (absent: neutral words, ProviderError). */
+  readonly repoWords?: RepoWords;
 }

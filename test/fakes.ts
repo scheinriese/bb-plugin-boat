@@ -11,15 +11,14 @@ import type Database from "better-sqlite3";
 import type {
   BoatApi,
   ChatEvent,
-  CheckoutMode,
   Conversation,
   Dispatch,
   Limits,
-  PreparedRepo,
-  PrepareOptions,
   ProcessSample,
   Sandbox,
 } from "../src/providers/boat/api.ts";
+import type { CheckoutMode, PreparedRepo, PrepareOptions } from "../src/providers/types.ts";
+import type { RepoSteps } from "../src/sandbox-repos.ts";
 import { BoatError } from "../src/providers/boat/cli.ts";
 import { SIZE_SPECS, isMachineType, type SizedProject } from "../src/memory.ts";
 import type { MachineTypeFacts } from "../src/providers/boat/setup.ts";
@@ -527,7 +526,7 @@ export class FakeBoat {
   ships: { id: string; targets: { path: string; baseBranch: string }[] }[] = [];
   shipError: Error | null = null;
   shipCommits = 2;
-  async ship(id: string, targets: { path: string; baseBranch: string }[]) {
+  async ship(id: string, targets: { path: string; baseBranch: string }[], _signal?: AbortSignal, _shippedBy?: (sha: string) => string | null) {
     this.ships.push({ id, targets });
     if (this.shipError) throw this.shipError;
     return { shipped: this.shipCommits === 0 ? [] : targets.slice(0, 1).map((target) => ({ ...target, sha: "abcdef1234567890", commits: this.shipCommits })) };
@@ -901,6 +900,19 @@ export class FakeChat implements ChatRunner {
   }
 }
 
+/**
+ * The plugin's repo steps on FakeBoat's stand-ins (prepare, login, ship),
+ * as tests had them before the steps ran over any provider's exec. The
+ * scripts themselves are tested with src/sandbox-repos.ts.
+ */
+export function fakeRepos(boat: FakeBoat): RepoSteps {
+  return {
+    prepareRepo: (_provider, id, repo, checkout, options) => boat.prepareRepo(id, repo, checkout, options),
+    githubLogin: (_provider, id) => boat.githubLogin(id),
+    ship: (_provider, id, targets, signal, shippedBy) => boat.ship(id, targets, signal, shippedBy),
+  };
+}
+
 export function defaultSettings(overrides: Partial<BoatSettings> = {}): BoatSettings {
   return {
     boatPath: "",
@@ -986,6 +998,7 @@ export function makeService(
   let plan: MachineTypeFacts[] | null = options.plan ?? null;
   let projects: SizedProject[] = options.projects ?? [];
   const service = new BoatService(boat as unknown as BoatApi, store, {
+    repos: fakeRepos(boat),
     settings: async () => settings,
     lifecycle: new AbortController().signal,
     changed: () => undefined,

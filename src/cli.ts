@@ -281,7 +281,7 @@ export function buildCli(runtime: Runtime) {
             if (repo !== null) {
               const always = alwaysProtectedBranches((await service.settings()).extraProtectedBranches);
               try {
-                checkout = await service.sandboxProvider(sandbox.id).prepareRepo(
+                checkout = await service.prepareRepo(
                   sandbox.id,
                   repo,
                   branch ? { kind: "new-branch", branch, base } : { kind: "default-branch", base },

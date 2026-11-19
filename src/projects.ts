@@ -2,7 +2,8 @@
 // sandboxes can't see local files, so every repo is cloned from GitHub.
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { DEFAULT_PROTECTED_BRANCHES, assertBranch, invalidBranchNames, normalizeRepo, parseBranchList } from "./providers/boat/api.ts";
+import { assertBranch, invalidBranchNames, normalizeRepo, parseBranchList } from "./providers/boat/api.ts";
+import { DEFAULT_PROTECTED_BRANCHES } from "./sandbox-repos.ts";
 import { DEFAULT_PROVIDER_ID, MACHINE_TYPES, type MachineType } from "./providers/types.ts";
 
 /** Longest project instructions (they go into every brief of the project's tasks). */
