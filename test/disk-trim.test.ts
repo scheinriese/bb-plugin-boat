@@ -9,6 +9,7 @@ import { registerBoatMachine } from "../src/machine.ts";
 import { TRIM_TIMEOUT_MS, diskTooLarge, markResize, parseTrim, resizeRefused, roomierSize, tooLargeMessage, tooLargeQuestion, trimFreedBlocks, trimScript } from "../src/disk-trim.ts";
 import { classifyWakeText } from "../src/wake-diagnosis.ts";
 import { defaultSettings, makeService } from "./fakes.ts";
+import { SLOT_TRIM_TIMEOUT_MS } from "../src/service.ts";
 
 // As fstrim -av prints it (the amount seen live on a sandbox that outgrew Small).
 const FSTRIM = "/boot/efi: 0 B (0 bytes) trimmed on /dev/vda15\n/: 124.2 GiB (133352955904 bytes) trimmed on /dev/vda1\n";
@@ -262,3 +263,21 @@ test("too large for its size: plain words, and Needs you with the exact way back
   assert.ok(!biggest.context.includes("boat resume"));
 });
 
+test("the make-room stop, inside the slot lock, trims with a shorter budget (20 s)", async () => {
+  const env = makeService({ settings: { maxActiveSandboxes: 1 } });
+  const trims: { sandboxId: string; script: string; timeoutMs?: number }[] = [];
+  const execBefore = env.boat.exec.bind(env.boat);
+  env.boat.exec = async (sandboxId, script, opts) => {
+    if (isTrim(script)) trims.push({ sandboxId, script, timeoutMs: opts?.timeoutMs });
+    return execBefore(sandboxId, script, opts);
+  };
+  const report = "Done.\n\n=== REPORT ===\nSTATUS: done\nPR: none\nBRANCH: none\nSUMMARY: done\nTESTS: ok\nOPEN QUESTIONS: none\n=== END REPORT ===";
+  const { task: first } = await env.service.launchTask({ title: "Docs", role: "implement", brief: "Write them.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+  env.boat.finish(first.conversationId!, report);
+  await env.service.sweep();
+  await env.service.launchTask({ title: "Fix login", role: "implement", brief: "Fix it.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+  assert.ok(env.boat.calls.includes(`stop ${first.sandboxId}`));
+  assert.equal(SLOT_TRIM_TIMEOUT_MS, 20_000);
+  assert.deepEqual(trims, [{ sandboxId: first.sandboxId!, script: trimScript(SLOT_TRIM_TIMEOUT_MS), timeoutMs: SLOT_TRIM_TIMEOUT_MS - 5_000 }]);
+  assert.equal(trimScript(SLOT_TRIM_TIMEOUT_MS), "timeout -k 5 10 sudo -n fstrim -av 2>&1");
+});

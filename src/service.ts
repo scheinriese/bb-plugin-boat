@@ -567,6 +567,8 @@ export function defaultModelFor(provider: Provider, settings: BoatSettings): str
 /** States a sandbox passes through on its way up or down. */
 const TRANSITIONAL_STATES = new Set(["provisioning", "starting", "stopping", "archiving", "resuming", "pending"]);
 const TRANSITION_WAIT_MS = 120_000;
+/** The trim before the stop that makes room for new work, inside the slot lock (src/disk-trim.ts). */
+export const SLOT_TRIM_TIMEOUT_MS = 20_000;
 
 /**
  * boat resumes it: stopped or archived, or a resume that failed (boat's state
@@ -906,7 +908,8 @@ export class BoatService {
           this.suspendedHosts.add(hostId);
           this.hooks.machineSuspended?.(hostId, false);
         } else {
-          await this.trimBeforeStop(victim.sandbox.id, signal, victim.sandbox.state);
+          // Inside the slot lock: a shorter trim, so creates and resumes wait at most 20 s for it.
+          await this.trimBeforeStop(victim.sandbox.id, signal, victim.sandbox.state, SLOT_TRIM_TIMEOUT_MS);
           await this.boat.stop(victim.sandbox.id, signal);
           this.hooks.sandboxStopped?.(victim.sandbox.id);
         }
@@ -991,8 +994,8 @@ export class BoatService {
    * Before a stop Boat makes on purpose: give boat.dev back the blocks deleted
    * files freed (src/disk-trim.ts). At most a minute; it never fails the stop.
    */
-  private async trimBeforeStop(sandboxId: string, signal?: AbortSignal, state?: string): Promise<void> {
-    await trimFreedBlocks(this.boat, sandboxId, { signal, ...(state === undefined ? {} : { state }), log: (line) => this.hooks.log.debug?.(line) });
+  private async trimBeforeStop(sandboxId: string, signal?: AbortSignal, state?: string, timeoutMs?: number): Promise<void> {
+    await trimFreedBlocks(this.boat, sandboxId, { signal, ...(state === undefined ? {} : { state }), ...(timeoutMs === undefined ? {} : { timeoutMs }), log: (line) => this.hooks.log.debug?.(line) });
   }
 
   /**
