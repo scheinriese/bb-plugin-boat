@@ -17,13 +17,12 @@ compute cost is the minimum plus `hourPrice × elapsed hours after paidUntil`.
 The rate is prorated by elapsed time, without rounding up to another day.
 Storage, tax and other provider charges are not included.
 
-`mac_leases` stores those terms, machine/model, end time/reason, the one-time
-idle notice, `kept`, and a pending `releaseAt`. The historical `day_price`
-column now stores the minimum price. Append-only migrations recover the
-original minimum/rate from this branch's old day-window records, add keep
-and schedule state, and index `mac_lease_tasks(task_id)` without changing
-existing migration indexes. `mac_lease_tasks` retains attachment history and
-CPU/memory reservations. An ended record is never reopened by a list upsert.
+`mac_leases` stores those terms, machine/model, end time/reason, the last
+notice time, `kept`, and a pending `releaseAt`. Because this schema has not
+shipped, its final billing, keep, scheduling and notice columns are created
+directly in one `CREATE TABLE`, without upgrade rewrites. The attachment
+table retains task/resource history and an index on `task_id`. An ended
+record is never reopened by a list upsert.
 
 `between(from, until, now, machineId?)` returns fractional billable lease-days
 and costs per currency. One lease-day is 24 billable hours. The minimum's
@@ -33,7 +32,9 @@ The entire minimum remains payable after early deletion. Sharing tasks
 never multiplies a machine's bill.
 
 `summary(now)` returns a UTC calendar-month allocation and a rolling 30-day
-historical window. The month includes committed minimum time allocated to
+historical window. **This month uses UTC calendar boundaries; lease times
+use the owner's local timezone.** The monthly-suggestion task must preserve
+this distinction. The month includes committed minimum time allocated to
 that month, including its prepaid future portion. The rolling window ends
 at now and excludes future prepaid time. This distinction keeps the full
 current-month minimum visible while exposing historical usage to the next
@@ -44,7 +45,11 @@ per collection RPC; formatting each task performs no additional ledger reads.
 ## Placement and hand-back
 
 The seam for own Mac → enrolled monthly Mac precedes held lease → new lease.
-Only the last two exist here. Held running machines, or stopped machines
+Only the last two exist here. Providers qualify through live `macModels`
+or advertised Mac capabilities, and task reservations use their own `sizes`
+(CPU and memory), with no Instabox-specific routing or resource table in
+shared code. Each connected Mac provider gets its own Runs on choice.
+Held active machines, or stopped machines
 still inside their minimum, are tried first. Open-task resource reservations
 must fit. Dispatch claims do not exclude a held Mac: placement is serialized,
 and each task gets its own checkout/workspace. Moves, resizes and busy review
@@ -62,16 +67,23 @@ The release policy is provider-neutral:
 - Open tasks, including failed or unpushed work, are never automatically deleted.
   Near the minimum end, if all have been idle for the configured threshold
   (default 60 minutes), their orchestrators receive one persisted notice that
-  paid time is ending and subsequent idle time bills per second. Active work
-  continues without a notice. There are no daily renewals or recurring warnings.
-- Closing with `keep_sandbox` (or the keep-on-close setting) persistently exempts
-  the Mac from automatic release before the task's open-work protection is
-  removed. Usage and task lines show that hand-back is off. Manual deletion
-  remains available; later tasks do not silently clear the keep.
+  paid time is ending and subsequent idle time bills per second. Past the
+  minimum, idle tasks get a reminder with running compute cost at most once
+  every 24 hours, persisted across restarts. Active work continues silently;
+  there are no daily billing renewals.
+- Only an explicit `keep_sandbox: true` permanently keeps a clean Mac. The
+  general keep-on-close setting protects a Mac only when there is unshipped
+  work, so clean closed Macs remain eligible for hand-back. Archiving a chat
+  with unshipped work marks its lease kept, and hand-back independently checks
+  every task in attachment history, including cancelled and done tasks.
+  A kept Mac past its minimum sends a running-cost reminder at most once
+  every 24 hours, including when all attached tasks are closed. Usage and
+  task lines show hand-back is off; manual deletion remains available.
 
 Placement and hand-back share a lock. Release rechecks task records, claims,
-bb machine activity and keep state after I/O. Successful lists close missing
-machines; a scheduled release ends at its scheduled time on reconciliation.
+bb machine activity, attachment-history work and keep state after I/O. Successful lists close missing
+machines; a scheduled release ends at its scheduled time on reconciliation,
+and a stopped lease uses the provider's `stoppedAt` rather than the later list time.
 Failed lists never authorize another rental or mark machines gone. Mac
 maintenance and Linux activity leases have independent error handling; no
 held Mac leases means no Mac maintenance/provider-list pass.
@@ -96,3 +108,12 @@ remain separate tasks.
 Sources checked 2026-11-19:
 [macOS machines](https://instabox.sh/docs/machines/macos.md),
 [OpenAPI](https://api.instabox.sh/v1/openapi.json).
+
+## Accepted copy changes from the original designs
+
+The mocks assumed whole-day billing. The implementation keeps their layout
+but uses “Paid until” instead of “Lease ends”, “$X minimum” instead of “$X a
+day”, and “$/h after 24 h minimum” on task lines (using the provider's actual
+minimum length). “Bills per second”, “Release scheduled” and “Kept · hand-back
+off” describe the later states. Orchestrator messages report paid-time expiry
+and running compute cost, rather than daily lease renewals.
