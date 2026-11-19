@@ -700,7 +700,7 @@ test("a bb machine lookup that fails isn't \"no machine\": no stop under a chat 
   assert.equal(w.stopsMade(), 0, w.calls.join(", "));
   assert.equal(report.target.hostLookupFailed, "bb couldn't read machine host_1");
   assert.equal(report.steps[0]!.text, "Boat couldn't look up bb's machine on sandbox bx_demo1 (bb couldn't read machine host_1), so it can't tell whether a chat runs there.");
-  assert.match(report.needsYou!.reason, /, but Boat couldn't look up bb's machine there \(bb couldn't read machine host_1\), so it can't see whether a chat is mid-turn, and a stop would interrupt it\./);
+  assert.match(report.needsYou!.reason, /, but Boat couldn't look up bb's machine there \(bb couldn't read machine host_1\), so it can't see whether a chat is mid-turn\. Nothing was stopped: try again in a minute, or wake it by a chat's id\.$/);
   assert.ok(!w.calls.includes("forget bx_demo1"));
 
   // A healthy disk: nothing to stop, but bb's machine and its chats can't be brought back or checked: Needs you, no update, no service restart.

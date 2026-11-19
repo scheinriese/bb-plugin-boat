@@ -977,7 +977,15 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       const busy = busyThere(await machineNow(), first.threads);
       if (busy.length > 0) {
         const running = deps.tasks.liveSandboxTasks(id).filter((task) => task.status === "running" || task.status === "starting");
-        stop(`${capitalize(why)}, but ${busy.join("; ")}, and a stop would interrupt it. Let it finish or interrupt it, then wake the sandbox again.`, [...running.map((task) => `bb boat task interrupt ${task.id}`), again], { step: "restart" });
+        // Only unknowns (Boat couldn't see the chats): nothing to finish or interrupt, just to look at again.
+        const unknownOnly = busy.every((reason) => reason.startsWith("Boat couldn't"));
+        stop(
+          unknownOnly
+            ? `${capitalize(why)}, but ${busy.join("; ")}. Nothing was stopped: try again in a minute, or wake it by a chat's id.`
+            : `${capitalize(why)}, but ${busy.join("; ")}, and a stop would interrupt it. Let it finish or interrupt it, then wake the sandbox again.`,
+          [...running.map((task) => `bb boat task interrupt ${task.id}`), again],
+          { step: "restart" },
+        );
       }
       const safe = moveDecision(first);
       if (dry) {
