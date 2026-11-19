@@ -11,7 +11,9 @@
 // - A resume boat refuses for the sandbox's size goes under Needs you, with
 //   the way back by hand (src/wake-retry.ts). Boat never starts it on a
 //   larger size itself: that costs more.
-import { ACTIVE_STATES, type BoatApi } from "./boat-api.ts";
+import { ACTIVE_STATES, type BoatApi, type MachineType } from "./boat-api.ts";
+import { BoatError } from "./boat.ts";
+import { SIZE_SPECS, isMachineType } from "./memory.ts";
 
 /** The trim's whole budget, from the look at the sandbox to fstrim's answer; the stop goes ahead after it whatever happens. */
 export const TRIM_TIMEOUT_MS = 60_000;
@@ -115,4 +117,103 @@ export async function trimFreedBlocks(
     // A call still running is cancelled (its answer no longer matters).
     controller.abort();
   }
+}
+
+/** boat refused a resume because the sandbox's data doesn't fit its size. */
+export interface DiskTooLarge {
+  /** The sandbox's data as boat counts it, in GB (null: boat didn't say). */
+  usedGb: number | null;
+  /** The size boat tried to start it on (null: boat didn't say). */
+  type: MachineType | null;
+  /** The most that size fits, in GB (null: boat didn't say). */
+  budgetGb: number | null;
+  /** boat's words (one line, clipped). */
+  detail: string;
+}
+
+/** boat's words for it: "This sandbox uses 84.1 GB of disk, which does not fit any available 'small' machine (largest budget: 76.0 GB)". */
+export const DISK_TOO_LARGE = /does not fit any available\b.{0,40}?\bmachine|\btype_too_small\b/i;
+
+function gb(text: string | undefined): number | null {
+  const value = text === undefined ? NaN : Number(text);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** The size refusal in a failed resume (null: it's something else). */
+export function diskTooLarge(error: unknown): DiskTooLarge | null {
+  const text = error instanceof Error ? error.message : String(error);
+  const code = error instanceof BoatError ? error.code : null;
+  if (!DISK_TOO_LARGE.test(text) && code !== "type_too_small") return null;
+  const type = /\bavailable '?([a-z]+)'? machine/i.exec(text)?.[1]?.toLowerCase();
+  const line = text.split("\n").find((entry) => DISK_TOO_LARGE.test(entry)) ?? text;
+  const clean = line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+/g, " ").trim();
+  return {
+    usedGb: gb(/\buses ([\d.]+) ?GB\b/i.exec(text)?.[1]),
+    type: isMachineType(type) ? type : null,
+    budgetGb: gb(/\bbudget:? ([\d.]+) ?GB\b/i.exec(text)?.[1]),
+    detail: clean.length > 300 ? `${clean.slice(0, 299)}…` : clean || "type_too_small",
+  };
+}
+
+/** A size its data fits: Large for Small and Default (they fit the same), XLarge for Large (null: none larger). */
+export function roomierSize(type: MachineType | null): MachineType | null {
+  if (type === "xlarge") return null;
+  return type === "large" ? "xlarge" : "large";
+}
+
+const label = (type: MachineType | null) => (type === null ? "its size" : SIZE_SPECS[type].label);
+const amount = (value: number) => `${value.toFixed(1)} GB`;
+
+/** "its data is 84.1 GB, too large for its size (Small fits 76.0 GB)". */
+function tooLargeFacts(size: DiskTooLarge | null, type: MachineType | null): string {
+  const data = size?.usedGb != null ? `its data is ${amount(size.usedGb)},` : "its data is";
+  const fits = size?.budgetGb != null && type !== null ? ` (${label(type)} fits ${amount(size.budgetGb)})` : "";
+  return `${data} too large for its size${fits}`;
+}
+
+/** The machine's failure message, and the line on the sandbox's tasks. */
+export function tooLargeMessage(size: DiskTooLarge | null): string {
+  const type = size?.type ?? null;
+  const bigger = roomierSize(type);
+  const facts = tooLargeFacts(size, type);
+  const what = `This sandbox won't start: ${facts}.`;
+  if (bigger === null) return `${what} No larger size fits it; it's under Needs you.`;
+  return `${what} One start on ${label(bigger)} plus a cleanup brings it back to ${label(type)}; the steps are under Needs you.`;
+}
+
+/**
+ * Needs you: bring it back by hand. Start it once on a larger size, trim
+ * the disk and remove unused Docker images, stop it (boat snapshots what's
+ * left), then start it on its own size again. `type`: its size, when boat's
+ * words don't name it.
+ */
+export function tooLargeQuestion(input: { sandboxId: string; size: DiskTooLarge | null; type?: MachineType | null }) {
+  const id = input.sandboxId;
+  const type = input.size?.type ?? input.type ?? null;
+  const bigger = roomierSize(type);
+  const facts = `Sandbox ${id} won't start: ${tooLargeFacts(input.size, type)}.`;
+  const said = `boat.dev said: ${input.size?.detail ?? "(no details)"}.`;
+  if (bigger === null) {
+    return {
+      question: `${facts} No larger size fits it. What now?`,
+      recommendation: "Report it to boat.dev with the error below.",
+      options: ["Report it to boat.dev", "Leave it for now"],
+      context: said,
+      shortLabel: "Sandbox too large for its size",
+    };
+  }
+  const steps = [
+    `boat resume ${id} --type ${bigger}`,
+    `boat exec ${id} -- sudo fstrim -av`,
+    `boat exec ${id} -- docker image prune -af`,
+    `boat stop ${id}`,
+    `boat resume ${id} --type ${type ?? "<its size>"}`,
+  ];
+  return {
+    question: `${facts} Bring it back to ${label(type)} with one start on ${label(bigger)}?`,
+    recommendation: `Usually most of it is space from deleted files, which boat.dev still counts until the disk is trimmed. One start on ${label(bigger)} plus a cleanup brings it back to ${label(type)}: resume it on ${label(bigger)}, trim its disk and remove unused Docker images, stop it, then resume it on ${label(type)} (the commands are below). Boat doesn't do this on its own: a start on ${label(bigger)} costs more.`,
+    options: ["I'll do it", "Leave it for now"],
+    context: `${said}\n${steps.join("\n")}`,
+    shortLabel: "Sandbox too large for its size",
+  };
 }

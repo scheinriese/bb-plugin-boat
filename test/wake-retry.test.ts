@@ -5,6 +5,7 @@ import { WakePacer } from "../src/wake-pacer.ts";
 import { GIVE_UP_AFTER, RETRY_MAX_MS, WAKE_EVENT, createWakeGuard, nextFailure, retryDelayMs, type MachineWake } from "../src/wake-retry.ts";
 import type { ThreadRow } from "../src/activity.ts";
 import { makeService } from "./fakes.ts";
+import { BoatError } from "../src/boat.ts";
 
 const HYDRATOR = "ascii-agents-server[812]: [lazyfs] [ERROR] HYDRATOR FAILED attempt 32 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";
 const KEY_STEP = "Machine bootstrap command failed: grep: /home/user/.ssh/authorized_keys: Input/output error";
@@ -567,4 +568,49 @@ test("the repair names this machine's own daemon unit when the sandbox has sever
   const steps = e.store.decisions({ statuses: ["open"] })[0]!.context!.split("\n").slice(1);
   assert.equal(steps[0], "D=~/.bb-machines/bb.example.com");
   assert.equal(steps.at(-1), "systemctl --user reset-failed bb-host-daemon-bb-example-com-host_orch1.service && systemctl --user start bb-host-daemon-bb-example-com-host_orch1.service");
+});
+
+test("a sandbox too large for its size: Needs you with the way back once, no retries, no hold, nothing on a larger size", async () => {
+  const e = await env();
+  const TOO_LARGE = "This sandbox uses 84.1 GB of disk, which does not fit any available 'small' machine (largest budget: 76.0 GB)";
+  const refused = async () => { throw new BoatError(TOO_LARGE, { code: "type_too_small" }); };
+  const execs = e.boat.execs.length;
+  await assert.rejects(e.guard.machine(e.wake(), refused), /^Error: This sandbox won't start: its data is 84\.1 GB, too large for its size \(Small fits 76\.0 GB\)\. One start on Large plus a cleanup brings it back to Small; the steps are under Needs you\.$/);
+  assert.equal(e.boat.execs.length, execs, "nothing runs there: no look over exec");
+  const decision = e.store.decisions({ statuses: ["open"] })[0]!;
+  assert.equal(decision.shortLabel, "Sandbox too large for its size");
+  assert.equal(decision.orchestratorThreadId, "thr_orch");
+  assert.match(decision.question, new RegExp(`^Sandbox ${e.sandboxId} won't start: its data is 84\\.1 GB`));
+  assert.deepEqual(decision.context!.split("\n").slice(1), [
+    `boat resume ${e.sandboxId} --type large`,
+    `boat exec ${e.sandboxId} -- sudo fstrim -av`,
+    `boat exec ${e.sandboxId} -- docker image prune -af`,
+    `boat stop ${e.sandboxId}`,
+    `boat resume ${e.sandboxId} --type small`,
+  ]);
+  // The task hears it too.
+  assert.ok(e.store.events(e.task.id).some((event) => event.kind === WAKE_EVENT && /too large for its size/.test(event.text)));
+  const plan = (await e.guard.scheduled(e.sandboxId))!;
+  assert.equal(plan.kind, "disk-too-large");
+  assert.equal(plan.retryAt, null);
+  assert.equal(await e.guard.tick(), null, "no retry of its own");
+  assert.equal((await e.pacer.snapshot()).failures, 0, "boat refused at once: the account's wakes don't pause");
+  // bb asks again: told again, but no second item, and boat is asked (nothing held).
+  let asked = 0;
+  await assert.rejects(e.guard.machine(e.wake(), async () => { asked += 1; return refused(); }), /too large for its size/);
+  assert.equal(asked, 1);
+  assert.equal(e.store.decisions({ statuses: ["open"] }).length, 1);
+  assert.ok(!e.boat.calls.some((call) => /type=(large|xlarge)/.test(call)), "never started on a larger size on its own");
+  // Brought back by hand: the next resume goes ahead and the plan ends.
+  assert.equal(await e.guard.machine(e.wake(), async () => "up"), "up");
+  assert.equal(await e.guard.scheduled(e.sandboxId), null);
+});
+
+test("too large, with only boat's code: the size in the commands is the sandbox's own", async () => {
+  const e = await env();
+  e.boat.sandboxes.get(e.sandboxId)!.machineType = "default";
+  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new BoatError("Requested machine type is too small", { code: "type_too_small" }); }), /its data is too large for its size/);
+  const decision = e.store.decisions({ statuses: ["open"] })[0]!;
+  assert.match(decision.question, /Bring it back to Default with one start on Large\?$/);
+  assert.equal(decision.context!.split("\n").at(-1), `boat resume ${e.sandboxId} --type default`);
 });
