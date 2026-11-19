@@ -12,7 +12,7 @@ import type { Task } from "../src/store.ts";
 import type { TurnEventRow } from "../src/steer-retry.ts";
 import { WakePacer } from "../src/wake-pacer.ts";
 import { classifyDiskCheck, parseDiskCheck } from "../src/wake-diagnosis.ts";
-import { WAKE_RETRY_REASON, createSandboxWaker, routeWake, startCheck, wakeText, type WakeFindings, type WakeReport } from "../src/sandbox-wake.ts";
+import { WAKE_MARKERS_KEY, WAKE_RETRY_REASON, createSandboxWaker, finishedNotice, routeWake, startCheck, wakeText, type SandboxWakeDeps, type WakeFindings, type WakeMarker, type WakeReport } from "../src/sandbox-wake.ts";
 import { composeProtocol } from "../src/protocol.ts";
 import { makeService } from "./fakes.ts";
 
@@ -72,8 +72,35 @@ function failedTurn(message = "Machine is paused", category = "host-offline"): T
   ] as TurnEventRow[];
 }
 
+interface WorldOptions {
+  state?: string;
+  host?: Partial<MachineState> | null;
+  /** bb's machine record can't be read: it throws, or bb says nothing (null). */
+  hostRead?: "throw" | "null";
+  limits?: Partial<Limits> | null;
+  disk?: string[];
+  /** The disk check once the sandbox was stopped and started (default: the disk list goes on). */
+  diskAfterStop?: string;
+  checkouts?: string;
+  bb?: string;
+  serverVersion?: string;
+  stop?: (call: number, force: boolean) => StopReport | Error;
+  stopStatus?: (call: number) => StopReport;
+  execDown?: boolean;
+  /** The test fork: its snapshot reads fine, can't be read, or boat can't make one. */
+  fork?: "healthy" | "unreadable" | Error;
+  /** Resumes wait for this (a long run). */
+  gate?: Promise<void>;
+  /** A resume fails (call number from 1). */
+  bringUpFails?: (call: number) => Error | null;
+  lifecycle?: AbortSignal;
+  /** After the sandbox's stop, the plugin goes away (its lifetime ends). */
+  abortAfterStop?: AbortController;
+  timing?: SandboxWakeDeps["timing"];
+}
+
 /** One fake account: a sandbox, bb's machine on it, its chats, and a clock. */
-function world(options: { state?: string; host?: Partial<MachineState> | null; limits?: Partial<Limits> | null; disk?: string[]; checkouts?: string; bb?: string; serverVersion?: string; stop?: (call: number, force: boolean) => StopReport | Error; stopStatus?: (call: number) => StopReport; execDown?: boolean } = {}) {
+function world(options: WorldOptions = {}) {
   let clock = T0;
   const now = () => clock;
   const sleep = async (ms: number) => {
@@ -85,6 +112,13 @@ function world(options: { state?: string; host?: Partial<MachineState> | null; l
   const disks = [...(options.disk ?? [HEALTHY_DISK])];
   let stops = 0;
   let statuses = 0;
+  let resumes = 0;
+  const host: MachineState | null = options.host === null ? null : { phase: "suspended", connected: false, message: null, ...options.host };
+  const machine = { state: host };
+  /** bb's service started on a machine that isn't suspended: it connects. */
+  const serviceUp = () => {
+    if (machine.state !== null && machine.state.phase !== "suspended") machine.state = { ...machine.state, phase: "active", connected: true };
+  };
   const boat = {
     async findInfo(id: string) {
       return sandboxes.get(id) ?? null;
@@ -100,15 +134,21 @@ function world(options: { state?: string; host?: Partial<MachineState> | null; l
         if (options.execDown) throw new Error("boat exec timed out");
         return { exitCode: 0, stdout: "BOAT_EXEC_OK\n", stderr: "" };
       }
-      if (script.includes("BOAT_DISK_END")) return { exitCode: 0, stdout: disks.length > 1 ? disks.shift()! : disks[0]!, stderr: "" };
+      if (script.includes("BOAT_DISK_END")) {
+        if (id === "bx_fork1") return { exitCode: 0, stdout: options.fork === "unreadable" ? UNREADABLE_DISK : HEALTHY_DISK, stderr: "" };
+        if (options.diskAfterStop !== undefined && stops > 0) return { exitCode: 0, stdout: options.diskAfterStop, stderr: "" };
+        return { exitCode: 0, stdout: disks.length > 1 ? disks.shift()! : disks[0]!, stderr: "" };
+      }
       if (script.includes("BOAT_GIT_SCAN_END")) return { exitCode: 0, stdout: options.checkouts ?? CLEAN_CHECKOUTS, stderr: "" };
       if (script.includes("host-package-download/bb-app.tgz") && script.includes("say end")) return { exitCode: 0, stdout: options.bb ?? inspection(), stderr: "" };
       if (script.includes("BOAT_BBUP")) {
         calls.push("bb install");
+        serviceUp();
         return { exitCode: 0, stdout: "BOAT_BBUP done 0.50.1 active\n", stderr: "" };
       }
       if (script.includes("BOAT_UNIT")) {
         calls.push("restart bb service");
+        serviceUp();
         return { exitCode: 0, stdout: "BOAT_UNIT active\n", stderr: "" };
       }
       return { exitCode: 0, stdout: "", stderr: "" };
@@ -120,6 +160,7 @@ function world(options: { state?: string; host?: Partial<MachineState> | null; l
       const said = options.stop?.(stops, force) ?? { status: "completed", stopId: `stop_${stops}`, forced: force ? true : null };
       if (said instanceof Error) throw said;
       if (said.status === "completed" || (force && said.forced === true)) sandboxes.set(id, sandbox(id, "stopped"));
+      if (sandboxes.get(id)?.state === "stopped") options.abortAfterStop?.abort();
       return said;
     },
     async stopStatus(id: string, stopId: string): Promise<StopReport> {
@@ -132,72 +173,93 @@ function world(options: { state?: string; host?: Partial<MachineState> | null; l
     async lastSnapshotAt() {
       return "2026-11-19T00:41:00.000Z";
     },
+    async fork(id: string) {
+      calls.push(`fork ${id}`);
+      if (options.fork instanceof Error) throw options.fork;
+      sandboxes.set("bx_fork1", sandbox("bx_fork1", "idle"));
+      return { id: "bx_fork1" };
+    },
+    async delete(id: string) {
+      calls.push(`delete ${id}`);
+      sandboxes.delete(id);
+    },
   };
   const pacer = new WakePacer({ now, sleep: async (ms) => sleep(ms) });
   const paid: boolean[] = [];
-  const host: MachineState | null = options.host === null ? null : { phase: "suspended", connected: false, message: null, ...options.host };
-  const machine = { state: host };
   const threads = new Map<string, ThreadFacts>([["thr_task", thread("thr_task", { status: "error" })]]);
   const queues = new Map<string, QueuedFacts[]>();
   const events = new Map<string, TurnEventRow[]>([["thr_task", failedTurn()]]);
   const task = { id: "t_1a2b3c4d", title: "Fix the login test", status: "failed", sandboxId: "bx_demo1", hostId: "host_1", threadId: "thr_task", runner: "chat", repoPath: "/home/user/work/web", delivery: "pr", unshipped: null, orchestratorThreadId: null } as unknown as Task;
-  const kv = new Map<string, unknown>();
-  const updater = createBbUpdater({
-    boat,
-    kv: { get: async <T>(key: string) => kv.get(key) as T | undefined, set: async (key, value) => void kv.set(key, value) },
-    serverVersion: async () => options.serverVersion ?? "0.50.1",
-    now,
-    sleep: async (ms) => sleep(ms),
-  });
-  const waker = createSandboxWaker({
-    boat,
-    async bringUp(id, _signal, wake) {
-      calls.push("resume");
-      paid.push(wake.paidStart);
-      assert.ok(wake.permit, "a wake slot from the pacer");
-      sandboxes.set(id, sandbox(id, "idle"));
-    },
-    pacer,
-    guard: {
-      forget: async (id) => void calls.push(`forget ${id}`),
-      moving: async () => false,
-    },
-    quietLogins: async () => {
-      calls.push("login scripts off");
-      return "disabled";
-    },
-    updateBb: updater,
-    serverVersion: async () => options.serverVersion ?? "0.50.1",
-    tasks: {
-      resolve: (id) => (task.id.startsWith(id) && id.length >= 4 ? task : null),
-      liveSandboxTasks: (id) => (id === "bx_demo1" ? [task] : []),
-      hostForSandbox: () => null,
-    },
-    threads: {
-      get: async (id) => threads.get(id) ?? null,
-      stopEvents: async (id) => events.get(id) ?? [],
-      queued: async (id) => queues.get(id!) ?? [],
-      sendQueued: async (id, rowId) => void calls.push(`send queued ${id} ${rowId}`),
-      retry: async (id, requestId, reason) => {
-        assert.equal(reason, WAKE_RETRY_REASON);
-        calls.push(`retry ${id} ${requestId}`);
+  const store = new Map<string, unknown>();
+  const kv = { get: async <T>(key: string) => store.get(key) as T | undefined, set: async (key: string, value: unknown) => void store.set(key, structuredClone(value)) };
+  const updater = createBbUpdater({ boat, kv, serverVersion: async () => options.serverVersion ?? "0.50.1", now, sleep: async (ms) => sleep(ms) });
+  const notices: { threadId: string; text: string }[] = [];
+  const told: string[] = [];
+  const makeWaker = (extra: Partial<SandboxWakeDeps> = {}) =>
+    createSandboxWaker({
+      boat,
+      async bringUp(id, _signal, wake) {
+        resumes++;
+        calls.push("resume");
+        paid.push(wake.paidStart);
+        assert.ok(wake.permit, "a wake slot from the pacer");
+        if (options.gate) await options.gate;
+        const failure = options.bringUpFails?.(resumes) ?? null;
+        if (failure !== null) throw failure;
+        sandboxes.set(id, sandbox(id, "idle"));
       },
-    },
-    machines: {
-      hostOf: async (environmentId) => (environmentId === "env_1" ? "host_1" : null),
-      sandboxOf: async (hostId) => (hostId === "host_1" ? "bx_demo1" : null),
-      hostFor: async (id) => (id === "bx_demo1" && machine.state !== null ? "host_1" : null),
-      host: async () => (machine.state === null ? null : { ...machine.state }),
-      resume: async (hostId) => {
-        calls.push(`bb machine resume ${hostId}`);
-        machine.state = { phase: "active", connected: true, message: null };
+      pacer,
+      guard: {
+        forget: async (id) => void calls.push(`forget ${id}`),
+        moving: async () => false,
       },
-      threadsOn: async () => [{ id: "thr_task", status: threads.get("thr_task")?.status ?? "idle", title: "Fix the login test" }],
-    },
-    now,
-    sleep: async (ms) => sleep(ms),
-  });
-  return { waker, calls, scripts, sandboxes, pacer, paid, machine, threads, queues, events, stopsMade: () => stops, now };
+      quietLogins: async () => {
+        calls.push("login scripts off");
+        return "disabled";
+      },
+      updateBb: updater,
+      serverVersion: async () => options.serverVersion ?? "0.50.1",
+      tasks: {
+        resolve: (id) => (task.id.startsWith(id) && id.length >= 4 ? task : null),
+        liveSandboxTasks: (id) => (id === "bx_demo1" ? [task] : []),
+        hostForSandbox: () => null,
+      },
+      threads: {
+        get: async (id) => threads.get(id) ?? null,
+        stopEvents: async (id) => events.get(id) ?? [],
+        queued: async (id) => queues.get(id!) ?? [],
+        sendQueued: async (id, rowId) => void calls.push(`send queued ${id} ${rowId}`),
+        retry: async (id, requestId, reason) => {
+          assert.equal(reason, WAKE_RETRY_REASON);
+          calls.push(`retry ${id} ${requestId}`);
+        },
+      },
+      machines: {
+        hostOf: async (environmentId) => (environmentId === "env_1" ? "host_1" : null),
+        sandboxOf: async (hostId) => (hostId === "host_1" ? "bx_demo1" : null),
+        hostFor: async (id) => (id === "bx_demo1" && (machine.state !== null || options.hostRead !== undefined) ? "host_1" : null),
+        host: async () => {
+          if (options.hostRead === "throw") throw new Error("bb didn't answer");
+          if (options.hostRead === "null") return null;
+          return machine.state === null ? null : { ...machine.state };
+        },
+        resume: async (hostId) => {
+          calls.push(`bb machine resume ${hostId}`);
+          machine.state = { phase: "active", connected: true, message: null };
+        },
+        threadsOn: async () => [{ id: "thr_task", status: threads.get("thr_task")?.status ?? "idle", title: "Fix the login test" }],
+      },
+      kv,
+      notify: async (threadId, text) => void notices.push({ threadId, text }),
+      tell: (_sandboxId, text) => void told.push(text),
+      now,
+      sleep: async (ms) => sleep(ms),
+      ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
+      ...(options.timing ? { timing: options.timing } : {}),
+      ...extra,
+    });
+  const waker = makeWaker();
+  return { waker, makeWaker, calls, scripts, sandboxes, pacer, paid, machine, threads, queues, events, store, notices, told, stopsMade: () => stops, now, advance: (ms: number) => void (clock += ms) };
 }
 
 function stepTexts(report: WakeReport, status?: string): string[] {
@@ -256,7 +318,7 @@ test("a dry run on a stuck sandbox looks and prints the plan, and changes nothin
   // Only read-only looks ran.
   assert.ok(scripts.every((script) => !/systemctl --user (stop|restart|start)|chmod|mv -- |npm install|pkill/.test(script)), "read-only scripts only");
   const planned = stepTexts(report, "planned");
-  assert.ok(planned.some((text) => /^Stop it with a plain boat stop \(a fresh snapshot, nothing lost\), follow that stop, and start it again/.test(text) && /force it: nothing there could be lost/.test(text)), planned.join("\n"));
+  assert.ok(planned.some((text) => /^Stop it with a plain boat stop \(a fresh snapshot, nothing lost\), follow that stop, and start it again/.test(text) && /check the snapshot with a test fork on another node first, and force the stop only if it reads fine there \(nothing there could be lost\)/.test(text)), planned.join("\n"));
   assert.ok(planned.some((text) => /^Start it again: an included boat start \(58 left this hour\), with a wake slot free now\.$/.test(text)));
   assert.ok(planned.some((text) => text === "Retry chat thr_task (\"Fix the login test\")'s failed turn."));
   const text = wakeText(report);
@@ -271,7 +333,7 @@ test("a dry run on a stopped sandbox plans the paced resume, then the rest", asy
   assert.deepEqual(calls, []);
   assert.equal(sandboxes.get("bx_demo1")?.state, "stopped");
   assert.match(stepTexts(report, "planned")[0]!, /^Resume it: an included boat start \(58 left this hour\), with a wake slot free now\.$/);
-  assert.ok(stepTexts(report, "planned").some((text) => /bb machine resume|resume bb's machine/i.test(text)));
+  assert.ok(stepTexts(report, "planned").some((text) => /^Then bb's machine: resume it if it's suspended \(bb's own resume updates bb safely and starts it\)/.test(text)));
 });
 
 // ---------------------------------------------------------------- the paced resume
@@ -282,7 +344,8 @@ test("a stopped sandbox is resumed through the wake pacer, then bb's machine and
   assert.equal(report.outcome, "awake", wakeText(report));
   assert.equal((await pacer.snapshot()).taken.length, 1, "one wake slot taken");
   assert.deepEqual(paid, [false], "an included start");
-  assert.deepEqual(calls, ["forget bx_demo1", "resume", "login scripts off", "restart bb service", "bb machine resume host_1", "retry thr_task req_1"]);
+  // bb has the machine suspended: only `bb machine resume` (its own resume restarts bb there), no service restart first.
+  assert.deepEqual(calls, ["forget bx_demo1", "resume", "login scripts off", "bb machine resume host_1", "retry thr_task req_1"]);
   assert.equal(machine.state?.connected, true);
   assert.match(wakeText(report), /It's back\.$/);
 });
@@ -314,7 +377,12 @@ test("each diagnosis leads to its action; a stuck or unreadable disk to a stop a
   };
   assert.equal(route(findings(UNREADABLE_DISK)), "disk-unreadable → stop-and-start");
   assert.equal(route(findings("BOAT_DISK fail .profile Input/output error\nBOAT_DISK_END\n")), "disk-unreadable → stop-and-start");
-  assert.equal(route(findings("BOAT_DSTATE 812 request_wait_answer fuse_simple_request node /usr/bin/node\nBOAT_DISK ok .profile\nBOAT_DISK_END\n")), "disk-stuck → stop-and-start");
+  // A read waiting on the disk is waited for first; still stuck after the wait: a stop and a start.
+  const fuse = findings("BOAT_DSTATE 812 request_wait_answer fuse_simple_request node /usr/bin/node\nBOAT_DISK ok .profile\nBOAT_DISK_END\n");
+  assert.equal(route(fuse), "disk-stuck → wait-for-disk");
+  assert.equal(`${routeWake(fuse, { waited: true }).problem} → ${routeWake(fuse, { waited: true }).action}`, "disk-stuck → stop-and-start");
+  const hydrating = findings("BOAT_HYDRATING [SNAPSHOT-INC] lazy volume hydration in progress (61%)\nBOAT_DISK ok .profile\nBOAT_DISK_END\n");
+  assert.equal(routeWake(hydrating, { waited: true }).action, "none", "only still hydrating, its files reading fine: it goes on");
   assert.equal(route(findings("BOAT_HYDRATING [SNAPSHOT-INC] lazy volume hydration in progress (61%)\nBOAT_DISK ok .profile\nBOAT_DISK_END\n")), "disk-restoring → wait-for-disk");
   assert.equal(route({ execFailed: "boat exec timed out", diagnosis: null, disk: null, bb: null }), "exec-unreachable → stop-and-start");
   assert.equal(route(findings("BOAT_MOTD_HUNG 4242 95 run-parts --lsbsysinit /etc/update-motd.d\nBOAT_DISK ok .profile\nBOAT_DISK_END\n")), "ssh-login-hang → login-scripts");
@@ -373,7 +441,7 @@ test("boat refuses the plain stop and nothing could be lost: forced, started aga
   // Nothing mid-turn there: the chat is idle.
   const report = await waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "awake", wakeText(report));
-  assert.deepEqual(calls.filter((call) => call.startsWith("stop")), ["stop", "stop --force"]);
+  assert.deepEqual(calls.filter((call) => /^(stop|fork|delete)/.test(call)), ["stop", "fork bx_demo1", "delete bx_fork1", "stop --force"], "a test fork of its snapshot before the force");
   assert.ok(stepTexts(report, "done").some((text) => /Stopped it with --force/.test(text)));
 });
 
@@ -426,7 +494,7 @@ test("still unreadable after a stop and a start: Needs you, no second restart", 
   const report = await waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "needs-you");
   assert.equal(stopsMade(), 1);
-  assert.match(report.needsYou!.reason, /still after a stop and a start\. Leave it stopped until boat\.dev has recovered/);
+  assert.match(report.needsYou!.reason, /still after a stop and a start\. Leave it until boat\.dev has recovered/);
 });
 
 test("an exec that never answers is a stuck sandbox: stopped and started again", async () => {
@@ -447,13 +515,22 @@ test("nothing kills processes by pattern", async () => {
 
 // ---------------------------------------------------------------- bb's update
 
-test("bb older than the server, with the server's download there: the safe update, then bb's machine", async () => {
-  const { waker, calls } = world({ state: "stopped", bb: inspection({ installed: "0.49.0", tgz: "0.50.1" }) });
+test("bb older than the server, with the server's download there: the safe update on a disconnected machine, then it connects", async () => {
+  const { waker, calls } = world({ state: "stopped", host: { phase: "active", connected: false }, bb: inspection({ installed: "0.49.0", tgz: "0.50.1" }) });
   const report = await waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "awake", wakeText(report));
   assert.ok(stepTexts(report, "done").includes("Updated bb on the sandbox from 0.49.0 to 0.50.1."));
-  // The install started bb's service again: no second restart.
-  assert.deepEqual(calls.filter((call) => /bb install|restart bb service|bb machine resume/.test(call)), ["bb install", "bb machine resume host_1"]);
+  // The install started bb's service again: no second restart, and bb didn't have it suspended: no machine resume.
+  assert.deepEqual(calls.filter((call) => /bb install|restart bb service|bb machine resume/.test(call)), ["bb install"]);
+  assert.ok(stepTexts(report, "done").includes("bb's machine host_1 is connected."), wakeText(report));
+});
+
+test("on a machine bb has suspended, bb's own resume updates bb: only `bb machine resume`, nothing restarted before it", async () => {
+  const { waker, calls } = world({ state: "stopped", bb: inspection({ installed: "0.49.0", tgz: "0.50.1" }) });
+  const report = await waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "awake", wakeText(report));
+  assert.deepEqual(calls.filter((call) => /bb install|restart bb service|bb machine resume/.test(call)), ["bb machine resume host_1"]);
+  assert.ok(stepTexts(report).includes("bb 0.49.0 on this sandbox is older than the server's 0.50.1: bb's machine resume updates it safely itself, before it starts bb."), wakeText(report));
 });
 
 test("bb older than the server without a download: said, with the npm registry as a manual step only", async () => {
@@ -461,7 +538,7 @@ test("bb older than the server without a download: said, with the npm registry a
   const report = await waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "awake", wakeText(report));
   assert.ok(!calls.includes("bb install"));
-  const note = stepTexts(report).find((text) => text.startsWith("No download of bb 0.50.1 is on the sandbox"));
+  const note = stepTexts(report).find((text) => text.includes("No download of bb 0.50.1 is on the sandbox, so Boat can't install the server's build there itself."));
   assert.ok(note, wakeText(report));
   assert.match(note!, /To install it by hand from the npm registry instead \(a manual step; Boat doesn't run it\)/);
   assert.match(note!, /npm install -g .* --prefix "\$D\/npm\.new" bb-app@0\.50\.1/);
@@ -563,6 +640,197 @@ test("the service's bringUp gets past its own start limit only for an allowed pa
   boat.limitsValue = { ...boat.limitsValue, startsLeftToday: 0 };
   await assert.rejects(service.bringUp("bx_s"), (error: unknown) => error instanceof TaskError && error.code === "boat_start_limit");
   assert.equal((await service.bringUp("bx_s", undefined, { paidStart: true })).state, "idle");
+});
+
+// ---------------------------------------------------------------- review follow-ups
+
+const FUSE_DISK = "BOAT_DSTATE 812 request_wait_answer fuse_simple_request node /usr/bin/node\nBOAT_DISK ok .profile\nBOAT_DISK_END\n";
+const REFUSED = (_call: number, force: boolean): StopReport => (force ? { status: "completed", stopId: "stop_f", forced: true } : { status: "failing", stopId: "stop_1", forced: null, error: "Final snapshot failed; stop aborted to protect unsaved data" });
+
+test("a read waiting on the disk is waited for, not stopped: one D-state look, then healthy, gives no stop at all", async () => {
+  const { waker, calls, stopsMade } = world({ state: "idle", host: { phase: "active", connected: true }, disk: [FUSE_DISK, HEALTHY_DISK], stop: REFUSED });
+  const report = await waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "awake", wakeText(report));
+  assert.equal(stopsMade(), 0, calls.join(", "));
+  assert.ok(!calls.some((call) => /^(stop|fork)/.test(call)));
+  assert.ok(stepTexts(report).some((text) => /^A read on this sandbox's disk is waiting for boat\.dev to restore it/.test(text)));
+  assert.ok(stepTexts(report).includes("Waiting up to 2 minutes for boat.dev to restore the disk."));
+});
+
+test("reads still stuck after the disk wait: then a stop and a start", async () => {
+  // Stuck for the whole wait (every look), healthy once it was stopped and started.
+  const { waker, calls, stopsMade, now } = world({ state: "idle", disk: [FUSE_DISK], diskAfterStop: HEALTHY_DISK });
+  const report = await waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "awake", wakeText(report));
+  assert.equal(stopsMade(), 1);
+  assert.ok(stepTexts(report).some((text) => /^Reads on this sandbox's disk are still stuck after the wait/.test(text)), wakeText(report));
+  assert.ok(calls.indexOf("stop") < calls.lastIndexOf("resume"));
+  assert.ok(now() - T0 >= 2 * 60_000, "only after the 2-minute wait");
+});
+
+test("bb's machine Boat can't read counts as connected: a chat mid-turn there means Needs you, not a stop", async () => {
+  for (const hostRead of ["throw", "null"] as const) {
+    const w = world({ state: "idle", disk: [UNREADABLE_DISK], hostRead });
+    w.threads.set("thr_task", thread("thr_task", { status: "active" }));
+    const report = await w.waker.run({ target: "bx_demo1" });
+    assert.equal(report.outcome, "needs-you", hostRead);
+    assert.equal(w.stopsMade(), 0, hostRead);
+    assert.match(report.needsYou!.reason, /, but the chat "Fix the login test" is mid-turn, and a stop would interrupt it\./);
+    assert.ok(!w.calls.includes("forget bx_demo1"), "a run that stops before acting keeps Boat's retry plan");
+  }
+});
+
+test("before any force, a test fork of the snapshot: unreadable or unknown, and nothing is forced", async () => {
+  // The fork can't read the snapshot either: forcing would keep only that.
+  let w = world({ state: "idle", disk: [UNREADABLE_DISK], stop: REFUSED, fork: "unreadable" });
+  let report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.ok(!w.calls.includes("stop --force"));
+  assert.deepEqual(w.calls.filter((call) => /^(fork|delete)/.test(call)), ["fork bx_demo1", "delete bx_fork1"], "the test fork is deleted");
+  assert.match(report.needsYou!.reason, /a test fork from the same snapshot couldn't read its files either: forcing the stop would keep only that snapshot/);
+  assert.equal(w.sandboxes.get("bx_demo1")?.state, "idle", "still running: nothing was stopped");
+  assert.equal(((w.store.get(WAKE_MARKERS_KEY) as Record<string, WakeMarker>).bx_demo1)?.restart, null, "no stop is left for the recovery");
+
+  // boat can't make the fork: unknown, so nothing is forced; the user gets the force command and what it loses.
+  w = world({ state: "idle", disk: [UNREADABLE_DISK], stop: REFUSED, fork: new Error("boat fork failed") });
+  report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.ok(!w.calls.includes("stop --force"));
+  assert.match(report.needsYou!.reason, /Boat couldn't check its snapshot with a test fork, so it won't force the stop: without a clear "it reads fine", nothing is forced\. Forcing the stop keeps only 00:41 UTC/);
+  assert.deepEqual(report.needsYou!.commands, ["boat stop bx_demo1 --force", "bb boat sandbox wake bx_demo1"]);
+
+  // A fork and a start need two starts: with one left, nothing is forked or forced.
+  w = world({ state: "idle", disk: [UNREADABLE_DISK], stop: REFUSED, limits: { startsLeftThisHour: 1 } });
+  report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.ok(!w.calls.some((call) => /^(fork|stop --force)/.test(call)));
+  assert.match(report.needsYou!.reason, /Forcing it needs a test fork of its snapshot first and then a start, but fewer than 2 included boat starts are left this hour/);
+});
+
+test("start check: partial limits with paid extra starts not known to be off could be paid", () => {
+  const partial = { ...LIMITS, startsLeftToday: null, startsLeftThisHour: null, startsLeftThisMinute: null, nextStartDollars: null };
+  for (const extra of [true, null]) {
+    const check = startCheck({ ...partial, extraStartsEnabled: extra }, false);
+    assert.equal(check.ok === false && check.code, "start_unknown", String(extra));
+    assert.match(check.ok === false ? check.text : "", /could be a paid extra start\. Run it again with --allow-paid-start once the user agrees\./);
+    assert.deepEqual(startCheck({ ...partial, extraStartsEnabled: extra }, true), { ok: true, paid: true, text: "a boat start that may be a paid extra start, allowed with --allow-paid-start" });
+  }
+  // Known included: paid extra starts off, a price of 0, both counts, or no start limit at all.
+  assert.equal(startCheck({ ...partial, extraStartsEnabled: false }, false).ok, true);
+  assert.deepEqual(startCheck({ ...partial, extraStartsEnabled: true, nextStartDollars: 0 }, false), { ok: true, paid: false, text: "an included boat start" });
+  assert.equal(startCheck({ ...partial, extraStartsEnabled: true, startsLeftToday: 5, startsLeftThisHour: 3 }, false).ok, true);
+  assert.equal(startCheck({ ...partial, extraStartsEnabled: true, startsLeftToday: 5 }, false).ok, false, "only today's count");
+  assert.equal(startCheck({ ...partial, extraStartsEnabled: null, startsUnlimited: true }, false).ok, true);
+  // Used up with paid extra starts unknown: could be paid.
+  const usedUp = startCheck({ ...LIMITS, startsLeftThisHour: 0, extraStartsEnabled: null }, false);
+  assert.equal(usedUp.ok === false && usedUp.code, "paid_start");
+  assert.match(usedUp.ok === false ? usedUp.text : "", /so this start may be a paid extra start/);
+  // Two starts (a test fork and the start).
+  assert.equal(startCheck({ ...LIMITS, startsLeftThisHour: 1 }, false, 2).ok, false);
+  assert.equal(startCheck({ ...LIMITS, startsLeftThisHour: 2 }, false, 2).ok, true);
+});
+
+test("one wake per sandbox: a second one while the first runs gets its progress and stops nothing", async () => {
+  let open: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  const w = world({ state: "idle", disk: [UNREADABLE_DISK, HEALTHY_DISK], gate });
+  const first = w.waker.run({ target: "bx_demo1" });
+  // Let the first one stop the sandbox and wait in its start.
+  for (let index = 0; index < 50 && !w.calls.includes("resume"); index++) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(w.calls.includes("resume"), w.calls.join(", "));
+  const second = await w.waker.run({ target: "t_1a2b3c4d" });
+  assert.equal(second.outcome, "running");
+  assert.match(second.steps.at(-1)!.text, /^A wake is already running for this sandbox \(started 09:00 UTC\): this is how far it got\.$/);
+  const viaWake = await w.waker.wake({ target: "thr_task", waitMs: 0 });
+  assert.equal(viaWake.outcome, "running");
+  // A dry run doesn't look meanwhile either.
+  assert.equal((await w.waker.run({ target: "bx_demo1", dryRun: true })).outcome, "running");
+  open();
+  assert.equal((await first).outcome, "awake");
+  assert.equal(w.stopsMade(), 1, "only the first wake stopped it");
+});
+
+test("a wake in another plugin load (a fresh heartbeat in kv) isn't run twice", async () => {
+  const w = world({ state: "idle", disk: [UNREADABLE_DISK, HEALTHY_DISK] });
+  const marker: WakeMarker = { instance: "another-load", startedAt: T0 - 60_000, heartbeatAt: T0 - 10_000, restart: null, report: null };
+  w.store.set(WAKE_MARKERS_KEY, { bx_demo1: marker });
+  const report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "running");
+  assert.match(report.steps[0]!.text, /^A wake is already running for this sandbox in another load of the plugin/);
+  assert.equal(w.stopsMade(), 0);
+  // Its heartbeat gone stale: this load runs it.
+  w.advance(5 * 60_000);
+  assert.equal((await w.makeWaker().run({ target: "bx_demo1" })).outcome, "awake");
+});
+
+test("a long wake: the call returns after its wait with the progress so far, --status shows it, and the chat hears when it's done", async () => {
+  let open: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  const w = world({ state: "stopped", gate });
+  const running = await w.waker.wake({ target: "thr_task", waitMs: 5, threadId: "thr_orch" });
+  assert.equal(running.outcome, "running");
+  assert.equal(running.tellsThreadId, "thr_orch");
+  assert.ok(running.steps.some((step) => step.text === "It's stopped."), "the progress so far");
+  assert.match(wakeText(running), /^Waking sandbox bx_demo1 \(still running; started 09:00 UTC\)\./);
+  assert.match(wakeText(running), /Still running\. Check on it with `bb boat sandbox wake bx_demo1 --status`; this chat gets a \[boat\] message when it's done\.$/);
+  assert.equal((await w.waker.status("bx_demo1")).outcome, "running");
+  assert.equal(w.notices.length, 0, "not told before it ends");
+  open();
+  for (let index = 0; index < 200 && w.notices.length === 0; index++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(w.notices.length, 1);
+  assert.equal(w.notices[0]!.threadId, "thr_orch");
+  assert.match(w.notices[0]!.text, /^\[boat\] The wake of sandbox bx_demo1 \(`bb boat sandbox wake thr_task`\) is done: it's back\./);
+  const done = await w.waker.status("thr_task");
+  assert.equal(done.outcome, "awake");
+  assert.equal(finishedNotice(done), w.notices[0]!.text);
+  await assert.rejects(w.makeWaker().status("bx_other1"), (error: unknown) => error instanceof TaskError && error.code === "no_wake");
+});
+
+test("the time bound: no stop goes out without time left to start it again", async () => {
+  const w = world({ state: "idle", disk: [UNREADABLE_DISK], timing: { maxMs: 10 * 60_000, restartBudgetMs: 15 * 60_000 } });
+  const report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.equal(w.stopsMade(), 0);
+  assert.match(report.needsYou!.reason, /too long to stop the sandbox and still start it again within its 10 minutes, so nothing was stopped\.$/);
+});
+
+test("a wake cut off between its stop and its start leaves a marker, and the next pass starts the sandbox again", async () => {
+  const reload = new AbortController();
+  const w = world({ state: "idle", disk: [UNREADABLE_DISK, HEALTHY_DISK], lifecycle: reload.signal, abortAfterStop: reload });
+  const report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.match(report.needsYou!.reason, /^The wake was cut off \(the plugin stopped or reloaded\)/);
+  assert.equal(w.sandboxes.get("bx_demo1")?.state, "stopped");
+  assert.ok((w.store.get(WAKE_MARKERS_KEY) as Record<string, WakeMarker>).bx_demo1?.restart, "the stop is on record");
+  // The next plugin load's pass (the same kv): it starts the sandbox again, with a wake slot.
+  const next = w.makeWaker({ lifecycle: new AbortController().signal });
+  assert.deepEqual(await next.recover(), ["bx_demo1"]);
+  assert.equal(w.sandboxes.get("bx_demo1")?.state, "idle");
+  assert.equal((w.store.get(WAKE_MARKERS_KEY) as Record<string, WakeMarker>).bx_demo1?.restart, null);
+  assert.match(w.told.at(-1)!, /A wake stopped this sandbox and was cut off before it started it again, so Boat started it again now\./);
+  assert.deepEqual(await next.recover(), [], "once");
+});
+
+test("a start after the stop that fails leaves the marker; the recovery tries again later", async () => {
+  const w = world({ state: "idle", disk: [UNREADABLE_DISK, HEALTHY_DISK], bringUpFails: (call) => (call === 1 ? new Error("Resume failed: restore error") : null) });
+  const report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.match(report.needsYou!.reason, /Boat stopped it for this wake and keeps trying to start it again \(every few minutes\)/);
+  assert.equal(w.sandboxes.get("bx_demo1")?.state, "stopped");
+  w.advance(60_000);
+  assert.deepEqual(await w.waker.recover(), ["bx_demo1"]);
+  assert.equal(w.sandboxes.get("bx_demo1")?.state, "idle");
+});
+
+test("Boat's retry plan stays when a wake stops before acting (no start left), and goes once it acts", async () => {
+  let w = world({ state: "stopped", limits: { startsLeftThisHour: 0 } });
+  let report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.ok(!w.calls.includes("forget bx_demo1"));
+  w = world({ state: "stopped" });
+  report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(w.calls.filter((call) => call === "forget bx_demo1").length, 1);
+  assert.ok(w.calls.indexOf("forget bx_demo1") < w.calls.indexOf("resume"));
 });
 
 // ---------------------------------------------------------------- the protocol

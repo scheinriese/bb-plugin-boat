@@ -105,6 +105,8 @@ export interface Limits {
   autoStopCapHours: number | null;
   /** Included starts left this minute (null: not said). */
   startsLeftThisMinute?: number | null;
+  /** boat says the plan has no start limit. */
+  startsUnlimited?: boolean | null;
   /** boat's paid extra starts ("keep going", `boat billing extra-starts`) are on; the plugin never turns them on. */
   extraStartsEnabled?: boolean | null;
   /** What the next start costs, in dollars (0: included; null: not said). */
@@ -855,6 +857,7 @@ export class BoatApi {
       checkoutRequired: bool(raw.checkoutRequired) ?? false,
       autoStopCapHours: autoStopCapFromLimits(raw),
       startsLeftThisMinute: num(rec(starts?.minute)?.remaining),
+      startsUnlimited: bool(starts?.unlimited),
       extraStartsEnabled: bool(rec(raw.keepGoing)?.enabled),
       nextStartDollars: num(raw.nextStartDollars),
     };
