@@ -1,13 +1,18 @@
 // bb project sources for task chats on boat sandboxes.
 //
-// bb opens a chat in a checkout on a machine (an "unmanaged" workspace) only
-// when the chat's project has a local_path source for that machine; otherwise
-// it refuses with 409 "No project source configured for this host". Personal
-// chats don't need one (they get a personal workspace). Before a task chat
-// opens in another project, Boat adds a source for the sandbox's checkout, or
-// reuses a matching one, and removes the ones it added once no open task uses
-// them. A source Boat didn't add is never touched: only the ones in Boat's
-// own registry (plugin kv) are ever deleted.
+// A task chat opens in its checkout on the sandbox's machine, an "unmanaged"
+// workspace. bb places that with its built-in "project-checkout" environment
+// provider on the existing machine, and that provider requires a project
+// checkout: outside Personal, bb refuses the chat with 409 "No project source
+// configured for this host" unless the project has a local_path source for
+// that machine. Personal chats get a personal workspace and need none.
+//
+// bb keeps at most one source per project and machine, so any source the
+// project has on the machine will do. Before a task chat opens in another
+// project, Boat reuses it, or adds one for the task's checkout, and removes
+// the ones it added once nothing on that machine needs them. Only sources in
+// Boat's own registry (plugin kv) are ever deleted: never a source Boat
+// didn't add, and never a project's last source (bb refuses that).
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
 /** Registry rows: one per source Boat added (plugin kv). */
@@ -16,13 +21,13 @@ export const PROJECT_SOURCE_KEY_PREFIX = "projectSource:";
 /** bb's answer to a chat in a checkout on a machine its project has no source for. */
 export const NO_PROJECT_SOURCE = /no project source configured/i;
 
-/** A source Boat added to a bb project, and the tasks whose chats use it. */
+/** A source Boat added to a bb project, and the tasks whose chats opened with it. */
 export interface OwnProjectSource {
   sourceId: string;
   projectId: string;
   hostId: string;
   path: string;
-  /** Tasks that opened (or reused) it: it goes once none of them is open. */
+  /** Tasks that added or reused it (the task on the machine may not be recorded there yet). */
   taskIds: string[];
   /** Epoch ms. */
   createdAt: number;
@@ -34,22 +39,25 @@ export interface EnsuredProjectSource {
   created: boolean;
   /** Boat added it (now or for an earlier task): Boat removes it later. False: someone else's, never removed. */
   own: boolean;
+  /** bb made it the project's default (it does for a project's first source). */
+  isDefault: boolean;
 }
 
+/** removed: gone from bb and the registry; in-use: still needed; last-source: bb won't delete a project's last source (kept, tried again later); not-ours: not in Boat's registry, untouched. */
+export type RemovedProjectSource = "removed" | "in-use" | "last-source" | "not-ours";
+
 export interface ProjectSources {
-  /**
-   * The project's local_path source for this machine and path: an existing
-   * one when it matches, else a new one (never marked default).
-   */
+  /** The project's local_path source for this machine: the one it has, else a new one for this path (never asked to be the default). */
   ensure(args: { taskId: string; projectId: string; hostId: string; path: string }): Promise<EnsuredProjectSource>;
   /** The sources Boat added and still tracks. */
   own(): Promise<OwnProjectSource[]>;
   /**
    * Delete a source Boat added and stop tracking it (one bb no longer lists
-   * counts as removed). Returns false without touching bb for a source that
-   * isn't in Boat's registry.
+   * counts as removed). inUse is asked again just before, with the latest
+   * registry row: true keeps it. Sources not in Boat's registry are never
+   * touched.
    */
-  remove(sourceId: string): Promise<boolean>;
+  remove(sourceId: string, inUse?: (row: OwnProjectSource) => boolean): Promise<RemovedProjectSource>;
 }
 
 interface BbSource {
@@ -62,12 +70,6 @@ interface BbSource {
 
 function keyFor(sourceId: string): string {
   return `${PROJECT_SOURCE_KEY_PREFIX}${sourceId}`;
-}
-
-/** Paths compare without trailing slashes ("/a/b/" is "/a/b"). */
-export function samePath(a: string, b: string): boolean {
-  const trim = (path: string) => (path.length > 1 ? path.replace(/\/+$/, "") : path);
-  return trim(a) === trim(b);
 }
 
 function isNotFound(error: unknown): boolean {
@@ -102,60 +104,78 @@ export function createProjectSources(bb: BbPluginApi): ProjectSources {
     const row = await kv().get<unknown>(keyFor(sourceId));
     return isOwnSource(row) ? row : null;
   };
+  // One change to sources and the registry at a time: a reuse that adds a task
+  // never races a removal that read the row before it.
+  let tail: Promise<unknown> = Promise.resolve();
+  const serial = <T>(work: () => Promise<T>): Promise<T> => {
+    const run = tail.then(work, work);
+    tail = run.catch(() => undefined);
+    return run;
+  };
 
   return {
-    async ensure({ taskId, projectId, hostId, path }) {
-      const existing = (await listSources(bb, projectId)).find(
-        (source) => (source.type ?? "local_path") === "local_path" && source.hostId === hostId && typeof source.path === "string" && samePath(source.path, path),
-      );
-      if (existing !== undefined) {
-        const own = await read(existing.id);
-        if (own !== null && !own.taskIds.includes(taskId)) await kv().set(keyFor(own.sourceId), { ...own, taskIds: [...own.taskIds, taskId] });
-        return { sourceId: existing.id, created: false, own: own !== null };
-      }
-      // The request takes no default flag: a new source is never made the project's default.
-      const added = (await bb.sdk.projects.sources.add({ projectId, type: "local_path", hostId, path })) as unknown;
-      const source = ((added as { source?: unknown } | null)?.source ?? added) as { id?: unknown; path?: unknown } | null;
-      if (typeof source?.id !== "string") throw new Error("bb did not return the new project source's id");
-      const row: OwnProjectSource = {
-        sourceId: source.id,
-        projectId,
-        hostId,
-        path: typeof source.path === "string" ? source.path : path,
-        taskIds: [taskId],
-        createdAt: Date.now(),
-      };
-      await kv().set(keyFor(row.sourceId), row);
-      return { sourceId: row.sourceId, created: true, own: true };
-    },
+    ensure: ({ taskId, projectId, hostId, path }) =>
+      serial(async () => {
+        const existing = (await listSources(bb, projectId)).find((source) => (source.type ?? "local_path") === "local_path" && source.hostId === hostId);
+        if (existing !== undefined) {
+          const own = await read(existing.id);
+          if (own !== null && !own.taskIds.includes(taskId)) await kv().set(keyFor(own.sourceId), { ...own, taskIds: [...own.taskIds, taskId] });
+          return { sourceId: existing.id, created: false, own: own !== null, isDefault: existing.isDefault === true };
+        }
+        // The request takes no default flag; bb makes only a project's first source its default.
+        const added = (await bb.sdk.projects.sources.add({ projectId, type: "local_path", hostId, path })) as unknown;
+        const source = ((added as { source?: unknown } | null)?.source ?? added) as { id?: unknown; path?: unknown; isDefault?: unknown } | null;
+        if (typeof source?.id !== "string") throw new Error("bb did not return the new project source's id");
+        const row: OwnProjectSource = {
+          sourceId: source.id,
+          projectId,
+          hostId,
+          path: typeof source.path === "string" ? source.path : path,
+          taskIds: [taskId],
+          createdAt: Date.now(),
+        };
+        try {
+          await kv().set(keyFor(row.sourceId), row);
+        } catch (error) {
+          // Untracked, it would never go: take it back (best effort).
+          await bb.sdk.projects.sources.delete({ projectId, sourceId: row.sourceId }).catch(() => undefined);
+          throw error;
+        }
+        return { sourceId: row.sourceId, created: true, own: true, isDefault: source.isDefault === true };
+      }),
 
-    async own() {
-      const rows: OwnProjectSource[] = [];
-      for (const key of await kv().list(PROJECT_SOURCE_KEY_PREFIX)) {
-        const row = await kv().get<unknown>(key);
-        if (isOwnSource(row)) rows.push(row);
-      }
-      return rows.sort((a, b) => a.createdAt - b.createdAt);
-    },
+    own: () =>
+      serial(async () => {
+        const rows: OwnProjectSource[] = [];
+        for (const key of await kv().list(PROJECT_SOURCE_KEY_PREFIX)) {
+          const row = await kv().get<unknown>(key);
+          if (isOwnSource(row)) rows.push(row);
+        }
+        return rows.sort((a, b) => a.createdAt - b.createdAt);
+      }),
 
-    async remove(sourceId) {
-      const own = await read(sourceId);
-      if (own === null) return false;
-      let listed: BbSource | undefined;
-      try {
-        listed = (await listSources(bb, own.projectId)).find((source) => source.id === sourceId);
-      } catch (error) {
-        // The project is gone, and its sources with it.
-        if (!isNotFound(error)) throw error;
-      }
-      // Only the source Boat added for this machine: bb no longer lists it, or it isn't that one any more.
-      if (listed !== undefined && listed.hostId === own.hostId) {
-        await bb.sdk.projects.sources.delete({ projectId: own.projectId, sourceId }).catch((error: unknown) => {
+    remove: (sourceId, inUse) =>
+      serial(async (): Promise<RemovedProjectSource> => {
+        const own = await read(sourceId);
+        if (own === null) return "not-ours";
+        if (inUse?.(own)) return "in-use";
+        let sources: BbSource[] = [];
+        try {
+          sources = await listSources(bb, own.projectId);
+        } catch (error) {
+          // The project is gone, and its sources with it.
           if (!isNotFound(error)) throw error;
-        });
-      }
-      await kv().delete(keyFor(sourceId));
-      return true;
-    },
+        }
+        const listed = sources.find((source) => source.id === sourceId);
+        // Only the source Boat added for this machine: bb no longer lists it, or it isn't that one any more.
+        if (listed !== undefined && listed.hostId === own.hostId) {
+          if (sources.length <= 1) return "last-source";
+          await bb.sdk.projects.sources.delete({ projectId: own.projectId, sourceId }).catch((error: unknown) => {
+            if (!isNotFound(error)) throw error;
+          });
+        }
+        await kv().delete(keyFor(sourceId));
+        return "removed";
+      }),
   };
 }

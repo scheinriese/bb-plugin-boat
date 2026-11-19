@@ -3,7 +3,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { hasWork, readMachineActivity, rowWork, type MachineActivity, type ThreadRow } from "./activity.ts";
 import { MACHINE_PROVIDER_ID, keepSandboxKey } from "./machine.ts";
-import { createProjectSources, type EnsuredProjectSource, type OwnProjectSource } from "./project-sources.ts";
+import { createProjectSources, type EnsuredProjectSource, type OwnProjectSource, type RemovedProjectSource } from "./project-sources.ts";
 import { threadSection } from "./sections.ts";
 import { TURN_EVENT_TYPES, type TurnEventRow } from "./steer-retry.ts";
 import type { Provider } from "./store.ts";
@@ -128,15 +128,15 @@ export interface ChatRunner {
    */
   machineActivity(hostId: string): Promise<MachineActivity>;
   /**
-   * A local_path source in a bb project for this machine's checkout (bb opens
-   * a chat in the checkout only then): a matching one is reused, else one is
-   * added, never as the default (src/project-sources.ts).
+   * A local_path source in a bb project for this machine (bb opens a chat in
+   * a checkout there only then): the project's one there is reused, else one
+   * is added for the path, never asked to be the default (src/project-sources.ts).
    */
   ensureProjectSource(args: { taskId: string; projectId: string; hostId: string; path: string }): Promise<EnsuredProjectSource>;
   /** The project sources Boat added and still tracks. */
   ownProjectSources(): Promise<OwnProjectSource[]>;
-  /** Delete a project source Boat added; false (bb untouched) for any other source. */
-  removeProjectSource(sourceId: string): Promise<boolean>;
+  /** Delete a project source Boat added unless inUse (asked again just before) says it's still needed; any other source is never touched. */
+  removeProjectSource(sourceId: string, inUse?: (row: OwnProjectSource) => boolean): Promise<RemovedProjectSource>;
   spawn(args: ChatSpawn): Promise<{ threadId: string; environmentId: string | null }>;
   /** A chat the user composed in bb's own composer, placed in a worker's workspace. */
   spawnComposed(args: {
@@ -293,8 +293,8 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
       return sources.own();
     },
 
-    removeProjectSource(sourceId) {
-      return sources.remove(sourceId);
+    removeProjectSource(sourceId, inUse) {
+      return sources.remove(sourceId, inUse);
     },
 
     async spawn(args) {
