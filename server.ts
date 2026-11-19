@@ -821,6 +821,8 @@ export default async function plugin(bb: BbPluginApi) {
           // Also delivers notices a restart or a failed send left pending.
           if (service.hasOpenWork()) await service.sweep();
           else await service.deliverPending();
+          // Project sources the plugin added that nothing needs (after a start, then every ten minutes), even with no open task.
+          await service.sweepProjectSourcesIfDue();
           await nativeReviews.tick();
           await runtime.startQueue.tick();
           await attentionNotifications?.flush();

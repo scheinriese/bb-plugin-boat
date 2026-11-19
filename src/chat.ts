@@ -3,6 +3,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { hasWork, readMachineActivity, rowWork, type MachineActivity, type ThreadRow } from "./activity.ts";
 import { MACHINE_PROVIDER_ID, keepSandboxKey } from "./machine.ts";
+import { createProjectSources, type EnsuredProjectSource, type OwnProjectSource, type RemovedProjectSource } from "./project-sources.ts";
 import { threadSection } from "./sections.ts";
 import { TURN_EVENT_TYPES, type TurnEventRow } from "./steer-retry.ts";
 import type { Provider } from "./store.ts";
@@ -126,6 +127,16 @@ export interface ChatRunner {
    * child chats). Throws when bb can't list its chats.
    */
   machineActivity(hostId: string): Promise<MachineActivity>;
+  /**
+   * A local_path source in a bb project for this machine (bb opens a chat in
+   * a checkout there only then): the project's one there is reused, else one
+   * is added for the path, never asked to be the default (src/project-sources.ts).
+   */
+  ensureProjectSource(args: { taskId: string; projectId: string; hostId: string; path: string }): Promise<EnsuredProjectSource>;
+  /** The project sources Boat added and still tracks. */
+  ownProjectSources(): Promise<OwnProjectSource[]>;
+  /** Delete a project source Boat added unless inUse (asked again just before) says it's still needed; any other source is never touched. */
+  removeProjectSource(sourceId: string, inUse?: (row: OwnProjectSource) => boolean): Promise<RemovedProjectSource>;
   spawn(args: ChatSpawn): Promise<{ threadId: string; environmentId: string | null }>;
   /** A chat the user composed in bb's own composer, placed in a worker's workspace. */
   spawnComposed(args: {
@@ -177,6 +188,7 @@ const WITHDRAW_BACKOFF_MS = [300, 1_200];
 
 export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?: readonly number[] } = {}): ChatRunner {
   const backoffMs = options.withdrawBackoffMs ?? WITHDRAW_BACKOFF_MS;
+  const sources = createProjectSources(bb);
   return {
     async attachMachine({ taskId, sandboxId, signal, keepSandbox }) {
       const key = keepSandbox ? `task-${taskId}-m${Date.now().toString(36)}` : `task-${taskId}`;
@@ -271,6 +283,18 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
         if (resource?.sandboxId === sandboxId) return host.id;
       }
       return null;
+    },
+
+    ensureProjectSource(args) {
+      return sources.ensure(args);
+    },
+
+    ownProjectSources() {
+      return sources.own();
+    },
+
+    removeProjectSource(sourceId, inUse) {
+      return sources.remove(sourceId, inUse);
     },
 
     async spawn(args) {
