@@ -95,6 +95,8 @@ export const usageViewSchema = z.object({
   /** A fresh "allowed" reading lets automatic paid Claude start now. */
   paidClaudeAvailable: z.boolean(),
   claudeExtraUsage: extraUsageViewSchema,
+  /** Chats (and headless tasks) stopped at a usage limit that continued on paid Claude in the last day. */
+  resumedOnPaid: z.number().optional(),
   /** Where a task started now with no agent named goes, from the relay's own checks. */
   next: z.object({
     /** room: the default agent; switch: the other one; paid: paid Claude; wait: until a reset; over: past a limit (nothing holds it back). */

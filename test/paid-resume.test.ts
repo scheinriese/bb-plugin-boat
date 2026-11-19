@@ -549,6 +549,9 @@ test("the plugin: a chat stopped at a Pooler 429 continues on paid Claude at the
   const text = await harness.runCli(["relay", "check"]);
   assert.equal(text.stdout.trim(), "Nothing to switch.");
   assert.equal(harness.inspection.sdk.callsTo("threads.retry").length, 1);
+  // The usage view says so.
+  const view = (await harness.callRpc("usage", null)) as { resumedOnPaid?: number };
+  assert.equal(view.resumedOnPaid, 1);
 });
 
 test("a project's Never continue on paid Claude: set with bb boat project set, kept when left out, shown in the list", async (t) => {

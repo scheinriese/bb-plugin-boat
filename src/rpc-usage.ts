@@ -27,7 +27,7 @@ function sourceOf(quota: AgentQuota): AgentSource {
  * The view from one reading: the Pooler's accounts as it saw them, the
  * relay's per-agent numbers, and the next step from the relay's own checks.
  */
-export function usageView({ quotas, pool, settings, now }: { quotas: Quotas; pool: PoolReading; settings: NewWorkSettings; now: number }): UsageViewDto {
+export function usageView({ quotas, pool, settings, now, resumedOnPaid = 0 }: { quotas: Quotas; pool: PoolReading; settings: NewWorkSettings; now: number; resumedOnPaid?: number }): UsageViewDto {
   const only = onlyAgent(settings.agents);
   return {
     checkedAt: now,
@@ -66,6 +66,7 @@ export function usageView({ quotas, pool, settings, now }: { quotas: Quotas; poo
     paidClaudeAvailable: automaticPaidClaude(quotas, settings.relay, settings.agents, now),
     // The relay's own evidence first, so it matches paidClaudeAvailable.
     claudeExtraUsage: extraUsageDto(quotas.get("claude")?.extraUsage ?? pool.claudeExtraUsage),
+    resumedOnPaid,
     next: { ...nextForNewWork(quotas, settings, now), switching: effectiveRelay(settings.relay, settings.agents).enabled },
   };
 }
@@ -140,7 +141,7 @@ export function usageHandlers(runtime: Runtime) {
         runtime.quotas ? runtime.quotas.read().catch((): Quotas => new Map()) : Promise.resolve<Quotas>(new Map()),
         readPoolUsage(bb),
       ]);
-      return usageView({ quotas, pool, settings, now: Date.now() });
+      return usageView({ quotas, pool, settings, now: Date.now(), resumedOnPaid: runtime.recentPaidResumes() });
     },
     refreshUsage: async () => {
       refreshing ??= refreshUsage(bb, runtime.quotas).finally(() => {
