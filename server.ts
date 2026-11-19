@@ -46,8 +46,10 @@ import { BoatService, DeliveryDeferred, type BoatSettings, type Notification } f
 import { TaskStore, type Provider } from "./src/store.ts";
 import { TOOL_NAMES, registerTools } from "./src/tools.ts";
 import { WakePacer, kvWakeStorage } from "./src/wake-pacer.ts";
-import { createWakeGuard } from "./src/wake-retry.ts";
+import { WAKE_EVENT, createWakeGuard } from "./src/wake-retry.ts";
 import { threadsOnMachine } from "./src/activity.ts";
+import { createBbUpdater } from "./src/bb-update.ts";
+import { prefetchBbFiles } from "./src/bb-prefetch.ts";
 
 const REALTIME_CHANNEL = "boat-changed";
 /** bb thread states with a turn under way. */
@@ -444,7 +446,22 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.cli.register(buildCli(runtime));
-  registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect, wakes });
+  // Before bb's setup on a resumed sandbox: read bb's files first, and update bb there in a fresh prefix.
+  const prepareHost = createBbUpdater({
+    boat,
+    kv: bb.storage.kv,
+    // The server's own bb-app version: what its machines run (bb's setup installs the server's build).
+    serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
+    prefetch: (sandboxId, request, signal) => prefetchBbFiles(boat, sandboxId, request, { signal, log: (line) => bb.log.info(line) }),
+    tell: (sandboxId, text) => {
+      const tasks = store.liveSandboxTasks(sandboxId);
+      for (const task of tasks) store.addEvent(task.id, WAKE_EVENT, text);
+      if (tasks.length > 0) changed();
+    },
+    log: (line) => bb.log.warn(line),
+    info: (line) => bb.log.info(line),
+  });
+  registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect, wakes, prepareHost });
   registerTools(runtime);
   registerRpc(runtime);
   registerMergeRpc(runtime);
