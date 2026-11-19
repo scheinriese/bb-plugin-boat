@@ -364,6 +364,48 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
 - **Teardown backs off too.** After boat.dev fails to stop or delete a
   sandbox, bb's retries in between fail at once, without asking boat.dev
   again (30 seconds, doubling up to 15 minutes).
+- **bb's files read first.** Right after a wake, before bb starts there,
+  the plugin reads through bb's data dir (`~/.bb-machines/<server>`) and
+  the node bb runs on (`~/.nvm/versions/node/<version>`), gently (nice,
+  ionice, one file at a time), so boat.dev restores them before bb needs
+  them. Nothing else is read. It stops after 60 seconds or 1.5 GiB, and
+  never holds up the wake longer than that, whatever the disk does.
+- **bb updated safely.** bb's service on a sandbox updates itself in place
+  when the bb server is newer, and on a disk still being restored that
+  `npm install` can hang for good, or stop half way and leave bb unable to
+  start (`MODULE_NOT_FOUND`). Before bb's setup on each resume, the plugin
+  compares the installed bb with the server's version. When they differ
+  and the server's build is already downloaded on the sandbox (bb's
+  service left it in `host-package-download`), or when the install is
+  broken, it installs that build into a fresh folder next to the old one
+  (its own npm cache in `/tmp`, at most 5 minutes), checks it and swaps it
+  in, keeping the old one as `npm.old-<version>-<time>`, then starts bb's
+  service again; bb's setup then finds the same build and doesn't install
+  it again. If anything fails, the old bb stays, the sandbox's tasks hear
+  why, bb's own setup goes ahead, and the plugin tries again after 30
+  minutes (doubling up to 6 hours). Without a download there, bb's own
+  update runs; a broken install is moved aside first, so bb installs into
+  an empty folder.
+- **A hung update isn't fought.** When bb's own update already hangs
+  there, the plugin stops nothing and installs nothing, and bb's setup
+  doesn't run into it. A zombie `npm install` (seen twice, 5 seconds apart)
+  only goes with a VM restart: that's the broken daemon above, with its
+  repair under Needs you. An `npm install` whose read of the disk made no
+  progress for 2 minutes, or bb's service stuck stopping, waits on boat.dev:
+  the plugin's own retries take it, as for a disk still being restored.
+- **Usage limit resets, paced.** At a limit's reset, bb's provider retry
+  retries every chat the limit stopped within the same minute. A retry
+  that would wake a Boat sandbox now waits for its own slot, 30 seconds
+  after the one before (2 a minute, the wake pace), with the time on the
+  queued message; bb still owns and sends the retry. On bb 0.49, which
+  asks the sending plugin first (`provider-retry.v1.consent`), the plugin
+  declines usage-limit retries of the chats it runs (task chats, reviews,
+  orchestrators) and queues each stopped turn again itself for the reset,
+  once; the next stop of the same chat is provider retry's again. That
+  queued retry is an ordinary retry row, so anything that continues a
+  stopped chat earlier sees it as the chat's one pending retry. Overloads
+  and server errors are always left to bb. bb 0.50 no longer asks, so there
+  only the pacing applies.
 
 ![A task chat: the worker's brief and progress, its parent orchestrator, and the boat sandbox it runs on](screenshots/worker-chat.png)
 
