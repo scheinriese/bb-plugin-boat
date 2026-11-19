@@ -16,17 +16,21 @@
 // What fixed it by hand, and what Boat does now, after the sandbox is up and
 // before bb's setup (all over boat's exec API, a plain `bash -c`):
 // 1. look (one capped exec): bb's data dir and unit, the installed version,
-//    the bin, a download left in host-package-download, the unit's state, a
-//    zombie npm install;
+//    the bin, a download left in host-package-download, the unit's state, and
+//    bb's own npm installs (a zombie, or one running right now, in any state:
+//    bb's in-place update is never stopped half way; Boat waits for it, up to
+//    3 minutes, and looks again);
 // 2. the installed version differs from the server's (bb.sdk.system.version)
 //    and the download is that version, or the install is broken: copy the
 //    download to /tmp, stop the unit, `npm install -g` it into a fresh prefix
 //    (`npm.new`, its own npm cache in /tmp: nothing of the old install is
 //    read), check it, swap it in (`npm` → `npm.old-<version>-<time>`), write
 //    bb's artifact digest (bb's setup then sees the identical build and
-//    doesn't install again), start the unit again. At most 5 minutes; on any
-//    failure the old install stays, the unit starts again, and Boat says so,
-//    then leaves it to bb's own setup and tries again later (backoff);
+//    doesn't install again), start the unit again. At most 5 minutes, the
+//    restart included; on any failure Boat checks the old install again: as it
+//    was, it starts again; no longer complete, it goes aside for bb's setup.
+//    Boat says which, then leaves it to bb's own setup and tries again later
+//    (backoff);
 // 3. no download there: nothing to install from without the server's
 //    credentials, so bb's own update runs (a broken install is moved aside
 //    first, so bb's setup installs into an empty prefix);
@@ -36,6 +40,7 @@
 //    goes with a VM restart: "daemon-broken", the repair under Needs you. Its
 //    service stuck stopping, or an npm install whose read of the disk made no
 //    progress: "disk-restoring", Boat's own retries later.
+import { setTimeout as delay } from "node:timers/promises";
 import type { BoatApi } from "./boat-api.ts";
 import { clockTime } from "./format.ts";
 import type { WakeDiagnosis } from "./wake-diagnosis.ts";
@@ -52,6 +57,12 @@ export const STUCK_STOPPING_SECONDS = 30;
 export const STUCK_READING_SECONDS = 120;
 /** kv: failed updates, by sandbox. */
 export const BB_UPDATES_KEY = "bbUpdates";
+/** A backoff whose retry time passed this long ago is dropped: the sandbox is gone, or a later wake starts over. */
+export const UPDATE_FORGET_MS = 24 * 3_600_000;
+/** bb's own update running on the sandbox: Boat looks again this often… */
+export const BUSY_POLL_MS = 10_000;
+/** …and waits for it this long at most, then leaves it to Boat's wake retries. */
+export const BUSY_WAIT_MS = 3 * 60_000;
 /** The native add-ons bb's installer lets npm build (install-machine.sh). */
 const ALLOW_SCRIPTS = "better-sqlite3,node-pty,@parcel/watcher";
 
@@ -66,6 +77,19 @@ export function hostSlug(hostId: string): string {
 
 /** Reads "version" from a package.json (the top-level one: at most two spaces in). */
 const VERSION_SED = `sed -n 's/^ \\{0,2\\}"version": *"\\([^"]*\\)".*/\\1/p'`;
+
+/**
+ * Shell helpers shared by the look and the install, after D (bb's data dir), U
+ * (its unit) and PR (procfs) are set. `mine "<args>" <pid>`: an npm install of
+ * bb's own, by its arguments (this data dir's install or download) or by the
+ * unit it runs in. The patterns come from variables: this script's own command
+ * line never matches.
+ */
+const OWN_NPM_SCRIPT = [
+  'I="npm"" install"',
+  `rc() { timeout 2 sed -n 's/^rchar: //p' "$PR/$1/io" 2>/dev/null; }`,
+  'mine() { case "$1" in *"$D/npm"*|*"$D/host-package-download"*) return 0 ;; esac; [ -n "$U" ] && timeout 2 grep -qF -- "/$U" "$PR/$2/cgroup" 2>/dev/null; }',
+];
 
 /**
  * Look at bb's install on the sandbox. Plain `bash -c`; every read is capped,
@@ -114,19 +138,21 @@ export function inspectScript(hostId: string | null, options: { proc?: string; s
     "  M1=MODULE_NOT; M2=\"Cannot find\"",
     '  case "$J" in *"${M1}_FOUND"*|*"$M2 module"*) say modulenotfound ;; esac',
     "fi",
-    // npm installs that are zombies or wait on the disk, looked at twice 5 s apart: a zombie
-    // nobody reaps, or a read that made no progress (rchar unchanged), not a passing moment.
-    'I="npm"" install"',
-    `rc() { timeout 2 sed -n 's/^rchar: //p' "$PR/$1/io" 2>/dev/null; }`,
+    // bb's own npm installs, looked at twice 5 s apart: a zombie nobody reaps; a live one (any
+    // state: bb's in-place update running right now, never to be stopped half way); and of
+    // those, one whose read of the disk made no progress (D, rchar unchanged).
+    ...OWN_NPM_SCRIPT,
     "Z0=$(timeout 5 ps -eo pid=,stat=,etimes=,args= 2>/dev/null | while read -r pid stat age args; do",
-    `  case "$stat" in Z*) case "$args" in *"[$I"*) echo "Z $pid $age" ;; esac ;; D*) case "$args" in *"$I"*) echo "D $pid $age $(rc "$pid")" ;; esac ;; esac`,
+    `  case "$stat" in Z*) case "$args" in *"[$I"*) echo "Z $pid $age" ;; esac ;; *) case "$args" in *"$I"*) mine "$args" "$pid" && echo "L $pid $age $(rc "$pid")" ;; esac ;; esac`,
     "done | head -n 10)",
     'if [ -n "$Z0" ]; then',
     `  sleep ${Math.max(0, options.sampleSeconds ?? 5)}`,
     "  while read -r k pid age io; do",
     `    S=$(timeout 2 sed -n 's/^State:[[:space:]]*\\(.\\).*/\\1/p' "$PR/$pid/status" 2>/dev/null)`,
     '    [ "$k" = Z ] && [ "$S" = Z ] && say zombie "$pid" "$age"',
-    `    if [ "$k" = D ] && [ "$S" = D ] && [ -n "$io" ] && [ "$(rc "$pid")" = "$io" ]; then say blocked "$pid" "$age"; fi`,
+    '    if [ "$k" = L ] && [ -n "$S" ] && [ "$S" != Z ] && [ "$S" != X ]; then',
+    `      if [ "$S" = D ] && [ -n "$io" ] && [ "$(rc "$pid")" = "$io" ]; then say blocked "$pid" "$age"; else say live "$pid" "$age"; fi`,
+    "    fi",
     "  done <<EOF_BOAT",
     "$Z0",
     "EOF_BOAT",
@@ -159,10 +185,12 @@ export interface BbInstall {
   zombies: string[];
   /** npm installs stuck reading the disk (D state, "pid age"). */
   blocked: string[];
+  /** bb's own npm installs running right now, making progress ("pid age"). */
+  live: string[];
 }
 
 export function parseInspection(stdout: string): BbInstall {
-  const seen: BbInstall = { complete: false, dataDir: null, unit: null, node: null, installed: "none", bin: "missing", lacks: [], tgz: "none", state: null, moduleNotFound: false, zombies: [], blocked: [] };
+  const seen: BbInstall = { complete: false, dataDir: null, unit: null, node: null, installed: "none", bin: "missing", lacks: [], tgz: "none", state: null, moduleNotFound: false, zombies: [], blocked: [], live: [] };
   let uptime: number | null = null;
   let stateText: string | null = null;
   for (const raw of stdout.split("\n")) {
@@ -209,6 +237,9 @@ export function parseInspection(stdout: string): BbInstall {
         break;
       case "blocked":
         seen.blocked.push(value);
+        break;
+      case "live":
+        seen.live.push(value);
         break;
     }
   }
@@ -275,7 +306,9 @@ export type BbUpdatePlan =
   /** bb's own update hangs there: a zombie npm install (only a VM restart clears it). */
   | { kind: "hung"; detail: string }
   /** bb's own update waits on the disk (its service stuck stopping, a read with no progress): later. */
-  | { kind: "waiting"; detail: string };
+  | { kind: "waiting"; detail: string }
+  /** bb's own update runs right now: never stopped half way; Boat waits for it, then looks again. */
+  | { kind: "busy"; detail: string };
 
 /** Why the install is broken (null: it isn't, as far as Boat can tell). */
 export function brokenInstall(seen: BbInstall): string | null {
@@ -298,6 +331,8 @@ export function decideBbUpdate(seen: BbInstall, target: string | null): BbUpdate
   if (seen.zombies.length > 0) return { kind: "hung", detail: `npm install left a zombie: pid ${seen.zombies[0]!.split(" ")[0]}` };
   const reading = seen.blocked.map((entry) => entry.split(" ").map(Number)).find(([, age]) => (age ?? 0) >= STUCK_READING_SECONDS);
   if (reading !== undefined) return { kind: "waiting", detail: `bb's npm install is waiting on a file not restored yet (pid ${reading[0]}, ${reading[1]}s)` };
+  const running = [...seen.live, ...seen.blocked][0];
+  if (running !== undefined) return { kind: "busy", detail: `bb's own update is running: npm install, pid ${running.split(" ")[0]}` };
   if (seen.state?.active === "deactivating" && (seen.state.sinceSeconds ?? 0) >= STUCK_STOPPING_SECONDS) return { kind: "waiting", detail: `bb's service has been stopping for ${seen.state.sinceSeconds}s, waiting on the disk` };
   const download = isVersion(seen.tgz) ? seen.tgz : null;
   const goal = isVersion(target) ? target : download;
@@ -320,56 +355,73 @@ export function decideBbUpdate(seen: BbInstall, target: string | null): BbUpdate
  * in all; prints one BOAT_BBUP line. On any failure the old install stays and
  * bb's unit starts again.
  */
-export function installScript(input: { dataDir: string; unit: string | null; node: string | null; version: string; from?: string | null; seconds?: number }): string {
+export function installScript(input: { dataDir: string; unit: string | null; node: string | null; version: string; from?: string | null; broken?: boolean; seconds?: number; proc?: string }): string {
   return [
     `D=${shellQuote(input.dataDir)}`,
     `U=${shellQuote(input.unit ?? "")}`,
     `N=${shellQuote(input.node ?? "")}`,
     `V=${shellQuote(input.version)}`,
-    // The installed version, as the look read it (the old install isn't read again).
+    // The installed version, as the look read it (the old install isn't read again before the stop).
     `O=${shellQuote(input.from && isVersion(input.from) ? input.from : "broken")}`,
+    // The look found the old install broken already.
+    `B0=${input.broken ? 1 : 0}`,
     `L=${Math.max(10, Math.round(input.seconds ?? INSTALL_SECONDS))}`,
+    `PR=${shellQuote(input.proc ?? "/proc")}`,
     'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"',
     "say() { printf 'BOAT_BBUP %s\\n' \"$*\"; }",
     "S0=$(date +%s)",
-    // A step's time limit: at most n seconds, and never past the whole limit.
-    'cap() { R=$((L - ($(date +%s) - S0))); [ "$R" -lt 1 ] && R=1; [ "$1" -lt "$R" ] && R=$1; echo "$R"; }',
+    // A step's time limit: at most n seconds, and never past the whole limit less RES, which
+    // starting bb's service again (40 s), npm's kill grace (10 s) and the last checks take.
+    "RES=70",
+    'cap() { R=$((L - RES - ($(date +%s) - S0))); [ "$R" -lt 1 ] && R=1; [ "$1" -lt "$R" ] && R=$1; echo "$R"; }',
     `ver() { timeout 5 ${VERSION_SED} "$1" 2>/dev/null | head -n 1; }`,
     'started() { [ -n "$U" ] || return 0; timeout 10 systemctl --user reset-failed "$U" >/dev/null 2>&1; timeout 30 systemctl --user start "$U" >/dev/null 2>&1; }',
+    ...OWN_NPM_SCRIPT,
+    // The old install now: intact (its bin, its daemon, the version the look read), broken, or
+    // unknown (not readable yet: boat.dev is still restoring it).
+    'oldstate() { P="$D/npm/lib/node_modules/bb-app"; [ "$B0" = 1 ] && { echo broken; return; }; { [ -e "$D/npm/bin/bb-app" ] && [ -e "$P/host-daemon/dist/daemon-bundle.mjs" ] && [ -e "$P/package.json" ]; } || { echo broken; return; }; X=$(ver "$P/package.json"); if [ -z "$X" ]; then echo unknown; elif [ "$X" = "$O" ]; then echo intact; else echo broken; fi; }',
+    // A failure says what became of the old install. Once Boat has stopped bb's service, a broken
+    // one goes aside (bb's setup then installs into an empty prefix); an intact one runs again.
+    "STOPPED=0",
+    'fail() { S=$(oldstate); if [ "$STOPPED" = 1 ]; then if [ "$S" = broken ] && { [ -e "$D/npm" ] || [ -L "$D/npm" ]; } && mv -- "$D/npm" "$D/npm.broken-$(date +%s)" 2>/dev/null; then rm -f -- "$D/host-artifact.sha256"; S=set-aside; else started; fi; fi; echo "BOAT_BBOLD $S"; say fail "$@"; exit 0; }',
     'T="$D/host-package-download/bb-app.tgz"',
-    'W=$(mktemp -d "${TMPDIR:-/tmp}/boat-bb-update.XXXXXX") || { say fail workdir; exit 0; }',
+    'W=$(mktemp -d "${TMPDIR:-/tmp}/boat-bb-update.XXXXXX") || fail workdir',
     "trap 'rm -rf -- \"$W\"' EXIT",
     // The node and npm bb's service runs on.
     'if [ -n "$N" ] && [ -x "$N" ]; then PATH="${N%/*}:$PATH"; export PATH; fi',
-    'command -v npm >/dev/null 2>&1 || { say fail no-npm; exit 0; }',
+    "command -v npm >/dev/null 2>&1 || fail no-npm",
+    // bb's own update started since the look: never stopped half way (Boat waits, then looks again).
+    'B1=$(timeout 5 ps -eo pid=,stat=,args= 2>/dev/null | while read -r pid stat args; do case "$stat" in Z*) ;; *) case "$args" in *"$I"*) mine "$args" "$pid" && echo "$pid" ;; esac ;; esac; done | head -n 1)',
+    '[ -n "$B1" ] && { say busy "$B1"; exit 0; }',
     // A copy first: bb's service deletes its download when its own update ends.
-    'timeout "$(cap 120)" cp -- "$T" "$W/bb-app.tgz" 2>/dev/null || { say fail copy; exit 0; }',
-    'timeout "$(cap 60)" gzip -t -- "$W/bb-app.tgz" 2>/dev/null || { say fail corrupt; exit 0; }',
+    'timeout "$(cap 120)" cp -- "$T" "$W/bb-app.tgz" 2>/dev/null || fail copy',
+    'timeout "$(cap 60)" gzip -t -- "$W/bb-app.tgz" 2>/dev/null || fail corrupt',
     `GOT=$(timeout "$(cap 60)" tar -xzOf "$W/bb-app.tgz" package/package.json 2>/dev/null | ${VERSION_SED} | head -n 1)`,
-    '[ "$GOT" = "$V" ] || { say fail version "${GOT:-unreadable}"; exit 0; }',
+    '[ "$GOT" = "$V" ] || fail version "${GOT:-unreadable}"',
     // A half-made install from an earlier try: renamed aside (no reads), deleted later.
-    'if [ -e "$D/npm.new" ] || [ -L "$D/npm.new" ]; then mv -- "$D/npm.new" "$D/npm.trash-$(date +%s)-$$" || { say fail leftover; exit 0; }; fi',
-    // Stop bb's service (an update of its own stops with it).
+    'if [ -e "$D/npm.new" ] || [ -L "$D/npm.new" ]; then mv -- "$D/npm.new" "$D/npm.trash-$(date +%s)-$$" || fail leftover; fi',
+    // Stop bb's service.
     'if [ -n "$U" ]; then',
     '  timeout "$(cap 45)" systemctl --user stop "$U" >/dev/null 2>&1',
     '  A=$(timeout 5 systemctl --user show "$U" --property=ActiveState --value 2>/dev/null)',
-    '  case "$A" in deactivating) say stuck deactivating; exit 0 ;; active|activating|reloading) started; say fail stop "$A"; exit 0 ;; esac',
+    '  case "$A" in deactivating) echo "BOAT_BBOLD unknown"; say stuck deactivating; exit 0 ;; active|activating|reloading) fail stop "$A" ;; esac',
     "fi",
+    "STOPPED=1",
     // A fresh prefix and its own cache: nothing of the old install is read.
-    `npm_config_cache="$W/cache" npm_config_update_notifier=false timeout -k 10 "$(cap 240)" nice -n 10 npm install -g --no-audit --no-fund --allow-scripts=${ALLOW_SCRIPTS} --prefix "$D/npm.new" "$W/bb-app.tgz" >"$W/npm.log" 2>&1`,
+    `npm_config_cache="$W/cache" npm_config_update_notifier=false timeout -k 10 "$(cap 230)" nice -n 10 npm install -g --no-audit --no-fund --allow-scripts=${ALLOW_SCRIPTS} --prefix "$D/npm.new" "$W/bb-app.tgz" >"$W/npm.log" 2>&1`,
     "RC=$?",
     'if [ "$RC" -ne 0 ]; then',
     '  if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then C=timeout; else C=$(grep -o -m 1 -E "npm (ERR!|error) code [A-Z0-9_]+" "$W/npm.log" | awk \'{print $NF}\'); fi',
-    '  rm -rf -- "$D/npm.new"; started; say fail npm "${C:-exit-$RC}"; exit 0',
+    '  timeout 20 rm -rf -- "$D/npm.new"; fail npm "${C:-exit-$RC}"',
     "fi",
     'NV=$(ver "$D/npm.new/lib/node_modules/bb-app/package.json")',
-    'if [ ! -e "$D/npm.new/bin/bb-app" ] || [ "$NV" != "$V" ]; then rm -rf -- "$D/npm.new"; started; say fail verify; exit 0; fi',
+    'if [ ! -e "$D/npm.new/bin/bb-app" ] || [ "$NV" != "$V" ]; then timeout 20 rm -rf -- "$D/npm.new"; fail verify; fi',
     // The native add-ons load, as bb's installer checks them.
-    `if ! timeout "$(cap 60)" node -e 'const r=process.argv[1];require(r+"/node_modules/node-pty");require(r+"/node_modules/@parcel/watcher")' "$D/npm.new/lib/node_modules/bb-app" >/dev/null 2>&1; then rm -rf -- "$D/npm.new"; started; say fail native; exit 0; fi`,
+    `if ! timeout "$(cap 60)" node -e 'const r=process.argv[1];require(r+"/node_modules/node-pty");require(r+"/node_modules/@parcel/watcher")' "$D/npm.new/lib/node_modules/bb-app" >/dev/null 2>&1; then timeout 20 rm -rf -- "$D/npm.new"; fail native; fi`,
     // The swap: the old install stays next to it.
     'OLD="$D/npm.old-$O-$(date +%s)"',
-    'if [ -e "$D/npm" ] || [ -L "$D/npm" ]; then mv -- "$D/npm" "$OLD" || { rm -rf -- "$D/npm.new"; started; say fail swap; exit 0; }; fi',
-    'if ! mv -- "$D/npm.new" "$D/npm"; then [ -e "$OLD" ] && mv -- "$OLD" "$D/npm"; rm -rf -- "$D/npm.new"; started; say fail swap; exit 0; fi',
+    'if [ -e "$D/npm" ] || [ -L "$D/npm" ]; then mv -- "$D/npm" "$OLD" || { timeout 20 rm -rf -- "$D/npm.new"; fail swap; }; fi',
+    'if ! mv -- "$D/npm.new" "$D/npm"; then [ -e "$OLD" ] && mv -- "$OLD" "$D/npm"; timeout 20 rm -rf -- "$D/npm.new"; fail swap; fi',
     // bb's setup compares this digest with the server's build: the same one isn't installed again.
     'H=$(timeout "$(cap 60)" sha256sum -- "$W/bb-app.tgz" 2>/dev/null | cut -c1-64)',
     'case "$H" in *[!0-9a-f]*|"") rm -f -- "$D/host-artifact.sha256" ;; *) [ ${#H} -eq 64 ] && (umask 077 && printf \'%s\\n\' "$H" >"$D/host-artifact.sha256.boat" && mv -f -- "$D/host-artifact.sha256.boat" "$D/host-artifact.sha256") ;; esac',
@@ -396,18 +448,25 @@ export function setAsideScript(input: { dataDir: string; unit: string | null }):
   ].join("\n");
 }
 
+/** The old install after a failed one: as it was, broken (and moved aside), or not readable yet. */
+export type OldInstall = "intact" | "broken" | "set-aside" | "unknown";
+
 export type InstallResult =
   | { kind: "done"; version: string; unit: string | null }
   | { kind: "stuck"; detail: string }
-  | { kind: "fail"; reason: string; detail: string | null };
+  /** bb's own update started since the look: nothing was touched. */
+  | { kind: "busy"; pid: string | null }
+  | { kind: "fail"; reason: string; detail: string | null; old: OldInstall | null };
 
 export function parseInstall(stdout: string): InstallResult {
   const line = stdout.split("\n").map((entry) => entry.trim()).reverse().find((entry) => entry.startsWith("BOAT_BBUP "));
-  if (line === undefined) return { kind: "fail", reason: "no-answer", detail: null };
+  const said = /^BOAT_BBOLD (intact|broken|set-aside|unknown)$/m.exec(stdout)?.[1] as OldInstall | undefined;
+  if (line === undefined) return { kind: "fail", reason: "no-answer", detail: null, old: said ?? null };
   const [, kind, ...rest] = line.split(/\s+/);
   if (kind === "done") return { kind: "done", version: rest[0] ?? "", unit: rest[1] ?? null };
   if (kind === "stuck") return { kind: "stuck", detail: rest.join(" ") || "deactivating" };
-  return { kind: "fail", reason: rest[0] ?? "unknown", detail: rest.slice(1).join(" ") || null };
+  if (kind === "busy") return { kind: "busy", pid: rest[0] ?? null };
+  return { kind: "fail", reason: rest[0] ?? "unknown", detail: rest.slice(1).join(" ") || null, old: said ?? null };
 }
 
 /** A failed install, in plain words. */
@@ -516,6 +575,8 @@ export interface BbUpdaterDeps {
   /** What it did (an update, nothing to do). */
   info?(line: string): void;
   now?(): number;
+  /** Wait (rejects when the signal aborts). */
+  sleep?(ms: number, signal: AbortSignal): Promise<unknown>;
 }
 
 function errorText(error: unknown): string {
@@ -523,10 +584,19 @@ function errorText(error: unknown): string {
 }
 
 /** The step between the sandbox being up and bb's setup there. Throws BbUpdateHung only (and the wake's own abort). */
-export function createBbUpdater(deps: BbUpdaterDeps): (prep: HostPrep) => Promise<HostPrepResult> {
+/** The step before bb's setup, and a way to forget a sandbox that's gone. */
+export interface BbUpdater {
+  (prep: HostPrep): Promise<HostPrepResult>;
+  /** The sandbox is gone (its machine removed): its backoff goes. */
+  forget(sandboxId: string): Promise<void>;
+}
+
+/** The step between the sandbox being up and bb's setup there. Throws BbUpdateHung only (and the wake's own abort). */
+export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? (() => undefined);
   const info = deps.info ?? log;
+  const sleep = deps.sleep ?? ((ms: number, signal: AbortSignal) => delay(ms, undefined, { signal }));
   let backoffs: Promise<Record<string, UpdateBackoff>> | null = null;
   let version: { value: string | null; at: number } | null = null;
 
@@ -537,12 +607,26 @@ export function createBbUpdater(deps: BbUpdaterDeps): (prep: HostPrep) => Promis
     );
     return backoffs;
   }
+  /** Save one sandbox's backoff (null: none), dropping every one long past its retry time. */
   async function saveBackoff(sandboxId: string, entry: UpdateBackoff | null): Promise<void> {
     const all = await loadBackoffs();
+    let changed = false;
+    for (const [id, old] of Object.entries(all)) {
+      if (id !== sandboxId && !(Number.isFinite(old?.retryAt) && now() - old.retryAt < UPDATE_FORGET_MS)) {
+        delete all[id];
+        changed = true;
+      }
+    }
     if (entry === null) {
-      if (all[sandboxId] === undefined) return;
-      delete all[sandboxId];
-    } else all[sandboxId] = entry;
+      if (all[sandboxId] !== undefined) {
+        delete all[sandboxId];
+        changed = true;
+      }
+    } else {
+      all[sandboxId] = entry;
+      changed = true;
+    }
+    if (!changed) return;
     await deps.kv.set(BB_UPDATES_KEY, { ...all }).catch((error: unknown) => log(`bb update: couldn't save its backoff (${errorText(error)})`));
   }
 
@@ -571,7 +655,42 @@ export function createBbUpdater(deps: BbUpdaterDeps): (prep: HostPrep) => Promis
     await deps.prefetch(prep.sandboxId, { dataDir: seen?.dataDir ?? null, node: seen?.node ?? null, skipInstall: plan?.kind === "update" || plan?.kind === "set-aside" }, prep.signal).catch(() => undefined);
   }
 
-  async function install(prep: HostPrep, seen: BbInstall, plan: Extract<BbUpdatePlan, { kind: "update" }>): Promise<HostPrepResult> {
+  /**
+   * bb's own update runs on the sandbox right now: never stopped half way. Look again every
+   * 10 s until it's done; after 3 minutes it's left to Boat's wake retries (it's waiting on the disk).
+   */
+  async function waitForOwnUpdate(prep: HostPrep, goal: string | null, detail: string): Promise<{ seen: BbInstall | null; plan: BbUpdatePlan | null }> {
+    const deadline = now() + BUSY_WAIT_MS;
+    prep.report.step(`Waiting for bb's own update on the sandbox to finish (${detail.replace(/^bb's own update is running: /, "")})`);
+    info(`bb update ${prep.sandboxId}: ${detail}; waiting for it`);
+    for (;;) {
+      await sleep(BUSY_POLL_MS, prep.signal);
+      const seen = await inspect(prep);
+      const plan = seen === null ? null : decideBbUpdate(seen, goal);
+      if (plan?.kind !== "busy") return { seen, plan };
+      if (now() >= deadline) return { seen, plan: { kind: "waiting", detail: `${plan.detail}, for more than ${Math.round(BUSY_WAIT_MS / 60_000)} minutes` } };
+    }
+  }
+
+  /** What became of the old install, in words (the end of a failure's text). */
+  function oldText(result: Extract<InstallResult, { kind: "fail" }>, plan: Extract<BbUpdatePlan, { kind: "update" }>): string {
+    switch (result.old) {
+      case "set-aside":
+        return plan.broken
+          ? "bb's install there was already broken, so Boat moved it aside and bb's own setup installs it again."
+          : "The bb that was there isn't complete any more, so Boat moved it aside and bb's own setup installs it again.";
+      case "broken":
+        return "The bb that was there isn't complete; bb's own setup installs it again.";
+      case "unknown":
+        return "Boat couldn't check the bb that was there (its files aren't readable yet); bb's own setup goes ahead.";
+      case "intact":
+        return "It kept the bb that was there, and bb's own setup goes ahead.";
+      default:
+        return "bb's own setup goes ahead and checks the bb that's there.";
+    }
+  }
+
+  async function install(prep: HostPrep, seen: BbInstall, plan: Extract<BbUpdatePlan, { kind: "update" }>): Promise<HostPrepResult | "busy"> {
     const held = (await loadBackoffs())[prep.sandboxId];
     if (held !== undefined && held.retryAt > now()) {
       info(`bb update ${prep.sandboxId}: held until ${new Date(held.retryAt).toISOString()} after ${held.failures} failure(s) (${held.detail}); bb's own setup goes ahead`);
@@ -580,11 +699,13 @@ export function createBbUpdater(deps: BbUpdaterDeps): (prep: HostPrep) => Promis
     prep.report.step(`Updating bb on the sandbox to ${plan.to}: a fresh install next to the old one`);
     let result: InstallResult;
     try {
-      result = parseInstall((await deps.boat.exec(prep.sandboxId, installScript({ dataDir: seen.dataDir!, unit: seen.unit, node: seen.node, version: plan.to, from: plan.from }), { timeoutMs: (INSTALL_SECONDS + 60) * 1000, signal: prep.signal, login: false })).stdout);
+      const script = installScript({ dataDir: seen.dataDir!, unit: seen.unit, node: seen.node, version: plan.to, from: plan.from, broken: plan.broken });
+      result = parseInstall((await deps.boat.exec(prep.sandboxId, script, { timeoutMs: (INSTALL_SECONDS + 60) * 1000, signal: prep.signal, login: false })).stdout);
     } catch (error) {
       prep.signal.throwIfAborted();
-      result = { kind: "fail", reason: "exec", detail: errorText(error).split("\n")[0]!.slice(0, 200) };
+      result = { kind: "fail", reason: "exec", detail: errorText(error).split("\n")[0]!.slice(0, 200), old: null };
     }
+    if (result.kind === "busy") return "busy";
     // bb's service didn't stop: its own update waits on the disk. Nothing installed; Boat's retries later.
     if (result.kind === "stuck") throw new BbUpdateHung({ kind: "disk-restoring", detail: "bb's service won't stop: its own update is waiting on a file not restored yet", checked: true });
     if (result.kind === "done") {
@@ -603,28 +724,42 @@ export function createBbUpdater(deps: BbUpdaterDeps): (prep: HostPrep) => Promis
     const unsure = result.reason === "exec" || result.reason === "no-answer";
     const text = unsure
       ? `Boat couldn't tell whether bb's update on this sandbox to ${plan.to} finished: ${why}. bb's own setup goes ahead and checks it. Boat tries the update again after ${clockTime(retryAt, at)} if it's still needed.`
-      : `Boat couldn't update bb on this sandbox to ${plan.to}: ${why}. It kept the bb that was there, and bb's own setup goes ahead. Boat tries the update again after ${clockTime(retryAt, at)}.`;
+      : `Boat couldn't update bb on this sandbox to ${plan.to}: ${why}. ${oldText(result, plan)} Boat tries the update again after ${clockTime(retryAt, at)}.`;
     prep.report.log(text);
     deps.tell?.(prep.sandboxId, text);
-    log(`bb update ${prep.sandboxId}: bb-update-failed (${result.reason}${result.detail ? ` ${result.detail}` : ""}, failure ${failures})`);
+    log(`bb update ${prep.sandboxId}: bb-update-failed (${result.reason}${result.detail ? ` ${result.detail}` : ""}, old install ${result.old ?? "unknown"}, failure ${failures})`);
     return { kind: "failed", text };
   }
 
-  return async (prep) => {
+  const prepare = async (prep: HostPrep): Promise<HostPrepResult> => {
     const goal = await target();
-    const seen = await inspect(prep);
-    const plan = seen === null ? null : decideBbUpdate(seen, goal);
-    // bb's own update hung there: not fought (no stop, no install), the guard decides.
-    if (seen !== null && (plan?.kind === "hung" || plan?.kind === "waiting")) {
-      log(`bb update ${prep.sandboxId}: bb's own update ${plan.kind === "hung" ? "hangs" : "waits on the disk"} (${plan.detail}); leaving it to the wake guard`);
-      throw new BbUpdateHung(hungDiagnosis(seen, plan));
+    let seen = await inspect(prep);
+    let plan = seen === null ? null : decideBbUpdate(seen, goal);
+    // Two rounds at most: bb's own update may start between the look and Boat's install.
+    for (let round = 0; ; round++) {
+      if (plan?.kind === "busy") ({ seen, plan } = await waitForOwnUpdate(prep, goal, plan.detail));
+      // bb's own update hung there: not fought (no stop, no install), the guard decides.
+      if (seen !== null && (plan?.kind === "hung" || plan?.kind === "waiting" || plan?.kind === "busy")) {
+        const hung = plan.kind === "busy" ? { kind: "waiting" as const, detail: plan.detail } : plan;
+        log(`bb update ${prep.sandboxId}: bb's own update ${hung.kind === "hung" ? "hangs" : "waits on the disk"} (${hung.detail}); leaving it to the wake guard`);
+        throw new BbUpdateHung(hungDiagnosis(seen, hung));
+      }
+      if (round === 0) await prefetch(prep, seen, plan);
+      if (seen === null || plan === null) return { kind: "none", why: "Boat couldn't look at bb's install" };
+      if (plan.kind === "update") {
+        const done = await install(prep, seen, plan);
+        if (done !== "busy") return done;
+        const detail = "bb's own update is running: it started while Boat was about to install";
+        // Twice in a row: Boat's wake retries take it from here.
+        if (round >= 1) throw new BbUpdateHung(hungDiagnosis(seen, { kind: "waiting", detail }));
+        plan = { kind: "busy", detail };
+        continue;
+      }
+      break;
     }
-    await prefetch(prep, seen, plan);
-    if (seen === null || plan === null) return { kind: "none", why: "Boat couldn't look at bb's install" };
-    if (plan.kind === "update") return install(prep, seen, plan);
     if (plan.kind === "set-aside") {
       try {
-        const said = (await deps.boat.exec(prep.sandboxId, setAsideScript({ dataDir: seen.dataDir!, unit: seen.unit }), { timeoutMs: 60_000, signal: prep.signal, login: false })).stdout;
+        const said = (await deps.boat.exec(prep.sandboxId, setAsideScript({ dataDir: seen!.dataDir!, unit: seen!.unit }), { timeoutMs: 60_000, signal: prep.signal, login: false })).stdout;
         if (/BOAT_BBFIX moved/.test(said)) {
           prep.report.log(`bb's install on the sandbox was broken (${plan.why}); Boat moved it aside so bb's setup installs it again`);
           info(`bb update ${prep.sandboxId}: broken install (${plan.why}) moved aside`);
@@ -639,4 +774,10 @@ export function createBbUpdater(deps: BbUpdaterDeps): (prep: HostPrep) => Promis
     if (plan.kind === "none") info(`bb update ${prep.sandboxId}: nothing to do (${plan.why})`);
     return { kind: "none", why: plan.kind === "none" ? plan.why : "" };
   };
+
+  return Object.assign(prepare, {
+    async forget(sandboxId: string) {
+      await saveBackoff(sandboxId, null);
+    },
+  });
 }
