@@ -5,7 +5,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { lastCompletedSnapshot, stopReport } from "../src/boat-api.ts";
+import { BoatApi, lastCompletedSnapshot, stopReport } from "../src/boat-api.ts";
+import { BoatCli, BoatError } from "../src/boat.ts";
+import { chmodSync } from "node:fs";
 import {
   CHECKOUTS_SCRIPT,
   STUCK_AFTER_MS,
@@ -157,19 +159,25 @@ test("a stop is followed by what boat says of it: forced only once boat refused 
   assert.equal(forcedOutcome(report("pending", "stop_1", false), "idle"), "pending");
   assert.equal(forcedOutcome(report("completed", "stop_2", true), "stopped"), "stopped");
   // boat's JSON, read loosely.
-  assert.deepEqual(stopReport([{ event: "stop", stop: { id: "stop_9", status: "pending" } }]), { status: "pending", stopId: "stop_9", forced: null });
-  assert.deepEqual(stopReport([{ stopId: "stop_3", status: "pending", forced: false }]), { status: "pending", stopId: "stop_3", forced: false });
-  assert.deepEqual(stopReport([]), { status: null, stopId: null, forced: null });
+  assert.deepEqual(stopReport([{ event: "stop", stop: { id: "stop_9", status: "pending" } }]), { status: "pending", stopId: "stop_9", forced: null, error: null });
+  assert.deepEqual(stopReport([{ stopId: "stop_3", status: "pending", forced: false }]), { status: "pending", stopId: "stop_3", forced: false, error: null });
+  assert.deepEqual(stopReport([]), { status: null, stopId: null, forced: null, error: null });
+  // boat's refusal while the status still reads pending (live): refused, in its own words.
+  const refusal = stopReport([{ operation: { id: "stop_4", status: "pending", error: "Final snapshot failed; stop aborted to protect unsaved data" } }]);
+  assert.deepEqual(refusal, { status: "pending", stopId: "stop_4", forced: null, error: "Final snapshot failed; stop aborted to protect unsaved data" });
+  assert.equal(stopOutcome(refusal, "idle"), "refused");
+  assert.equal(stopOutcome(refusal, "stopped"), "stopped", "stopped after all wins");
+  assert.deepEqual(stopReport([{ stop: { id: "stop_5", status: "failing", error: { message: "snapshot upload failed" } } }]).error, "snapshot upload failed");
 });
 
 test("Needs you says the exact commands, what would be lost, and why Boat didn't do it", () => {
   const now = Date.parse("2026-11-19T02:00:00Z");
   const asked = moveQuestion({ sandboxId: "bx_demo1", snapshotAt: "2026-11-19T00:41:00.000Z", reasons: ["task t_1 has 2 unpushed commits"], detail: LINE, fork: "healthy", now });
-  assert.equal(asked.question, "Sandbox bx_demo1 is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? If boat can't take a fresh snapshot, that loses what changed there since 00:41 UTC (its last completed snapshot).");
+  assert.equal(asked.question, "Sandbox bx_demo1 is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? If boat can't take a fresh snapshot, that loses what changed there since 00:41 UTC (its last completed snapshot), files git ignores (a local .env, build output) included.");
   assert.equal(asked.recommendation, "Move it if nothing written since then matters: run `boat stop bx_demo1` (if boat refuses it, `boat stop bx_demo1 --force`), then `bb boat sandbox resume bx_demo1`. Boat didn't do it itself because task t_1 has 2 unpushed commits. Otherwise wait for boat.dev to recover.");
   assert.equal(asked.context, `boat.dev said: ${LINE}. A test fork from the same snapshot restored fine on another node.`);
   assert.deepEqual(asked.options, ["Move it now", "Wait for boat.dev"]);
-  assert.match(moveQuestion({ sandboxId: "bx_demo1", snapshotAt: null, reasons: ["task t_1 is mid-turn"], detail: null, fork: "unknown", now }).question, /since its last completed snapshot \(boat didn't say when\)\.$/);
+  assert.match(moveQuestion({ sandboxId: "bx_demo1", snapshotAt: null, reasons: ["task t_1 is mid-turn"], detail: null, fork: "unknown", now }).question, /since its last completed snapshot \(boat didn't say when\), files git ignores \(a local \.env, build output\) included\.$/);
   const broken = brokenSnapshotQuestion({ sandboxId: "bx_demo1", detail: LINE });
   assert.match(broken.question, /doesn't restore, on its node or on a new one/);
   assert.match(broken.recommendation, /Don't force-stop it/);
@@ -203,4 +211,23 @@ test("the last completed snapshot from boat snapshots <id>, whatever list it com
   ] }]), "2026-11-19T00:41:00.000Z");
   assert.equal(lastCompletedSnapshot([{ id: "s1", createdAt: "2026-11-19T00:41:00Z" }, { id: "s2", createdAt: "2026-11-19T00:12:00Z" }]), "2026-11-19T00:41:00.000Z");
   assert.equal(lastCompletedSnapshot([{ items: [] }]), null);
+});
+
+test("boat stop through the CLI: a failed exit that still names its stop is that stop, refused in boat's words; anything else still throws", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "boat-stop-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const binary = join(dir, "boat");
+  writeFileSync(binary, [
+    "#!/bin/sh",
+    'case "$*" in',
+    `  *bx_pending*) echo '{"operation":{"id":"stop_1","status":"pending"}}' ;;`,
+    `  *bx_refuses*) echo '{"operation":{"id":"stop_2","status":"pending","error":"Final snapshot failed; stop aborted to protect unsaved data"}}'; exit 1 ;;`,
+    `  *bx_gone*) echo '{"event":"error","code":"not_found","error":"Sandbox not found","status":404}'; exit 1 ;;`,
+    "esac",
+  ].join("\n"));
+  chmodSync(binary, 0o755);
+  const boat = new BoatApi(new BoatCli(async () => binary));
+  assert.deepEqual(await boat.stop("bx_pending"), { status: "pending", stopId: "stop_1", forced: null, error: null });
+  assert.deepEqual(await boat.stop("bx_refuses"), { status: "pending", stopId: "stop_2", forced: null, error: "Final snapshot failed; stop aborted to protect unsaved data" });
+  await assert.rejects(boat.stop("bx_gone"), (error: unknown) => error instanceof BoatError && error.code === "not_found");
 });

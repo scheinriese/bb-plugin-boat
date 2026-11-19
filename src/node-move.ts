@@ -276,13 +276,16 @@ const UP = new Set(["provisioned", "cloning", "ready", "idle", "running"]);
 
 /**
  * Where a stop stands, from boat's report of it and the sandbox's state:
- * stopped; refused (boat said it failed, or the sandbox is up and boat says
- * nothing more); pending (boat still works on it: wait and ask its status
- * again, never stop again); superseded (another stop replaced it).
+ * stopped; refused (boat gave an error or a failing status, or the stop
+ * ended and the sandbox is still up, or the sandbox is up and boat says
+ * nothing); pending (boat still works on it, the final snapshot: wait and
+ * ask its status again, never stop again); superseded (another stop
+ * replaced it).
  */
 export function stopOutcome(report: StopReport, state: string | null): "stopped" | "refused" | "pending" | "superseded" {
   const status = report.status?.toLowerCase() ?? null;
   if (state !== null && STOPPED.has(state)) return "stopped";
+  if (report.error) return "refused";
   if (status !== null && /^(fail|refus|error)/.test(status)) return "refused";
   if (status === "superseded") return "superseded";
   if (status === "pending" || status === "running" || status === "in_progress") return "pending";
@@ -295,6 +298,11 @@ export function stopOutcome(report: StopReport, state: string | null): "stopped"
 export function forcedOutcome(report: StopReport, state: string | null): "stopped" | "pending" {
   if (state !== null && STOPPED.has(state)) return "stopped";
   return "pending";
+}
+
+/** boat's own words for a refused stop, for the user ("" when it gave none). */
+export function refusalText(report: StopReport | null | undefined): string {
+  return report?.error ? `boat said: "${report.error.split("\n")[0]!.slice(0, 300)}"` : "";
 }
 
 /** The commands that move it by hand. */
@@ -331,7 +339,7 @@ export function movingMessage(track: HydratorTrack | null | undefined, now: numb
 export function moveQuestion(input: { sandboxId: string; snapshotAt: string | null; reasons: readonly string[]; detail: string | null; fork: ForkCheck; now: number }) {
   const since = snapshotText(input.snapshotAt, input.now);
   return {
-    question: `Sandbox ${input.sandboxId} is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? If boat can't take a fresh snapshot, that loses what changed there since ${since}.`,
+    question: `Sandbox ${input.sandboxId} is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? If boat can't take a fresh snapshot, that loses what changed there since ${since}, files git ignores (a local .env, build output) included.`,
     recommendation: `Move it if nothing written since then matters: run ${moveCommands(input.sandboxId)}. Boat didn't do it itself because ${input.reasons.join("; ")}. Otherwise wait for boat.dev to recover.`,
     options: ["Move it now", "Wait for boat.dev"],
     context: `boat.dev said: ${input.detail ?? "(no details)"}.${forkText(input.fork)}`,

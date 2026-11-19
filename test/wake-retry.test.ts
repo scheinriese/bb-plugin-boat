@@ -357,7 +357,7 @@ test("a task with unpushed commits: Boat asks first, with the exact commands and
   assert.ok(!e.boat.calls.some((call) => call.startsWith(`stop ${e.sandboxId}`)), "nothing is stopped without the user");
   const decision = e.store.decisions({ statuses: ["open"] }).find((entry) => entry.shortLabel === "Sandbox stuck on a node")!;
   assert.equal(decision.orchestratorThreadId, "thr_orch");
-  assert.equal(decision.question, `Sandbox ${e.sandboxId} is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? If boat can't take a fresh snapshot, that loses what changed there since 00:41 UTC (its last completed snapshot).`);
+  assert.equal(decision.question, `Sandbox ${e.sandboxId} is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? If boat can't take a fresh snapshot, that loses what changed there since 00:41 UTC (its last completed snapshot), files git ignores (a local .env, build output) included.`);
   assert.equal(decision.recommendation, `Move it if nothing written since then matters: run \`boat stop ${e.sandboxId}\` (if boat refuses it, \`boat stop ${e.sandboxId} --force\`), then \`bb boat sandbox resume ${e.sandboxId}\`. Boat didn't do it itself because task ${e.task.id} has 2 unpushed commits. Otherwise wait for boat.dev to recover.`);
   assert.match(decision.context ?? "", /HYDRATOR FAILED attempt 77 .*status code 503\. A test fork from the same snapshot restored fine on another node\.$/);
   assert.match(e.store.events(e.task.id, 50).filter((event) => event.kind === WAKE_EVENT).at(-1)!.text, /could lose what changed since 00:41 UTC \(its last completed snapshot\), and task t_\w+ has 2 unpushed commits, so it's under Needs you\.$/);
@@ -475,3 +475,56 @@ test("bb's daemon broken by an update: its own kind, Needs you with the repair b
   assert.equal(await e.guard.machine(e.wake(), async () => "up"), "up");
   assert.equal(e.store.decisions({ statuses: ["open"] }).length, 1);
 });
+
+test("checked again right before --force: a turn that started while the stop was pending means Needs you, not a forced stop", async () => {
+  const e = await env({ moves: {} });
+  e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
+  e.boat.stopBehavior = "pending";
+  await failUntilStuck(e, { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" });
+  await e.pass();
+  assert.equal((await e.guard.scheduled(orch.id))!.move!.state, "stopping");
+  assert.equal(await e.guard.moving(orch.id), true, "Boat's own dispatches wait meanwhile");
+  // The sandbox is up while boat works on the stop: a turn starts there, then boat gives up on the stop.
+  e.setThreads([{ id: "thr_orch", title: "Orchestrator", status: "active" }]);
+  e.boat.stopStatuses.set("stop_1", "failing");
+  e.advance(30_000);
+  await e.pass();
+  assert.equal((await e.guard.scheduled(orch.id))!.move!.state, "asked");
+  assert.ok(!e.boat.calls.some((call) => call.includes("--force")));
+  assert.equal(await e.guard.moving(orch.id), false);
+  assert.match(e.store.decisions({ statuses: ["open"] })[0]!.recommendation, /because the chat "Orchestrator" is mid-turn\./);
+});
+
+test("a stop boat refuses with its own words: forced at once when still safe, quoted when it goes to the user", async () => {
+  const safe = await env({ moves: {} });
+  safe.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  const box = safe.boat.addSandbox("bx_orchbox", "small", "idle");
+  safe.boat.stopBehavior = "error";
+  await failUntilStuck(safe, { ...safe.wake(), sandboxId: box.id, hostId: "host_orch" });
+  await safe.pass();
+  // No 20-minute wait for a stop boat already refused.
+  assert.deepEqual(safe.boat.calls.filter((call) => call.startsWith(`stop ${box.id}`)), [`stop ${box.id}`, `stop ${box.id} --force`]);
+  assert.equal((await safe.guard.scheduled(box.id))!.move!.state, "moved");
+  const risky = await env({ moves: {} });
+  risky.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  const other = risky.boat.addSandbox("bx_orchbox", "small", "idle");
+  risky.boat.stopBehavior = "error";
+  await failUntilStuck(risky, { ...risky.wake(), sandboxId: other.id, hostId: "host_orch" });
+  // Clean when the move starts; a file appears before Boat would force.
+  const exec = risky.boat.exec.bind(risky.boat);
+  let scans = 0;
+  risky.boat.exec = async (sandboxId, script, options) => {
+    if (script.includes("BOAT_GIT_SCAN_END")) {
+      scans += 1;
+      risky.setScan(scans === 1 ? "BOAT_GIT_SCAN_END\n" : "BOAT_GIT_AT ahead=0 dirty=1 stash=0 /home/user/notes\nBOAT_GIT_SCAN_END\n");
+    }
+    return exec(sandboxId, script, options);
+  };
+  await risky.pass();
+  assert.equal(scans, 2, "the facts are read again before forcing");
+  assert.ok(!risky.boat.calls.some((call) => call.includes("--force")));
+  const decision = risky.store.decisions({ statuses: ["open"] })[0]!;
+  assert.match(decision.recommendation, /because boat refused the plain stop \(boat said: "Final snapshot failed; stop aborted to protect unsaved data \(lazy volume not fully hydrated\)"\); ~\/notes has changes that aren't committed\./);
+});
+

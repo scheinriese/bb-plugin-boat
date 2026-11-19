@@ -9,6 +9,7 @@
 // also block on files not restored yet over exec; what helps is waiting
 // (src/wake-retry.ts) and keeping SSH logins from hanging (src/login-scripts.ts).
 import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { reviewerSchema } from "../contract-review.ts";
@@ -21,6 +22,7 @@ import { bootstrapExecutor, bootstrapFailureMessage, retryableBootstrap } from "
 import { directWakes, type WakeGuard } from "./wake-retry.ts";
 import { createLoginQuieter, type QuietLogin } from "./login-scripts.ts";
 import { TeardownBackoff } from "./teardown-backoff.ts";
+import { stopOutcome } from "./node-move.ts";
 
 export const MACHINE_PROVIDER_ID = "boat-sandbox";
 
@@ -131,6 +133,8 @@ export function registerBoatMachine(
     quietLogins?: (sandboxId: string, signal?: AbortSignal) => Promise<QuietLogin>;
     /** Tests: the teardown backoff's clock. */
     now?: () => number;
+    /** How long a suspend follows a pending stop, and how often it asks (default 5 s, up to 90 s). */
+    stopWait?: { pollMs: number; maxMs: number };
   },
 ): void {
   const { boat, cli, service } = deps;
@@ -138,6 +142,7 @@ export function registerBoatMachine(
   const quietLogins = deps.quietLogins ?? createLoginQuieter(boat, (line) => bb.log?.warn?.(line));
   /** After boat.dev fails a stop or delete, bb's retries wait (src/teardown-backoff.ts). */
   const teardown = new TeardownBackoff(deps.now);
+  const stopWait = deps.stopWait ?? { pollMs: 5_000, maxMs: 90_000 };
 
   /** The machine's sandbox holds a headless task's work: bb forgets the machine, the sandbox stays. */
   async function keptSandbox(key: string): Promise<boolean> {
@@ -247,7 +252,7 @@ export function registerBoatMachine(
         return { status: "failed" as const, message: teardown.failed(`key:${key}`, "delete", error) };
       }
     },
-    async suspend({ resource, hostId }) {
+    async suspend({ resource, hostId, signal }) {
       const { sandboxId } = resourceSchema.parse(resource);
       const held = teardown.held(sandboxId, "stop");
       if (held !== null) throw new Error(held);
@@ -258,19 +263,27 @@ export function registerBoatMachine(
         // Already stopped (for example by boat's auto-stop) is fine: the disk is kept.
         if (sandbox !== null && ACTIVE_STATES.has(sandbox.state)) {
           stop = await boat.stop(sandboxId);
-          // boat may not stop it: it can't snapshot a disk it hasn't finished restoring.
-          if (stop.status !== null && /^fail/i.test(stop.status)) refused = `the stop is ${stop.status}`;
-          else {
-            const after = await boat.findInfo(sandboxId);
-            if (after !== null && ACTIVE_STATES.has(after.state)) refused = `it's still ${after.state}`;
+          // boat usually answers "pending" while it takes the final snapshot: follow that stop
+          // a while (its status, never a second stop). It may refuse: it can't snapshot a disk
+          // it hasn't finished restoring.
+          let state = (await boat.findInfo(sandboxId))?.state ?? null;
+          let outcome = stopOutcome(stop, state);
+          for (let polls = Math.ceil(stopWait.maxMs / stopWait.pollMs); outcome === "pending" && stop.stopId !== null && polls > 0; polls--) {
+            await delay(stopWait.pollMs, undefined, { signal });
+            stop = { ...(await boat.stopStatus(sandboxId, stop.stopId)), stopId: stop.stopId };
+            state = (await boat.findInfo(sandboxId))?.state ?? null;
+            outcome = stopOutcome(stop, state);
           }
+          // Still pending: boat goes on with it, as a stop always did.
+          if (outcome === "refused") refused = stop.error ? `boat said: "${stop.error.split("\n")[0]!.slice(0, 200)}"` : stop.status !== null && /^fail/i.test(stop.status) ? `the stop is ${stop.status}` : `it's still ${state ?? "up"}`;
         }
       } catch (error) {
+        signal?.throwIfAborted();
         throw new Error(teardown.failed(sandboxId, "stop", error));
       }
       if (refused !== null) {
         const moving = (await deps.wakes?.stopRefused?.(sandboxId, hostId ?? null, stop).catch(() => false)) ?? false;
-        throw new Error(teardown.failed(sandboxId, "stop", new Error(moving ? "it can't snapshot a disk it hasn't finished restoring; Boat moves it off its node, or asks first under Needs you" : `boat didn't stop it: ${refused}`)));
+        throw new Error(teardown.failed(sandboxId, "stop", new Error(moving ? `it can't snapshot a disk it hasn't finished restoring${stop?.error ? ` (${refused})` : ""}; Boat moves it off its node, or asks first under Needs you` : `boat didn't stop it: ${refused}`)));
       }
       teardown.succeeded(sandboxId, "stop");
       return { resource };

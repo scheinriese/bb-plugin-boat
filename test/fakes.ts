@@ -276,13 +276,18 @@ export class FakeBoat {
    * stays up); pending (boat gives a stop id and works on it: the sandbox
    * stays up while stopStatuses says pending); quiet (nothing said, it stays up).
    */
-  stopBehavior: "stops" | "refused" | "pending" | "quiet" = "stops";
-  /** What `boat stop --status <stop id>` says, per stop id. */
+  stopBehavior: "stops" | "refused" | "pending" | "quiet" | "error" = "stops";
+  /** What `boat stop --status <stop id>` says, per stop id, and boat's error on it (error: boat refuses with these words, the status still pending). */
   stopStatuses = new Map<string, string>();
+  stopErrors = new Map<string, string>();
+  stopError = "Final snapshot failed; stop aborted to protect unsaved data (lazy volume not fully hydrated)";
+  /** A pending stop completes after this many status reads (null: it stays pending). */
+  pendingCompletesAfter: number | null = null;
+  private statusReads = new Map<string, number>();
   /** --force while a stop is pending hands that stop back (forced false), as boat does. */
   forceWhilePending = false;
   private stopIds = 0;
-  async stop(id: string, _signal?: AbortSignal, options: { force?: boolean } = {}): Promise<{ status: string | null; stopId: string | null; forced: boolean | null }> {
+  async stop(id: string, _signal?: AbortSignal, options: { force?: boolean } = {}): Promise<{ status: string | null; stopId: string | null; forced: boolean | null; error?: string | null }> {
     this.calls.push(`stop ${id}${options.force ? " --force" : ""}`);
     const sandbox = this.sandboxes.get(id);
     if (options.force) {
@@ -304,16 +309,23 @@ export class FakeBoat {
         return { status: "pending", stopId, forced: null };
       case "quiet":
         return { status: null, stopId: null, forced: null };
+      case "error":
+        this.stopStatuses.set(stopId, "pending");
+        this.stopErrors.set(stopId, this.stopError);
+        return { status: "pending", stopId, forced: null, error: this.stopError };
     }
   }
-  async stopStatus(id: string, stopId: string): Promise<{ status: string | null; stopId: string | null; forced: null }> {
+  async stopStatus(id: string, stopId: string): Promise<{ status: string | null; stopId: string | null; forced: null; error: string | null }> {
     this.calls.push(`stop ${id} --status ${stopId}`);
+    const reads = (this.statusReads.get(stopId) ?? 0) + 1;
+    this.statusReads.set(stopId, reads);
+    if (this.stopStatuses.get(stopId) === "pending" && this.pendingCompletesAfter !== null && reads >= this.pendingCompletesAfter) this.stopStatuses.set(stopId, "completed");
     const status = this.stopStatuses.get(stopId) ?? null;
     if (status === "completed") {
       const sandbox = this.sandboxes.get(id);
       if (sandbox) sandbox.state = "stopped";
     }
-    return { status, stopId, forced: null };
+    return { status, stopId, forced: null, error: this.stopErrors.get(stopId) ?? null };
   }
   /** Test forks made (`boat fork --no-snapshots --wait`), and how one fails. */
   forks: { from: string; id: string; noSnapshots: boolean; ttlSeconds: number | null }[] = [];

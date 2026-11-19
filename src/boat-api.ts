@@ -784,15 +784,22 @@ export interface StopReport {
   status: string | null;
   stopId: string | null;
   forced: boolean | null;
+  /**
+   * boat's reason when it won't stop it (live: "Final snapshot failed; stop
+   * aborted to protect unsaved data …"), even while the status still reads
+   * pending. Non-null: refused. Absent or null: none given.
+   */
+  error?: string | null;
 }
 
 export function stopReport(records: JsonRecord[]): StopReport {
-  const report: StopReport = { status: null, stopId: null, forced: null };
+  const report: StopReport = { status: null, stopId: null, forced: null, error: null };
   for (const record of [...records].reverse()) {
     const stop = rec(record.stop) ?? rec(record.operation) ?? record;
     report.status ??= str(stop.status) ?? str(record.status);
     report.stopId ??= str(stop.stopId) ?? str(record.stopId) ?? str(stop.stop_id) ?? (str(stop.id)?.startsWith("stop") ? str(stop.id) : null);
     report.forced ??= bool(stop.forced) ?? bool(record.forced);
+    report.error ??= str(stop.error) ?? str(rec(stop.error)?.message) ?? (stop === record ? null : str(record.error) ?? str(rec(record.error)?.message));
   }
   return report;
 }
@@ -966,14 +973,25 @@ export class BoatApi {
    * returned a stop still pending instead).
    */
   async stop(id: string, signal?: AbortSignal, options: { force?: boolean } = {}): Promise<StopReport> {
-    const result = await this.cli.run(["stop", id, ...(options.force === true ? ["--force"] : [])], { timeoutMs: 180_000, signal });
-    return stopReport(result.records);
+    return this.stopCall(["stop", id, ...(options.force === true ? ["--force"] : [])], 180_000, signal);
   }
 
   /** An earlier stop's status (`boat stop <id> --status <stop id>`): reads it, never stops again. */
   async stopStatus(id: string, stopId: string, signal?: AbortSignal): Promise<StopReport> {
-    const result = await this.cli.run(["stop", id, "--status", stopId], { timeoutMs: 60_000, signal });
-    return stopReport(result.records);
+    return this.stopCall(["stop", id, "--status", stopId], 60_000, signal);
+  }
+
+  /** A stop call that failed but still names its stop comes back as that stop, refused (its error). */
+  private async stopCall(args: string[], timeoutMs: number, signal?: AbortSignal): Promise<StopReport> {
+    const result = await this.cli.run(args, { timeoutMs, signal, allowFailure: true });
+    const report = stopReport(result.records);
+    if (result.exitCode === 0) return report;
+    const failure = [...result.records].reverse().find((record) => record.event === "error");
+    const said = str(failure?.error) ?? str(failure?.message) ?? (result.stderr.trim().split("\n").at(-1) || `boat stop exited with code ${result.exitCode}`);
+    if (report.stopId === null && report.status === null) {
+      throw new BoatError(said, { code: str(failure?.code) ?? "boat_failed", status: num(failure?.status), exitCode: result.exitCode });
+    }
+    return { ...report, error: report.error ?? said };
   }
 
   /**

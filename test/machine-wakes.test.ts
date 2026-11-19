@@ -32,7 +32,7 @@ function setup(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean } } 
     async delete(key: string) { kvValues.delete(key); },
   };
   let wakes: ReturnType<typeof createWakeGuard> | null = null;
-  const fake = makeService({ wakes: { pacer, forget: (sandboxId) => wakes!.forget(sandboxId) } });
+  const fake = makeService({ wakes: { pacer, forget: (sandboxId) => wakes!.forget(sandboxId), moving: (sandboxId) => wakes!.moving(sandboxId) } });
   wakes = createWakeGuard({ pacer, kv, boat: fake.boat as never, store: fake.store, now: () => at, threadsOn: async () => [], ...(options.moves ? { moves: options.moves } : {}) });
   // Room for every sandbox here: pacing is what's tested, not the plan's limit.
   fake.boat.limitsValue = { ...fake.boat.limitsValue, maxActiveSandboxes: 10 };
@@ -57,7 +57,7 @@ function setup(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean } } 
     experimental_environments: { register: () => undefined },
     storage: { kv },
   } as unknown as BbPluginApi;
-  registerBoatMachine(bb, { boat: fake.boat as unknown as BoatApi, cli: { binary: async () => "/bin/boat" } as unknown as BoatCli, service: fake.service, settings: async () => defaultSettings(), wakes, now: () => at });
+  registerBoatMachine(bb, { boat: fake.boat as unknown as BoatApi, cli: { binary: async () => "/bin/boat" } as unknown as BoatCli, service: fake.service, settings: async () => defaultSettings(), wakes, now: () => at, stopWait: { pollMs: 1, maxMs: 5 } });
   const report = { steps: [] as string[], step(text: string) { this.steps.push(text); }, log: () => undefined };
   const lifecycle = (resource: unknown) => ({ resource, report, signal: new AbortController().signal, hostId: "host_123456" });
   return {
@@ -206,6 +206,8 @@ test("a plain stop boat keeps refusing, the node failing the same file: Boat wat
   assert.equal(plan.move!.state, "due");
   assert.equal(plan.move!.resume, false);
   await assert.rejects(suspend(), /Boat moves it off its node, or asks first under Needs you/);
+  // Meanwhile no Boat work goes there (a follow-up's bringUp, a start, a ship).
+  await assert.rejects(env.service.bringUp(sandboxId), /^TaskError: Boat is moving sandbox bx_\w+ to a new boat\.dev node: its node keeps failing its disk\.$/);
   // No chat at work there (none listed), clean checkouts: the forced stop, since boat refused the plain one.
   assert.equal(await env.wakes.tick(), sandboxId);
   await env.wakes.idle();
@@ -225,4 +227,35 @@ test("a refused stop with the disk only restoring (or healthy) is only reported 
   }
   assert.equal(await env.wakes.scheduled(created.resource!.sandboxId), null);
   assert.ok(!env.boat.calls.some((call) => call.includes("--force")));
+});
+
+test("a plain stop boat answers pending isn't a failed suspend: Boat follows it until boat finishes", async () => {
+  const env = setup();
+  const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
+  const sandboxId = created.resource!.sandboxId;
+  env.boat.stopBehavior = "pending";
+  env.boat.pendingCompletesAfter = 2;
+  await env.provider().suspend(env.lifecycle(created.resource));
+  assert.equal(env.boat.sandboxes.get(sandboxId)!.state, "stopped");
+  assert.deepEqual(env.boat.calls.filter((call) => call.startsWith(`stop ${sandboxId}`)), [`stop ${sandboxId}`, `stop ${sandboxId} --status stop_1`, `stop ${sandboxId} --status stop_1`], "its status, never a second stop");
+});
+
+test("a stop still pending when the suspend's wait ends counts as done, as a stop always did: boat goes on with it", async () => {
+  const env = setup();
+  const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
+  const sandboxId = created.resource!.sandboxId;
+  env.boat.stopBehavior = "pending";
+  await env.provider().suspend(env.lifecycle(created.resource));
+  assert.equal(env.boat.calls.filter((call) => call === `stop ${sandboxId}`).length, 1);
+  assert.ok(env.boat.calls.filter((call) => call.startsWith(`stop ${sandboxId} --status`)).length >= 1);
+  // Not held: it wasn't a failure.
+  env.boat.sandboxes.get(sandboxId)!.state = "stopped";
+  await env.provider().suspend(env.lifecycle(created.resource));
+});
+
+test("a stop boat refuses with its own words is refused, and they're quoted", async () => {
+  const env = setup();
+  const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
+  env.boat.stopBehavior = "error";
+  await assert.rejects(env.provider().suspend(env.lifecycle(created.resource)), /^Error: boat\.dev failed to stop this sandbox \(boat didn't stop it: boat said: "Final snapshot failed; stop aborted to protect unsaved data \(lazy volume not fully hydrated\)"\)\. Boat asks it again at \d\d:\d\d UTC\.$/);
 });

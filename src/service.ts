@@ -263,7 +263,12 @@ export interface ServiceHooks {
    * takes a slot from the account's pacer; an explicit resume starts the
    * sandbox's retry plan over. Absent: resumes go out at once.
    */
-  wakes?: { pacer: WakePacer; forget(sandboxId: string): Promise<void> };
+  wakes?: {
+    pacer: WakePacer;
+    forget(sandboxId: string): Promise<void>;
+    /** Boat is moving the sandbox to a new node (src/wake-retry.ts): nothing is sent there meanwhile. */
+    moving?(sandboxId: string): Promise<boolean>;
+  };
 }
 
 export interface StartTaskInput {
@@ -985,6 +990,10 @@ export class BoatService {
    * within the account's wake pacing).
    */
   private async ensureRunning(sandboxId: string, signal?: AbortSignal, given?: WakePermit): Promise<Sandbox> {
+    // A move to a new node stops it, maybe dropping what's written meanwhile: no work goes there now.
+    if (await this.hooks.wakes?.moving?.(sandboxId)) {
+      throw new TaskError(`Boat is moving sandbox ${sandboxId} to a new boat.dev node: its node keeps failing its disk.`, "sandbox_moving", "Try again once it's back, in a few minutes (or see Needs you).");
+    }
     const deadline = Date.now() + TRANSITION_WAIT_MS;
     // The wake slot, taken once before the slot lock (a wait there would hold up creates).
     let permit: WakePermit | null = given ?? null;

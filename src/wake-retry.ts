@@ -29,6 +29,7 @@ import {
   moveQuestion,
   movingMessage,
   parseHydratorFailure,
+  refusalText,
   snapshotText,
   stopOutcome,
   stuckOnNode,
@@ -165,6 +166,8 @@ export interface WakeGuard {
   stopRefused(sandboxId: string, hostId: string | null, stop?: StopReport | null, signal?: AbortSignal): Promise<boolean>;
   /** Resolves once the move steps started so far are done (tests). */
   idle(): Promise<void>;
+  /** Boat is moving this sandbox (its move is due or its stop is followed): no work is sent there meanwhile. */
+  moving(sandboxId: string): Promise<boolean>;
 }
 
 export interface WakeGuardDeps {
@@ -324,7 +327,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
     const move = entry.move!;
     await tracks.put(entry.sandboxId, null);
     const stopped = lost
-      ? `boat.dev couldn't take a fresh snapshot of this sandbox, so Boat stopped it keeping its last completed snapshot (${snapshotText(move.snapshotAt ?? null, at)}).`
+      ? `boat.dev couldn't take a fresh snapshot of this sandbox, so Boat stopped it keeping its last completed snapshot (${snapshotText(move.snapshotAt ?? null, at)}); files written after it, files git ignores included, aren't kept.`
       : "boat.dev stopped this sandbox with a fresh snapshot, so nothing was lost.";
     log(`node move: ${entry.sandboxId} stopped (${lost ? "forced" : "plain"})`);
     if (!move.resume) {
@@ -344,7 +347,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
     const state = (await deps.boat.findInfo(entry.sandboxId).catch(() => null))?.state ?? null;
     let outcome = move.forced === true ? forcedOutcome(report, state) : stopOutcome(report, state);
     // Up, and boat said nothing more of the stop: look once more before calling it refused.
-    if (outcome === "refused" && move.forced !== true && report.status === null && report.stopId === null) {
+    if (outcome === "refused" && move.forced !== true && !report.error && report.status === null && report.stopId === null) {
       if (move.sawUpAt == null || at - move.sawUpAt < STOP_POLL_MS) {
         await update(entry.sandboxId, { ...entry, move: { ...move, state: "stopping", sawUpAt: move.sawUpAt ?? at, nextAt: at + STOP_POLL_MS }, lastAt: at });
         return;
@@ -352,13 +355,27 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
     }
     if (outcome === "stopped") return moved(entry, move.forced === true);
     if (outcome === "refused" && move.forced !== true) {
-      // boat refused the plain stop: now --force (keeps the last completed snapshot).
+      // boat refused the plain stop: now --force (keeps the last completed snapshot). The
+      // stop may have been pending a while, with the sandbox up: look again that nothing
+      // there would be lost now (a turn may have started meanwhile).
+      const said = refusalText(report);
+      const hostId = entry.hostId;
+      const recheck = moveDecision(await moveFacts(deps.boat, entry.sandboxId, deps.store.liveSandboxTasks(entry.sandboxId), hostId !== null && deps.threadsOn ? () => deps.threadsOn!(hostId) : null));
+      if (!recheck.auto) {
+        const reasons = [...(said ? [`boat refused the plain stop (${said})`] : []), ...recheck.reasons];
+        log(`node move: ${entry.sandboxId}: not forcing, ${recheck.reasons.join("; ")}`);
+        return askMove(
+          entry,
+          moveQuestion({ sandboxId: entry.sandboxId, snapshotAt: move.snapshotAt ?? null, reasons, detail: entry.detail, fork: move.fork ?? "skipped", now: at }),
+          `boat refused to stop this sandbox with a fresh snapshot${said ? ` (${said})` : ""}, and forcing it now could lose work: ${recheck.reasons.join("; ")}. It's under Needs you.`,
+        );
+      }
       let forced: StopReport;
       try {
         forced = await deps.boat.stop(entry.sandboxId, undefined, { force: true });
       } catch (error) {
         log(`node move: force stop ${entry.sandboxId}: ${errorText(error)}`);
-        return askMove(entry, moveQuestion({ sandboxId: entry.sandboxId, snapshotAt: move.snapshotAt ?? null, reasons: [`boat refused the forced stop too (${errorText(error).split("\n")[0]})`], detail: entry.detail, fork: move.fork ?? "skipped", now: at }), `Boat couldn't move this sandbox to a new boat.dev node: boat refused the forced stop (${errorText(error).split("\n")[0]}). It's under Needs you.`);
+        return askMove(entry, moveQuestion({ sandboxId: entry.sandboxId, snapshotAt: move.snapshotAt ?? null, reasons: [...(said ? [`boat refused the plain stop (${said})`] : []), `boat refused the forced stop too (${errorText(error).split("\n")[0]})`], detail: entry.detail, fork: move.fork ?? "skipped", now: at }), `Boat couldn't move this sandbox to a new boat.dev node: boat refused the forced stop (${errorText(error).split("\n")[0]}). It's under Needs you.`);
       }
       const after = (await deps.boat.findInfo(entry.sandboxId).catch(() => null))?.state ?? null;
       const next: WakeRetry = { ...entry, move: { ...move, state: "stopping", forced: true, stopId: forced.stopId ?? move.stopId ?? null, nextAt: at + STOP_POLL_MS }, lastAt: at };
@@ -580,6 +597,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
     },
 
     scheduled: (sandboxId) => plans.get(sandboxId),
+    moving: async (sandboxId) => moving(await plans.get(sandboxId)),
     async idle() {
       await Promise.allSettled([...steps]);
     },
