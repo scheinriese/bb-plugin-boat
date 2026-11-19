@@ -2,7 +2,8 @@ import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidel
 // `bb boat …` — the agent- and human-facing command line.
 import { PluginCliError, cliCommand, defineCli, type PluginCliContext } from "@get-bb/plugin-sdk";
 import { dashboardUrl } from "./providers/boat/api.ts";
-import { MACHINE_TYPES, ProviderError, autoStopHours, type MachineType } from "./providers/types.ts";
+import { DEFAULT_PROVIDER_ID, MACHINE_TYPES, PROVIDER_IDS, PROVIDER_NAMES, ProviderError, autoStopHours, type MachineType, type ProviderId } from "./providers/types.ts";
+import { instaboxDoctorText } from "./providers/instabox/setup.ts";
 import { describeClose } from "./close-outcome.ts";
 import {
   agentLine,
@@ -166,9 +167,17 @@ export function buildCli(runtime: Runtime) {
         async run({ options }) {
           return guard(async () => {
             const status = await setupStatus(runtime, true);
+            // Instabox's own checks, when it's turned on (it then counts toward the exit code).
+            const instabox = runtime.providers ? await runtime.providers.instabox({ force: true }).catch(() => null) : null;
+            const checked = instabox !== null && instabox.turnedOn ? instabox : null;
+            const ok = status.ok && (checked === null || checked.ok);
             return {
-              exitCode: status.ok ? 0 : 1,
-              stdout: `${options.json ? JSON.stringify({ ok: status.ok, checks: status.checks }, null, 2) : doctorText(status)}\n`,
+              exitCode: ok ? 0 : 1,
+              stdout: `${
+                options.json
+                  ? JSON.stringify({ ok, checks: status.checks, ...(checked ? { instabox: { ok: checked.ok, checks: checked.checks } } : {}) }, null, 2)
+                  : `${doctorText(status)}${checked ? `\n\n${instaboxDoctorText(checked)}` : ""}`
+              }\n`,
             };
           });
         },
@@ -190,6 +199,19 @@ export function buildCli(runtime: Runtime) {
               // boat just failed: the cached checks may be out of date.
               setup = await setupStatus(runtime, true).catch(() => setup);
             }
+            // Every other enabled provider's room (boat.dev's is the line above it).
+            const others = await Promise.all(
+              service.sandboxProviders.enabled
+                .filter((provider) => provider !== service.sandboxProviders.default)
+                .map(async (provider) => {
+                  try {
+                    const room = await service.capacity(ctx.signal, undefined, provider);
+                    return { provider: provider.id, name: provider.displayName, limits: room.limits, active: room.active.length, cap: room.cap, free: room.free, error: null };
+                  } catch (error) {
+                    return { provider: provider.id, name: provider.displayName, limits: null, active: 0, cap: null, free: null, error: error instanceof ProviderError ? error.explain().message : String(error) };
+                  }
+                }),
+            );
             const open = service.store.list({ statuses: OPEN_STATUSES });
             const orchestrator = ctx.threadId ? await runtime.isOrchestrator(ctx.threadId).catch(() => false) : false;
             const project = await runtime.projectForThread(ctx.threadId);
@@ -208,12 +230,14 @@ export function buildCli(runtime: Runtime) {
               openTasks: open,
               thisThreadIsOrchestrator: orchestrator,
               access: access.map(({ project: entry, access: result }) => ({ project: entry.id, ...result })),
+              ...(others.length > 0 ? { providers: others } : {}),
             };
             return out(value, options.json, () =>
               [
                 setup?.summary ?? null,
                 capacity ? `boat: ${limitsLine(capacity.limits, capacity.active.length, capacity.cap)}` : `boat: ${boatProblem ?? "not reachable"}`,
                 capacity?.limits?.summary ? `plan: ${capacity.limits.summary}` : null,
+                ...others.map((entry) => `${entry.name}: ${entry.error ?? limitsLine(entry.limits, entry.active, entry.cap)}`),
                 tasksAtOnceLine(tasksBeforeAsking),
                 ctx.threadId ? `this thread: ${orchestrator ? "orchestrator" : "not an orchestrator"}` : null,
                 project ? `project: ${project.name} (${project.repos.map((r) => `${r.repo}@${r.baseBranch}`).join(", ")}; environment ${project.environment ?? "default"})` : null,
@@ -232,22 +256,27 @@ export function buildCli(runtime: Runtime) {
 
       // ---------------------------------------------------------------- sandboxes
       "sandbox list": cliCommand({
-        summary: "List boat sandboxes (running by default)",
+        summary: "List sandboxes on every enabled provider (running by default)",
         options: { all: { type: "boolean", description: "Include stopped and failed sandboxes" }, json },
         async run({ options }, ctx) {
           return guard(async () => {
-            const sandboxes = await service.sandboxProviders.default.list({ all: options.all, signal: ctx.signal });
-            return out(sandboxes, options.json, () =>
-              sandboxes.length === 0
-                ? "No sandboxes."
-                : sandboxes
-                    .map((sandbox) =>
-                      sandboxLine(
-                        sandbox,
-                        service.store.liveSandboxTasks(sandbox.id).map((task) => task.id),
-                      ),
-                    )
-                    .join("\n"),
+            const { sandboxes, failed } = await service.listSandboxes({ all: options.all, signal: ctx.signal });
+            // With boat.dev alone the list reads as it always did; with another provider each line names its own.
+            const several = service.sandboxProviders.enabled.length > 1;
+            return out(several || failed.length > 0 ? { sandboxes, failed } : sandboxes.map(({ provider: _provider, ...sandbox }) => sandbox), options.json, () =>
+              [
+                sandboxes.length === 0
+                  ? "No sandboxes."
+                  : sandboxes
+                      .map((sandbox) =>
+                        `${several ? `${PROVIDER_NAMES[sandbox.provider as keyof typeof PROVIDER_NAMES] ?? sandbox.provider}  ` : ""}${sandboxLine(
+                          sandbox,
+                          service.store.liveSandboxTasks(sandbox.id).map((task) => task.id),
+                        )}`,
+                      )
+                      .join("\n"),
+                ...failed.map((entry) => `${PROVIDER_NAMES[entry.provider as keyof typeof PROVIDER_NAMES] ?? entry.provider}: couldn't list its sandboxes (${entry.error})`),
+              ].join("\n"),
             );
           });
         },
@@ -1513,6 +1542,7 @@ export function buildCli(runtime: Runtime) {
               "never: Never continue on paid Claude. Its chats stopped at a usage limit wait for included usage. allow: they continue when paid Claude is available (default)",
           },
           "user-approved": { type: "boolean", description: "The user approved XLarge sandboxes for this project" },
+          "runs-on": { type: "enum", values: [...PROVIDER_IDS], description: "Where its new tasks' sandboxes run: boat (boat.dev, the default) or instabox (needs Instabox turned on)" },
           json,
         },
         async run({ positionals, options }, ctx) {
@@ -1539,6 +1569,7 @@ export function buildCli(runtime: Runtime) {
                 ...(instructions !== undefined ? { instructions: instructions.trim() === "none" ? "" : instructions } : {}),
                 ...(options.size !== undefined ? { machineType: options.size === "none" ? null : (options.size as MachineType) } : {}),
                 ...(options["paid-claude"] !== undefined ? { neverPaidClaude: options["paid-claude"] === "never" } : {}),
+                ...(options["runs-on"] !== undefined ? { sandboxProvider: options["runs-on"] as ProviderId } : {}),
               });
             } catch (error) {
               throw new PluginCliError(error instanceof Error ? error.message : String(error), { code: "invalid_value" });
@@ -1591,6 +1622,71 @@ export function buildCli(runtime: Runtime) {
             ];
             return out({ path, settings: Object.keys(file.settings).length, projects: file.projects.length, customTiers: file.modelTiers !== null, customProtocol: file.protocol !== null }, options.json, () =>
               `Saved ${path}: ${parts.join(", ")}. Keep it private. Restore it with \`bb boat config import ${options.output}\`.`,
+            );
+          });
+        },
+      }),
+      "config runs-on": cliCommand({
+        summary: "Show where each project's tasks run, or set one project's: boat (boat.dev, the default) or instabox",
+        description:
+          "Without arguments: every project with its provider. With a project and a provider: its new tasks' sandboxes run there (tasks already started stay where they are). Instabox needs `bb boat config set instaboxEnabled true` and its API key in bb's settings for this plugin; `bb boat doctor` checks it.",
+        positionals: [
+          { name: "project", description: "Project id or name", required: false },
+          { name: "provider", description: "boat or instabox", required: false },
+        ],
+        options: { json },
+        async run({ positionals, options }) {
+          return guard(async () => {
+            const name = (id: string) => PROVIDER_NAMES[id as ProviderId] ?? id;
+            if (positionals.project === undefined) {
+              const rows = runtime.projects.list().map((project) => ({ project: project.id, name: project.name, runsOn: project.sandboxProvider ?? DEFAULT_PROVIDER_ID }));
+              return out({ projects: rows }, options.json, () => (rows.length === 0 ? "No projects." : rows.map((row) => `${row.project}  ${row.name}  runs on ${name(row.runsOn)}`).join("\n")));
+            }
+            const project = runtime.projects.find(positionals.project);
+            if (project === null) throw new PluginCliError(`No project "${positionals.project}".`, { code: "project_not_found" });
+            if (positionals.provider === undefined) {
+              const runsOn = project.sandboxProvider ?? DEFAULT_PROVIDER_ID;
+              return out({ project: project.id, runsOn }, options.json, () => `${project.id} runs on ${name(runsOn)}`);
+            }
+            const provider = positionals.provider.trim().toLowerCase();
+            if (!(PROVIDER_IDS as readonly string[]).includes(provider)) {
+              throw new PluginCliError(`"${positionals.provider}" isn't a sandbox provider.`, { code: "invalid_value", hint: `Use one of: ${PROVIDER_IDS.join(", ")}.` });
+            }
+            const saved = runtime.projects.save({ ...project, sandboxProvider: provider as ProviderId });
+            runtime.changed();
+            const off = service.sandboxProviders.get(provider) === null;
+            return out({ project: saved.id, runsOn: saved.sandboxProvider ?? DEFAULT_PROVIDER_ID, enabled: !off }, options.json, () =>
+              [
+                `${saved.id} now runs on ${name(provider)}.`,
+                off ? `${name(provider)} isn't on yet, so its new tasks won't start: turn it on (\`bb boat config set ${provider}Enabled true\`), add its API key in bb's settings for this plugin, then run \`bb boat doctor\`.` : null,
+              ]
+                .filter(Boolean)
+                .join("\n"),
+            );
+          });
+        },
+      }),
+      providers: cliCommand({
+        summary: "Show the sandbox providers: which are on, whether a key is stored, and what to fix",
+        description: "Read-only. boat.dev is always on and the default; turn Instabox on with `bb boat config set instaboxEnabled true` and store its API key in bb's settings for this plugin (Settings → Plugins → Boat Cloud Agents).",
+        options: { json },
+        async run({ options }) {
+          return guard(async () => {
+            if (runtime.providers === null) throw new PluginCliError("Provider checks aren't available here.", { code: "setup_unavailable" });
+            const states = await runtime.providers.states({ force: true });
+            return out({ providers: states }, options.json, () =>
+              states
+                .map((state) =>
+                  [
+                    `${state.displayName}${state.isDefault ? " (default)" : ""}: ${state.status}${state.enabled ? "" : state.turnedOn ? " (not usable yet)" : ""}`,
+                    state.keyPresent === null ? null : `  API key: ${state.keyPresent ? "stored" : "none"}`,
+                    state.projectIds.length > 0 ? `  projects: ${state.projectIds.join(", ")}` : null,
+                    state.problem ? `  ${state.problem}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join("\n"),
+                )
+                .join("\n"),
             );
           });
         },

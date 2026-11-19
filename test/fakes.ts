@@ -2,7 +2,7 @@
 import { createFakePluginHost, type CreateFakePluginHostOptions } from "@get-bb/plugin-sdk/testing";
 import type { PluginSettingValue } from "@get-bb/plugin-sdk";
 import { PLUGIN_SETTINGS_KEY } from "../src/settings-store.ts";
-import { isDeclaredKey, isPluginKey } from "../src/settings.ts";
+import { SECRET_SETTINGS, isDeclaredKey, isPluginKey } from "../src/settings.ts";
 import type { Quotas } from "../src/quota.ts";
 import type { EvidenceSource } from "../src/evidence.ts";
 import type { PreflightInput } from "../src/providers/boat/setup.ts";
@@ -34,7 +34,8 @@ import { DEFAULT_TIERS } from "../src/tiers.ts";
 /**
  * bb's fake host, with settings from both places stored as if saved before
  * this load: bb's list as stored settings, the plugin's own in its kv.
- * A key that's neither is refused, and boatPath is required: a test must
+ * Secret settings (the Instabox API key) are stored as bb stores them.
+ * A key that's none of these is refused, and boatPath is required: a test must
  * never fall back to a real boat CLI. Sandboxes at once is 0 (the plan's
  * limit) unless a test sets it (undefined: the real default).
  */
@@ -45,7 +46,7 @@ export async function createTestHost(options: Omit<CreateFakePluginHostOptions, 
   const own: Record<string, PluginSettingValue> = {};
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined) continue;
-    if (isDeclaredKey(key)) declared[key] = value as PluginSettingValue;
+    if (isDeclaredKey(key) || Object.hasOwn(SECRET_SETTINGS, key)) declared[key] = value as PluginSettingValue;
     else if (isPluginKey(key)) own[key] = value as PluginSettingValue;
     else throw new Error(`test setting "${key}" doesn't exist`);
   }

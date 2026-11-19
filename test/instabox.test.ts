@@ -1,0 +1,499 @@
+// Instabox as the second sandbox provider (src/providers/instabox/), against
+// the fake instabox CLI and REST API (src/providers/instabox/fixtures/):
+// a machine's whole life, the headless agent runner through the service,
+// a task chat's bb setup, and what happens without a key, with Instabox
+// down, with an account that isn't activated, and with no room for a machine.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
+import { InstaboxCli, InstaboxError, redactKeys } from "../src/providers/instabox/cli.ts";
+import { InstaboxRest } from "../src/providers/instabox/api.ts";
+import { INSTABOX_GIT_ENV, INSTABOX_MACHINE_PROVIDER_ID, createInstaboxProvider, restExecutor } from "../src/providers/instabox/provider.ts";
+import { createInstaboxSetup, instaboxPreflight } from "../src/providers/instabox/setup.ts";
+import { createInstaboxKeeper, LEASE_ID } from "../src/providers/instabox/keeper.ts";
+import { toChatEvents } from "../src/providers/instabox/parse.ts";
+import { createProviderRegistry } from "../src/providers/registry.ts";
+import { createBoatProvider } from "../src/providers/boat/provider.ts";
+import { registerSandboxMachine } from "../src/providers/machine.ts";
+import { ProviderError, type SandboxProvider } from "../src/providers/types.ts";
+import type { BoatApi } from "../src/providers/boat/api.ts";
+import { prepareRepo } from "../src/sandbox-repos.ts";
+import { BoatService, TaskError } from "../src/service.ts";
+import { normalizeProject, toOrchestratorProject } from "../src/projects.ts";
+import { FakeBoat, defaultSettings, memoryStore } from "./fakes.ts";
+import type { RunsOnDto, SandboxProvidersResultDto } from "../contract-providers.ts";
+// @ts-expect-error: a plain JavaScript fixture.
+import { startFakeInstaboxApi } from "../src/providers/instabox/fixtures/fake-api.mjs";
+
+const FAKE_CLI = fileURLToPath(new URL("../src/providers/instabox/fixtures/fake-instabox.mjs", import.meta.url));
+/** A made-up key: it must never show up in arguments, output, errors or task history. */
+const KEY = "ibk_fake_example_key";
+const REPORT = "Done.\n\n=== REPORT ===\nSTATUS: done\nSUMMARY: Added the route.\n=== END REPORT ===";
+
+interface FakeApi {
+  url: string;
+  received: { method: string; path: string; query: string; keyOk: boolean; accept: string | null; body: Record<string, unknown> | null }[];
+  close(): Promise<void>;
+}
+
+/** The fake CLI and API on one state file, and an Instabox provider on them. */
+async function instabox(t: { after(fn: () => unknown): void }, options: { key?: string | null; state?: Record<string, unknown> } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "instabox-"));
+  const statePath = join(dir, "state.json");
+  if (options.state) writeFileSync(statePath, JSON.stringify(options.state));
+  process.env.FAKE_INSTABOX_STATE = statePath;
+  process.env.FAKE_INSTABOX_KEY = KEY;
+  const api = (await startFakeInstaboxApi({ statePath, key: KEY })) as FakeApi;
+  t.after(() => api.close());
+  const key = options.key === undefined ? KEY : options.key;
+  const cli = new InstaboxCli(async () => FAKE_CLI, async () => key);
+  const rest = new InstaboxRest({ key: async () => key, baseUrl: () => api.url });
+  const provider = createInstaboxProvider(cli, rest);
+  const state = () => (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {}) as Record<string, any>;
+  const setState = (patch: Record<string, unknown>) => writeFileSync(statePath, JSON.stringify({ ...state(), ...patch }));
+  return { cli, rest, provider, api, state, setState, statePath };
+}
+
+/** The query of the last usage request the fake API got. */
+function box_api_usage_query(api: FakeApi): string {
+  return api.received.filter((entry) => entry.path.endsWith("/usage")).at(-1)?.query ?? "";
+}
+
+function hooks(overrides: Record<string, unknown> = {}) {
+  const warnings: string[] = [];
+  return {
+    warnings,
+    hooks: {
+      settings: async () => defaultSettings({ maxActiveSandboxes: 0 }),
+      lifecycle: new AbortController().signal,
+      changed: () => undefined,
+      notify: async () => undefined,
+      log: { info: () => undefined, warn: (line: string) => void warnings.push(line), debug: () => undefined },
+      checkPreview: async () => "up" as const,
+      ...overrides,
+    },
+  };
+}
+
+const WEB = { id: "web", name: "Web app", repos: [{ repo: "acme/web" }], machineType: null, sandboxProvider: "instabox" };
+
+test("an Instabox machine's life: create, exec, preview, stop, resume, delete", async (t) => {
+  const { provider, state, api } = await instabox(t);
+  const sandbox = await provider.create({ name: "bb t_1 fix the login", type: "large", environment: "ignored", snapshot: null, ttlSeconds: 7200, gitGuard: true });
+  assert.match(sandbox.id, /^m_\d+$/);
+  assert.equal(sandbox.state, "idle", "a running machine reads idle (no agent state of Instabox's)");
+  assert.equal(sandbox.machineType, "large");
+  assert.equal(sandbox.environment, null);
+  const created = state().machines[sandbox.id];
+  assert.deepEqual(created.envNames, Object.keys(INSTABOX_GIT_ENV).sort(), "the push guard's git env is fixed at create");
+  assert.equal(created.metadata["created-by"], "bb-boat");
+  assert.ok(state().calls.some((call: string) => call.startsWith("create --name bb-t_1-fix-the-login --json --fail-fast --ready-timeout 10m --meta created-by=bb-boat --vcpus 8 --mem-mib 16384")));
+
+  // exec: one command, its exit code and output; a checkout over it with the plugin's own script.
+  const result = await provider.exec(sandbox.id, "echo hi", { timeoutMs: 30_000 });
+  assert.deepEqual(result, { exitCode: 0, stdout: "", stderr: "" });
+  assert.equal(state().execs.at(-1).timeout, 30);
+  const prepared = await prepareRepo(provider, sandbox.id, "acme/web", { kind: "new-branch", branch: "fix-login", base: "main" });
+  assert.deepEqual([prepared.path, prepared.branch, prepared.baseBranch, prepared.canPush], ["/data/home/work/web", "fix-login", "main", true]);
+  // Capped at Instabox's 600 s.
+  await provider.exec(sandbox.id, "true", { timeoutMs: 3_600_000 });
+  assert.equal(state().execs.at(-1).timeout, 600);
+
+  // A private preview: the link with its token, kept for the next wake (the token is shown once).
+  const hosted = await provider.host(sandbox.id, 3000, "Fix the login");
+  assert.equal(hosted.isProtected, true);
+  assert.match(hosted.url, /^https:\/\/3000-\d+\.instabox\.test\/\?_token=ibp_/);
+  assert.equal((await provider.host(sandbox.id, 3000, "Fix the login")).url, hosted.url, "the same link again");
+  // After a reload (no link kept), a republish rotates the token rather than returning no link.
+  const reloaded = createInstaboxProvider(new InstaboxCli(async () => FAKE_CLI, async () => KEY), new InstaboxRest({ key: async () => KEY, baseUrl: () => api.url }));
+  const rotated = await reloaded.host(sandbox.id, 3000, "Fix the login");
+  assert.notEqual(rotated.url, hosted.url);
+  assert.ok(state().calls.some((call: string) => call.includes("--rotate-token")));
+
+  // Stop (shut down, disk kept), resume (start), and a paused one resumes with `resume`.
+  assert.deepEqual(await provider.stop(sandbox.id), { status: "completed", stopId: null, forced: null, error: null });
+  assert.equal((await provider.info(sandbox.id)).state, "stopped");
+  assert.equal((await provider.list()).length, 0, "a stopped machine isn't up");
+  assert.equal((await provider.list({ all: true })).length, 1);
+  await provider.resume(sandbox.id, { ttlSeconds: 3600 });
+  assert.equal((await provider.info(sandbox.id)).state, "idle");
+  state(); // paused by Instabox's idle check:
+  const paused = state();
+  paused.machines[sandbox.id].state = "suspended";
+  writeFileSync(process.env.FAKE_INSTABOX_STATE!, JSON.stringify(paused));
+  assert.equal((await provider.info(sandbox.id)).state, "stopped");
+  await provider.resume(sandbox.id, { ttlSeconds: 3600 });
+  assert.ok(state().calls.includes(`resume ${sandbox.id} --json`));
+  // A size move: resized while stopped, then started.
+  await provider.stop(sandbox.id);
+  await provider.resume(sandbox.id, { ttlSeconds: 3600, type: "small" });
+  assert.equal((await provider.info(sandbox.id)).machineType, "small");
+
+  // Extend: no deadline on Instabox, an activity lease instead (at most an hour).
+  assert.deepEqual(await provider.extend(sandbox.id, 4 * 3600), { ttlSeconds: 3600 });
+  assert.deepEqual(state().leases, { [`${sandbox.id}:bb-boat-extend`]: { ttlSeconds: 3600 } });
+  // Usage: its running time from the API; no price (Instabox bills by allocation and credit).
+  const { until: _until, ...usage } = await provider.usage(sandbox.id, { since: "2026-11-19T00:00:00.000Z" });
+  assert.deepEqual(usage, { seconds: 5400, hours: 1.5, dollars: null, since: "2026-11-19T00:00:00.000Z", running: null });
+  assert.equal(box_api_usage_query(api), "?from=2026-11-19T00%3A00%3A00.000Z");
+  // Capacity: the plan's machine limit, stopped and paused machines included.
+  const capacity = await provider.capacity();
+  assert.deepEqual([capacity.activeSandboxes, capacity.maxActiveSandboxes, capacity.canStart, capacity.tier], [1, 5, true, "pro"]);
+
+  await provider.delete(sandbox.id);
+  assert.equal(await provider.findInfo(sandbox.id), null);
+  await assert.rejects(provider.info(sandbox.id), (error: unknown) => error instanceof InstaboxError && error.code === "not_found");
+  // The key went to the CLI's environment and the API's header only.
+  for (const call of state().calls as string[]) assert.ok(!call.includes(KEY));
+  assert.ok(api.received.every((entry) => entry.keyOk && !JSON.stringify(entry).includes(KEY)));
+});
+
+test("a project that runs on Instabox: the task's sandbox, checkout and headless agent are Instabox's", async (t) => {
+  const box = await instabox(t, { state: { autoReply: REPORT } });
+  const fakeBoat = new FakeBoat();
+  const registry = createProviderRegistry([createBoatProvider(fakeBoat as unknown as BoatApi), box.provider]);
+  const store = memoryStore();
+  const { hooks: serviceHooks } = hooks({ projects: () => [WEB] });
+  const service = new BoatService(registry, store, serviceHooks);
+  const project = toOrchestratorProject(normalizeProject({ id: "web", name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }] }));
+  const { task } = await service.launchTask({ title: "Add a health route", role: "implement", brief: "Add /healthz.", project, provider: "claude" }, 10_000);
+  assert.equal(task.status, "running", task.error ?? "");
+  assert.equal(task.sandboxProvider, "instabox");
+  assert.match(task.sandboxId!, /^m_/);
+  assert.equal(task.repoPath, "/data/home/work/web");
+  assert.deepEqual(fakeBoat.created, [], "nothing went to boat.dev");
+  assert.equal(service.sandboxProvider(task).id, "instabox");
+  // The prompt went in on stdin, a new conversation of Instabox's own.
+  const calls = box.state().calls as string[];
+  assert.ok(calls.some((call) => /^agent prompt m_\d+ --provider claude --json (--model \S+ )?--new -$/.test(call)), calls.join("\n"));
+  assert.match(task.conversationId!, /^c\d+$/);
+  assert.equal(task.promptId, "turn-1");
+  const convo = box.state().convos[task.conversationId!];
+  assert.ok(convo.promptBytes[0] > 100, "the brief was on stdin");
+
+  // The sweep reads its events through `instabox agent events` and finishes the turn.
+  await service.sweep();
+  const done = store.get(task.id)!;
+  assert.equal(done.status, "idle", done.error ?? "");
+  assert.match(done.result ?? "", /=== REPORT ===/);
+  // A follow-up resumes the same conversation.
+  await service.followup(task.id, "Also add a test.");
+  assert.ok((box.state().calls as string[]).some((call) => call.includes(`--resume ${task.conversationId}`)));
+  // The task's provider and machine label for the page.
+  assert.ok(fakeBoat.calls.every((call) => !call.includes(task.sandboxId!)));
+});
+
+test("a task chat's bb setup on Instabox: Instabox's own step, then bb's command over exec with noHistory and stdin", async (t) => {
+  const box = await instabox(t);
+  const sandbox = await box.provider.create({ name: "bb machine k1", type: "small", ttlSeconds: 3600, gitGuard: false });
+  const definitions: Record<string, unknown>[] = [];
+  const outputs: string[] = [];
+  const kv = new Map<string, unknown>();
+  const bb = {
+    log: { warn: () => undefined, debug: () => undefined },
+    experimental_machines: {
+      register: (definition: Record<string, unknown>) => void definitions.push(definition),
+      bootstrap: async ({ executor }: { executor: MachineExecutor }) => {
+        // bb's installer: one command, its enrollment secret on stdin.
+        const { exitCode } = await executor.exec({ command: ["sh", "-c", "install bb"], stdin: "enrollment-secret-value", timeoutMs: 900_000, signal: new AbortController().signal, onOutput: (chunk) => void outputs.push(chunk) });
+        assert.equal(exitCode, 0);
+        return { hostId: "host_abcdef123456" };
+      },
+    },
+    experimental_environments: { register: () => undefined },
+    storage: { kv: { get: async (key: string) => kv.get(key), set: async (key: string, value: unknown) => void kv.set(key, value), delete: async (key: string) => void kv.delete(key) } },
+  } as unknown as BbPluginApi;
+  const service = { createSandbox: async () => assert.fail("adopts the prepared machine"), bringUp: async () => assert.fail("it's up") } as never;
+  registerSandboxMachine(bb, box.provider, { service, settings: async () => defaultSettings(), availability: async () => ({ status: "available" }) });
+  const definition = definitions[0] as { id: string; create(args: unknown): Promise<{ status: string; name?: string; message?: string }> };
+  assert.equal(definition.id, INSTABOX_MACHINE_PROVIDER_ID);
+  const steps: string[] = [];
+  const result = await definition.create({ inputs: { sandboxId: sandbox.id, taskId: "t_1" }, key: "task-t_1", checkpoint: async () => undefined, report: { step: (text: string) => void steps.push(text), log: (text: string) => void steps.push(text) }, signal: new AbortController().signal });
+  assert.equal(result.status, "created", result.message);
+  assert.equal(result.name, `Instabox ${sandbox.id} (123456)`);
+  // Step 1, on its own: linger and the Secrets CA (a short exec of the CLI's).
+  assert.equal(box.state().execs.at(-1).marker, "BOAT_IBX");
+  // Step 2: bb's command over the API, streamed, never in the machine's history, capped at 600 s.
+  const exec = box.api.received.find((entry) => entry.path === `/v1/machines/${sandbox.id}/exec`)!;
+  assert.equal(exec.accept, "text/event-stream");
+  assert.deepEqual(exec.body, { cmd: "'sh' '-c' 'install bb'", stdin: "[23 chars]", timeoutSeconds: 600, noHistory: true });
+  assert.deepEqual(outputs, ["installing bb\n", "a warning\n"]);
+  // A setup that runs past the cap says so.
+  box.setState({ execTimesOut: true });
+  await assert.rejects(
+    restExecutor(box.rest, sandbox.id).exec({ command: ["true"], stdin: "", timeoutMs: 900_000, signal: new AbortController().signal, onOutput: () => undefined }),
+    /past Instabox's 10-minute limit for one command/,
+  );
+});
+
+test("the keeper holds an activity lease while a bb chat works on an Instabox machine, and lets go after", async (t) => {
+  const box = await instabox(t);
+  const sandbox = await box.provider.create({ name: "bb machine k2", type: "default", ttlSeconds: 3600, gitGuard: false });
+  let status = "active";
+  const bb = {
+    sdk: {
+      hosts: { list: async () => [{ id: "host_1", machineProviderId: INSTABOX_MACHINE_PROVIDER_ID, lifecycle: { phase: "active" } }, { id: "host_2", machineProviderId: "boat-sandbox", lifecycle: { phase: "active" } }] },
+      threads: { list: async () => [{ id: "thr_1", status }] },
+    },
+    experimental_machines: { getResource: async (hostId: string) => (hostId === "host_1" ? { sandboxId: sandbox.id, key: "k2" } : null) },
+  } as unknown as BbPluginApi;
+  const keep = createInstaboxKeeper(bb, { rest: box.rest });
+  await keep();
+  assert.deepEqual(box.state().leases, { [`${sandbox.id}:${LEASE_ID}`]: { ttlSeconds: 900 } });
+  status = "idle";
+  await keep();
+  assert.deepEqual(box.state().leases, {}, "released once the chat is done: the idle pause applies again");
+});
+
+test("without a key, Instabox isn't enabled: its tasks refuse, nothing goes to boat.dev, and the doctor says how to add one", async (t) => {
+  const box = await instabox(t, { key: null });
+  let keyPresent = false;
+  const fakeBoat = new FakeBoat();
+  const registry = createProviderRegistry([createBoatProvider(fakeBoat as unknown as BoatApi), box.provider], { isEnabled: (provider) => provider.id !== "instabox" || keyPresent });
+  assert.deepEqual(registry.enabled.map((provider) => provider.id), ["boat"]);
+  assert.equal(registry.get("instabox"), null);
+  assert.equal(registry.forTask({ sandboxProvider: "instabox" }).displayName, "Instabox");
+  await assert.rejects(registry.forTask({ sandboxProvider: "instabox" }).list(), (error: unknown) => error instanceof ProviderError && error.code === "provider_unavailable");
+  // A machine id of Instabox's fails closed too, never goes to boat.dev.
+  await assert.rejects(registry.forSandbox("m_000001").findInfo("m_000001"), (error: unknown) => error instanceof ProviderError && error.code === "provider_unavailable");
+  // The provider itself refuses before spawning anything.
+  await assert.rejects(box.provider.list(), (error: unknown) => error instanceof InstaboxError && error.code === "key_missing" && /Instabox API key/.test(error.explain().hint ?? ""));
+  assert.equal(box.state().calls?.length ?? 0, 0);
+
+  // A project on Instabox: its new task refuses with what to do.
+  const service = new BoatService(registry, memoryStore(), hooks({ projects: () => [WEB] }).hooks);
+  const project = toOrchestratorProject(normalizeProject({ id: "web", name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }] }));
+  await assert.rejects(service.launchTask({ title: "x", role: "implement", brief: "x", project }, 5_000), (error: unknown) => error instanceof TaskError && error.code === "provider_unavailable" && /Web app runs on Instabox, which isn't turned on/.test(error.message));
+  assert.deepEqual(fakeBoat.created, []);
+
+  // The doctor's checks.
+  const setup = createInstaboxSetup({ cli: box.cli, turnedOn: async () => true, keyPresent: () => keyPresent });
+  const status = await setup.status({ force: true });
+  assert.equal(status.ok, false);
+  const key = status.checks.find((check) => check.id === "key")!;
+  assert.equal(key.state, "missing");
+  assert.match(key.fix!.text, /Settings → Plugins → Boat Cloud Agents → Instabox API key/);
+  await assert.rejects(instaboxPreflight(setup), (error: unknown) => error instanceof TaskError && error.code === "setup_required");
+  // Stored: enabled.
+  keyPresent = true;
+  assert.deepEqual(registry.enabled.map((provider) => provider.id), ["boat", "instabox"]);
+});
+
+test("Instabox down: a clear provider error, and a running task isn't marked failed or its sandbox gone", async (t) => {
+  const box = await instabox(t, { state: { autoReply: null } });
+  const fakeBoat = new FakeBoat();
+  const registry = createProviderRegistry([createBoatProvider(fakeBoat as unknown as BoatApi), box.provider]);
+  const store = memoryStore();
+  const { hooks: serviceHooks, warnings } = hooks({ projects: () => [WEB] });
+  const service = new BoatService(registry, store, serviceHooks);
+  const project = toOrchestratorProject(normalizeProject({ id: "web", name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }] }));
+  const { task } = await service.launchTask({ title: "Slow work", role: "implement", brief: "Do it.", project, provider: "codex" }, 10_000);
+  assert.equal(task.status, "running", task.error ?? "");
+  // A boat.dev task runs next to it.
+  fakeBoat.addSandbox("bx_1", "default", "idle");
+
+  box.setState({ fail: "down" });
+  await assert.rejects(box.provider.list(), (error: unknown) => {
+    assert.ok(error instanceof InstaboxError);
+    assert.equal(error.code, "host_unavailable");
+    assert.equal(error.retryable, true);
+    assert.match(error.explain().message, /Instabox isn't answering right now/);
+    assert.match(error.explain().hint ?? "", /nothing was marked failed/);
+    return true;
+  });
+  await service.sweep();
+  await service.sweep();
+  const after = store.get(task.id)!;
+  assert.equal(after.status, "running", "still running: Instabox is only unreachable");
+  assert.equal(after.error, null);
+  assert.ok(warnings.some((line) => /sweep: instabox list failed/.test(line)), warnings.join("\n"));
+  // boat.dev's sandboxes still list; Instabox's are named as unreadable.
+  const listed = await service.listSandboxes({ all: true });
+  assert.deepEqual(listed.sandboxes.map((sandbox) => [sandbox.id, sandbox.provider]), [["bx_1", "boat"]]);
+  assert.deepEqual(listed.failed.map((entry) => entry.provider), ["instabox"]);
+  // The REST side says the same.
+  await assert.rejects(box.rest.lease(task.sandboxId!, "x", 60), (error: unknown) => error instanceof InstaboxError && error.code === "host_unavailable");
+  // Back up: the turn is read again.
+  box.setState({ fail: null });
+  await service.sweep();
+  assert.equal(store.get(task.id)!.status, "running");
+});
+
+test("an account that isn't activated (403 invite_required): the doctor and the error say how to get in", async (t) => {
+  const box = await instabox(t, { state: { fail: "invite" } });
+  await assert.rejects(box.provider.create({ name: "bb t_9", type: "default", ttlSeconds: 3600, gitGuard: true }), (error: unknown) => {
+    assert.ok(error instanceof InstaboxError);
+    assert.equal(error.code, "invite_required");
+    assert.equal(error.status, 403);
+    assert.deepEqual(error.explain(), { code: "invite_required", message: "Your Instabox account isn't activated yet (invite only).", hint: error.explain().hint });
+    assert.match(error.explain().hint ?? "", /invite code|paid plan/);
+    return true;
+  });
+  const status = await createInstaboxSetup({ cli: box.cli, turnedOn: async () => true, keyPresent: () => true }).status({ force: true });
+  const account = status.checks.find((check) => check.id === "account")!;
+  assert.equal(account.state, "missing");
+  assert.match(account.fix?.text ?? "", /invite/);
+  assert.equal(Object.keys(box.state().machines).length, 0);
+});
+
+test("no room on Instabox: create fails at once with no_capacity and leaves no machine; the task fails with that", async (t) => {
+  const box = await instabox(t, { state: { fail: "no_capacity" } });
+  await assert.rejects(box.provider.create({ name: "bb t_3", type: "default", ttlSeconds: 3600, gitGuard: true }), (error: unknown) => {
+    assert.ok(error instanceof InstaboxError);
+    assert.equal(error.code, "no_capacity");
+    assert.equal(error.retryable, true);
+    assert.equal(error.explain().message, "Instabox has no room for a new machine right now.");
+    return true;
+  });
+  assert.deepEqual(box.state().machines, {});
+  // Through the service: the task fails with Instabox's words (a create isn't retried behind the user's back).
+  const store = memoryStore();
+  const registry = createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi), box.provider]);
+  const service = new BoatService(registry, store, hooks({ projects: () => [WEB] }).hooks);
+  const project = toOrchestratorProject(normalizeProject({ id: "web", name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }] }));
+  await assert.rejects(service.launchTask({ title: "x", role: "implement", brief: "x", project }, 10_000), /no host has room/);
+  const failed = store.list({ limit: 10 })[0]!;
+  assert.equal(failed.status, "failed");
+  assert.match(failed.error ?? "", /no host has room/);
+  // At the plan's machine limit (stopped ones count), no start either, and nothing is stopped to make room.
+  box.setState({ fail: null, maxMachines: 1 });
+  await box.provider.create({ name: "bb other", type: "default", ttlSeconds: 3600, gitGuard: false });
+  const capacity = await box.provider.capacity();
+  assert.equal(capacity.canStart, false);
+  assert.match(capacity.blockedReason ?? "", /paused and stopped ones count/);
+  await assert.rejects(service.launchTask({ title: "y", role: "implement", brief: "y", project }, 10_000), (error: unknown) => error instanceof TaskError && error.code === "provider_start_blocked" && /Instabox will not start a machine right now/.test(error.message));
+  assert.equal((box.state().calls as string[]).filter((call) => call.startsWith("stop ")).length, 0, "nothing stopped to make room");
+});
+
+test("Instabox's agent events read into turns: Claude's and Codex's messages, an interrupted and a lost turn", () => {
+  const events = toChatEvents(
+    {
+      status: "lost",
+      events: [
+        { type: "instabox.turn", turn: 1, jobId: "job_1", prompt: "Fix it" },
+        { type: "assistant", message: { content: [{ type: "text", text: "Looking." }, { type: "tool_use", name: "Edit" }] } },
+        { type: "result", result: "Fixed.", is_error: false },
+        { type: "instabox.turn_end", exitCode: 0, interrupted: false },
+        { type: "instabox.turn", turn: 2, jobId: "job_2" },
+        { type: "item.completed", item: { type: "agent_message", text: "On it." } },
+        { type: "instabox.turn_end", exitCode: 130, interrupted: true },
+        { type: "instabox.turn", turn: 3, jobId: "job_3" },
+      ],
+    },
+    "c1",
+  );
+  assert.deepEqual(
+    events.map((event) => [event.type, event.promptId, event.status, event.content, event.tools]),
+    [
+      ["prompt", "turn-1", "running", "Fix it", []],
+      ["response", "turn-1", null, "Looking.", ["Edit"]],
+      ["response", "turn-1", null, "Fixed.", []],
+      ["prompt", "turn-1", "finished", null, []],
+      ["prompt", "turn-2", "running", null, []],
+      ["response", "turn-2", null, "On it.", []],
+      ["prompt", "turn-2", "interrupted", null, []],
+      ["prompt", "turn-3", "running", null, []],
+      ["prompt", "turn-3", "failed", null, []],
+    ],
+  );
+  assert.equal(events.at(-1)!.error, "Instabox lost the agent's job");
+});
+
+test("keys never show in Instabox's messages", () => {
+  assert.equal(redactKeys("bad key ibk_fake_example_1 and port ibp_fake_example_2"), "bad key ib…_[hidden] and port ib…_[hidden]");
+  const provider: Pick<SandboxProvider, "id"> = { id: "instabox" };
+  assert.equal(provider.id, "instabox");
+});
+
+test("the plugin with Instabox on and a key in bb's secret settings: providers, doctor, runs on, machines and lists; the key shows nowhere", async (t) => {
+  const box = await instabox(t, { state: { autoReply: REPORT } });
+  process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "instabox-boat-")), "state.json");
+  const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
+  const previousUrl = process.env.INSTABOX_API_URL;
+  process.env.INSTABOX_API_URL = box.api.url;
+  t.after(() => {
+    if (previousUrl === undefined) delete process.env.INSTABOX_API_URL;
+    else process.env.INSTABOX_API_URL = previousUrl;
+  });
+  const { createTestHost } = await import("./fakes.ts");
+  const { default: plugin } = await import("../server.ts");
+  const { bb, harness } = await createTestHost({
+    pluginId: "boat",
+    settings: { boatPath: fakeBoat, evidenceUploader: "", instaboxEnabled: true, instaboxPath: FAKE_CLI, instaboxApiKey: KEY },
+    agentSkillIds: ["boat", "boat-orchestrator"],
+  });
+  t.after(() => harness.lifecycle.dispose());
+  harness.sdk.stub("system.config", async () => ({ primaryHostId: "host_1" }));
+  await plugin(bb);
+  const cli = (args: string[]) => harness.runCli(args, { cwd: "/work" });
+
+  // bb offers Instabox machines for task chats (registered at load, with Instabox on).
+  assert.ok(harness.inspection.registrations.machineProviders.has(INSTABOX_MACHINE_PROVIDER_ID));
+  assert.ok(harness.inspection.registrations.machineProviders.has("boat-sandbox"));
+
+  // Settings › Sandbox providers (the providers UI's view): Instabox on and connected, Linux ready, Mac next,
+  // its key in bb's secret setting (named, never shown), and what Instabox itself says it cost.
+  const providers = (await harness.callRpc("sandboxProviders", null)) as SandboxProvidersResultDto;
+  const ibx = providers.providers.find((entry) => entry.id === "instabox")!;
+  assert.deepEqual([ibx.enabled, ibx.connection, ibx.apiKey], [true, "connected", { setting: "Instabox API key" }]);
+  assert.deepEqual(ibx.systems.map((system) => [system.os, system.ready, system.note]), [["linux", true, null], ["macos", false, "coming next"], ["windows", false, "not launched yet"]]);
+  assert.equal(ibx.pricing, "$3.21 used this month · $16.79 credit left");
+  assert.equal(providers.options.find((option) => option.provider === "instabox")!.disabledReason, null);
+  const listed = await cli(["providers"]);
+  assert.equal(listed.exitCode, 0, listed.stderr);
+  assert.match(listed.stdout, /Instabox: ready\n {2}API key: stored/);
+
+  // The doctor checks Instabox too.
+  const doctor = await cli(["doctor", "--json"]);
+  const report = JSON.parse(doctor.stdout) as { instabox?: { ok: boolean; checks: { id: string; state: string }[] } };
+  assert.equal(report.instabox?.ok, true);
+  assert.deepEqual(report.instabox?.checks.map((check) => [check.id, check.state]), [["enabled", "ok"], ["cli", "ok"], ["key", "ok"], ["account", "ok"], ["capacity", "ok"]]);
+
+  // A project runs on Instabox.
+  const added = await cli(["project", "add", "--name", "Web app", "--repo", "acme/web@main"]);
+  assert.equal(added.exitCode, 0, added.stderr);
+  const set = await cli(["config", "runs-on", "web-app", "instabox"]);
+  assert.equal(set.exitCode, 0, set.stderr);
+  assert.match(set.stdout, /web-app now runs on Instabox\./);
+  assert.match((await cli(["config", "runs-on"])).stdout, /web-app {2}Web app {2}runs on Instabox/);
+  const projects = (await harness.callRpc("projects", null)) as { projects: { id: string; sandboxProvider?: string }[] };
+  assert.equal(projects.projects[0]!.sandboxProvider, "instabox");
+  // The page's Runs on sets the same field.
+  assert.deepEqual(await harness.callRpc("setProjectRunsOn", { projectId: "web-app", provider: "boat" }), { projectId: "web-app", name: "Web app", detail: "acme/web · Linux", provider: "boat", chosen: false });
+  assert.equal((await harness.callRpc("setProjectRunsOn", { projectId: "web-app", provider: "instabox" }) as { provider: string }).provider, "instabox");
+
+  // A task of the project: on an Instabox machine, headless, finished by the sweep.
+  const started = await cli(["task", "start", "--title", "Add a health route", "--brief", "Add /healthz.", "--project", "web-app", "--headless", "--json"]);
+  assert.equal(started.exitCode, 0, started.stderr);
+  const taskId = (JSON.parse(started.stdout) as { task?: { id: string }; id?: string }).task?.id ?? (JSON.parse(started.stdout) as { id: string }).id;
+  const tasks = (await harness.callRpc("tasks", { statuses: null, threadId: null, limit: 10 })) as { tasks: { id: string; sandboxId: string | null; runsOn?: RunsOnDto }[] };
+  const task = tasks.tasks.find((entry) => entry.id === taskId)!;
+  assert.match(task.sandboxId ?? "", /^m_/);
+  assert.deepEqual([task.runsOn?.provider, task.runsOn?.label, task.runsOn?.os], ["instabox", "Instabox", "linux"]);
+  // Its sandbox in the lists, with its provider.
+  const sandboxes = (await harness.callRpc("sandboxes", { all: true })) as { sandboxes: { id: string; runsOn?: RunsOnDto; sshCommand: string }[] };
+  const sandbox = sandboxes.sandboxes.find((entry) => entry.id === task.sandboxId)!;
+  assert.deepEqual([sandbox.runsOn?.provider, sandbox.sshCommand], ["instabox", `instabox ssh ${task.sandboxId}`]);
+  assert.match((await cli(["sandbox", "list", "--all"])).stdout, new RegExp(`Instabox {2}${task.sandboxId}`));
+
+  // The key: never in what the CLI printed, the page got, the logs, or the task's history.
+  const everything = JSON.stringify([
+    listed,
+    doctor,
+    providers,
+    tasks,
+    sandboxes,
+    await cli(["task", "show", taskId, "--json"]),
+    await cli(["config", "get", "--json"]),
+    await cli(["config", "export"]),
+    harness.inspection.logEntries,
+    box.state(),
+    box.api.received,
+  ]);
+  assert.ok(!everything.includes(KEY), "the key shows nowhere");
+  assert.ok(!everything.includes("instaboxApiKey\":\"ibk"), "not even as a setting value");
+});

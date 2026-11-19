@@ -15,6 +15,14 @@ import { registerBoatMachine } from "./src/providers/boat/machine.ts";
 import { createBoatProvider } from "./src/providers/boat/provider.ts";
 import { createSandboxKeeper } from "./src/providers/boat/keeper.ts";
 import { createProviderRegistry } from "./src/providers/registry.ts";
+import { InstaboxCli, resolveInstaboxBinary } from "./src/providers/instabox/cli.ts";
+import { InstaboxRest } from "./src/providers/instabox/api.ts";
+import { INSTABOX_PROVIDER_ID, createInstaboxProvider } from "./src/providers/instabox/provider.ts";
+import { createInstaboxSetup, instaboxPreflight } from "./src/providers/instabox/setup.ts";
+import { registerInstaboxMachine } from "./src/providers/instabox/machine.ts";
+import { createInstaboxKeeper } from "./src/providers/instabox/keeper.ts";
+import { defineProviderSecrets } from "./src/provider-settings.ts";
+import { providerStates } from "./src/provider-status.ts";
 import type { MachineType } from "./src/providers/types.ts";
 import { createWatchdog, type QueuedRow, type Watchdog } from "./src/watchdog.ts";
 import { notificationText } from "./src/format.ts";
@@ -101,8 +109,17 @@ export default async function plugin(bb: BbPluginApi) {
   // boat CLI
   const cli = new BoatCli(async () => resolveBoatBinary((await settings.get()).boatPath));
   const boat = new BoatApi(cli);
-  // Sandbox providers: boat.dev, the only one so far (src/providers/registry.ts).
-  const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli })]);
+  // Instabox: its CLI and API get the key from bb's secret settings (src/provider-settings.ts).
+  const providerSecrets = await defineProviderSecrets(bb);
+  const instaboxCli = new InstaboxCli(async () => resolveInstaboxBinary((await settings.get()).instaboxPath), () => providerSecrets.instaboxKey());
+  const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
+  const instabox = createInstaboxProvider(instaboxCli, instaboxRest);
+  let instaboxOn = (await settings.get()).instaboxEnabled;
+  // Sandbox providers: boat.dev, the default; Instabox while it's turned on and its key stored (src/providers/registry.ts).
+  const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli }), instabox], {
+    isEnabled: (provider) => provider.id !== INSTABOX_PROVIDER_ID || (instaboxOn && providerSecrets.instaboxKeyPresent()),
+  });
+  const instaboxSetup = createInstaboxSetup({ cli: instaboxCli, turnedOn: async () => (await settings.get()).instaboxEnabled, keyPresent: () => providerSecrets.instaboxKeyPresent() });
   // Worker chats and cloud orchestrators need bb Connect.
   const connect = createConnectCheck(bb);
 
@@ -197,6 +214,8 @@ export default async function plugin(bb: BbPluginApi) {
 
   const lifecycle = new AbortController();
   bb.onDispose(() => lifecycle.abort());
+  /** The bb machine providers registered at this load. */
+  const registeredMachines = new Set<string>();
 
   let wakeMonitor: () => void = () => undefined;
   let attentionNotifications: AttentionNotifications | null = null;
@@ -208,6 +227,18 @@ export default async function plugin(bb: BbPluginApi) {
   }
   // A settings change (here, from bb's settings page or the CLI) refreshes open UIs.
   settings.onChange(() => changed());
+  settings.onChange((keys) => {
+    if (!keys.includes("instaboxEnabled") && !keys.includes("instaboxPath")) return;
+    void settings.get().then((values) => {
+      instaboxOn = values.instaboxEnabled;
+      void instaboxSetup.status({ force: true }).catch(() => undefined);
+      changed();
+    });
+  });
+  providerSecrets.onChange(() => {
+    void instaboxSetup.status({ force: true }).catch(() => undefined);
+    changed();
+  });
 
   /**
    * A phone/desktop notice through bb's push-notifications plugin. Turn
@@ -314,7 +345,9 @@ export default async function plugin(bb: BbPluginApi) {
     quotas,
     usageRefused: provider => limits.record(provider, Date.now() + DEFAULT_LIMIT_MS),
     connect,
-    preflight: (input) => setup.preflight(input),
+    // Each provider's own checks: Instabox's for work there, boat's otherwise.
+    preflight: (input) => (input.provider === INSTABOX_PROVIDER_ID ? instaboxPreflight(instaboxSetup) : setup.preflight(input)),
+    machineProviders: () => registeredMachines,
     // Sandbox sizes: the projects' sizes, the plan's sizes (never waiting unless fresh), and plain messages to chats.
     projects: () => projects.list(),
     sizePlan: async (options) => (await setup.reading({ force: options?.fresh === true }).catch(() => null))?.plan?.machineTypes ?? null,
@@ -421,6 +454,21 @@ export default async function plugin(bb: BbPluginApi) {
     // Relay progress and reset waits stay in-chat; only task needs-you/ready pushes are sent.
     notifyUser: async () => undefined,
     setup,
+    providers: {
+      states: (options) =>
+        providerStates(
+          {
+            registry: sandboxProviders,
+            projects: () => projects.list(),
+            machines: () => registeredMachines,
+            boatSetup: setup,
+            instabox: { setup: instaboxSetup, keyPresent: () => providerSecrets.instaboxKeyPresent() },
+          },
+          options,
+        ),
+      instabox: (options) => instaboxSetup.status(options),
+      keyPresent: (providerId) => (providerId === INSTABOX_PROVIDER_ID ? providerSecrets.instaboxKeyPresent() : null),
+    },
     changed,
     wake: () => wakeMonitor(),
   });
@@ -472,6 +520,14 @@ export default async function plugin(bb: BbPluginApi) {
     info: (line) => bb.log.info(line),
   });
   registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect, wakes, prepareHost });
+  registeredMachines.add("boat-sandbox");
+  // Instabox machines for task chats, when it's on at load (turning it on later needs a reload for these).
+  let keepInstaboxAwake: (() => Promise<void>) | null = null;
+  if (instaboxOn) {
+    registerInstaboxMachine(bb, { provider: instabox, service, settings: readSettings, setup: instaboxSetup, connect });
+    registeredMachines.add(instabox.machine!.id);
+    keepInstaboxAwake = createInstaboxKeeper(bb, { rest: instaboxRest, signal: lifecycle.signal, log: (line) => bb.log.warn(line) });
+  }
   // A stuck sandbox and its chat back in one go, composed from the wake pacer and guard, the login
   // scripts, bb's safe update and the chat retries above (src/sandbox-wake.ts).
   sandboxWaker = createSandboxWaker({
@@ -905,6 +961,14 @@ export default async function plugin(bb: BbPluginApi) {
           await keepSandboxesOn();
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        // Instabox doesn't see a bb chat working: an activity lease keeps its machine awake meanwhile.
+        if (keepInstaboxAwake !== null && sandboxProviders.get(INSTABOX_PROVIDER_ID) !== null) {
+          try {
+            await keepInstaboxAwake();
+          } catch (error) {
+            bb.log.warn(`instabox keeper failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
         try {
           await watchdog.tick();
