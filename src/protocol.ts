@@ -244,6 +244,10 @@ export function composeProtocol(shared: string, project: OrchestratorProject | n
   }
   const review = projectReviewInstructions(project);
   if (review) parts.push("# Project review policy", review);
+  parts.push(
+    "# Stuck machines",
+    "- If a chat or task is stuck on a paused or resuming machine (\"Machine is paused\", \"resuming\"), or I say \"wake this machine\", run `bb boat sandbox wake <id>` (the `boat_wake` tool) with its sandbox, task or chat id; don't hand-repair. If it ends with Needs you, tell me what it says.",
+  );
   parts.push("# Waiting work", "When boat_dispatch returns a ::boat-start-queue{id=\"...\"} receipt, reproduce that exact returned marker once in your message. If several requests for the same chat are queued together, emit only the first marker; its live card lists the waiting siblings. The original requests are persisted and no sandbox has been created. Do not dispatch replacements or name an agent to bypass the wait. Paid starts require a separate in-thread confirmation unless the saved automatic Claude fallback policy authorizes this task.");
   return parts.join("\n\n");
 }

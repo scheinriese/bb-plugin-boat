@@ -26,6 +26,7 @@ import { toOrchestratorProject, type OrchestratorProject, type ProjectStore } fr
 import { ensureProjectSection, threadSection } from "./sections.ts";
 import type { QuotaReader, Quotas } from "./quota.ts";
 import { resumeEnabled, type PaidResume, type ResumeReport } from "./paid-resume.ts";
+import type { SandboxWaker, WakeCall, WakeReport } from "./sandbox-wake.ts";
 import type { ConnectCheck, ConnectStatus } from "./connect.ts";
 import type { ConfigDeps } from "./config.ts";
 import type { SettingsStore } from "./settings-store.ts";
@@ -152,6 +153,13 @@ export interface Runtime {
   changed(): void;
   /** Nudge the monitor to check boat soon. */
   wake(): void;
+  /**
+   * Bring a stuck sandbox and its chat back (`bb boat sandbox wake`,
+   * src/sandbox-wake.ts): waited for up to 90 seconds, then reported as running.
+   */
+  wakeSandbox(call: WakeCall): Promise<WakeReport>;
+  /** The running or last wake of the sandbox behind an id (`bb boat sandbox wake --status`). */
+  wakeStatus(id: string): Promise<WakeReport>;
 }
 
 export type RelayAction =
@@ -184,6 +192,8 @@ export interface RuntimeDeps {
   setup?: Setup;
   /** Chats stopped at a usage limit continue on paid Claude (src/paid-resume.ts). */
   paidResume?: PaidResume;
+  /** `bb boat sandbox wake` (src/sandbox-wake.ts); a getter: it's made after the runtime (null: not available). */
+  sandboxWaker?(): SandboxWaker | null;
   changed(): void;
   wake(): void;
 }
@@ -994,5 +1004,19 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
 
     changed: deps.changed,
     wake: deps.wake,
+    async wakeSandbox(call) {
+      const waker = deps.sandboxWaker?.() ?? null;
+      if (waker === null) throw new TaskError("Waking a sandbox isn't available here.", "wake_unavailable");
+      try {
+        return await waker.wake(call);
+      } finally {
+        deps.changed();
+      }
+    },
+    async wakeStatus(id) {
+      const waker = deps.sandboxWaker?.() ?? null;
+      if (waker === null) throw new TaskError("Waking a sandbox isn't available here.", "wake_unavailable");
+      return waker.status(id);
+    },
   };
 }

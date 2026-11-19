@@ -50,6 +50,8 @@ import { WAKE_EVENT, createWakeGuard } from "./src/wake-retry.ts";
 import { threadsOnMachine } from "./src/activity.ts";
 import { createBbUpdater } from "./src/bb-update.ts";
 import { prefetchBbFiles } from "./src/bb-prefetch.ts";
+import { createLoginQuieter } from "./src/login-scripts.ts";
+import { createSandboxWaker, type SandboxWaker } from "./src/sandbox-wake.ts";
 import { RETRY_CONSENT_METHOD, createResetPacing, retryConsentContract, type LimitFailure } from "./src/reset-pacing.ts";
 
 const REALTIME_CHANNEL = "boat-changed";
@@ -372,11 +374,14 @@ export default async function plugin(bb: BbPluginApi) {
   // Machine wakes the plugin makes on its own (the watchdog's resumes, paid Claude resumes): 2 a minute, kept in kv.
   // It also waits while the sandbox wake pacer above has no slot free, so the two never add up past 2 a minute.
   const wakeBudget = createWakeBudget(bb.storage.kv, { pacer: wakePacer });
+  // A chat's queue, failed turn and retries, and the machine it runs on (the paid resume and `bb boat sandbox wake`).
+  const resumeThreads = bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(), { error: (line) => bb.log.error(line) });
+  const machineReader = bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await boat.findInfo(sandboxId))?.state ?? null);
   // Chats stopped at a usage limit continue once paid Claude is available (its own timer, below).
   const paidResume = createPaidResume({
-    threads: bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(), { error: (line) => bb.log.error(line) }),
+    threads: resumeThreads,
     store: new PaidResumeStore(() => bb.storage.database()),
-    machines: bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await boat.findInfo(sandboxId))?.state ?? null),
+    machines: machineReader,
     wakes: wakeBudget,
     tasks: {
       byThread: (threadId) => service.store.byThread(threadId),
@@ -399,6 +404,8 @@ export default async function plugin(bb: BbPluginApi) {
     sleep: (ms) => sleep(ms, lifecycle.signal),
   });
 
+  // `bb boat sandbox wake` (made below, once bb's safe update exists).
+  let sandboxWaker: SandboxWaker | null = null;
   const runtime = createRuntime({
     bb,
     service,
@@ -409,6 +416,7 @@ export default async function plugin(bb: BbPluginApi) {
     connect,
     settings,
     paidResume,
+    sandboxWaker: () => sandboxWaker,
     // Relay progress and reset waits stay in-chat; only task needs-you/ready pushes are sent.
     notifyUser: async () => undefined,
     setup,
@@ -463,6 +471,57 @@ export default async function plugin(bb: BbPluginApi) {
     info: (line) => bb.log.info(line),
   });
   registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect, wakes, prepareHost });
+  // A stuck sandbox and its chat back in one go, composed from the wake pacer and guard, the login
+  // scripts, bb's safe update and the chat retries above (src/sandbox-wake.ts).
+  sandboxWaker = createSandboxWaker({
+    boat,
+    kv: bb.storage.kv,
+    // A wake runs under the plugin's lifetime, not the CLI's request: the call waits 90 s, then it goes on.
+    lifecycle: lifecycle.signal,
+    notify: (threadId, text) => runtime.tellOrchestrator(threadId, text),
+    tell: (sandboxId, text, options) => {
+      const tasks = options?.closedToo === true ? store.sandboxTasks(sandboxId) : store.liveSandboxTasks(sandboxId);
+      for (const task of tasks) store.addEvent(task.id, WAKE_EVENT, text);
+      if (tasks.length > 0) changed();
+    },
+    bringUp: (sandboxId, signal, wake) => service.bringUp(sandboxId, signal, wake),
+    pacer: wakePacer,
+    guard: wakes,
+    quietLogins: createLoginQuieter(boat, (line) => bb.log.warn(line)),
+    updateBb: prepareHost,
+    serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
+    tasks: {
+      resolve: (id) => store.resolve(id),
+      liveSandboxTasks: (id) => store.liveSandboxTasks(id),
+      sandboxTasks: (id) => store.sandboxTasks(id),
+      // The plugin's records first, else the chat's own metadata (a worker chat carries its task id).
+      forThread: async (threadId) => {
+        const known = store.byThread(threadId);
+        if (known !== null) return known;
+        const raw = (await bb.sdk.threads.getPluginMetadata({ threadId, pluginId: bb.pluginId } as never).catch(() => null)) as { metadata?: unknown; taskId?: unknown } | null;
+        const metadata = (raw !== null && typeof raw === "object" && "metadata" in raw ? raw.metadata : raw) as { taskId?: unknown } | null;
+        return typeof metadata?.taskId === "string" ? store.get(metadata.taskId) : null;
+      },
+      hostForSandbox: (id) => store.hostForSandbox(id),
+    },
+    // A pending provider retry is cancelled by withdrawing its queued row, confirmed by bb's queue.
+    threads: { ...resumeThreads, cancelRetry: (threadId, queuedMessageId) => chatRunner.withdraw(threadId, queuedMessageId) },
+    machines: {
+      hostOf: (environmentId) => machineReader.hostOf(environmentId),
+      sandboxOf: async (hostId) => {
+        const resource = (await bb.experimental_machines.getResource(hostId).catch(() => null)) as { sandboxId?: unknown } | null;
+        return typeof resource?.sandboxId === "string" ? resource.sandboxId : null;
+      },
+      // A machine bb couldn't read makes the lookup fail, not read as "none".
+      hostFor: (sandboxId) => chatRunner.findMachine(sandboxId, { strict: true }),
+      host: (hostId) => chatRunner.machineState(hostId),
+      resume: (hostId) => chatRunner.resumeMachine(hostId),
+      threadsOn: (hostId) => threadsOnMachine(bb, hostId),
+    },
+    log: (line) => bb.log.info(line),
+  });
+  // A wake cut off between its stop and its start (a reload): the sandbox is started again.
+  void sandboxWaker.recover().catch((error: unknown) => bb.log.warn(`sandbox wake recovery failed: ${error instanceof Error ? error.message : String(error)}`));
 
   // A usage limit's reset: Boat's chats go on without waking every sandbox at once.
   const resets = createResetPacing({
@@ -856,6 +915,12 @@ export default async function plugin(bb: BbPluginApi) {
           await wakes.tick();
         } catch (error) {
           bb.log.warn(`wake retries failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        // A sandbox a cut-off `bb boat sandbox wake` left stopped: started again (paced).
+        try {
+          await sandboxWaker?.recover();
+        } catch (error) {
+          bb.log.warn(`sandbox wake recovery failed: ${error instanceof Error ? error.message : String(error)}`);
         }
         // Running turns are checked often; waiting tasks (idle-stop, notices) slowly.
         const intervalMs = service.hasActiveWork() ? POLL_INTERVAL_MS : 60_000;
