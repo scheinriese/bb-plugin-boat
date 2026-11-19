@@ -27,6 +27,9 @@ export { ORCHESTRATOR_EFFORT_VALUES, type OrchestratorChoicesDto, type Orchestra
 // The usage view (contract-usage.ts), spread in at the end too.
 import { extraUsageViewSchema, usageRpcMethods } from "./contract-usage.ts";
 export { USAGE_STALE_MS, type UsageAccountDto, type UsageViewDto, type UsageWindowDto } from "./contract-usage.ts";
+// Sandbox providers (contract-providers.ts): spread in at the end too, and runsOn on tasks and sandboxes.
+import { providerRpcMethods, runsOnSchema } from "./contract-providers.ts";
+export * from "./contract-providers.ts";
 
 export const PROVIDER_VALUES = ["claude", "codex"] as const;
 export const ROLE_VALUES = ["implement", "review", "custom"] as const;
@@ -203,6 +206,8 @@ export const projectSchema = z.object({
   reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
   /** Its chats stopped at a usage limit never continue on paid Claude. */
   neverPaidClaude: z.boolean().optional(),
+  /** The sandbox provider its new work runs on (Settings › Runs on); null or absent: the default, boat.dev. */
+  sandboxProvider: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -231,6 +236,8 @@ export const projectInputSchema = z.object({
   reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
   /** absent: unchanged. */
   neverPaidClaude: z.boolean().optional(),
+  /** The sandbox provider for its new work; null: the default; absent: unchanged. */
+  sandboxProvider: z.string().trim().min(1).max(40).nullable().optional(),
 });
 export type ProjectInputDto = z.infer<typeof projectInputSchema>;
 
@@ -342,6 +349,8 @@ export const taskSchema = z.object({
   verdict: z.string().nullable(),
   /** The tail of the agent's last message (≤ 600 chars) for cards. */
   excerpt: z.string().nullable(),
+  /** Where its sandbox runs: the provider and the machine (absent: not said; read it as boat.dev). */
+  runsOn: runsOnSchema.optional(),
 });
 export type TaskDto = z.infer<typeof taskSchema>;
 
@@ -401,6 +410,8 @@ export const sandboxSchema = z.object({
   taskIds: z.array(z.string()),
   /** What uses it: open tasks first, then chats on it (empty: not in use). */
   uses: z.array(sandboxUseSchema),
+  /** Its provider and machine (Cloud agents › Sandboxes' Runs on column; absent: not said). */
+  runsOn: runsOnSchema.optional(),
 });
 export type SandboxDto = z.infer<typeof sandboxSchema>;
 
@@ -1098,6 +1109,8 @@ export const rpcContract = defineRpcContract({
   ...orchestratorRpcMethods,
   // ------------------------------------------------------------- the usage view (contract-usage.ts)
   ...usageRpcMethods,
+  // ------------------------------------------------------------- sandbox providers (contract-providers.ts)
+  ...providerRpcMethods,
 });
 
 export type RpcContract = typeof rpcContract;

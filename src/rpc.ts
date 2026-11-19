@@ -4,7 +4,7 @@ import { fidelityHandlers } from "./rpc-fidelity.ts";
 import { shipPresentation } from "./ship-presentation.ts";
 // RPC handlers behind the Cloud agents UI (contract in ../contract.ts).
 import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
-import { TAGS, rpcContract, type PreviewDto, type SandboxDto, type TaskDetailDto, type TaskDto, type TaskSourceDto, type ThreadRoleDto } from "../contract.ts";
+import { TAGS, rpcContract, type PreviewDto, type RunsOnDto, type SandboxDto, type TaskDetailDto, type TaskDto, type TaskSourceDto, type ThreadRoleDto } from "../contract.ts";
 import type { PreviewView } from "./previews.ts";
 import { assertBranch, dashboardUrl, normalizeRepo } from "./providers/boat/api.ts";
 import { resolveBoatBinary } from "./providers/boat/cli.ts";
@@ -33,6 +33,7 @@ import { SETTING_SECTIONS } from "./settings.ts";
 import { HIDDEN_EVENT_KINDS } from "./memory.ts";
 import { sizeHandlers } from "./rpc-size.ts";
 import { usageHandlers } from "./rpc-usage.ts";
+import { providerHandlers, runsOnOf } from "./rpc-providers.ts";
 import { currentChanges } from "./ship-approval.ts";
 import { shipRpcContract } from "../contract-ship.ts";
 import { createShipInteractions, parseShipSnapshot, shipSnapshotScript } from "./ship-interaction.ts";
@@ -74,7 +75,7 @@ export function shipApprovalDto(task: Pick<Task, "turns" | "shipApproval">): Tas
 
 export function toTaskDto(
   task: Task,
-  extras: { ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean; publicStatus?: TaskPublicStatus } = {},
+  extras: { ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean; publicStatus?: TaskPublicStatus; runsOn?: RunsOnDto } = {},
 ): TaskDto {
   const report = task.result ? parseReport(task.result) : { status: null, verdict: null };
   const unshipped = holdsUnshippedWork(task);
@@ -123,6 +124,7 @@ export function toTaskDto(
     reportStatus: report.status,
     verdict: report.verdict,
     excerpt: task.result ? resultExcerpt(task.result, 600) : null,
+    ...(extras.runsOn ? { runsOn: extras.runsOn } : {}),
   };
 }
 
@@ -155,7 +157,7 @@ export function sandboxUses(
   ];
 }
 
-function toSandboxDto(sandbox: Sandbox, taskIds: string[], uses: SandboxDto["uses"] = []): SandboxDto {
+function toSandboxDto(sandbox: Sandbox, taskIds: string[], uses: SandboxDto["uses"] = [], runsOn?: RunsOnDto): SandboxDto {
   return {
     id: sandbox.id,
     name: sandbox.name,
@@ -169,6 +171,7 @@ function toSandboxDto(sandbox: Sandbox, taskIds: string[], uses: SandboxDto["use
     sshCommand: `boat ssh ${sandbox.id}`,
     taskIds,
     uses,
+    ...(runsOn ? { runsOn } : {}),
   };
 }
 
@@ -306,8 +309,36 @@ export function registerRpc(runtime: Runtime): void {
   }
   type Sourcing = Awaited<ReturnType<typeof sourcing>>;
 
+  /**
+   * The size a sandbox was last read at (the memory probe's reading, kept 15
+   * seconds per sandbox: task lists ask often). Only open tasks are read; a
+   * closed task's sandbox may be long gone.
+   */
+  const sizeCache = new Map<string, { at: number; type: MachineType | null }>();
+  const sizeOf = (sandboxId: string, task: Pick<Task, "id" | "sandboxId">): MachineType | null => {
+    const cached = sizeCache.get(sandboxId);
+    if (cached !== undefined && Date.now() - cached.at < 15_000) return cached.type;
+    let type: MachineType | null = null;
+    try {
+      type = service.sizes.knownSize(task)?.type ?? null;
+    } catch {
+      // Unknown: the line names only the provider.
+    }
+    if (sizeCache.size > 500) sizeCache.clear();
+    sizeCache.set(sandboxId, { at: Date.now(), type });
+    return type;
+  };
+  /** Where a task's sandbox runs (Settings › Sandbox providers words): "boat.dev · Default". */
+  const runsOn = (task: Task): RunsOnDto =>
+    runsOnOf(
+      service.sandboxProvider(task),
+      task.sandboxId !== null && OPEN_STATUSES.includes(task.status) ? sizeOf(task.sandboxId, task) : null,
+      service.sandboxProviders.default.id,
+    );
+
   const dto = (task: Task, sources: Sourcing, all?: readonly Task[]) =>
     toTaskDto(task, {
+      runsOn: runsOn(task),
       publicStatus: service.publicStatus(task, { ready: isReady(task, all ?? service.store.list({ parentTaskId: task.id, limit: 100 }).concat(task), latestReview, sources.isOrchestrator) }),
       untrustedRepo: untrusted(task),
       movingToChat: service.isMovingToChat(task.id),
@@ -377,6 +408,8 @@ export function registerRpc(runtime: Runtime): void {
     // Sandbox sizes and memory (src/rpc-size.ts).
     ...sizeHandlers(runtime, refuse),
     ...usageHandlers(runtime),
+    // Sandbox providers and where each project's work runs (src/rpc-providers.ts).
+    ...providerHandlers(runtime),
     overview: async () => {
       const settings = await service.settings();
       const only = onlyAgent(settings.agents);
@@ -422,13 +455,17 @@ export function registerRpc(runtime: Runtime): void {
         const tasks = service.store.list({ limit: 1000 });
         const orchestrators = service.store.orchestratorThreadIds().current;
         return {
-          sandboxes: sandboxes.map((sandbox) =>
-            toSandboxDto(
+          sandboxes: sandboxes.map((sandbox) => {
+            const own = tasks.filter((task) => task.sandboxId === sandbox.id);
+            const live = own.find((task) => OPEN_STATUSES.includes(task.status)) ?? null;
+            const size = sandbox.machineType ?? (live === null ? null : sizeOf(sandbox.id, live));
+            return toSandboxDto(
               sandbox,
-              tasks.filter((task) => task.sandboxId === sandbox.id).map((task) => task.id),
+              own.map((task) => task.id),
               sandboxUses(sandbox.id, tasks, chats, orchestrators),
-            ),
-          ),
+              runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id),
+            );
+          }),
           error: null,
         };
       } catch (error) {
