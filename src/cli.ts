@@ -1250,7 +1250,9 @@ export function buildCli(runtime: Runtime) {
                           ? `Asked @thread:${action.threadId} for a handoff note for ${AGENT_NAME[action.to]} (${action.reason}).`
                           : action.kind === "both-out"
                             ? `@thread:${action.threadId} waits: ${action.reason}.`
-                            : `@thread:${action.threadId}: skipped (${action.reason}).`,
+                            : action.kind === "resumed"
+                              ? `${action.threadId.startsWith("task:") ? `Task ${action.taskId}` : `@thread:${action.threadId}`} continues ${action.reason}.`
+                              : `@thread:${action.threadId}: skipped (${action.reason}).`,
                     )
                     .join("\n"),
             );
