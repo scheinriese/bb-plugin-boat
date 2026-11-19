@@ -337,10 +337,14 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   doesn't fit its size ("does not fit any available 'small' machine").
   The machine says so in plain words, and Needs you has the way back by
   hand: one start on Large (`boat resume <id> --type large`), then
-  `sudo fstrim -av` and `docker image prune -af` over `boat exec`, `boat
-  stop <id>`, and `boat resume <id> --type <its size>`. The plugin never
+  `boat exec <id> --timeout 300 -- sudo fstrim -av` and
+  `boat exec <id> -- sudo -n docker image prune -f` (dangling images only),
+  `boat stop <id>`, and `boat resume <id> --type <its size>`. If that last
+  resume still fails, removing every image no container uses
+  (`docker image prune -af`) is the optional extra step. The plugin never
   does this itself, since a larger size costs more, and it doesn't retry
-  or hold resumes for it.
+  or hold resumes for it. A move to a smaller size that boat refuses this
+  way isn't asked about: the move says so and goes back to the old size.
 - **Off a node that keeps failing.** Once the plugin itself has seen the
   same hydrator failure at least 3 times over more than 15 minutes (on
   wakes, or on stops boat refused), it moves the sandbox to a new node.
@@ -372,7 +376,8 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   plugin makes on purpose (bb suspending a Boat machine, the idle stop,
   making room, Stop in Sandboxes, a preview's stop, a resize), it runs
   `sudo -n fstrim -av` there over boat's exec API, only while the sandbox
-  runs. It takes at most a minute and never fails the stop; bb's debug log
+  runs. It takes at most a minute (20 seconds when it makes room for new
+  work, since starts wait for it) and never fails the stop; bb's debug log
   has the amount trimmed.
 - **Suspending follows boat's stop.** boat usually answers a stop with
   "pending" while it takes the final snapshot; a suspend follows it (its
