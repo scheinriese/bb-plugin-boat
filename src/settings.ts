@@ -226,6 +226,13 @@ export const PLUGIN_SETTINGS = {
     description: "Only with automatic paid Claude fallback enabled. Authorize headless tasks too after confirming Boat uses the same Claude subscription account and billing controls as bb. The availability signal comes from bb; Boat cannot verify every environment's login. Leave off for different accounts or API keys.",
     default: false,
   },
+  resumeStoppedChats: {
+    section: "usage-limits",
+    type: "boolean",
+    label: "Resume chats stopped at a limit when paid Claude is available",
+    description: "Only with automatic paid Claude fallback enabled. Claude chats that stopped at a usage limit continue on their own once paid Claude is available, each stopped turn once. A project can opt out. Headless tasks follow the headless setting above.",
+    default: true,
+  },
   relayEnabled: {
     section: "usage-limits",
     group: "switching",

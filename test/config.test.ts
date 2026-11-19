@@ -91,6 +91,7 @@ const EVERY_SETTING = {
   avoidExtraUsage: false,
   paidClaudeFallback: true,
   paidClaudeHeadless: true,
+  resumeStoppedChats: false,
   relayEnabled: true,
   relaySwitchAt: 85,
   relaySwitchBackBelow: 40,
@@ -326,7 +327,7 @@ test("a version 1 backup with every old setting imports into today's settings", 
   assert.match(dry.stdout, /From an older backup: workers from workerMode "chat" and adhocWorkerMode "boat": "projects"/);
   assert.match(dry.stdout, /Ignored, no longer settings: pollIntervalSeconds/);
   // The settings newer than the file are named, with the values they keep (the defaults here).
-  assert.match(dry.stdout, /Not in the file, stay as they are: experimentalUiTweaks = false, notifyNeedsYou = true, notifyReady = true, notifyProgress = false, paidClaudeFallback = false, paidClaudeHeadless = false, orchestratorEffort = "high", tasksBeforeAsking = 5 and 2 more settings\n/);
+  assert.match(dry.stdout, /Not in the file, stay as they are: experimentalUiTweaks = false, notifyNeedsYou = true, notifyReady = true, notifyProgress = false, paidClaudeFallback = false, paidClaudeHeadless = false, resumeStoppedChats = true, orchestratorEffort = "high" and 3 more settings\n/);
   assert.doesNotMatch(dry.stdout, /Skipped, not settings of this version/);
 
   const result = await importFile(file);
@@ -346,7 +347,7 @@ test("a version 1 backup with every old setting imports into today's settings", 
 
   // The effective settings are the intended ones: the file's values by today's keys, defaults for the rest.
   const { workerMode: _w, adhocWorkerMode: _a, pollIntervalSeconds: _p, ...rest } = V1_SETTINGS;
-  const intended = { ...rest, workers: "projects", experimentalUiTweaks: false, notifyNeedsYou: true, notifyReady: true, notifyProgress: false, paidClaudeFallback: false, paidClaudeHeadless: false, orchestratorEffort: "high", tasksBeforeAsking: 5, cloudOrchestratorFullAccess: true, recoverChatsAfterSteer: true };
+  const intended = { ...rest, workers: "projects", experimentalUiTweaks: false, notifyNeedsYou: true, notifyReady: true, notifyProgress: false, paidClaudeFallback: false, paidClaudeHeadless: false, resumeStoppedChats: true, orchestratorEffort: "high", tasksBeforeAsking: 5, cloudOrchestratorFullAccess: true, recoverChatsAfterSteer: true };
   const after = await exported();
   assert.deepEqual(after.settings, Object.fromEntries(Object.keys(ALL_SETTINGS).map((key) => [key, intended[key as keyof typeof intended]])));
   assert.equal(after.version, 2);

@@ -165,6 +165,7 @@ export default async function plugin(bb: BbPluginApi) {
         quietMinutes: values.relayQuietMinutes,
         paidClaudeFallback: values.paidClaudeFallback,
         paidClaudeHeadless: values.paidClaudeHeadless,
+        resumeStoppedChats: values.resumeStoppedChats,
       },
       avoidExtraUsage: values.avoidExtraUsage,
       pushNotifications: values.pushNotifications,
