@@ -14,6 +14,7 @@ import plugin from "../server.ts";
 import {
   BACKOFF_FIRST_MS,
   BACKOFF_MAX_MS,
+  CLAIM_TTL_MS,
   CLAUDE_CODE,
   UNKNOWN,
   WAKE_HOLD_MS,
@@ -602,6 +603,9 @@ test("bb's side: decision.get through callRpc, a pending row sent with mode auto
   await threads.retry("thr_a", "req_1", RESUME_REASON);
   assert.deepEqual(calls.find((call) => call.method === "threads.retry")!.args, { threadId: "thr_a", turnRequestId: "req_1", reason: RESUME_REASON });
   assert.equal((await threads.stopEvents("thr_a")).length, 2);
+  // An older bb that only says archived: true.
+  const archived = bbResumeThreads({ sdk: { threads: { get: async () => ({ id: "thr_x", providerId: CLAUDE_CODE, status: "error", archived: true }) } } } as never, async () => undefined);
+  assert.equal((await archived.get("thr_x"))?.archived, true);
   // An older bb without these calls: nothing is sent, and the attempt says why.
   const older = bbResumeThreads({ sdk: { threads: { queuedMessages: {} } } } as never, async () => undefined);
   await assert.rejects(older.retry("thr_a", "req_1", RESUME_REASON), ResumeUnsupported);
@@ -889,6 +893,23 @@ test("a machine the paid resume woke that then fails to start holds all wakes on
   const after = await env.resume.pass(fresh(env), settings());
   assert.deepEqual(after.resumed.map((work) => work.threadId), ["thr_next"]);
   assert.equal(env.store.wakeHold(), NOW + 60_000 + WAKE_HOLD_MS);
+});
+
+test("a chat's try cut off by a restart (still claimed) goes again after ten minutes; a headless one doesn't", async () => {
+  const env = setup({ tasks: [task({ id: "t_head", runner: "boat", error: "Claude AI usage limit reached", sandboxId: "sbx_h" })] });
+  skippedStop(env, "thr_cut");
+  // The plugin stopped between claiming and marking the try.
+  assert.equal(env.store.claim("thr_cut", "req_thr_cut", "retry", new Date(NOW)), true);
+  assert.equal(env.store.claim("task:t_head", "turn:1", "follow-up", new Date(NOW)), true);
+  const early = await env.resume.pass(fresh(env), settings({ paidClaudeHeadless: true }));
+  assert.deepEqual(early.skipped.find((entry) => entry.id === "thr_cut"), { id: "thr_cut", reason: "a try of it is under way" });
+  env.advance(CLAIM_TTL_MS + 1_000);
+  await env.resume.pass(fresh(env), settings({ paidClaudeHeadless: true }));
+  assert.deepEqual(env.threads.retried, [{ threadId: "thr_cut", turnRequestId: "req_thr_cut", reason: RESUME_REASON }]);
+  // The cut-off try counted.
+  assert.equal(env.store.attempts("thr_cut", "req_thr_cut"), 2);
+  // A headless follow-up may have reached the agent: never again.
+  assert.deepEqual(env.followups, []);
 });
 
 test("the wake budget: two a minute, one at a time, kept across a restart", async () => {

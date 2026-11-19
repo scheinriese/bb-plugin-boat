@@ -57,6 +57,8 @@ export const BACKOFF_FIRST_MS = 5 * 60_000;
 export const BACKOFF_MAX_MS = 60 * 60_000;
 /** After a wake the paid resume made failed, no machine is woken for this long. */
 export const WAKE_HOLD_MS = 15 * 60_000;
+/** A chat's try still "claimed" after this long was cut off (a restart): it counts, and may go again. */
+export const CLAIM_TTL_MS = 10 * 60_000;
 /** provider-retry records its decision right after a failure: wait this long for it before a core retry. */
 export const DECISION_WAIT_MS = 60_000;
 /** A pending provider retry due this soon is left alone: it may still run on included usage. */
@@ -229,23 +231,34 @@ export class PaidResumeStore {
 
   /**
    * This stopped turn is done with: continued, being tried, or out of tries.
-   * A failed try with tries left isn't (it goes again after the backoff).
+   * A failed try with tries left isn't (it goes again after the backoff), nor,
+   * with `claimedBefore`, a try still "claimed" from before then (a restart
+   * cut it off; only for chats, where bb refuses a retry that already went out).
    */
-  settled(threadId: string, turnKey: string): boolean {
-    const row = this.db().prepare(`SELECT state, attempts FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).get(threadId, turnKey) as { state: string; attempts: number } | undefined;
-    return row !== undefined && !(row.state === "unsent" && Number(row.attempts) < MAX_ATTEMPTS);
+  settled(threadId: string, turnKey: string, options: { claimedBefore?: Date } = {}): boolean {
+    const row = this.db().prepare(`SELECT state, attempts, at FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).get(threadId, turnKey) as { state: string; attempts: number; at: string } | undefined;
+    if (row === undefined) return false;
+    const again = row.state === "unsent" || (row.state === "claimed" && options.claimedBefore !== undefined && row.at < options.claimedBefore.toISOString());
+    return !(again && Number(row.attempts) < MAX_ATTEMPTS);
   }
 
-  /** Claim a stopped turn for one try; false when it's settled. */
-  claim(threadId: string, turnKey: string, how: ResumeHow, at = new Date()): boolean {
+  /** Claim a stopped turn for one try (`claimedBefore` as in settled); false when it's settled. */
+  claim(threadId: string, turnKey: string, how: ResumeHow, at = new Date(), options: { claimedBefore?: Date } = {}): boolean {
     const inserted = this.db()
       .prepare(`INSERT OR IGNORE INTO paid_resumes (thread_id, turn_key, how, state, at, attempts) VALUES (?, ?, ?, 'claimed', ?, 1)`)
       .run(threadId, turnKey, how, at.toISOString());
     if (Number(inserted.changes) === 1) return true;
+    // ISO times in one format compare as text. Without claimedBefore, no "claimed" row matches ('' sorts first).
     const again = this.db()
-      .prepare(`UPDATE paid_resumes SET state = 'claimed', how = ?, at = ?, attempts = attempts + 1 WHERE thread_id = ? AND turn_key = ? AND state = 'unsent' AND attempts < ?`)
-      .run(how, at.toISOString(), threadId, turnKey, MAX_ATTEMPTS);
+      .prepare(`UPDATE paid_resumes SET state = 'claimed', how = ?, at = ?, attempts = attempts + 1 WHERE thread_id = ? AND turn_key = ? AND (state = 'unsent' OR (state = 'claimed' AND at < ?)) AND attempts < ?`)
+      .run(how, at.toISOString(), threadId, turnKey, options.claimedBefore?.toISOString() ?? "", MAX_ATTEMPTS);
     return Number(again.changes) === 1;
+  }
+
+  /** A try of this stopped turn is "claimed" (going on, or cut off by a restart) with tries left. */
+  inFlight(threadId: string, turnKey: string): boolean {
+    const row = this.db().prepare(`SELECT state, attempts FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).get(threadId, turnKey) as { state: string; attempts: number } | undefined;
+    return row !== undefined && row.state === "claimed" && Number(row.attempts) < MAX_ATTEMPTS;
   }
 
   /** How many tries this stopped turn had (0: none). */
@@ -621,7 +634,11 @@ export function createPaidResume(deps: PaidResumeDeps) {
     const turn = readStoppedTurn(await deps.threads.stopEvents(threadId));
     if (turn === null) return { skip: "no failed turn", drop: true };
     if (turn.failure.kind !== "usage-limit") return { skip: `it stopped on ${turn.failure.why}`, drop: true };
-    if (deps.store.settled(threadId, turn.rootRequestId)) return { skip: "this stopped turn was continued once already", drop: true };
+    if (deps.store.settled(threadId, turn.rootRequestId, { claimedBefore: new Date(at - CLAIM_TTL_MS) })) {
+      // A try still "claimed" (a restart may have cut it off) keeps its stop: after CLAIM_TTL_MS it may go again.
+      const inFlight = deps.store.inFlight(threadId, turn.rootRequestId);
+      return { skip: inFlight ? "a try of it is under way" : "this stopped turn was continued once already", drop: !inFlight };
+    }
     if (pending !== null) {
       if (pending.sendAt !== null && pending.sendAt - at <= PENDING_SOON_MS) return { skip: "its provider retry goes out soon anyway", drop: false };
       return { plan: { how: "pending-retry", queuedMessageId: pending.id, turn }, thread, task };
@@ -642,7 +659,8 @@ export function createPaidResume(deps: PaidResumeDeps) {
   async function resumeChat(threadId: string, step: { plan: Plan; thread: ThreadFacts; task: Task | null }, wake: boolean): Promise<Attempt> {
     const { plan: chosen, thread, task } = step;
     const key = chosen.turn.rootRequestId;
-    if (!deps.store.claim(threadId, key, chosen.how)) return { kind: "released", reason: "this stopped turn was continued once already" };
+    // A chat's try left "claimed" by a restart may go again: bb refuses a retry that already went out (409, 404).
+    if (!deps.store.claim(threadId, key, chosen.how, new Date(now()), { claimedBefore: new Date(now() - CLAIM_TTL_MS) })) return { kind: "released", reason: "this stopped turn was continued once already" };
     try {
       if (chosen.how === "pending-retry") await deps.threads.sendQueued(threadId, chosen.queuedMessageId);
       else await deps.threads.retry(threadId, chosen.turn.requestId, RESUME_REASON);
@@ -1004,7 +1022,8 @@ export function bbResumeThreads(bb: BbPluginApi, tell: (threadId: string, text: 
         title,
         providerId: typeof thread.providerId === "string" ? thread.providerId : null,
         status: typeof thread.status === "string" ? thread.status : "idle",
-        archived: Boolean(thread.archivedAt),
+        // Older bb versions may only say archived: true.
+        archived: Boolean(thread.archivedAt) || thread.archived === true,
         projectId: typeof thread.projectId === "string" ? thread.projectId : null,
         parentThreadId: typeof thread.parentThreadId === "string" ? thread.parentThreadId : null,
         environmentId: typeof thread.environmentId === "string" ? thread.environmentId : null,
