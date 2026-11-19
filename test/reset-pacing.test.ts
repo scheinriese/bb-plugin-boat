@@ -214,6 +214,7 @@ test("at dispatch, reset retries that would wake a Boat sandbox go one machine e
 });
 
 test("in the plugin: the consent RPC answers provider retry, and the dispatch hook spreads reset retries", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-19T12:00:00.000Z") });
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-reset-")), "state.json");
   const { bb, harness } = await createTestHost({
     pluginId: "boat",

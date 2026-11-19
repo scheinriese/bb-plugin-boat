@@ -864,41 +864,46 @@ test("messages waiting on a machine bb lost the connection to while its sandbox 
   assert.deepEqual(w.calls.resume, []);
 });
 
-test("boat's coming stop of a headless sandbox still computing: told ahead; the note only once it has stopped", async () => {
-  const env = makeService();
-  const { task } = await env.service.launchTask({ title: "Soak", role: "implement", brief: "Run it.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
-  env.boat.finish(task.conversationId!, "Done.\n\n=== REPORT ===\nSTATUS: done\nPR: none\nBRANCH: boat/x\nSUMMARY: ran it\nTESTS: ok\nOPEN QUESTIONS: none\n=== END REPORT ===");
-  await env.service.sweep();
-  const told: string[] = [];
-  let at = Date.now();
-  const dog = createWatchdog({ pluginId: "boat", sdk: { hosts: { list: async () => [] } } } as unknown as BbPluginApi, {
-    boat: env.boat as unknown as BoatApi,
-    store: env.store,
-    kv: memoryKv(),
-    computing: async () => "busy",
-    tell: async (_threadId, text) => void told.push(text),
-    log: () => undefined,
-    now: () => at,
-  });
-  await dog.tick();
-  const deadline = at + 20 * MINUTE;
-  await dog.headlessStopped({ sandboxId: task.sandboxId!, stoppedAt: deadline, how: "auto-stop" });
-  at += MINUTE;
-  await dog.tick();
-  assert.equal(told.length, 1);
-  assert.match(told[0]!, /sandbox \([^)]*\) stops at \d\d:\d\d UTC while work is running in the background/);
-  assert.equal(await dog.noteFor(task.id), null, "nothing was lost yet");
-  // The watchdog keeps looking while it computes; then boat's stop comes: the worker's note now, no second notice.
-  for (let step = 0; step < 4; step += 1) {
-    at += 5 * MINUTE;
+for (const [startTime, stopTime] of [
+  ["12:00", "12:20"],
+  ["23:50", "2026-11-20 00:10"],
+]) {
+  test(`boat's coming stop of a headless sandbox still computing (${startTime} UTC): told ahead; the note only once it has stopped`, async () => {
+    const env = makeService();
+    const { task } = await env.service.launchTask({ title: "Soak", role: "implement", brief: "Run it.", repo: "acme/web", orchestratorThreadId: "thr_orch" }, 5_000);
+    env.boat.finish(task.conversationId!, "Done.\n\n=== REPORT ===\nSTATUS: done\nPR: none\nBRANCH: boat/x\nSUMMARY: ran it\nTESTS: ok\nOPEN QUESTIONS: none\n=== END REPORT ===");
+    await env.service.sweep();
+    const told: string[] = [];
+    let at = Date.parse(`2026-11-19T${startTime}:00.000Z`);
+    const dog = createWatchdog({ pluginId: "boat", sdk: { hosts: { list: async () => [] } } } as unknown as BbPluginApi, {
+      boat: env.boat as unknown as BoatApi,
+      store: env.store,
+      kv: memoryKv(),
+      computing: async () => "busy",
+      tell: async (_threadId, text) => void told.push(text),
+      log: () => undefined,
+      now: () => at,
+    });
     await dog.tick();
-  }
-  env.boat.sandboxes.get(task.sandboxId!)!.state = "stopped";
-  at += MINUTE;
-  await dog.tick();
-  assert.equal(told.length, 1);
-  assert.match((await dog.noteFor(task.id))!, /Restart a job only if you still need it/);
-});
+    const deadline = at + 20 * MINUTE;
+    await dog.headlessStopped({ sandboxId: task.sandboxId!, stoppedAt: deadline, how: "auto-stop" });
+    at += MINUTE;
+    await dog.tick();
+    assert.equal(told.length, 1);
+    assert.match(told[0]!, new RegExp(`sandbox \\([^)]*\\) stops at ${stopTime} UTC while work is running in the background`));
+    assert.equal(await dog.noteFor(task.id), null, "nothing was lost yet");
+    // The watchdog keeps looking while it computes; then boat's stop comes: the worker's note now, no second notice.
+    for (let step = 0; step < 4; step += 1) {
+      at += 5 * MINUTE;
+      await dog.tick();
+    }
+    env.boat.sandboxes.get(task.sandboxId!)!.state = "stopped";
+    at += MINUTE;
+    await dog.tick();
+    assert.equal(told.length, 1);
+    assert.match((await dog.noteFor(task.id))!, /Restart a job only if you still need it/);
+  });
+}
 
 test("a planned headless stop (the idle stop, with nothing computing) says nothing, even right after a busy reading", async () => {
   const env = makeService();
