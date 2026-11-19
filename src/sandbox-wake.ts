@@ -39,7 +39,7 @@
 // heartbeat across loads). A wake runs in the plugin's process, not under the
 // caller's request: the CLI and the tool wait up to 90 seconds, then report
 // what it did so far; `--status` shows it, and the chat that asked hears when
-// it ends. Each run is bounded (25 minutes): no stop goes out without time
+// it ends. Each run is bounded (about 25 minutes): no stop goes out without time
 // left to start it again, and once a stop went out the start always follows.
 // A run cut off between them (a reload) leaves a marker, and the monitor's
 // pass starts the sandbox again.
@@ -92,6 +92,8 @@ export const HEARTBEAT_MS = 30_000;
 export const STALE_MS = 3 * 60_000;
 /** A sandbox a cut-off wake left stopped: started again at most this often. */
 export const RECOVER_RETRY_MS = 5 * 60_000;
+/** A sandbox a cut-off wake left stopped is started again on its own for this long; after that, a note on its tasks instead. */
+export const RESTART_TTL_MS = 24 * 3_600_000;
 /** Finished wakes are kept this long (for --status). */
 export const MARKER_TTL_MS = 24 * 3_600_000;
 /** kv: the wakes, by sandbox. */
@@ -108,8 +110,10 @@ export interface WakeTarget {
   /** The id as given. */
   input: string;
   sandboxId: string;
-  /** bb's machine on the sandbox (null: none, or bb doesn't know one). */
+  /** bb's machine on the sandbox (null: none, bb doesn't know one, or the lookup failed: see hostLookupFailed). */
   hostId: string | null;
+  /** Boat couldn't look bb's machine up (why): there may be one, with chats running. null: the lookup worked. */
+  hostLookupFailed: string | null;
   /** The chats to retry once it's back. */
   threadIds: string[];
   /** The open tasks on the sandbox. */
@@ -184,6 +188,8 @@ export interface WakeRequest {
   dryRun?: boolean;
   /** The user agreed to a paid extra start if no included start is left. */
   allowPaidStart?: boolean;
+  /** Wake it although its tasks are cancelled or closed (the user asked; their chats are still never retried). */
+  forceWake?: boolean;
   /** A dry run's signal (a wake itself runs under the plugin's lifecycle, not the caller's request). */
   signal?: AbortSignal;
 }
@@ -226,6 +232,10 @@ export interface SandboxWakeDeps {
     /** A task by id or prefix (null: none). */
     resolve(idOrPrefix: string): Task | null;
     liveSandboxTasks(sandboxId: string): Task[];
+    /** Every task that ran in the sandbox, closed ones included. */
+    sandboxTasks(sandboxId: string): Task[];
+    /** The Boat task a chat belongs to (the plugin's records, else the chat's metadata), whatever its state; null: none. */
+    forThread(threadId: string): Promise<Task | null>;
     /** bb's machine on a sandbox, from the plugin's tasks (null: none known). */
     hostForSandbox?(sandboxId: string): string | null;
   };
@@ -235,7 +245,7 @@ export interface SandboxWakeDeps {
     hostOf(environmentId: string): Promise<string | null>;
     /** The boat sandbox under a bb machine (null: it isn't a Boat sandbox machine). */
     sandboxOf(hostId: string): Promise<string | null>;
-    /** The bb machine on a sandbox (null: none). */
+    /** The bb machine on a sandbox (null: none). Throws when bb's machines couldn't all be read. */
     hostFor(sandboxId: string): Promise<string | null>;
     /** bb's record of a machine (null: bb doesn't know it; throws: couldn't read it). */
     host(hostId: string): Promise<MachineState | null>;
@@ -294,6 +304,15 @@ function clip(text: string, max = 60): string {
 function minutes(ms: number): string {
   const count = Math.max(1, Math.round(ms / 60_000));
   return `${count} minute${count === 1 ? "" : "s"}`;
+}
+
+/** A Boat task that's over: cancelled, or closed as done. Its chats are never retried or woken for. */
+function closed(task: Pick<Task, "status">): boolean {
+  return task.status === "cancelled" || task.status === "done";
+}
+
+function closedText(task: Pick<Task, "id" | "status">): string {
+  return `${task.id} ${task.status === "cancelled" ? "cancelled" : "closed"}`;
 }
 
 const EIO = /Input\/output error|\bEIO\b/i;
@@ -610,8 +629,15 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
     await saving;
   }
 
-  async function hostFor(sandboxId: string): Promise<string | null> {
-    return deps.tasks.hostForSandbox?.(sandboxId) ?? (await deps.machines.hostFor(sandboxId).catch(() => null));
+  /** bb's machine on a sandbox; a lookup that failed is kept apart from "none" (there may be one, running chats). */
+  async function hostFor(sandboxId: string): Promise<{ hostId: string | null; failed: string | null }> {
+    const known = deps.tasks.hostForSandbox?.(sandboxId) ?? null;
+    if (known !== null) return { hostId: known, failed: null };
+    try {
+      return { hostId: await deps.machines.hostFor(sandboxId), failed: null };
+    } catch (error) {
+      return { hostId: null, failed: firstLine(error) || "bb didn't answer" };
+    }
   }
 
   async function openThreads(hostId: string): Promise<string[]> {
@@ -623,12 +649,13 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
     const id = input.trim();
     if (id === "") throw new TaskError("Name the sandbox, chat or task to wake.", "missing_target", "bb boat sandbox wake <sandbox id | thread id | task id>");
     if (/^bx_[A-Za-z0-9]+$/.test(id)) {
-      const hostId = await hostFor(id);
+      const { hostId, failed } = await hostFor(id);
       return {
         kind: "sandbox",
         input: id,
         sandboxId: id,
         hostId,
+        hostLookupFailed: failed,
         threadIds: hostId === null ? [] : await openThreads(hostId),
         taskIds: deps.tasks.liveSandboxTasks(id).map((task) => task.id),
         path: [`sandbox ${id}`, ...(hostId === null ? [] : [`bb machine ${hostId}`])],
@@ -637,13 +664,15 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
     const task = id.length >= 4 ? deps.tasks.resolve(id) : null;
     if (task !== null) {
       if (task.sandboxId === null) throw new TaskError(`Task ${task.id} has no sandbox yet.`, "no_sandbox", `Check it with \`bb boat task show ${task.id}\`.`);
-      const hostId = task.hostId ?? (await hostFor(task.sandboxId));
+      const found = task.hostId !== null ? { hostId: task.hostId, failed: null } : await hostFor(task.sandboxId);
+      const hostId = found.hostId;
       const threadIds = [...new Set([task.threadId, ...(task.threadId === null && hostId !== null ? await openThreads(hostId) : [])].filter((entry): entry is string => typeof entry === "string"))];
       return {
         kind: "task",
         input: id,
         sandboxId: task.sandboxId,
         hostId,
+        hostLookupFailed: found.failed,
         threadIds,
         taskIds: [...new Set([task.id, ...deps.tasks.liveSandboxTasks(task.sandboxId).map((entry) => entry.id)])],
         path: [`task ${task.id}`, ...(hostId === null ? [] : [`bb machine ${hostId}`]), `sandbox ${task.sandboxId}`],
@@ -663,6 +692,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       input: id,
       sandboxId,
       hostId,
+      hostLookupFailed: null,
       threadIds: [id],
       taskIds: deps.tasks.liveSandboxTasks(sandboxId).map((entry) => entry.id),
       path: [`chat ${id}`, `workspace ${thread.environmentId}`, `bb machine ${hostId}`, `sandbox ${sandboxId}`],
@@ -712,7 +742,8 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
     }
 
     async function machineNow(): Promise<MachineNow> {
-      if (target.hostId === null) return { kind: "none" };
+      // A lookup that failed isn't "no machine": there may be one, running chats.
+      if (target.hostId === null) return target.hostLookupFailed !== null ? { kind: "unknown", why: target.hostLookupFailed } : { kind: "none" };
       try {
         return { kind: "known", state: await deps.machines.host(target.hostId) };
       } catch (error) {
@@ -729,7 +760,37 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       await putMarker(id, (current) => (current === null ? null : { ...current, heartbeatAt: now(), restart: null }));
     }
 
-    say("resolve", "info", target.kind === "sandbox" ? (target.hostId ? `bb machine ${target.hostId} runs on it.` : "No bb machine runs on it.") : `${capitalize(target.path.join(" → "))}.`);
+    const lookupFailed = target.hostLookupFailed === null ? null : `Boat couldn't look up bb's machine on sandbox ${id} (${target.hostLookupFailed}), so it can't tell whether a chat runs there`;
+    say(
+      "resolve",
+      "info",
+      target.kind === "sandbox"
+        ? target.hostId
+          ? `bb machine ${target.hostId} runs on it.`
+          : lookupFailed !== null
+            ? `${lookupFailed}.`
+            : "No bb machine runs on it."
+        : `${capitalize(target.path.join(" → "))}.`,
+    );
+    /** Needs you: bb's machine there is unknown (it can't be brought back, nor its chats checked). */
+    const machineUnknown = (): never =>
+      stop(`Boat couldn't look up bb's machine on sandbox ${id} (${target.hostLookupFailed}), so it can't bring bb back there or check the chats on it. Try again in a minute, or wake it by a chat's id.`, [again], { step: "machine" });
+
+    /** Closed work isn't woken for: a task cancelled or done, a chat of one, a sandbox with only those. */
+    async function closedTarget(): Promise<string | null> {
+      const why = "so Boat doesn't wake it: a chat there could go on with superseded work. Wake it anyway with --force-wake only if the user wants that.";
+      if (target.kind === "task") {
+        const task = deps.tasks.resolve(target.input);
+        return task !== null && closed(task) ? `Task ${task.id} is ${task.status === "cancelled" ? "cancelled" : "closed"}, ${why}` : null;
+      }
+      if (target.kind === "thread") {
+        const task = await deps.tasks.forThread(target.input).catch(() => null);
+        return task !== null && closed(task) ? `Chat ${target.input} belongs to task ${task.id}, which is ${task.status === "cancelled" ? "cancelled" : "closed"}, ${why}` : null;
+      }
+      const all = deps.tasks.sandboxTasks(id);
+      return all.length > 0 && all.every(closed) ? `Sandbox ${id}'s only ${all.length === 1 ? "task is" : "tasks are"} over (${all.map(closedText).join(", ")}), ${why}` : null;
+    }
+
 
     /** Wait out a start or stop boat is doing on its own. */
     async function settled(sandbox: Sandbox): Promise<Sandbox> {
@@ -892,7 +953,8 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         .map((task) => `task ${task.id} is mid-turn`);
       if (live) {
         for (const row of threads ?? []) if (turnRuns(row) || (isOpen(row) && row.hasPendingInteraction === true)) reasons.push(`${row.title ? `the chat "${clip(row.title)}"` : "a chat there"} is mid-turn`);
-        if (threads === null && target.hostId !== null) reasons.push("Boat couldn't see whether a chat there is mid-turn");
+        if (target.hostId === null && target.hostLookupFailed !== null) reasons.push(`Boat couldn't look up bb's machine there (${target.hostLookupFailed}), so it can't see whether a chat is mid-turn`);
+        else if (threads === null && target.hostId !== null) reasons.push("Boat couldn't see whether a chat there is mid-turn");
       }
       return [...new Set(reasons)];
     }
@@ -906,7 +968,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       const check = startCheck(await deps.boat.limits(signal).catch(() => null), allowPaid);
       if (!check.ok) stop(`${capitalize(why)}. boat.dev's fix is to stop it and start it again, but ${lower(check.text)}`, check.commands, { step: "start-limit" });
       if (!dry && left() < timing.restartBudgetMs) {
-        stop(`${capitalize(why)}. This wake has run for ${minutes(now() - startedAt)}, too long to stop the sandbox and still start it again within its ${minutes(timing.maxMs)}, so nothing was stopped.`, [again], { step: "restart" });
+        stop(`${capitalize(why)}. This wake has run for ${minutes(now() - startedAt)}, too long to stop the sandbox and still start it again within its limit of about ${minutes(timing.maxMs)}, so nothing was stopped.`, [again], { step: "restart" });
       }
       const facts = () => moveFacts(deps.boat, id, deps.tasks.liveSandboxTasks(id), target.hostId !== null ? () => deps.machines.threadsOn(target.hostId!) : null, signal);
       const first = await facts();
@@ -993,7 +1055,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       const snapshotAt = await deps.boat.lastSnapshotAt(id, signal).catch(() => null);
       const keeps = `Forcing the stop keeps only ${snapshotText(snapshotAt, now())}, so what changed since is lost, files git ignores included.`;
       if (!recheck.auto) await giveUp(`${refused}. ${keeps} Boat won't force it because ${recheck.reasons.join("; ")}.`, [`boat stop ${id} --force`, again]);
-      if (left() < timing.restartBudgetMs) await giveUp(`${refused}. This wake has run for ${minutes(now() - startedAt)}, too long for a test fork, a forced stop and a start within its ${minutes(timing.maxMs)}; the sandbox is still running.`, [again]);
+      if (left() < timing.restartBudgetMs) await giveUp(`${refused}. This wake has run for ${minutes(now() - startedAt)}, too long for a test fork, a forced stop and a start within its limit of about ${minutes(timing.maxMs)}; the sandbox is still running.`, [again]);
       const two = startCheck(await deps.boat.limits(signal).catch(() => null), allowPaid, 2);
       if (!two.ok) await giveUp(`${refused}. Forcing it needs a test fork of its snapshot first and then a start, but ${lower(two.text)}`, [...two.commands, again]);
       // forkCheck takes its own wake slot without waiting: wait for one first.
@@ -1115,6 +1177,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
     async function machineBack(look: BbLook | null, serviceStarted: boolean): Promise<void> {
       const hostId = target.hostId;
       if (hostId === null) {
+        if (lookupFailed !== null) machineUnknown();
         say("machine", "skipped", "No bb machine runs on this sandbox.");
         return;
       }
@@ -1183,6 +1246,11 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       if (thread === null) return target.kind === "sandbox" ? null : { status: "skipped", text: `Chat ${threadId} is gone.` };
       if (thread.archived) return null;
       const name = `chat ${threadId}${thread.title ? ` ("${clip(thread.title)}")` : ""}`;
+      // A chat of a task that's over is never retried: it could push superseded work.
+      const task = await deps.tasks.forThread(threadId).catch(() => null);
+      if (task !== null && closed(task)) {
+        return { status: "skipped", text: `${capitalize(name)} belongs to task ${task.id}, which is ${task.status === "cancelled" ? "cancelled" : "closed"}: Boat doesn't retry it (it could push superseded work).` };
+      }
       if (isBusy(thread.status)) return { status: "skipped", text: `${capitalize(name)} is running a turn.` };
       const rows = await deps.threads.queued(threadId).catch(() => UNKNOWN);
       if (rows === UNKNOWN) return { status: "skipped", text: `Boat couldn't read ${name}'s queue, so it left it alone.` };
@@ -1243,6 +1311,10 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
     });
 
     try {
+      if (request.forceWake !== true) {
+        const over = await closedTarget();
+        if (over !== null) stop(over, [`${again} --force-wake`], { step: "sandbox" });
+      }
       let sandbox = await deps.boat.findInfo(id, signal);
       if (sandbox === null) stop(`Sandbox ${id} no longer exists on boat.dev.`, [], { step: "sandbox" });
       if ((await deps.guard?.moving(id).catch(() => false)) === true) {
@@ -1261,6 +1333,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         say("diagnose", "planned", "Then wait until boat's exec answers and look at the disk, the SSH login and bb's install there. A read waiting on the disk: wait up to 2 minutes. A disk that's unreadable, reads still stuck after that, or an npm zombie: stop it and start it again.");
         say("login-scripts", "planned", "Turn off the login message scripts, if any are still on.");
         if (target.hostId !== null) say("machine", "planned", "Then bb's machine: resume it if it's suspended (bb's own resume updates bb safely and starts it), else restart bb's service, and wait until it connects.");
+        else if (lookupFailed !== null) machineUnknown();
         await retryChats();
         return report("planned", null);
       }
@@ -1416,6 +1489,17 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       // Another plugin load is still at it.
       if (marker.instance !== instance && now() - marker.heartbeatAt < STALE_MS && marker.report === null) continue;
       if (marker.restart.triedAt !== null && now() - marker.restart.triedAt < RECOVER_RETRY_MS) continue;
+      const stoppedAt = marker.restart.at;
+      // Not started again within a day, or its tasks are over: no more starts on its own, a note instead.
+      const over = deps.tasks.sandboxTasks(sandboxId);
+      const expired = now() - stoppedAt > RESTART_TTL_MS;
+      if (expired || (over.length > 0 && over.every(closed))) {
+        await putMarker(sandboxId, (current) => (current === null ? null : { ...current, restart: null }));
+        const why = expired ? "couldn't start it again within a day" : `its tasks are over (${over.map(closedText).join(", ")})`;
+        deps.log?.(`sandbox wake ${sandboxId}: a wake stopped it at ${new Date(stoppedAt).toISOString()} and ${why}; Boat no longer starts it on its own`);
+        deps.tell?.(sandboxId, `A wake stopped this sandbox at ${clockTime(stoppedAt, now())} and ${why}, so Boat no longer starts it on its own. Start it with \`bb boat sandbox wake ${sandboxId}\` when it's needed.`);
+        continue;
+      }
       const paidStart = marker.restart.paidStart;
       await putMarker(sandboxId, (current) => (current?.restart ? { ...current, restart: { ...current.restart, triedAt: now() } } : current));
       const sandbox = await deps.boat.findInfo(sandboxId, lifecycle).catch(() => undefined);

@@ -490,7 +490,20 @@ export default async function plugin(bb: BbPluginApi) {
     quietLogins: createLoginQuieter(boat, (line) => bb.log.warn(line)),
     updateBb: prepareHost,
     serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
-    tasks: { resolve: (id) => store.resolve(id), liveSandboxTasks: (id) => store.liveSandboxTasks(id), hostForSandbox: (id) => store.hostForSandbox(id) },
+    tasks: {
+      resolve: (id) => store.resolve(id),
+      liveSandboxTasks: (id) => store.liveSandboxTasks(id),
+      sandboxTasks: (id) => store.sandboxTasks(id),
+      // The plugin's records first, else the chat's own metadata (a worker chat carries its task id).
+      forThread: async (threadId) => {
+        const known = store.byThread(threadId);
+        if (known !== null) return known;
+        const raw = (await bb.sdk.threads.getPluginMetadata({ threadId, pluginId: bb.pluginId } as never).catch(() => null)) as { metadata?: unknown; taskId?: unknown } | null;
+        const metadata = (raw !== null && typeof raw === "object" && "metadata" in raw ? raw.metadata : raw) as { taskId?: unknown } | null;
+        return typeof metadata?.taskId === "string" ? store.get(metadata.taskId) : null;
+      },
+      hostForSandbox: (id) => store.hostForSandbox(id),
+    },
     threads: resumeThreads,
     machines: {
       hostOf: (environmentId) => machineReader.hostOf(environmentId),
@@ -498,7 +511,8 @@ export default async function plugin(bb: BbPluginApi) {
         const resource = (await bb.experimental_machines.getResource(hostId).catch(() => null)) as { sandboxId?: unknown } | null;
         return typeof resource?.sandboxId === "string" ? resource.sandboxId : null;
       },
-      hostFor: (sandboxId) => chatRunner.findMachine(sandboxId),
+      // A machine bb couldn't read makes the lookup fail, not read as "none".
+      hostFor: (sandboxId) => chatRunner.findMachine(sandboxId, { strict: true }),
       host: (hostId) => chatRunner.machineState(hostId),
       resume: (hostId) => chatRunner.resumeMachine(hostId),
       threadsOn: (hostId) => threadsOnMachine(bb, hostId),

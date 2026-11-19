@@ -597,6 +597,10 @@ export function registerTools(runtime: Runtime): void {
       id: z.string().trim().min(1).max(200).describe("Sandbox id (bx_…), task id (t_…) or a chat's thread id"),
       dry_run: z.boolean().optional().describe("Only look and report the plan; change nothing"),
       status: z.boolean().optional().describe("Show the running or last wake of this sandbox; starts nothing"),
+      force_wake: z
+        .boolean()
+        .optional()
+        .describe("Only when the user said so in this chat: wake a sandbox whose tasks are all cancelled or closed. Their chats are still never retried."),
       allow_paid_start: z
         .boolean()
         .optional()
@@ -606,7 +610,7 @@ export function registerTools(runtime: Runtime): void {
       attempt(async () => {
         const report = params.status
           ? await runtime.wakeStatus(params.id)
-          : await runtime.wakeSandbox({ target: params.id, dryRun: params.dry_run === true, allowPaidStart: params.allow_paid_start === true, threadId: ctx.threadId, signal: ctx.signal });
+          : await runtime.wakeSandbox({ target: params.id, dryRun: params.dry_run === true, allowPaidStart: params.allow_paid_start === true, forceWake: params.force_wake === true, threadId: ctx.threadId, signal: ctx.signal });
         return wakeText(report);
       }),
   });

@@ -115,8 +115,12 @@ export interface ChatRunner {
   /** Suspend a machine through bb (boat stops the sandbox; bb resumes it on the next message). */
   suspendMachine(hostId: string): Promise<void>;
   resumeMachine(hostId: string): Promise<void>;
-  /** The bb machine wrapping this sandbox, if any (e.g. one whose attach was cut short). */
-  findMachine(sandboxId: string): Promise<string | null>;
+  /**
+   * The bb machine wrapping this sandbox, if any (e.g. one whose attach was cut
+   * short). strict: a machine whose resource couldn't be read makes it throw
+   * instead of answering "none" (it may be this sandbox's).
+   */
+  findMachine(sandboxId: string, options?: { strict?: boolean }): Promise<string | null>;
   /** The machine's phase and connection (null: bb doesn't know it). */
   machineState(hostId: string): Promise<MachineState | null>;
   /** Any chat on the machine is working, a message waits there, or work runs in the background (every thread on it, not only the plugin's). */
@@ -274,14 +278,19 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
       return readMachineActivity(bb, hostId, { providerId: MACHINE_PROVIDER_ID });
     },
 
-    async findMachine(sandboxId) {
+    async findMachine(sandboxId, options = {}) {
       const raw = (await bb.sdk.hosts.list()) as unknown;
       const hosts = (Array.isArray(raw) ? raw : ((raw as { hosts?: unknown[] }).hosts ?? [])) as { id: string; machineProviderId?: string | null }[];
+      const unread: string[] = [];
       for (const host of hosts) {
         if (host.machineProviderId !== MACHINE_PROVIDER_ID) continue;
-        const resource = (await bb.experimental_machines.getResource(host.id).catch(() => null)) as { sandboxId?: string } | null;
+        const resource = (await bb.experimental_machines.getResource(host.id).catch(() => {
+          unread.push(host.id);
+          return null;
+        })) as { sandboxId?: string } | null;
         if (resource?.sandboxId === sandboxId) return host.id;
       }
+      if (options.strict === true && unread.length > 0) throw new Error(`bb couldn't read machine ${unread.slice(0, 3).join(", ")}${unread.length > 3 ? "…" : ""}`);
       return null;
     },
 

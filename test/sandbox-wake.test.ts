@@ -15,6 +15,8 @@ import { classifyDiskCheck, parseDiskCheck } from "../src/wake-diagnosis.ts";
 import { WAKE_MARKERS_KEY, WAKE_RETRY_REASON, createSandboxWaker, finishedNotice, routeWake, startCheck, wakeText, type SandboxWakeDeps, type WakeFindings, type WakeMarker, type WakeReport } from "../src/sandbox-wake.ts";
 import { composeProtocol } from "../src/protocol.ts";
 import { makeService } from "./fakes.ts";
+import { createChatRunner } from "../src/chat.ts";
+import { MACHINE_PROVIDER_ID } from "../src/machine.ts";
 
 const T0 = Date.parse("2026-11-19T09:00:00Z");
 const HYDRATOR = "[lazyfs] [ERROR] HYDRATOR FAILED attempt 32 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";
@@ -77,6 +79,10 @@ interface WorldOptions {
   host?: Partial<MachineState> | null;
   /** bb's machine record can't be read: it throws, or bb says nothing (null). */
   hostRead?: "throw" | "null";
+  /** Looking up bb's machine on the sandbox fails (bb's machine list, or one machine's resource). */
+  hostLookup?: "throw";
+  /** The task's state (default failed). */
+  taskStatus?: string;
   limits?: Partial<Limits> | null;
   disk?: string[];
   /** The disk check once the sandbox was stopped and started (default: the disk list goes on). */
@@ -189,7 +195,7 @@ function world(options: WorldOptions = {}) {
   const threads = new Map<string, ThreadFacts>([["thr_task", thread("thr_task", { status: "error" })]]);
   const queues = new Map<string, QueuedFacts[]>();
   const events = new Map<string, TurnEventRow[]>([["thr_task", failedTurn()]]);
-  const task = { id: "t_1a2b3c4d", title: "Fix the login test", status: "failed", sandboxId: "bx_demo1", hostId: "host_1", threadId: "thr_task", runner: "chat", repoPath: "/home/user/work/web", delivery: "pr", unshipped: null, orchestratorThreadId: null } as unknown as Task;
+  const task = { id: "t_1a2b3c4d", title: "Fix the login test", status: options.taskStatus ?? "failed", sandboxId: "bx_demo1", hostId: "host_1", threadId: "thr_task", runner: "chat", repoPath: "/home/user/work/web", delivery: "pr", unshipped: null, orchestratorThreadId: null } as unknown as Task;
   const store = new Map<string, unknown>();
   const kv = { get: async <T>(key: string) => store.get(key) as T | undefined, set: async (key: string, value: unknown) => void store.set(key, structuredClone(value)) };
   const updater = createBbUpdater({ boat, kv, serverVersion: async () => options.serverVersion ?? "0.50.1", now, sleep: async (ms) => sleep(ms) });
@@ -221,7 +227,9 @@ function world(options: WorldOptions = {}) {
       serverVersion: async () => options.serverVersion ?? "0.50.1",
       tasks: {
         resolve: (id) => (task.id.startsWith(id) && id.length >= 4 ? task : null),
-        liveSandboxTasks: (id) => (id === "bx_demo1" ? [task] : []),
+        liveSandboxTasks: (id) => (id === "bx_demo1" && !["done", "cancelled"].includes(task.status) ? [task] : []),
+        sandboxTasks: (id) => (id === "bx_demo1" ? [task] : []),
+        forThread: async (id) => (id === "thr_task" ? task : null),
         hostForSandbox: () => null,
       },
       threads: {
@@ -237,7 +245,10 @@ function world(options: WorldOptions = {}) {
       machines: {
         hostOf: async (environmentId) => (environmentId === "env_1" ? "host_1" : null),
         sandboxOf: async (hostId) => (hostId === "host_1" ? "bx_demo1" : null),
-        hostFor: async (id) => (id === "bx_demo1" && (machine.state !== null || options.hostRead !== undefined) ? "host_1" : null),
+        hostFor: async (id) => {
+          if (options.hostLookup === "throw") throw new Error("bb couldn't read machine host_1");
+          return id === "bx_demo1" && (machine.state !== null || options.hostRead !== undefined) ? "host_1" : null;
+        },
         host: async () => {
           if (options.hostRead === "throw") throw new Error("bb didn't answer");
           if (options.hostRead === "null") return null;
@@ -680,6 +691,33 @@ test("bb's machine Boat can't read counts as connected: a chat mid-turn there me
   }
 });
 
+test("a bb machine lookup that fails isn't \"no machine\": no stop under a chat that may be running, and Needs you", async () => {
+  // Resolving the sandbox id: bb's machine list can't be read. A chat on the connected machine is mid-turn.
+  let w = world({ state: "idle", disk: [UNREADABLE_DISK], host: { phase: "active", connected: true }, hostLookup: "throw" });
+  w.threads.set("thr_task", thread("thr_task", { status: "active" }));
+  let report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.equal(w.stopsMade(), 0, w.calls.join(", "));
+  assert.equal(report.target.hostLookupFailed, "bb couldn't read machine host_1");
+  assert.equal(report.steps[0]!.text, "Boat couldn't look up bb's machine on sandbox bx_demo1 (bb couldn't read machine host_1), so it can't tell whether a chat runs there.");
+  assert.match(report.needsYou!.reason, /, but Boat couldn't look up bb's machine there \(bb couldn't read machine host_1\), so it can't see whether a chat is mid-turn, and a stop would interrupt it\./);
+  assert.ok(!w.calls.includes("forget bx_demo1"));
+
+  // A healthy disk: nothing to stop, but bb's machine and its chats can't be brought back or checked: Needs you, no update, no service restart.
+  w = world({ state: "idle", host: { phase: "active", connected: false }, hostLookup: "throw", bb: inspection({ installed: "0.49.0", tgz: "0.50.1" }) });
+  report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.ok(!w.calls.some((call) => /bb install|restart bb service|bb machine resume|retry /.test(call)), w.calls.join(", "));
+  assert.match(report.needsYou!.reason, /^Boat couldn't look up bb's machine on sandbox bx_demo1 \(bb couldn't read machine host_1\), so it can't bring bb back there or check the chats on it\./);
+  assert.ok(stepTexts(report, "skipped").includes("Boat couldn't read bb's machine, so it leaves bb's install alone (it may be running turns)."));
+
+  // The dry run says so too.
+  w = world({ state: "stopped", hostLookup: "throw" });
+  report = await w.waker.run({ target: "bx_demo1", dryRun: true });
+  assert.equal(report.outcome, "needs-you");
+  assert.deepEqual(w.calls, []);
+});
+
 test("before any force, a test fork of the snapshot: unreadable or unknown, and nothing is forced", async () => {
   // The fork can't read the snapshot either: forcing would keep only that.
   let w = world({ state: "idle", disk: [UNREADABLE_DISK], stop: REFUSED, fork: "unreadable" });
@@ -791,7 +829,7 @@ test("the time bound: no stop goes out without time left to start it again", asy
   const report = await w.waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "needs-you");
   assert.equal(w.stopsMade(), 0);
-  assert.match(report.needsYou!.reason, /too long to stop the sandbox and still start it again within its 10 minutes, so nothing was stopped\.$/);
+  assert.match(report.needsYou!.reason, /too long to stop the sandbox and still start it again within its limit of about 10 minutes, so nothing was stopped\.$/);
 });
 
 test("a wake cut off between its stop and its start leaves a marker, and the next pass starts the sandbox again", async () => {
@@ -831,6 +869,86 @@ test("Boat's retry plan stays when a wake stops before acting (no start left), a
   report = await w.waker.run({ target: "bx_demo1" });
   assert.equal(w.calls.filter((call) => call === "forget bx_demo1").length, 1);
   assert.ok(w.calls.indexOf("forget bx_demo1") < w.calls.indexOf("resume"));
+});
+
+// ---------------------------------------------------------------- work that's over
+
+test("a cancelled task's chat is never woken for or retried; --force-wake wakes the sandbox, still without the retry", async () => {
+  // The chat of a cancelled task: not woken.
+  let w = world({ state: "stopped", taskStatus: "cancelled" });
+  let report = await w.waker.run({ target: "thr_task" });
+  assert.equal(report.outcome, "needs-you");
+  assert.deepEqual(w.calls, [], "nothing woken");
+  assert.match(report.needsYou!.reason, /^Chat thr_task belongs to task t_1a2b3c4d, which is cancelled, so Boat doesn't wake it: a chat there could go on with superseded work\. Wake it anyway with --force-wake only if the user wants that\.$/);
+  assert.deepEqual(report.needsYou!.commands, ["bb boat sandbox wake thr_task --force-wake"]);
+
+  // --force-wake: the sandbox comes back, but its chat isn't retried.
+  w = world({ state: "stopped", taskStatus: "cancelled" });
+  report = await w.waker.run({ target: "thr_task", forceWake: true });
+  assert.equal(report.outcome, "awake", wakeText(report));
+  assert.ok(w.calls.includes("resume"));
+  assert.ok(!w.calls.some((call) => call.startsWith("retry ") || call.startsWith("send queued ")), w.calls.join(", "));
+  assert.ok(stepTexts(report, "skipped").includes("Chat thr_task (\"Fix the login test\") belongs to task t_1a2b3c4d, which is cancelled: Boat doesn't retry it (it could push superseded work)."));
+
+  // A pending provider retry of a closed task's chat isn't sent either.
+  w = world({ state: "idle", host: { phase: "active", connected: true }, taskStatus: "done" });
+  w.queues.set("thr_task", [{ id: "q_1", threadId: "thr_task", retry: true, sendAt: T0 + 30 * 60_000 }]);
+  report = await w.waker.run({ target: "bx_demo1", forceWake: true });
+  assert.ok(!w.calls.some((call) => call.startsWith("send queued ")));
+  assert.ok(stepTexts(report, "skipped").some((text) => /which is closed: Boat doesn't retry it/.test(text)));
+});
+
+test("a sandbox whose only tasks are over, or a closed task, isn't woken without --force-wake", async () => {
+  let w = world({ state: "stopped", taskStatus: "done" });
+  let report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "needs-you");
+  assert.deepEqual(w.calls, []);
+  assert.match(report.needsYou!.reason, /^Sandbox bx_demo1's only task is over \(t_1a2b3c4d closed\), so Boat doesn't wake it/);
+  // The dry run says the same.
+  assert.equal((await w.waker.run({ target: "bx_demo1", dryRun: true })).outcome, "needs-you");
+
+  w = world({ state: "stopped", taskStatus: "cancelled" });
+  report = await w.waker.run({ target: "t_1a2b3c4d" });
+  assert.equal(report.outcome, "needs-you");
+  assert.match(report.needsYou!.reason, /^Task t_1a2b3c4d is cancelled, so Boat doesn't wake it/);
+
+  w = world({ state: "stopped", taskStatus: "done" });
+  report = await w.waker.run({ target: "bx_demo1", forceWake: true });
+  assert.equal(report.outcome, "awake", wakeText(report));
+  assert.ok(w.calls.includes("resume"));
+});
+
+test("a restart marker older than a day isn't acted on: a note on the tasks instead", async () => {
+  const w = world({ state: "stopped" });
+  const marker: WakeMarker = { instance: "an-old-load", startedAt: T0 - 26 * 3_600_000, heartbeatAt: T0 - 26 * 3_600_000, restart: { at: T0 - 25 * 3_600_000, paidStart: false, triedAt: null }, report: null };
+  w.store.set(WAKE_MARKERS_KEY, { bx_demo1: marker });
+  assert.deepEqual(await w.waker.recover(), []);
+  assert.ok(!w.calls.includes("resume"));
+  assert.equal(w.sandboxes.get("bx_demo1")?.state, "stopped");
+  assert.equal((w.store.get(WAKE_MARKERS_KEY) as Record<string, WakeMarker>).bx_demo1?.restart ?? null, null, "no auto-resume left");
+  assert.match(w.told.at(-1)!, /^A wake stopped this sandbox at 2026-11-18 08:00 UTC and couldn't start it again within a day, so Boat no longer starts it on its own\. Start it with `bb boat sandbox wake bx_demo1` when it's needed\.$/);
+
+  // Its tasks are over: not started again either.
+  const closedWorld = world({ state: "stopped", taskStatus: "cancelled" });
+  closedWorld.store.set(WAKE_MARKERS_KEY, { bx_demo1: { ...marker, restart: { at: T0 - 60_000, paidStart: false, triedAt: null } } });
+  assert.deepEqual(await closedWorld.waker.recover(), []);
+  assert.ok(!closedWorld.calls.includes("resume"));
+});
+
+test("findMachine strict: a machine whose resource bb couldn't read makes the lookup fail, not read as \"none\"", async () => {
+  const bb = {
+    sdk: { hosts: { list: async () => [{ id: "host_a", machineProviderId: MACHINE_PROVIDER_ID }, { id: "host_b", machineProviderId: MACHINE_PROVIDER_ID }] } },
+    experimental_machines: {
+      getResource: async (hostId: string) => {
+        if (hostId === "host_a") throw new Error("bb didn't answer");
+        return { sandboxId: "bx_other1", key: "k" };
+      },
+    },
+  };
+  const chat = createChatRunner(bb as never);
+  assert.equal(await chat.findMachine("bx_demo1"), null, "the other callers keep their answer");
+  await assert.rejects(chat.findMachine("bx_demo1", { strict: true }), /bb couldn't read machine host_a/);
+  assert.equal(await chat.findMachine("bx_other1", { strict: true }), "host_b", "a match still answers");
 });
 
 // ---------------------------------------------------------------- the protocol
