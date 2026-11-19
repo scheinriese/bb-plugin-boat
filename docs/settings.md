@@ -232,7 +232,9 @@ the plugin was off, and has no retry waiting, isn't found; continue it by hand
   decision a minute after it failed, is retried like `bb thread retry`. A
   retry that someone cancelled stays cancelled. If provider-retry can't be
   asked, or bb answers in a shape this version doesn't know, the chat is left
-  alone (the plugin log says so), never retried on a guess.
+  alone (the plugin log says so), never retried on a guess. So on a bb whose
+  provider-retry has no `decision.get`, only retries waiting in bb's queue are
+  sent; a turn provider-retry skipped stays stopped.
 - Not continued: archived chats, chats with a turn running or a message
   queued, Codex chats, an orchestrator that is being handed over or was taken
   over, an older chat of a task, and failures that aren't a usage limit
@@ -256,13 +258,18 @@ boat.dev's start limit or its storage can't take:
 - The first failure ends the check, and the next one waits 5 minutes, doubling
   up to an hour (this survives a restart). A failed stopped turn gets three
   tries in all; a refusal that proves nothing was sent (the turn moved on, or
-  the chat is gone) doesn't use one. A headless follow-up that failed while
-  its sandbox is up isn't tried again, as it may have reached the agent.
+  the chat is gone) doesn't use one. A chat's try cut off by a restart may go
+  again after ten minutes, as bb refuses a retry that already went out. A
+  headless follow-up that failed while its sandbox is up, or was cut off,
+  isn't tried again, as it may have reached the agent.
 - The chat's machine is checked first. One that is starting, stopping, being
   created or removed, offline or failed is left alone. Waking a suspended
   machine or a stopped sandbox takes one of two wakes a minute, a budget the
-  watchdog's own resumes share (kept across restarts). After a machine fails
-  to start, or a wake fails, no machine is woken for 15 minutes.
+  watchdog's own resumes share (kept across restarts). A machine bb couldn't
+  start is left alone on its own (bb keeps that message until it starts
+  again), never holding the others. Only when a wake the plugin made fails
+  (the call, or the machine failing to start within 15 minutes of it) is no
+  machine woken for 15 minutes.
 
 A task records a `paid-resume` event. `bb boat relay check` (which also runs
 a check now) and the plugin log list each chat that continued, and an
