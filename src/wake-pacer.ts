@@ -23,6 +23,11 @@ export const WAKE_BACKOFF_BASE_MS = 30_000;
 export const WAKE_BACKOFF_MAX_MS = 10 * 60_000;
 /** acquire waits at most this long; a later slot throws WakeDeferred instead. */
 export const WAKE_MAX_WAIT_MS = 2 * 60_000;
+/**
+ * Failures in a row are forgotten once the last pause ended this long ago:
+ * one old bad wake doesn't give the next, days later, the longest pause.
+ */
+export const WAKE_FAILURES_DECAY_MS = 15 * 60_000;
 
 /** What the pacer saves (plain JSON). */
 export interface WakePacerState {
@@ -83,6 +88,7 @@ export interface WakePacerOptions {
   backoffBaseMs?: number;
   backoffMaxMs?: number;
   maxWaitMs?: number;
+  decayMs?: number;
   storage?: WakePacerStorage;
   now?: () => number;
   /** Wait (rejects when the signal aborts). */
@@ -114,6 +120,7 @@ export class WakePacer {
   private readonly backoffBaseMs: number;
   private readonly backoffMaxMs: number;
   private readonly maxWaitMs: number;
+  private readonly decayMs: number;
   private readonly storage: WakePacerStorage | null;
   private readonly now: () => number;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<unknown>;
@@ -127,6 +134,7 @@ export class WakePacer {
     this.backoffBaseMs = options.backoffBaseMs ?? WAKE_BACKOFF_BASE_MS;
     this.backoffMaxMs = options.backoffMaxMs ?? WAKE_BACKOFF_MAX_MS;
     this.maxWaitMs = options.maxWaitMs ?? WAKE_MAX_WAIT_MS;
+    this.decayMs = options.decayMs ?? WAKE_FAILURES_DECAY_MS;
     this.storage = options.storage ?? null;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? ((ms, signal) => delay(ms, undefined, { signal }));
@@ -183,7 +191,13 @@ export class WakePacer {
     return Math.min(this.backoffMaxMs, this.backoffBaseMs * 2 ** Math.min(failures - 1, 30));
   }
 
+  /** Failures in a row whose last pause ended long ago are forgotten. */
+  private decay(state: WakePacerState, now: number): void {
+    if (state.failures > 0 && now - state.blockedUntil > this.decayMs) state.failures = 0;
+  }
+
   private slot(state: WakePacerState, now: number): { at: number; reason: WakeWait } {
+    this.decay(state, now);
     // Forget wakes out of the window (and impossible ones from a clock change).
     state.taken = state.taken.filter((at) => at > now - this.windowMs && at <= now + this.windowMs);
     const rateAt = state.taken.length < this.perWindow ? now : state.taken[state.taken.length - this.perWindow]! + this.windowMs;
@@ -200,6 +214,7 @@ export class WakePacer {
       if (ok) {
         state.failures = 0;
       } else {
+        this.decay(state, this.now());
         state.failures += 1;
         state.blockedUntil = Math.max(state.blockedUntil, this.now() + this.backoffMs(state.failures));
       }

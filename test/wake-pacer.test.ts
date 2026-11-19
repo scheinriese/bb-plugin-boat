@@ -126,3 +126,25 @@ test("the bucket is saved: a reload of the plugin keeps the pace and the pause",
   const fresh = new WakePacer({ now: time.now, sleep: time.sleep, storage: kvWakeStorage(kv) });
   assert.equal(await fresh.nextWakeAt(), time.now());
 });
+
+test("failures in a row are forgotten once the last pause ended long ago: one old bad wake doesn't give the next the longest pause", async () => {
+  const time = clock();
+  const pacer = new WakePacer({ now: time.now, sleep: time.sleep });
+  for (let index = 0; index < 5; index++) {
+    const permit = await pacer.acquire({ maxWaitMs: 60 * 60_000 });
+    await permit.failed();
+  }
+  assert.equal((await pacer.snapshot()).failures, 5);
+  // A day later, one more bad sandbox: the first pause again, not 10 minutes.
+  time.advance(24 * 3_600_000);
+  assert.equal(await pacer.nextWakeAt(), time.now(), "no pause left");
+  const late = await pacer.acquire();
+  await late.failed();
+  const state = await pacer.snapshot();
+  assert.equal(state.failures, 1);
+  assert.equal(state.blockedUntil, time.now() + 30_000);
+  // Within the decay window, failures still add up.
+  time.advance(31_000);
+  await (await pacer.acquire()).failed();
+  assert.equal((await pacer.snapshot()).failures, 2);
+});
