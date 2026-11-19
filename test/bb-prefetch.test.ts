@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { PREFETCH_SECONDS, parsePrefetch, prefetchBbFiles, prefetchScript } from "../src/bb-prefetch.ts";
+import { LINUX_ONLY } from "./platform.ts";
 
 function home(t: { after(fn: () => void): void }) {
   const root = mkdtempSync(join(tmpdir(), "boat-prefetch-"));
@@ -30,7 +31,7 @@ function home(t: { after(fn: () => void): void }) {
   return { root, data, node: join(node, "bin", "node"), run };
 }
 
-test("only bb's data dir and the node bb runs on are read, without old or half-made installs", (t) => {
+test("only bb's data dir and the node bb runs on are read, without old or half-made installs", LINUX_ONLY, (t) => {
   const box = home(t);
   assert.deepEqual({ ...box.run(prefetchScript({ dataDir: box.data, node: box.node, skipInstall: false })), seconds: 0 }, { kind: "done", bytes: 1000 + 8000 + 16000, seconds: 0 });
   // The install Boat is about to replace isn't read either.
@@ -41,7 +42,7 @@ test("only bb's data dir and the node bb runs on are read, without old or half-m
   assert.equal((box.run(prefetchScript({ dataDir: null, node: null, skipInstall: false })) as { bytes: number }).bytes, 1000 + 8000 + 16000);
 });
 
-test("bounded per file and in total", (t) => {
+test("bounded per file and in total", LINUX_ONLY, (t) => {
   const box = home(t);
   assert.equal((box.run(prefetchScript({ dataDir: box.data, node: box.node, skipInstall: false }, { maxFileKb: 10 })) as { bytes: number }).bytes, 1000 + 8000, "files of 10 KiB or more are skipped");
   assert.equal((box.run(prefetchScript({ dataDir: box.data, node: box.node, skipInstall: false }, { maxBytes: 5000 })) as { bytes: number }).bytes, 5000, "it stops at the total");

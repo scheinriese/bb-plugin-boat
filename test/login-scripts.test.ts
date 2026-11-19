@@ -6,8 +6,9 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, stat
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { QUIET_LOGIN_SCRIPT, createLoginQuieter, parseQuietLogin } from "../src/login-scripts.ts";
+import { LINUX_ONLY } from "./platform.ts";
 
-test("the script turns the scripts off inside the folder only, once, then changes nothing (run here on a copy, without sudo)", (t) => {
+test("the script turns the scripts off inside the folder only, once, then changes nothing (run here on a copy, without sudo)", LINUX_ONLY, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "boat-motd-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const scripts = join(dir, "update-motd.d");
