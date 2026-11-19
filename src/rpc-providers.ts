@@ -186,7 +186,7 @@ function projectRow(project: BoatProject, registry: ProviderRegistry): ProjectRu
   const provider = project.sandboxProvider ?? registry.default.id;
   const os = project.sandboxSystem ?? registry.get(provider)?.caps.os ?? "linux";
   const repo = project.repos[0]?.repo ?? project.name;
-  return { projectId: project.id, name: project.name, detail: `${repo} · ${os === "macos" ? "Mac" : "Linux"}`, provider: os === "macos" && provider === "instabox" ? "instabox-macos" : provider, chosen: project.sandboxProvider !== undefined };
+  return { projectId: project.id, name: project.name, detail: `${repo} · ${os === "macos" ? "Mac" : "Linux"}`, provider: os === "macos" ? `${provider}-macos` : provider, chosen: project.sandboxProvider !== undefined };
 }
 
 /** Settings › Sandbox providers and Runs on, from the registry, boat.dev's reading and the projects. */
@@ -196,6 +196,7 @@ export function providersView(input: {
   connections?: Connections;
   prices?: Prices;
   keys?: Keys;
+  macReady?: ReadonlySet<string>;
   projects: readonly BoatProject[];
 }): SandboxProvidersResultDto {
   const { registry } = input;
@@ -227,8 +228,11 @@ export function providersView(input: {
     // A monthly Mac is a choice once one is enrolled.
     .filter((row) => row.kind !== "monthly-mac" || (row.available && row.connection === "connected"))
     .map((row) => ({ provider: row.id, label: row.label, disabledReason: pickProblem(row) }));
-  const instabox = rows.find(row => row.id === "instabox");
-  if (instabox?.systems.some(system => system.os === "macos" && system.ready)) options.push({ provider: "instabox-macos", label: "Instabox · Mac", disabledReason: null });
+  for (const provider of registry.enabled) {
+    const row = rows.find(row => row.id === provider.id);
+    const ready = input.macReady?.has(provider.id) ?? (provider.caps.systems ?? [provider.caps.os]).includes("macos");
+    if (row?.available && row.connection === "connected" && ready) options.push({ provider: `${provider.id}-macos`, label: `${providerLabel(provider.id,provider)} · Mac`, disabledReason: null });
+  }
   const projects = input.projects.map((project) => projectRow(project, registry));
   // A pick this version doesn't know (a backup from a newer one) still shows, greyed out.
   for (const project of projects) {
@@ -244,10 +248,10 @@ const CONNECTION_TTL_MS = 60_000;
 
 export function providerHandlers(runtime: Runtime) {
   const { service, bb } = runtime;
-  let checked: { at: number; connections: Connections; prices: Prices } | null = null;
+  let checked: { at: number; connections: Connections; prices: Prices; macReady: ReadonlySet<string> } | null = null;
 
   /** Ask each enabled provider other than boat.dev for its plan (an answer means connected) and its prices. */
-  async function others(): Promise<{ connections: Connections; prices: Prices }> {
+  async function others(): Promise<{ connections: Connections; prices: Prices; macReady: ReadonlySet<string> }> {
     if (checked !== null && Date.now() - checked.at < CONNECTION_TTL_MS) return checked;
     const providers = service.sandboxProviders.enabled.filter((provider) => provider.id !== "boat");
     const results = await Promise.all(
@@ -262,11 +266,13 @@ export function providerHandlers(runtime: Runtime) {
           connection = code === "key_missing" ? "key-missing" : "not-connected";
         }
         const pricing = connection === "connected" && provider.pricing ? await provider.pricing(signal).catch(() => null) : null;
-        return { id: provider.id, connection, pricing };
+        const macReady = connection === "connected" && (provider.macModels ? (await provider.macModels(signal).catch(() => [])).length > 0 : (provider.caps.systems ?? [provider.caps.os]).includes("macos"));
+        return { id: provider.id, connection, pricing, macReady };
       }),
     );
     checked = {
       at: Date.now(),
+      macReady: new Set(results.filter(entry=>entry.macReady).map(entry=>entry.id)),
       connections: new Map(results.map((entry) => [entry.id, entry.connection])),
       prices: new Map(results.flatMap((entry) => (entry.pricing ? [[entry.id, entry.pricing] as const] : []))),
     };
@@ -275,12 +281,12 @@ export function providerHandlers(runtime: Runtime) {
 
   async function view(): Promise<SandboxProvidersResultDto> {
     const reading = runtime.setup ? (runtime.setup.peek()?.facts ?? (await runtime.setup.reading().catch(() => null))) : null;
-    const { connections, prices } = await others();
+    const { connections, prices, macReady } = await others();
     const keys = new Map(service.sandboxProviders.all.flatMap((provider) => {
       const stored = runtime.providers?.keyPresent(provider.id) ?? null;
       return stored === null ? [] : [[provider.id, stored] as const];
     }));
-    return providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, keys, projects: runtime.projects.list() });
+    return providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, keys, macReady, projects: runtime.projects.list() });
   }
 
   return {
@@ -298,10 +304,12 @@ export function providerHandlers(runtime: Runtime) {
       const option = current.options.find((entry) => entry.provider === provider);
       if (option === undefined) throw new experimental_PluginRpcRefusal({ code: "invalid", message: `"${provider}" isn't a sandbox provider Boat knows.` });
       // Moving off a pick that's no longer available is fine; moving onto one isn't.
-      if (option.disabledReason !== null && provider !== project.sandboxProvider) {
+      if (option.disabledReason !== null && provider !== projectRow(project,service.sandboxProviders).provider) {
         throw new experimental_PluginRpcRefusal({ code: "conflict", message: `${option.label} can't take new work: ${option.disabledReason.charAt(0).toLowerCase()}${option.disabledReason.slice(1)}.` });
       }
-      const saved = runtime.projects.save({ ...project, sandboxProvider: provider === "instabox-macos" ? "instabox" : provider === service.sandboxProviders.default.id ? null : provider, sandboxSystem: provider === "instabox-macos" ? "macos" : "linux" });
+      const macProvider = service.sandboxProviders.all.find(candidate => `${candidate.id}-macos` === provider);
+      const providerId = macProvider?.id ?? provider;
+      const saved = runtime.projects.save({ ...project, sandboxProvider: providerId === service.sandboxProviders.default.id ? null : providerId, sandboxSystem: macProvider ? "macos" : "linux" });
       runtime.changed();
       bb.rpc.experimental_invalidate([PROVIDERS_TAG]);
       return projectRow(saved, service.sandboxProviders);

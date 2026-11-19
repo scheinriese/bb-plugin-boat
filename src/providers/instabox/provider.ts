@@ -311,7 +311,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       const sandboxes = machineList(result.value).filter((raw) => nativeState(raw) !== "deleted").map(raw => {
         const sandbox = toSandbox(raw);
         if (sandbox.system === "macos" && sandbox.state === "stopped" && !sandbox.mac) {
-          for (const lease of options.ledger?.held(sandbox.id) ?? []) options.ledger?.end(lease.id, "handed back");
+          for (const lease of options.ledger?.held(sandbox.id) ?? []) options.ledger?.end(lease.id, "handed back", Date.parse(sandbox.stoppedAt ?? lease.paidUntil));
         }
         return rec(raw.metadata)?.["created-by"] === "bb-boat" ? remember(sandbox) : sandbox;
       });
