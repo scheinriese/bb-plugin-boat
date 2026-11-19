@@ -17,7 +17,7 @@
 //   sandbox's SSH doesn't answer at all.
 import { clockTime } from "./format.ts";
 
-export type WakeFailureKind = "disk-restoring" | "restore-rate-limited" | "ssh-session-stuck" | "ssh-unreachable" | "other";
+export type WakeFailureKind = "disk-restoring" | "restore-rate-limited" | "ssh-session-stuck" | "daemon-broken" | "ssh-unreachable" | "other";
 
 export interface WakeDiagnosis {
   kind: WakeFailureKind;
@@ -25,6 +25,8 @@ export interface WakeDiagnosis {
   detail: string | null;
   /** The sandbox was looked at through boat's exec API. */
   checked: boolean;
+  /** daemon-broken: bb's machine folder and daemon unit there, and whether an npm zombie remains. */
+  daemon?: { dir: string | null; unit: string | null; zombie: boolean };
 }
 
 const RATE_LIMITED = /reduce your request rate|too many requests|\brate[- ]limit(?:ed)?\b|\bslow ?down\b|status(?: code)?:? 429\b/i;
@@ -62,6 +64,7 @@ const PATTERN: Record<WakeFailureKind, RegExp | null> = {
   "restore-rate-limited": RATE_LIMITED,
   "disk-restoring": DISK,
   "ssh-session-stuck": MOTD,
+  "daemon-broken": null,
   "ssh-unreachable": SSH,
   other: RESTORE,
 };
@@ -110,13 +113,24 @@ export const DISK_CHECK_SCRIPT = [
   "timeout 5 ps -eo pid=,stat=,etimes=,wchan:40=,args= 2>/dev/null | head -n 2000 | while read -r pid stat age wchan args; do",
   '  case "$stat" in D*) S=$(timeout 2 sudo -n cat "/proc/$pid/stack" 2>/dev/null | grep -o \'fuse_[a-z_]*\' | head -n 4 | tr \'\\n\' \' \'); echo "BOAT_DSTATE $pid $wchan ${S:--} ${args:0:120}" ;; esac',
   '  case "$args" in "run-parts "*"$M"*|*"/$M.d/"*) [ "${age:-0}" -ge 20 ] 2>/dev/null && echo "BOAT_MOTD_HUNG $pid $age ${args:0:120}" ;; esac',
+  // bb's auto-update: an npm install left as a zombie ("[npm install …] <defunct>", state Zl).
+  '  case "$stat" in Z*) case "$args" in *npm*) echo "BOAT_ZOMBIE $pid $stat ${args:0:120}" ;; esac ;; esac',
   "done | head -n 40",
+  // bb's daemon unit (a user unit) stuck stopping.
+  "timeout 3 env XDG_RUNTIME_DIR=\"/run/user/$(id -u)\" systemctl --user list-units --all --no-legend --plain 'bb-host-daemon*' 2>/dev/null | head -n 5 | while read -r unit load active sub rest; do echo \"BOAT_UNIT $unit $active $sub\"; done",
+  // bb's machine folders, and whether the daemon's installed entry point is there ("$B" keeps this text from matching the journal check).
+  'B=bb-ap; for d in "$HOME"/.bb-machines/*/; do [ -d "$d" ] || continue; echo "BOAT_BB_DIR ${d%/}"; [ -d "${d}npm" ] && [ ! -e "${d}npm/bin/${B}p" ] && echo "BOAT_BB_MISSING ${d%/}"; done',
   "J=$( { timeout 4 journalctl -b --since '-30 min' -n 4000 -o cat --no-pager -q 2>/dev/null; timeout 4 sudo -n journalctl -b --since '-30 min' -n 4000 -o cat --no-pager -q 2>/dev/null; } )",
+  // The daemon's own log only (a command someone ran can't pass for it).
+  "K=$(timeout 4 env XDG_RUNTIME_DIR=\"/run/user/$(id -u)\" journalctl --user -u 'bb-host-daemon*' -b --since '-30 min' -n 400 -o cat --no-pager -q 2>/dev/null)",
   // lazyfs's own lines only: the patterns can't match their own text (the journal may log commands run).
   "H=$(printf '%s\\n' \"$J\" | grep -a -E '\\[lazyfs\\].*HYDRATOR FAILED attempt [0-9]' | tail -n 1 | cut -c1-600)",
   '[ -n "$H" ] && printf "BOAT_HYDRATOR %s\\n" "$H"',
   "P=$(printf '%s\\n' \"$J\" | grep -a -E '\\[SNAPSHOT-INC\\].*hydration in progress' | tail -n 1 | cut -c1-600)",
   '[ -n "$P" ] && printf "BOAT_HYDRATING %s\\n" "$P"',
+  // The daemon failing to load after an update (the bracket keeps the pattern from matching its own text).
+  "Q=$(printf '%s\\n' \"$K\" | grep -a -E 'MODULE_NOT_FOUN[D]|Cannot find modul[e]|npm/bin/bb-ap[p]' | tail -n 1 | cut -c1-400)",
+  '[ -n "$Q" ] && printf "BOAT_BB_LOG %s\\n" "$Q"',
   "for f in .profile .bashrc .ssh/authorized_keys; do",
   '  [ -e "$HOME/$f" ] || continue',
   '  if E=$(timeout -k 1 5 head -c 1 -- "$HOME/$f" 2>&1 >/dev/null); then echo "BOAT_DISK ok $f"; else echo "BOAT_DISK fail $f ${E:-no answer}"; fi',
@@ -135,12 +149,20 @@ export interface DiskCheck {
   fuseBlocked: string[];
   /** Login message scripts that hang (an SSH session that never starts). */
   motdHung: string[];
+  /** bb's daemon after an update: an npm install zombie, its unit stuck deactivating, a module it can't load or its missing entry point. */
+  daemon: { zombies: string[]; units: { unit: string; active: string; sub: string }[]; log: string | null; missing: string[]; dirs: string[] };
   /** The check ran to its end. */
   complete: boolean;
 }
 
+/** bb's daemon broke during an update (what the check saw says so). */
+export function daemonBroken(check: DiskCheck): boolean {
+  const daemon = check.daemon;
+  return daemon.zombies.length > 0 || daemon.units.some((unit) => unit.active === "deactivating") || daemon.log !== null || daemon.missing.length > 0;
+}
+
 export function parseDiskCheck(stdout: string): DiskCheck {
-  const check: DiskCheck = { unreadable: [], hydrator: null, hydrating: null, fuseBlocked: [], motdHung: [], complete: /^BOAT_DISK_END$/m.test(stdout) };
+  const check: DiskCheck = { unreadable: [], hydrator: null, hydrating: null, fuseBlocked: [], motdHung: [], daemon: { zombies: [], units: [], log: null, missing: [], dirs: [] }, complete: /^BOAT_DISK_END$/m.test(stdout) };
   for (const raw of stdout.split("\n")) {
     const line = raw.trim();
     const read = /^BOAT_DISK fail (\S+) (.*)$/.exec(line);
@@ -160,6 +182,16 @@ export function parseDiskCheck(stdout: string): DiskCheck {
     }
     const hung = /^BOAT_MOTD_HUNG (\d+) (\d+) (.*)$/.exec(line);
     if (hung !== null) check.motdHung.push(cleanDetail(`${hung[3]} (${hung[2]}s)`, 160));
+    const zombie = /^BOAT_ZOMBIE (\d+) (\S+) (.*)$/.exec(line);
+    if (zombie !== null) check.daemon.zombies.push(cleanDetail(`${zombie[3]} (pid ${zombie[1]}, ${zombie[2]})`, 160));
+    const unit = /^BOAT_UNIT (\S+) (\S+) (\S+)$/.exec(line);
+    if (unit !== null) check.daemon.units.push({ unit: unit[1]!, active: unit[2]!, sub: unit[3]! });
+    const log = /^BOAT_BB_LOG (.+)$/.exec(line);
+    if (log !== null) check.daemon.log = cleanDetail(log[1]!, 200);
+    const missing = /^BOAT_BB_MISSING (.+)$/.exec(line);
+    if (missing !== null) check.daemon.missing.push(missing[1]!);
+    const dir = /^BOAT_BB_DIR (.+)$/.exec(line);
+    if (dir !== null) check.daemon.dirs.push(dir[1]!);
   }
   return check;
 }
@@ -192,6 +224,22 @@ export async function diagnoseWakeFailure(error: unknown, check: DiskCheckRunner
   const textDetail = fromText.kind === "disk-restoring" ? fromText.detail : null;
   if (seen.hydrator !== null || seen.unreadable.length > 0) {
     return { kind: "disk-restoring", detail: seen.hydrator ?? textDetail ?? `${seen.unreadable.map((file) => `~/${file}`).join(", ")}: Input/output error`, checked: true };
+  }
+  // bb's daemon broke during an update: retrying won't fix it, a repair by hand does.
+  if (daemonBroken(seen)) {
+    const daemon = seen.daemon;
+    const what = [
+      ...daemon.zombies.slice(0, 1).map((zombie) => `npm install left a zombie: ${zombie}`),
+      ...daemon.units.filter((unit) => unit.active === "deactivating").slice(0, 1).map((unit) => `${unit.unit} is stuck deactivating`),
+      ...daemon.missing.slice(0, 1).map((dir) => `${shortHome(dir)}/npm/bin/bb-app is missing`),
+      ...(daemon.log === null ? [] : [daemon.log]),
+    ];
+    return {
+      kind: "daemon-broken",
+      detail: cleanDetail(what.join("; "), 300),
+      checked: true,
+      daemon: { dir: daemon.missing[0] ?? daemon.dirs[0] ?? null, unit: daemon.units[0]?.unit ?? null, zombie: daemon.zombies.length > 0 },
+    };
   }
   if (seen.motdHung.length > 0) {
     return { kind: "ssh-session-stuck", detail: `login message script hangs: ${seen.motdHung[0]}`, checked: true };
@@ -237,6 +285,8 @@ export function wakeFailureMessage(diagnosis: WakeDiagnosis, plan: WakePlan, ori
     case "ssh-session-stuck":
       if (gaveUp !== null) return `The sandbox still took Boat's SSH login without starting the session after ${gaveUp} tries (its login message scripts hang while boat.dev restores the disk), so Boat stopped retrying on its own. It's under Needs you.${resumeLater}`;
       return `The sandbox took Boat's SSH login, but the session never started: its login message scripts hang while boat.dev restores the disk. Boat turns them off before each try. ${next}`;
+    case "daemon-broken":
+      return `bb's daemon on this sandbox broke during an update${diagnosis.detail ? ` (${diagnosis.detail})` : ""}, so bb can't start there. It needs a repair by hand; the steps are under Needs you.`;
     case "ssh-unreachable":
       return `Boat couldn't reach the sandbox over SSH to restart bb there${diagnosis.detail ? ` (${diagnosis.detail})` : ""}. Press Resume to try again; if it keeps failing, check the sandbox on boat.dev.`;
     case "other":
@@ -248,4 +298,33 @@ export function wakeFailureMessage(diagnosis: WakeDiagnosis, plan: WakePlan, ori
 export type RetriedKind = "disk-restoring" | "restore-rate-limited" | "ssh-session-stuck";
 export function retriesLater(kind: WakeFailureKind): kind is RetriedKind {
   return kind === "disk-restoring" || kind === "restore-rate-limited" || kind === "ssh-session-stuck";
+}
+
+/** "/home/user/.bb-machines/acme" → "~/.bb-machines/acme". */
+function shortHome(path: string): string {
+  return path.replace(/^\/home\/[^/]+\//, "~/").replace(/^\/root\//, "~/");
+}
+
+/**
+ * Needs you: repair bb's daemon by hand after a broken update (automatic
+ * repair is out of scope: it depends on bb's own layout). Reinstall the
+ * package bb downloaded into a fresh folder, swap it in, restart the unit.
+ */
+export function daemonRepairQuestion(input: { sandboxId: string; detail: string | null; daemon: WakeDiagnosis["daemon"] }) {
+  const dir = input.daemon?.dir ? shortHome(input.daemon.dir) : "~/.bb-machines/<server>";
+  const unit = input.daemon?.unit ?? "<the bb-host-daemon unit: systemctl --user list-units 'bb-host-daemon*'>";
+  const steps = [
+    `D=${dir}`,
+    `cp "$D/host-package-download/bb-app.tgz" /tmp/bb-app.tgz`,
+    `npm_config_cache=/tmp/npmcache npm install -g --no-audit --no-fund --allow-scripts=@parcel/watcher,node-pty --prefix "$D/npm.new" /tmp/bb-app.tgz`,
+    `mv "$D/npm" "$D/npm.old" && mv "$D/npm.new" "$D/npm"`,
+    `systemctl --user reset-failed ${unit} && systemctl --user start ${unit}`,
+  ];
+  return {
+    question: `bb's daemon on sandbox ${input.sandboxId} broke during an update, so bb can't start there. Repair it by hand?`,
+    recommendation: `In the sandbox (\`boat ssh ${input.sandboxId}\`, or \`boat exec ${input.sandboxId}\`), reinstall bb's downloaded package into a fresh folder, swap it in and restart the unit (the commands are below). Then resume the sandbox. ${input.daemon?.zombie ? "An npm install zombie is left there: it goes only with a VM restart (`boat recover " + input.sandboxId + "`) or a move to a new node." : "If an npm install zombie stays (`ps` shows <defunct>), it needs a VM restart (`boat recover " + input.sandboxId + "`) or a move to a new node."}`,
+    options: ["I'll repair it", "Leave it for now"],
+    context: `What the check saw: ${input.detail ?? "(no details)"}.\n${steps.join("\n")}`,
+    shortLabel: "bb's daemon needs a repair",
+  };
 }

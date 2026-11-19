@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   DISK_CHECK_SCRIPT,
   classifyWakeText,
+  daemonBroken,
   diagnoseWakeFailure,
   needsDiskCheck,
   parseDiskCheck,
@@ -146,11 +147,47 @@ test("the machine's message says what boat.dev is doing and when Boat retries", 
 
 test("the check's journal patterns find lazyfs's lines but never the check's own text", () => {
   const patterns = [...DISK_CHECK_SCRIPT.matchAll(/grep -a -E '([^']+)'/g)].map((match) => new RegExp(match[1]!));
-  assert.equal(patterns.length, 2);
+  assert.equal(patterns.length, 3);
   assert.ok(patterns[0]!.test(HYDRATOR));
   assert.ok(patterns[1]!.test(HYDRATING));
+  assert.ok(patterns[2]!.test("Error: Cannot find module '/home/user/.bb-machines/acme/npm/lib/node_modules/bb-app/dist/bb.js'"));
+  assert.ok(patterns[2]!.test("code: 'MODULE_NOT_FOUND'"));
+  assert.ok(patterns[2]!.test("bash: /home/user/.bb-machines/acme/npm/bin/bb-app: No such file or directory"));
   // boat's journal can log the commands run in the sandbox, this one too.
   for (const line of DISK_CHECK_SCRIPT.split("\n")) for (const pattern of patterns) assert.ok(!pattern.test(line), line);
   // The login-script test can't match the check's own shell either.
   assert.ok(!DISK_CHECK_SCRIPT.includes("/update-motd.d/"));
+});
+
+test("bb's daemon broken by an auto-update: an npm zombie, its unit stuck deactivating, a module it can't load or its missing entry point", async () => {
+  const seen = parseDiskCheck([
+    "BOAT_ZOMBIE 5150 Zl [npm install -g] <defunct>",
+    "BOAT_UNIT bb-host-daemon-acme.service deactivating stop-sigterm",
+    "BOAT_BB_DIR /home/user/.bb-machines/acme",
+    "BOAT_BB_MISSING /home/user/.bb-machines/acme",
+    "BOAT_BB_LOG code: 'MODULE_NOT_FOUND'",
+    "BOAT_DISK_END",
+  ].join("\n"));
+  assert.deepEqual(seen.daemon, {
+    zombies: ["[npm install -g] <defunct> (pid 5150, Zl)"],
+    units: [{ unit: "bb-host-daemon-acme.service", active: "deactivating", sub: "stop-sigterm" }],
+    log: "code: 'MODULE_NOT_FOUND'",
+    missing: ["/home/user/.bb-machines/acme"],
+    dirs: ["/home/user/.bb-machines/acme"],
+  });
+  assert.equal(daemonBroken(seen), true);
+  // Each one alone is enough; a running unit with its files there isn't.
+  for (const line of ["BOAT_ZOMBIE 77 Z [npm install] <defunct>", "BOAT_UNIT bb-host-daemon-x.service deactivating stop", "BOAT_BB_MISSING /home/user/.bb-machines/x", "BOAT_BB_LOG Error: Cannot find module 'x'"]) {
+    assert.equal(daemonBroken(parseDiskCheck(`${line}\nBOAT_DISK_END`)), true, line);
+  }
+  assert.equal(daemonBroken(parseDiskCheck("BOAT_UNIT bb-host-daemon-x.service active running\nBOAT_BB_DIR /home/user/.bb-machines/x\nBOAT_DISK_END")), false);
+  // "did not start within 20 seconds" plus that: daemon-broken, with where to repair it.
+  const diagnosis = await diagnoseWakeFailure(new Error(DAEMON), runner("BOAT_UNIT bb-host-daemon-acme.service deactivating stop-sigterm\nBOAT_BB_DIR /home/user/.bb-machines/acme\nBOAT_DISK_END\n"));
+  assert.equal(diagnosis.kind, "daemon-broken");
+  assert.deepEqual(diagnosis.daemon, { dir: "/home/user/.bb-machines/acme", unit: "bb-host-daemon-acme.service", zombie: false });
+  assert.equal(retriesLater("daemon-broken"), false, "a repair by hand, not a retry");
+  // Storage failing comes first: the daemon can't load files that don't restore.
+  assert.equal((await diagnoseWakeFailure(new Error(DAEMON), runner(`BOAT_HYDRATOR ${HYDRATOR}\nBOAT_ZOMBIE 5150 Zl [npm install -g] <defunct>\nBOAT_DISK_END\n`))).kind, "disk-restoring");
+  // The check's own text never reads as a missing entry point.
+  assert.ok(!DISK_CHECK_SCRIPT.includes("npm/bin/bb-app"));
 });
