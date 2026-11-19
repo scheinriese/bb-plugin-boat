@@ -779,6 +779,28 @@ export function conflictReason(baseBranch: string, conflict: ShipConflict, shipp
   return `its commits conflict with the latest ${baseBranch}${where}. The task's agent must rebase and resolve them`;
 }
 
+/**
+ * The newest completed snapshot in `boat snapshots <id> --json` (shape not
+ * verified against boat: any list of entries with a time; a status, when
+ * given, must say it completed).
+ */
+export function lastCompletedSnapshot(records: JsonRecord[]): string | null {
+  const entries: JsonRecord[] = [];
+  for (const record of records) {
+    entries.push(record);
+    for (const value of Object.values(record)) if (Array.isArray(value)) for (const item of value) { const entry = rec(item); if (entry !== null) entries.push(entry); }
+  }
+  let newest: { at: number; text: string } | null = null;
+  for (const entry of entries) {
+    const status = (str(entry.status) ?? str(entry.state))?.toLowerCase() ?? null;
+    if (status !== null && !/^(completed?|ready|done|succeeded|success|available)$/.test(status)) continue;
+    const text = str(entry.completedAt) ?? str(entry.finishedAt) ?? str(entry.createdAt) ?? str(entry.takenAt);
+    const at = text === null ? NaN : Date.parse(text);
+    if (Number.isFinite(at) && (newest === null || at > newest.at)) newest = { at, text: new Date(at).toISOString() };
+  }
+  return newest?.text ?? null;
+}
+
 export class BoatApi {
   readonly cli: BoatCli;
 
@@ -917,8 +939,38 @@ export class BoatApi {
     await this.cli.run(["delete", id, "--yes"], { timeoutMs: 120_000, signal });
   }
 
-  async stop(id: string, signal?: AbortSignal): Promise<void> {
-    await this.cli.run(["stop", id], { timeoutMs: 180_000, signal });
+  /**
+   * force: stop even if boat can't snapshot it; keeps the last completed
+   * snapshot, what was written since is lost. Returns the stop's status as
+   * boat printed it (pending, failing, completed, superseded; null: none).
+   */
+  async stop(id: string, signal?: AbortSignal, options: { force?: boolean } = {}): Promise<{ status: string | null }> {
+    const result = await this.cli.run(["stop", id, ...(options.force === true ? ["--force"] : [])], { timeoutMs: 180_000, signal });
+    const said = [...result.records].reverse().map((record) => str(record.status) ?? str(rec(record.stop)?.status)).find((value) => value !== null);
+    return { status: said ?? null };
+  }
+
+  /**
+   * Fork a sandbox from its latest snapshot and wait until it's ready (`boat
+   * fork --wait`: created, state and ready lines, like `boat new`). A failed
+   * fork's error carries `forkId` when boat made one.
+   */
+  async fork(id: string, options: { noSnapshots?: boolean; ttlSeconds?: number; signal?: AbortSignal } = {}): Promise<{ id: string }> {
+    const args = ["fork", id, "--wait"];
+    if (options.noSnapshots === true) args.push("--no-snapshots");
+    if (options.ttlSeconds !== undefined) args.push("--ttl", String(Math.round(options.ttlSeconds)));
+    const result = await this.cli.run(args, { timeoutMs: 300_000, signal: options.signal, allowFailure: true });
+    const made = [...result.records].reverse().map((record) => str(record.id) ?? str(rec(record.sandbox)?.id)).find((value) => value !== null && value !== id) ?? null;
+    if (result.exitCode !== 0 || made === null) {
+      const error = [...result.records].reverse().find((record) => record.event === "error");
+      throw Object.assign(new BoatError(str(error?.error) ?? (result.stderr.trim() || "boat fork failed"), { code: str(error?.code) ?? "boat_failed", status: num(error?.status), exitCode: result.exitCode }), { forkId: made });
+    }
+    return { id: made };
+  }
+
+  /** When boat last completed a snapshot of this sandbox (`boat snapshots <id>`; null: none, or not said). */
+  async lastSnapshotAt(id: string, signal?: AbortSignal): Promise<string | null> {
+    return lastCompletedSnapshot((await this.cli.run(["snapshots", id], { timeoutMs: 60_000, signal })).records);
   }
 
   /** `type`: resume onto another size (`--type`); omitted, boat keeps the sandbox's size. */
