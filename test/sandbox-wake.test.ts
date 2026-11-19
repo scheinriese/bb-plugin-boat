@@ -564,16 +564,25 @@ test("on a machine bb has suspended, bb's own resume updates bb: only `bb machin
   assert.ok(stepTexts(report).includes("bb 0.49.0 on this sandbox is older than the server's 0.50.1: bb's machine resume updates it safely itself, before it starts bb."), wakeText(report));
 });
 
-test("bb older than the server without a download: said, with the npm registry as a manual step only", async () => {
-  const { waker, calls } = world({ state: "stopped", bb: inspection({ installed: "0.49.0", tgz: "none" }) });
-  const report = await waker.run({ target: "bx_demo1" });
+test("bb older than the server without a download: the same safe update, from the npm registry", async () => {
+  // Suspended: bb's machine resume runs it; nothing to do by hand.
+  let w = world({ state: "stopped", bb: inspection({ installed: "0.49.0", tgz: "none" }) });
+  let report = await w.waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "awake", wakeText(report));
-  assert.ok(!calls.includes("bb install"));
-  const note = stepTexts(report).find((text) => text.includes("No download of bb 0.50.1 is on the sandbox, so Boat can't install the server's build there itself."));
-  assert.ok(note, wakeText(report));
-  assert.match(note!, /To install it by hand from the npm registry instead \(a manual step; Boat doesn't run it\)/);
-  assert.match(note!, /npm install -g .* --prefix "\$D\/npm\.new" bb-app@0\.50\.1/);
-  assert.match(note!, /`D=~\/\.bb-machines\/acme-example-com`/);
+  assert.ok(!w.calls.includes("bb install"));
+  assert.ok(stepTexts(report).includes("bb 0.49.0 on this sandbox is older than the server's 0.50.1: bb's machine resume updates it safely itself, before it starts bb."), wakeText(report));
+  assert.ok(!stepTexts(report).some((text) => /No download of bb|by hand/.test(text)), wakeText(report));
+  // Disconnected, not suspended: Boat installs bb-app 0.50.1 from the npm registry itself.
+  const dry = world({ state: "idle", host: { phase: "active", connected: false }, bb: inspection({ installed: "0.49.0", tgz: "none" }) });
+  report = await dry.waker.run({ target: "bx_demo1", dryRun: true });
+  assert.ok(stepTexts(report).includes("Update bb on the sandbox from 0.49.0 to 0.50.1: a fresh install from the npm registry (no download of it there), swapped in, the old one kept."), wakeText(report));
+  w = world({ state: "stopped", host: { phase: "active", connected: false }, bb: inspection({ installed: "0.49.0", tgz: "none" }) });
+  report = await w.waker.run({ target: "bx_demo1" });
+  assert.equal(report.outcome, "awake", wakeText(report));
+  assert.ok(stepTexts(report, "done").includes("Updated bb on the sandbox from 0.49.0 to 0.50.1, installed from the npm registry."), wakeText(report));
+  const install = w.scripts.find((script) => script.includes("BOAT_BBUP"));
+  assert.match(install!, /^V='0\.50\.1'$/m);
+  assert.match(install!, /npm pack --ignore-scripts --registry=https:\/\/registry\.npmjs\.org\/ .* "bb-app@\$V"/);
 });
 
 test("bb's install isn't touched under a connected machine", async () => {

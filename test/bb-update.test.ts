@@ -94,15 +94,29 @@ exit 0
   writeFileSync(join(bin, "journalctl"), `#!/bin/bash\necho "journalctl $*" >> "${fake}/log"\ncat "${fake}/journal" 2>/dev/null\nexit 0\n`);
   // ps: the listing, then (when a test asks) a change to procfs right after the first look.
   writeFileSync(join(bin, "ps"), `#!/bin/bash\ncat "${fake}/ps" 2>/dev/null\n[ -f "${fake}/ps-after" ] && { (sleep 0.3; bash "${fake}/ps-after") & }\nexit 0\n`);
-  // npm install -g --prefix <dir> <tgz>: makes bb-app at the tgz's version (or fails as told).
+  // npm pack --pack-destination <dir> bb-app@<v>: the registry's bb-app-<v>.tgz (or fails, hangs or
+  // sends another version, as told). npm install -g --prefix <dir> <tgz>: makes bb-app at the tgz's
+  // version (or fails, or makes another version, as told).
   writeFileSync(
     join(bin, "npm"),
     `#!/bin/bash
 echo "npm $* cache=$npm_config_cache" >> "${fake}/log"
+if [ "$1" = pack ]; then
+  dest=; spec=
+  while [ $# -gt 0 ]; do case "$1" in --pack-destination) dest=$2; shift 2 ;; *) spec=$1; shift ;; esac; done
+  [ -n "\${FAKE_PACK_HANG:-}" ] && exec sleep 600
+  if [ -n "\${FAKE_PACK_FAIL:-}" ]; then echo "npm error code $FAKE_PACK_FAIL" >&2; exit 1; fi
+  v=\${FAKE_PACK_VERSION:-\${spec#bb-app@}}
+  s=$(mktemp -d); mkdir -p "$s/package"
+  printf '{\\n  "name": "bb-app",\\n  "version": "%s"\\n}\\n' "$v" > "$s/package/package.json"
+  tar -czf "$dest/bb-app-$v.tgz" -C "$s" package; rm -rf "$s"
+  echo "bb-app-$v.tgz"
+  exit 0
+fi
 prefix=; last=
 while [ $# -gt 0 ]; do case "$1" in --prefix) prefix=$2; shift 2 ;; *) last=$1; shift ;; esac; done
 if [ -n "\${FAKE_NPM_FAIL:-}" ]; then echo "npm error code $FAKE_NPM_FAIL" >&2; exit 1; fi
-v=$(tar -xzOf "$last" package/package.json | sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' | head -n 1)
+v=\${FAKE_NPM_VERSION:-$(tar -xzOf "$last" package/package.json | sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' | head -n 1)}
 p="$prefix/lib/node_modules/bb-app"
 mkdir -p "$p/dist" "$p/host-daemon/dist" "$prefix/bin" "$p/node_modules/node-pty" "$p/node_modules/@parcel/watcher"
 printf '{\\n  "name": "bb-app",\\n  "version": "%s"\\n}\\n' "$v" > "$p/package.json"
@@ -148,11 +162,15 @@ test("the update decision: the server's version, the download's, and a broken in
   // Without the server's version, the download is what the server sent.
   assert.deepEqual(decideBbUpdate(seen(), null), { kind: "update", to: "0.50.1", from: "0.49.0", broken: false });
   assert.equal(decideBbUpdate(seen({ installed: "0.50.1" }), "0.50.1").kind, "none", "current");
-  // A stale download is never installed: bb's own update fetches the right one.
-  const stale = decideBbUpdate(seen({ tgz: "0.50.0" }), "0.50.1");
-  assert.equal(stale.kind, "none");
-  assert.match((stale as { why: string }).why, /no download of bb 0\.50\.1/);
-  assert.equal(decideBbUpdate(seen({ tgz: "none" }), "0.50.1").kind, "none", "no download: bb's own update");
+  // No download of the server's version there (none, unreadable, or a stale one, which is never
+  // installed): that exact version from the npm registry instead.
+  const npm = { kind: "update", to: "0.50.1", from: "0.49.0", broken: false, npm: true };
+  assert.deepEqual(decideBbUpdate(seen({ tgz: "none" }), "0.50.1"), npm);
+  assert.deepEqual(decideBbUpdate(seen({ tgz: "unreadable" }), "0.50.1"), npm);
+  assert.deepEqual(decideBbUpdate(seen({ tgz: "0.50.0" }), "0.50.1"), npm);
+  // The server's version unknown: nothing to ask the registry for (never "latest").
+  assert.deepEqual(decideBbUpdate(seen({ tgz: "none" }), null), { kind: "none", why: "Boat couldn't tell which bb the server needs" });
+  assert.equal(decideBbUpdate(seen({ tgz: "unreadable" }), null).kind, "none");
   assert.equal(decideBbUpdate(seen({ installed: "0.51.0", tgz: "none" }), "0.50.1").kind, "none", "newer: bb's setup decides");
   assert.equal(decideBbUpdate(seen({ installed: "unreadable" }), "0.50.1").kind, "none", "an unreadable file is not a missing one");
   assert.equal(decideBbUpdate(seen({ complete: false }), "0.50.1").kind, "none");
@@ -161,8 +179,11 @@ test("the update decision: the server's version, the download's, and a broken in
   assert.deepEqual(decideBbUpdate(seen({ bin: "missing" }), "0.50.1"), { kind: "update", to: "0.50.1", from: "0.49.0", broken: true });
   assert.deepEqual(decideBbUpdate(seen({ installed: "0.50.1", moduleNotFound: true, state: { active: "activating", sub: "auto-restart", result: "exit-code", restarts: 40, sinceSeconds: 1 } }), "0.50.1"), { kind: "update", to: "0.50.1", from: "0.50.1", broken: true });
   assert.equal(decideBbUpdate(seen({ installed: "0.50.1", moduleNotFound: true }), "0.50.1").kind, "none", "an old MODULE_NOT_FOUND line while the service runs isn't broken");
-  assert.equal(decideBbUpdate(seen({ bin: "missing", tgz: "none" }), "0.50.1").kind, "set-aside", "broken, nothing to install from: bb's setup installs into an empty prefix");
-  assert.equal(decideBbUpdate(seen({ lacks: ["dist/bb-app.js"], tgz: "0.50.0" }), "0.50.1").kind, "set-aside");
+  // Broken without a download of the server's version: repaired from the npm registry.
+  assert.deepEqual(decideBbUpdate(seen({ bin: "missing", tgz: "none" }), "0.50.1"), { kind: "update", to: "0.50.1", from: "0.49.0", broken: true, npm: true });
+  assert.deepEqual(decideBbUpdate(seen({ lacks: ["dist/bb-app.js"], tgz: "0.50.0" }), "0.50.1"), { kind: "update", to: "0.50.1", from: "0.49.0", broken: true, npm: true });
+  assert.deepEqual(decideBbUpdate(seen({ bin: "missing", installed: "none", tgz: "unreadable" }), "0.50.1"), { kind: "update", to: "0.50.1", from: null, broken: true, npm: true });
+  assert.equal(decideBbUpdate(seen({ bin: "missing", tgz: "none" }), null).kind, "set-aside", "broken, nothing to install from: bb's setup installs into an empty prefix");
   // A hung update of bb's own: not fought. A zombie needs a VM restart; a wait on the disk needs time.
   assert.deepEqual(decideBbUpdate(seen({ zombies: ["812 3600"] }), "0.50.1"), { kind: "hung", detail: "npm install left a zombie: pid 812" });
   assert.equal(decideBbUpdate(seen({ state: { active: "deactivating", sub: "stop-sigterm", result: "success", restarts: 0, sinceSeconds: 600 } }), "0.50.1").kind, "waiting");
@@ -393,6 +414,88 @@ test("the install's worst case stays inside its limit, bb's restart included", a
   assert.match(installScript({ dataDir: "/d", unit: null, node: null, version: "1.0.0" }), /--allow-scripts=better-sqlite3,node-pty,@parcel\/watcher /);
 });
 
+test("without a download there, bb-app at the server's exact version comes from the npm registry: fetched before the stop, then the same install and swap, bb's digest left as it was", async (t) => {
+  const box = sandboxHome(t, { tgz: null });
+  // bb's digest of the build it installed last: not the npm build's, and Boat can't make that one.
+  writeFileSync(join(box.data, "host-artifact.sha256"), `${"c".repeat(64)}\n`);
+  const plan = decideBbUpdate(parseInspection(box.run(inspectScript(HOST))), "0.50.1");
+  assert.deepEqual(plan, { kind: "update", to: "0.50.1", from: "0.49.0", broken: false, npm: true }, "download missing: npm");
+  const result = parseInstall(box.run(installScript({ dataDir: box.data, unit: box.unit, node: null, version: "0.50.1", from: "0.49.0", npm: true })));
+  assert.deepEqual(result, { kind: "done", version: "0.50.1", unit: "active" });
+  assert.equal(box.version(), "0.50.1");
+  const old = readdirSync(box.data).filter((name) => name.startsWith("npm.old-"));
+  assert.deepEqual(old.map((name) => name.replace(/-\d+$/, "")), ["npm.old-0.49.0"], "the old install stays next to it");
+  assert.equal(box.version(old[0]), "0.49.0");
+  assert.equal(existsSync(join(box.data, "npm.new")), false);
+  assert.equal(readFileSync(join(box.data, "host-artifact.sha256"), "utf8"), `${"c".repeat(64)}\n`, "no fake digest: the file stays as it was");
+  const log = box.log().trim().split("\n");
+  const pack = log.findIndex((line) => line.startsWith("npm pack"));
+  const stop = log.findIndex((line) => line.startsWith(`systemctl --user stop ${box.unit}`));
+  const npm = log.findIndex((line) => line.startsWith("npm install -g"));
+  const start = log.findIndex((line) => line.startsWith(`systemctl --user start ${box.unit}`));
+  assert.ok(pack >= 0 && stop > pack && npm > stop && start > npm, log.join("\n"));
+  assert.match(log[pack]!, /^npm pack --ignore-scripts --registry=https:\/\/registry\.npmjs\.org\/ --pack-destination \S+\/boat-bb-update\.[A-Za-z0-9]+\/pack bb-app@0\.50\.1 cache=\S+\/boat-bb-update\.[A-Za-z0-9]+\/cache$/, "the exact version, from npm's own registry");
+  assert.match(log[npm]!, new RegExp(`--allow-scripts=better-sqlite3,node-pty,@parcel/watcher --registry=https://registry\\.npmjs\\.org/ --prefix ${box.data}/npm\\.new \\S+/boat-bb-update\\.[A-Za-z0-9]+/bb-app\\.tgz cache=`));
+  assert.deepEqual(readdirSync(box.root).filter((name) => name.startsWith("boat-bb-update.")), [], "its work dir goes");
+  // A download there that can't be read: the look says so, and npm installs the server's version.
+  const unreadable = sandboxHome(t, { installed: "0.49.0" });
+  writeFileSync(unreadable.tgzFile!, "not a tarball");
+  const seenThere = parseInspection(unreadable.run(inspectScript(HOST)));
+  assert.equal(seenThere.tgz, "unreadable");
+  assert.deepEqual(decideBbUpdate(seenThere, "0.50.1"), { kind: "update", to: "0.50.1", from: "0.49.0", broken: false, npm: true });
+  assert.equal(parseInstall(unreadable.run(installScript({ dataDir: unreadable.data, unit: unreadable.unit, node: null, version: "0.50.1", from: "0.49.0", npm: true }))).kind, "done");
+  assert.equal(unreadable.version(), "0.50.1");
+  assert.equal(unreadable.log().includes(unreadable.tgzFile!), false, "the unreadable download isn't read");
+  await until(() => !existsSync(unreadable.tgzFile!));
+  // Never a range, a tag or "latest".
+  assert.throws(() => installScript({ dataDir: "/d", unit: null, node: null, version: "latest", npm: true }), /not a bb version/);
+});
+
+test("the npm registry fails (a version it doesn't have, unreachable, a timeout): nothing stopped, the old bb untouched, in plain words", (t) => {
+  for (const [env, detail, text] of [
+    [{ FAKE_PACK_FAIL: "ETARGET" }, "ETARGET", "the npm registry doesn't have bb-app 0.50.1 (ETARGET)"],
+    [{ FAKE_PACK_FAIL: "E404" }, "E404", "the npm registry doesn't have bb-app 0.50.1 (E404)"],
+    [{ FAKE_PACK_FAIL: "ENOTFOUND" }, "ENOTFOUND", "the npm registry couldn't be reached (ENOTFOUND)"],
+    [{ FAKE_PACK_HANG: "1" }, "timeout", "fetching bb-app 0.50.1 from the npm registry took longer than 2 minutes"],
+  ] as const) {
+    const box = sandboxHome(t, { tgz: null });
+    writeFileSync(join(box.data, "host-artifact.sha256"), "d".repeat(64));
+    const started = Date.now();
+    // For the hang, a short limit: the fetch's own share of it is a second.
+    const result = parseInstall(box.run(installScript({ dataDir: box.data, unit: box.unit, node: null, version: "0.50.1", from: "0.49.0", npm: true, seconds: "FAKE_PACK_HANG" in env ? 10 : undefined }), env));
+    assert.ok(Date.now() - started < 15_000);
+    assert.deepEqual(result, { kind: "fail", reason: "registry", detail, old: "intact" });
+    assert.equal(installFailureText(result as Extract<typeof result, { kind: "fail" }>, "0.50.1"), text);
+    assert.equal(box.version(), "0.49.0", "the old install is untouched");
+    assert.equal(box.log().includes("systemctl --user stop"), false, "bb's service never stopped");
+    assert.equal(box.log().includes("npm install"), false);
+    assert.equal(readFileSync(join(box.fake, "active"), "utf8").trim(), "active");
+    assert.equal(readFileSync(join(box.data, "host-artifact.sha256"), "utf8"), "d".repeat(64));
+    assert.deepEqual(readdirSync(box.data).filter((name) => /^npm\./.test(name)), []);
+  }
+  assert.equal(installFailureText({ kind: "fail", reason: "registry", detail: "E500", old: "intact" }, "0.50.1"), "fetching bb-app 0.50.1 from the npm registry failed (E500)");
+  assert.equal(installFailureText({ kind: "fail", reason: "registry", detail: "no-package", old: "intact" }, "0.50.1"), "npm fetched nothing for bb-app 0.50.1 from the npm registry");
+});
+
+test("bb-app from the npm registry at another version than the server's is never swapped in", (t) => {
+  // npm installs another version than it was given: the new install goes, the old one starts again.
+  const box = sandboxHome(t, { tgz: null });
+  const installed = parseInstall(box.run(installScript({ dataDir: box.data, unit: box.unit, node: null, version: "0.50.1", from: "0.49.0", npm: true }), { FAKE_NPM_VERSION: "0.50.0" }));
+  assert.deepEqual(installed, { kind: "fail", reason: "installed", detail: "0.50.0", old: "intact" });
+  assert.equal(installFailureText(installed as Extract<typeof installed, { kind: "fail" }>), "npm installed bb-app 0.50.0 instead");
+  assert.equal(box.version(), "0.49.0", "not swapped in");
+  assert.equal(existsSync(join(box.data, "npm.new")), false);
+  assert.deepEqual(readdirSync(box.data).filter((name) => name.startsWith("npm.old-")), []);
+  assert.equal(readFileSync(join(box.fake, "active"), "utf8").trim(), "active", "bb's service runs again");
+  // The registry sends another version: caught before anything stops.
+  const sent = sandboxHome(t, { tgz: null });
+  const fetched = parseInstall(sent.run(installScript({ dataDir: sent.data, unit: sent.unit, node: null, version: "0.50.1", from: "0.49.0", npm: true }), { FAKE_PACK_VERSION: "0.50.0" }));
+  assert.deepEqual(fetched, { kind: "fail", reason: "fetched", detail: "0.50.0", old: "intact" });
+  assert.equal(installFailureText(fetched as Extract<typeof fetched, { kind: "fail" }>), "the npm registry sent bb-app 0.50.0");
+  assert.equal(sent.log().includes("systemctl --user stop"), false);
+  assert.equal(sent.version(), "0.49.0");
+});
+
 test("a broken install with nothing to install from is moved aside for bb's setup", (t) => {
   const box = sandboxHome(t, { bin: false, tgz: null });
   writeFileSync(join(box.data, "host-artifact.sha256"), "a".repeat(64));
@@ -445,6 +548,8 @@ test("the updater installs the server's version, says so, and never reads the ol
   assert.match(exec.scripts[1]!, /V='0\.50\.1'/);
   assert.match(exec.scripts[1]!, /D='\/home\/user\/\.bb-machines\/bb\.example\.com'/);
   assert.match(exec.scripts[1]!, /N='\/home\/user\/\.nvm\/versions\/node\/v24\.11\.1\/bin\/node'/, "bb's own node and npm");
+  assert.doesNotMatch(exec.scripts[1]!, /npm pack|registry/, "the download there: nothing from the npm registry");
+  assert.match(exec.scripts[1]!, /host-artifact\.sha256\.boat/, "and bb's digest of it written");
   assert.deepEqual(prefetched, [{ dataDir: "/home/user/.bb-machines/bb.example.com", node: "/home/user/.nvm/versions/node/v24.11.1/bin/node", skipInstall: true }], "the install about to be replaced isn't read");
   assert.ok(step.steps.some((text) => /Updating bb on the sandbox to 0\.50\.1/.test(text)));
   assert.ok(step.logs.some((text) => /Updated bb on the sandbox from 0\.49\.0 to 0\.50\.1/.test(text)));
@@ -532,6 +637,64 @@ test("a failure's words follow the old install as the script found it", async ()
   assert.equal(await say("broken"), "The bb that was there isn't complete; bb's own setup installs it again.");
   assert.equal(await say("unknown"), "Boat couldn't check the bb that was there (its files aren't readable yet); bb's own setup goes ahead.");
   assert.equal(await say(null), "bb's own setup goes ahead and checks the bb that's there.", "no word on it: no claim either way");
+});
+
+test("without a download of the server's version, the updater installs it from the npm registry and says so; a failure keeps bb and backs off", async () => {
+  let at = Date.parse("2026-11-19T02:00:00Z");
+  const noDownload = INSPECTED.replace("BOAT_BB tgz 0.50.1", "BOAT_BB tgz none");
+  let answer = "BOAT_BBUP done 0.50.1 active\n";
+  const exec = fakeExec({ inspect: () => noDownload, install: () => answer, setAside: () => "BOAT_BBFIX moved" });
+  const told: string[] = [];
+  const prefetched: { skipInstall: boolean }[] = [];
+  const kv = kvStore();
+  const update = createBbUpdater({ boat: exec.boat, kv, serverVersion: async () => "0.50.1", tell: (_id, text) => told.push(text), now: () => at, prefetch: async (_id, request) => { prefetched.push(request); } });
+  const step = prep();
+  assert.deepEqual(await update(step), { kind: "updated", from: "0.49.0", to: "0.50.1", npm: true });
+  assert.equal(prefetched[0]!.skipInstall, false, "the registry may not come through: the intact install is still read first, as before");
+  assert.match(exec.scripts[1]!, /npm pack --ignore-scripts --registry=https:\/\/registry\.npmjs\.org\/ --pack-destination "\$W\/pack" "bb-app@\$V"/);
+  assert.match(exec.scripts[1]!, /^V='0\.50\.1'$/m, "the server's exact version");
+  assert.doesNotMatch(exec.scripts[1]!, /host-artifact\.sha256\.boat/, "no digest written for a build from npm");
+  assert.ok(step.steps.includes("Updating bb on the sandbox to 0.50.1 from the npm registry: a fresh install next to the old one"), step.steps.join("\n"));
+  assert.ok(step.logs.includes("Updated bb on the sandbox from 0.49.0 to 0.50.1, installed from the npm registry"), step.logs.join("\n"));
+  // The registry doesn't have that version: the old bb kept, the tasks told, the same backoff.
+  answer = "BOAT_BBOLD intact\nBOAT_BBUP fail registry ETARGET\n";
+  const failed = (await update(prep())) as { kind: string; text: string };
+  assert.equal(failed.kind, "failed");
+  assert.equal(failed.text, "Boat couldn't update bb on this sandbox to 0.50.1: the npm registry doesn't have bb-app 0.50.1 (ETARGET). It kept the bb that was there, and bb's own setup goes ahead. Boat tries the update again after 02:30 UTC.");
+  assert.deepEqual(told, [failed.text]);
+  assert.equal((kv.values.get(BB_UPDATES_KEY) as Record<string, { failures: number; detail: string }>).bx_one!.failures, 1);
+  assert.equal(exec.scripts.some((script) => script.includes("BOAT_BBFIX")), false, "an install that isn't broken stays where it is");
+  at += 10 * 60_000;
+  assert.equal((await update(prep())).kind, "held");
+  assert.equal(exec.scripts.filter((script) => script.includes("BOAT_BBUP")).length, 2, "no fetch while held");
+  // A timeout after it: the wait doubles.
+  at += 25 * 60_000;
+  answer = "BOAT_BBOLD intact\nBOAT_BBUP fail registry timeout\n";
+  assert.match(((await update(prep())) as { text: string }).text, /: fetching bb-app 0\.50\.1 from the npm registry took longer than 2 minutes\. It kept the bb that was there/);
+  assert.equal((kv.values.get(BB_UPDATES_KEY) as Record<string, { retryAt: number }>).bx_one!.retryAt, at + updateBackoffMs(2));
+  // The server's version unknown: nothing asked of the registry (never "latest").
+  const blind = fakeExec({ inspect: () => noDownload });
+  assert.deepEqual(await createBbUpdater({ boat: blind.boat, kv: kvStore(), serverVersion: async () => null })(prep()), { kind: "none", why: "Boat couldn't tell which bb the server needs" });
+  assert.equal(blind.scripts.some((script) => script.includes("BOAT_BBUP")), false);
+});
+
+test("a broken install the npm registry couldn't replace still goes aside for bb's setup, as without the fallback", async () => {
+  let at = Date.parse("2026-11-19T02:00:00Z");
+  const broken = INSPECTED.replace("BOAT_BB tgz 0.50.1", "BOAT_BB tgz none").replace("BOAT_BB bin ok", "BOAT_BB bin missing");
+  const exec = fakeExec({ inspect: () => broken, install: () => "BOAT_BBOLD broken\nBOAT_BBUP fail registry ENOTFOUND\n", setAside: () => "BOAT_BBFIX moved" });
+  const prefetched: { skipInstall: boolean }[] = [];
+  const update = createBbUpdater({ boat: exec.boat, kv: kvStore(), serverVersion: async () => "0.50.1", now: () => at, prefetch: async (_id, request) => { prefetched.push(request); } });
+  const failed = (await update(prep())) as { kind: string; text: string };
+  assert.equal(prefetched[0]!.skipInstall, true, "a broken install isn't read: it's replaced or goes aside");
+  assert.equal(failed.text, "Boat couldn't update bb on this sandbox to 0.50.1: the npm registry couldn't be reached (ENOTFOUND). bb's install there was already broken, so Boat moved it aside and bb's own setup installs it again. Boat tries the update again after 02:30 UTC.");
+  assert.deepEqual(exec.scripts.map((script) => (script.includes("say end") ? "look" : script.includes("BOAT_BBUP") ? "install" : script.includes("BOAT_BBFIX") ? "set aside" : "other")), ["look", "install", "set aside"]);
+  // Held after that: no fetch, and a broken install there again goes aside again.
+  at += 10 * 60_000;
+  const step = prep();
+  assert.deepEqual(await update(step), { kind: "set-aside" });
+  assert.equal(exec.scripts.filter((script) => script.includes("BOAT_BBUP")).length, 1);
+  assert.equal(exec.scripts.filter((script) => script.includes("BOAT_BBFIX")).length, 2);
+  assert.deepEqual(step.logs, ["bb's install on the sandbox was broken (npm/bin/bb-app is missing); Boat moved it aside so bb's setup installs it again"]);
 });
 
 test("backoffs of sandboxes long gone are dropped, and a removed machine's goes at once", async () => {
