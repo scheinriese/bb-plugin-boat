@@ -21,6 +21,7 @@
 - Spread usage-limit reset retries that would wake a Boat sandbox to one machine every 30 seconds. On bb 0.49, decline provider retry's consent question for Boat's own chats and resume each stopped turn once itself.
 - Open task chats on a sandbox in any bb project, not only Personal: before the chat opens, add the sandbox's checkout to the project as a source (never asking for the default), or reuse the project's source on that sandbox. If bb refuses, open the chat in Personal, still under its orchestrator, and say why on the task.
 - Remove the sources the plugin added once no open task is on their sandbox (a review in the same workspace counts) or their machine goes, and on a sweep after a restart. Reopening a task adds its source back. Sources it didn't add, like your own computer's, and a project's last source are never deleted.
+- New `bb boat sandbox wake <sandbox, task or chat id>` (the `boat_wake` tool, and the `boat-sandbox-wake` skill) brings a stuck sandbox and its chat back in one go: a paced resume within the start limit, a look at the disk, SSH login and bb there, a stop and a start for a disk that's unreadable or stuck (boat.dev's fix; forced only when nothing could be lost), login scripts off, bb's safe update, bb's service and machine back, and the chat's retry. `--dry-run` only prints the plan, `--json` the report; a paid extra start needs `--allow-paid-start`. It ends with Needs you and the commands when it stops for safety. The orchestrator protocol tells orchestrators to use it instead of repairing a machine by hand.
 
 ## 0.2.8
 

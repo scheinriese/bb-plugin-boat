@@ -417,6 +417,36 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   and server errors are always left to bb. bb 0.50 no longer asks, so there
   only the pacing applies.
 
+### Waking a stuck sandbox
+
+A chat or task stuck on **Machine is paused** or **resuming** comes back
+with one command: `bb boat sandbox wake <id>`, with the sandbox's id, a
+task's or a chat's (orchestrators have it as the `boat_wake` tool). It uses
+the pieces above, in the order that worked by hand:
+
+1. A stopped sandbox is resumed with a wake slot, within the boat start
+   limit. When no included start is left it says so; a paid extra start needs
+   `--allow-paid-start`, and the plugin never turns paid extra starts on.
+2. It waits until boat's exec answers, then looks at the disk, the SSH login
+   and bb's install there.
+3. A disk that's unreadable or stuck, an exec that never answers, or an `npm
+   install` zombie: it stops the sandbox and starts it again, boat.dev's fix
+   for a stuck sandbox. That's a plain stop first, followed by its status
+   (never a second stop), and `--force` only when nothing there could be lost,
+   checked as for a move to a new node. Otherwise it stops with the facts and
+   the commands. Still unreadable after that: Needs you.
+4. Login message scripts off, bb's safe update when it's older than the server
+   or broken (not while bb's machine is connected), bb's service restarted,
+   then `bb machine resume` if bb has the machine suspended, and a wait until
+   it connects. Without bb's download on the sandbox it says so, and gives the
+   npm registry install as a manual step only.
+5. The chat: a pending provider retry is sent now, a failed turn is retried
+   (not one stopped at a usage limit), and a queue that's already sending is
+   left alone.
+
+`--dry-run` only looks and prints the plan, `--json` gives the report. When it
+stops for safety it exits 1 with "Needs you" and the commands to run.
+
 ![A task chat: the worker's brief and progress, its parent orchestrator, and the boat sandbox it runs on](screenshots/worker-chat.png)
 
 ## How work lands: pull requests, or ship after approval
@@ -908,6 +938,7 @@ command has `--help`, and `--json` gives machine-readable output.
 | `bb boat task wait <id>…` | Block until tasks stop running; a last resort: ending the turn is better, the chat is told when a turn ends |
 | `bb boat preview list \| wake \| extend \| stop` | Previews |
 | `bb boat sandbox list \| new \| info \| stop \| resume \| resize \| delete \| exec` | Sandboxes (`resize <id> --type <size>` moves a task's sandbox to another size) |
+| `bb boat sandbox wake <id>` | Bring a stuck sandbox and its chat back, from its sandbox, task or chat id ([Waking a stuck sandbox](#waking-a-stuck-sandbox); `--dry-run`, `--allow-paid-start`) |
 | `bb boat sandbox snapshot \| snapshots` | Snapshots |
 | `bb boat project list [--local] \| add \| set \| remove` | Projects (`--protected-branches`, `--instructions`, `--delivery`, `--workers`, `--size` …) |
 | `bb boat config get [key] \| set <key> <value> \| reset <key>` | Every setting, wherever it's shown ([settings.md](settings.md)) |

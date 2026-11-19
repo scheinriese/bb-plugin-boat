@@ -150,6 +150,7 @@ size. Agents are told their sandbox's size.
 | `bb boat task ship <id>` | Projects that ship after approval: push the task's commits to its base branch. Only from the task's orchestrator chat, after the user said so there |
 | `bb boat preview list` / `preview wake\|extend\|stop <id>` | Previews agents left running (private links), and bringing a sleeping one back |
 | `bb boat sandbox list [--all]` / `sandbox new [--repo …]` / `sandbox info\|stop\|resume\|delete <id>` | Sandboxes |
+| `bb boat sandbox wake <id>` | A chat or task stuck on "Machine is paused" or "resuming": bring its sandbox and chat back (sandbox, task or chat id; `--dry-run` first if unsure). See the boat-sandbox-wake skill |
 | `bb boat sandbox resize <id> --type <size>` | Move a task's sandbox to another size without a follow-up (see Sandbox sizes) |
 | `bb boat sandbox exec <id> -- <command>` | Run a shell command in a sandbox |
 | `bb boat sandbox snapshot <id> <name>` / `sandbox snapshots` | Save a sandbox as a snapshot; list saved ones (`--snapshot <name>` on task start starts from one) |

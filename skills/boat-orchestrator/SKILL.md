@@ -133,6 +133,7 @@ open task's sandbox that has evidence-upload.
 | `boat_needs_you` / `boat_resolve` | Put a decision (with your recommendation) on the user's Cloud agents page; close it once answered |
 | `boat_ready` | Mark work ready for the user to review (after the review approved) |
 | `boat_preview` | Previews (list) and wake, extend or stop one |
+| `boat_wake` | A chat or task stuck on a paused or resuming machine: bring its sandbox and chat back (don't repair it by hand) |
 | `boat_ship` | Projects that ship after approval: push the work to the base branch, only on the user's OK in this chat |
 
 For task dispatch, optionally provide `compact_title` (CLI `--compact-title`):

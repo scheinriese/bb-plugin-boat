@@ -184,6 +184,7 @@ may block `bb`. `bb boat …` is only for what no tool does.
 | `boat_needs_you` / `boat_resolve` | Put a decision on your Cloud agents page; close it once you answered |
 | `boat_ready` | Mark work ready for you to review (after the review approved) |
 | `boat_preview` | List previews; wake, extend or stop one |
+| `boat_wake` | Bring a chat or task stuck on a paused or resuming machine back (`bb boat sandbox wake`) |
 | `boat_ship` | Projects that ship after approval: push the work to the base branch, only on your OK in the orchestrator's chat |
 
 `boat_ship` only works from the task's own orchestrator chat, after the
