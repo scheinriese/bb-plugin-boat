@@ -9,13 +9,36 @@
 // "invite" (403 invite_required, exit 3), "no_capacity" (create only: exit 75).
 // state.autoReply: a turn ends at once with this reply (null: it runs until
 // the test ends it in the state file).
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 
 const statePath = process.env.FAKE_INSTABOX_STATE;
 if (!statePath) {
   process.stderr.write("FAKE_INSTABOX_STATE is not set\n");
   process.exit(1);
 }
+// One command at a time on the state (the service runs some at once): a lock file for the whole run.
+const lockPath = `${statePath}.lock`;
+for (let tries = 0; ; tries += 1) {
+  try {
+    closeSync(openSync(lockPath, "wx"));
+    break;
+  } catch {
+    try {
+      if (Date.now() - statSync(lockPath).mtimeMs > 10_000) unlinkSync(lockPath);
+    } catch {
+      // Gone meanwhile.
+    }
+    if (tries > 2_000) break;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  }
+}
+process.on("exit", () => {
+  try {
+    unlinkSync(lockPath);
+  } catch {
+    // Already gone.
+  }
+});
 const initial = () => ({ machines: {}, next: 1, ports: {}, snapshots: [], convos: {}, calls: [], jobs: 0, maxMachines: 5, tier: "pro", fail: null, autoReply: null, execs: [] });
 const state = existsSync(statePath) ? { ...initial(), ...JSON.parse(readFileSync(statePath, "utf8")) } : initial();
 // Whole-file writes (the service runs two commands at once): never a half-written file.
@@ -87,6 +110,9 @@ switch (command) {
     print(machine(positionals(1)[0]));
     break;
   case "create": {
+    // Instabox's rule (OpenAPI CreateMachineRequest.name), as its API refuses other names.
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(flag("--name") ?? "")) fail(1, { code: "bad_request", message: `invalid name "${flag("--name")}": 1-63 lowercase letters, digits or -, starting with a letter or digit`, status: 400 });
+    if (Object.values(state.machines).some((entry) => entry.state !== "deleted" && entry.name === flag("--name"))) fail(1, { code: "bad_request", message: `a sandbox named ${flag("--name")} exists`, status: 409 });
     if (state.fail === "no_capacity") fail(75, { code: "no_capacity", message: "no host has room for this size right now", status: 503, retryable: true, retryAfterSeconds: 60 });
     const count = Object.values(state.machines).filter((entry) => entry.state !== "deleted").length;
     if (count >= state.maxMachines && state.maxMachines > 0) fail(5, { code: "quota_exceeded", message: `your plan allows ${state.maxMachines} machines`, status: 402 });

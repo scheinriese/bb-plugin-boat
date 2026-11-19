@@ -927,11 +927,18 @@ export class BoatService {
   // -------------------------------------------------------------------------
   // Capacity
 
+  /**
+   * Room for one more sandbox on a provider: `free` for a new one. `resume`:
+   * room to start one the provider already keeps, where that differs (a
+   * provider whose plan limit counts stopped machines too: only Sandboxes at
+   * once applies, to the ones running).
+   */
   async capacity(signal?: AbortSignal, forSandbox?: string, given?: SandboxProvider): Promise<{
     limits: Limits | null;
     active: Sandbox[];
     cap: number | null;
     free: number | null;
+    resume?: { cap: number | null; free: number | null };
   }> {
     const settings = await this.settings();
     const sandboxProvider = given ?? (forSandbox === undefined ? this.sandboxProviders.default : this.sandboxProvider(forSandbox));
@@ -944,6 +951,15 @@ export class BoatService {
     const userCap = settings.maxActiveSandboxes > 0 ? settings.maxActiveSandboxes : null;
     const cap =
       planCap === null ? userCap : userCap === null ? planCap : Math.min(planCap, userCap);
+    if (sandboxProvider.caps.concurrencyUnit === "kept-sandboxes") {
+      // The plan counts every machine the provider keeps (a create adds one, a resume none);
+      // Sandboxes at once counts the ones running, as it says.
+      const running = active.length + this.sizes.reservedSlots(active, forSandbox);
+      const planFree = planCap === null ? null : Math.max(0, planCap - Math.max(limits?.activeSandboxes ?? 0, active.length));
+      const userFree = userCap === null ? null : Math.max(0, userCap - running);
+      const free = planFree === null ? userFree : userFree === null ? planFree : Math.min(planFree, userFree);
+      return { limits, active, cap, free, resume: { cap: userCap, free: userFree } };
+    }
     // boat's own count also covers sandboxes the list can miss while they provision.
     // A sandbox stopped for a move to another size keeps its slot (sizes).
     const used = Math.max(active.length, limits?.activeSandboxes ?? 0) + this.sizes.reservedSlots(active, forSandbox);
@@ -961,7 +977,11 @@ export class BoatService {
    */
   private async ensureSlot(signal?: AbortSignal, forSandbox?: string, options: { paidStart?: boolean; sandboxProvider?: SandboxProvider } = {}): Promise<{ limits: Limits | null; stopped: string | null }> {
     const settings = await this.settings();
-    const { limits, active, cap, free } = await this.capacity(signal, forSandbox, options.sandboxProvider);
+    const room = await this.capacity(signal, forSandbox, options.sandboxProvider);
+    const { limits, active } = room;
+    // A resume (forSandbox) of a machine the provider already counts adds none to its plan's limit.
+    const resumingKept = forSandbox !== undefined && room.resume !== undefined;
+    const { cap, free } = resumingKept ? room.resume! : room;
     if (limits?.checkoutRequired) {
       throw new TaskError(
         "Your boat.dev account has no plan yet, so it can't start sandboxes.",
@@ -970,7 +990,7 @@ export class BoatService {
       );
     }
     const onBoat = (options.sandboxProvider ?? (forSandbox === undefined ? this.sandboxProviders.default : this.sandboxProvider(forSandbox))).id === DEFAULT_PROVIDER_ID;
-    if (limits !== null && !limits.canStart) {
+    if (limits !== null && !limits.canStart && !resumingKept) {
       if (!onBoat) {
         const name = (options.sandboxProvider ?? this.sandboxProvider(forSandbox ?? "")).displayName;
         throw new TaskError(`${name} will not start a machine right now${limits.blockedReason ? `: ${limits.blockedReason}` : ""}.`, "provider_start_blocked");
@@ -1040,7 +1060,7 @@ export class BoatService {
     }
     const names = active.map((sandbox) => `${sandbox.id}${sandbox.name ? ` (${sandbox.name})` : ""}`).join(", ");
     throw new TaskError(
-      `All ${cap} sandboxes your limit allows are in use: ${names}.`,
+      resumingKept ? `All ${cap} sandboxes Sandboxes at once allows are running: ${names}.` : `All ${cap} sandboxes your limit allows are in use: ${names}.`,
       "boat_at_capacity",
       onBoat
         ? "Close finished tasks (`bb boat task close <id>`), stop a sandbox (`bb boat sandbox stop <id>`), reuse one with --sandbox <id>, or raise the limit by upgrading (`boat billing plan`)."

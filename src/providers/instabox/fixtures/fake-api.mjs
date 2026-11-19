@@ -4,7 +4,7 @@
 // checks the X-API-Key header and never stores the key or the stdin it gets:
 // only whether they were there, and the request's other fields.
 import { createServer } from "node:http";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 
 /**
  * Start the server. `key`: the key requests must carry. Returns its base URL,
@@ -13,11 +13,41 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 export async function startFakeInstaboxApi({ statePath, key }) {
   const received = [];
   const read = () => (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : { machines: {} });
-  const write = (state) => {
-    const temporary = `${statePath}.api.tmp`;
-    writeFileSync(temporary, JSON.stringify(state, null, 2));
-    renameSync(temporary, statePath);
+  // The fake CLI's lock: a read and its write happen together, never across a CLI command.
+  const locked = (fn) => {
+    const lockPath = `${statePath}.lock`;
+    for (let tries = 0; ; tries += 1) {
+      try {
+        closeSync(openSync(lockPath, "wx"));
+        break;
+      } catch {
+        try {
+          if (Date.now() - statSync(lockPath).mtimeMs > 10_000) unlinkSync(lockPath);
+        } catch {
+          // Gone meanwhile.
+        }
+        if (tries > 2_000) break;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+    }
+    try {
+      return fn();
+    } finally {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Already gone.
+      }
+    }
   };
+  const write = (change) =>
+    locked(() => {
+      const state = read();
+      change(state);
+      const temporary = `${statePath}.api.tmp`;
+      writeFileSync(temporary, JSON.stringify(state, null, 2));
+      renameSync(temporary, statePath);
+    });
   const server = createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -60,14 +90,17 @@ export async function startFakeInstaboxApi({ statePath, key }) {
         state.leases ??= {};
         const id = `${decodeURIComponent(lease[1])}:${decodeURIComponent(lease[2])}`;
         if (request.method === "PUT") {
-          state.leases[id] = { ttlSeconds: parsed?.ttlSeconds ?? 300 };
-          write(state);
+          write((fresh) => {
+            fresh.leases ??= {};
+            fresh.leases[id] = { ttlSeconds: parsed?.ttlSeconds ?? 300 };
+          });
           return json(200, { id: lease[2], machineId: lease[1], expiresAt: new Date(Date.now() + (parsed?.ttlSeconds ?? 300) * 1000).toISOString() });
         }
         if (request.method === "DELETE") {
           if (!(id in state.leases)) return json(404, { error: { code: "not_found", message: "no such lease" } });
-          delete state.leases[id];
-          write(state);
+          write((fresh) => {
+            delete fresh.leases?.[id];
+          });
           response.writeHead(204).end();
           return;
         }

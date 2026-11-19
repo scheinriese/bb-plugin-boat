@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { InstaboxCli, InstaboxError, redactKeys } from "../src/providers/instabox/cli.ts";
 import { InstaboxRest } from "../src/providers/instabox/api.ts";
-import { INSTABOX_GIT_ENV, INSTABOX_MACHINE_PROVIDER_ID, createInstaboxProvider, restExecutor } from "../src/providers/instabox/provider.ts";
+import { INSTABOX_GIT_ENV, INSTABOX_MACHINE, INSTABOX_MACHINE_PROVIDER_ID, MACHINE_NAME, createInstaboxProvider, machineName, restExecutor } from "../src/providers/instabox/provider.ts";
 import { createInstaboxSetup, instaboxPreflight } from "../src/providers/instabox/setup.ts";
 import { createInstaboxKeeper, LEASE_ID } from "../src/providers/instabox/keeper.ts";
 import { toChatEvents } from "../src/providers/instabox/parse.ts";
@@ -22,7 +22,7 @@ import { registerSandboxMachine } from "../src/providers/machine.ts";
 import { ProviderError, type SandboxProvider } from "../src/providers/types.ts";
 import type { BoatApi } from "../src/providers/boat/api.ts";
 import { prepareRepo } from "../src/sandbox-repos.ts";
-import { BoatService, TaskError } from "../src/service.ts";
+import { BoatService, TaskError, type BoatSettings } from "../src/service.ts";
 import { normalizeProject, toOrchestratorProject } from "../src/projects.ts";
 import { FakeBoat, defaultSettings, memoryStore } from "./fakes.ts";
 import type { RunsOnDto, SandboxProvidersResultDto } from "../contract-providers.ts";
@@ -91,7 +91,8 @@ test("an Instabox machine's life: create, exec, preview, stop, resume, delete", 
   const created = state().machines[sandbox.id];
   assert.deepEqual(created.envNames, Object.keys(INSTABOX_GIT_ENV).sort(), "the push guard's git env is fixed at create");
   assert.equal(created.metadata["created-by"], "bb-boat");
-  assert.ok(state().calls.some((call: string) => call.startsWith("create --name bb-t_1-fix-the-login --json --fail-fast --ready-timeout 10m --meta created-by=bb-boat --vcpus 8 --mem-mib 16384")));
+  assert.ok(state().calls.some((call: string) => call.startsWith("create --name bb-t-1-fix-the-login --json --fail-fast --ready-timeout 10m --meta created-by=bb-boat --vcpus 8 --mem-mib 16384")));
+  assert.equal(sandbox.name, "bb-t-1-fix-the-login", "a valid Instabox name: lowercase letters, digits and hyphens");
 
   // exec: one command, its exit code and output; a checkout over it with the plugin's own script.
   const result = await provider.exec(sandbox.id, "echo hi", { timeoutMs: 30_000 });
@@ -496,4 +497,94 @@ test("the plugin with Instabox on and a key in bb's secret settings: providers, 
   ]);
   assert.ok(!everything.includes(KEY), "the key shows nowhere");
   assert.ok(!everything.includes("instaboxApiKey\":\"ibk"), "not even as a setting value");
+});
+
+test("machine names follow Instabox's rule: lowercase letters, digits and hyphens, at most 63, from a letter or digit", () => {
+  assert.equal(machineName("bb t_1a2b3c4d Fix the LOGIN!"), "bb-t-1a2b3c4d-fix-the-login");
+  assert.equal(machineName("__weird..name__"), "weird-name");
+  assert.equal(machineName(""), "bb-machine");
+  const long = machineName(`bb t_1a2b3c4d ${"very-long-title-".repeat(8)}`);
+  assert.ok(long.length <= 63 && MACHINE_NAME.test(long) && !long.endsWith("-"), long);
+  // bb machine names are found again by name after a lost create: already valid.
+  for (const key of ["task-t_1a2b3c4d", "task-t_1a2b3c4d-m1xyz", "Orchestrator_Key.1"]) assert.match(INSTABOX_MACHINE.machineName(key), MACHINE_NAME);
+});
+
+/** A service with boat.dev (FakeBoat) and Instabox (the fakes), and settings a test can change. */
+async function bothProviders(t: { after(fn: () => unknown): void }, options: { state?: Record<string, unknown>; settings?: Partial<BoatSettings> } = {}) {
+  const box = await instabox(t, { state: options.state });
+  const fakeBoat = new FakeBoat();
+  const store = memoryStore();
+  let settings = defaultSettings({ maxActiveSandboxes: 0, ...options.settings });
+  const registry = createProviderRegistry([createBoatProvider(fakeBoat as unknown as BoatApi), box.provider]);
+  const service = new BoatService(registry, store, { ...hooks({ projects: () => [WEB] }).hooks, settings: async () => settings });
+  const project = toOrchestratorProject(normalizeProject({ id: "web", name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }] }));
+  return { box, fakeBoat, store, service, project, setSettings: (next: Partial<BoatSettings>) => void (settings = { ...settings, ...next }) };
+}
+
+test("a stopped Instabox machine resumes at the plan's machine limit (it's counted already); a new one doesn't", async (t) => {
+  const env = await bothProviders(t, { state: { autoReply: REPORT, maxMachines: 1 } });
+  const { task } = await env.service.launchTask({ title: "Fix it", role: "implement", brief: "x", project: env.project }, 10_000);
+  assert.equal(task.status, "running", task.error ?? "");
+  await env.service.sweep();
+  await env.box.provider.stop(task.sandboxId!);
+  // One machine on a one-machine plan, stopped: Instabox says no new machine can start…
+  assert.equal((await env.box.provider.capacity()).canStart, false);
+  // …but bringing that one back adds none: it resumes.
+  const resumed = await env.service.bringUp(task.sandboxId!);
+  assert.equal(resumed.state, "idle");
+  assert.ok((env.box.state().calls as string[]).includes(`start ${task.sandboxId} --json`));
+  // A follow-up on the task resumes it the same way.
+  await env.box.provider.stop(task.sandboxId!);
+  await env.service.followup(task.id, "One more thing.");
+  assert.equal((await env.box.provider.info(task.sandboxId!)).state, "idle");
+  // A new machine is still refused at the plan's limit.
+  await assert.rejects(env.service.launchTask({ title: "Other", role: "implement", brief: "y", project: env.project }, 10_000), (error: unknown) => error instanceof TaskError && error.code === "provider_start_blocked");
+});
+
+test("Sandboxes at once counts the Instabox machines running, not the ones it keeps stopped", async (t) => {
+  const env = await bothProviders(t, { state: { autoReply: REPORT }, settings: { maxActiveSandboxes: 1 } });
+  const first = (await env.service.launchTask({ title: "One", role: "implement", brief: "x", project: env.project }, 10_000)).task;
+  await env.service.sweep();
+  await env.box.provider.stop(first.sandboxId!);
+  // One stopped, none running: a second task gets a machine (two kept, one running).
+  const second = (await env.service.launchTask({ title: "Two", role: "implement", brief: "y", project: env.project }, 10_000)).task;
+  assert.equal(second.status, "running", second.error ?? "");
+  await env.service.sweep();
+  // One running (the cap): the stopped one can't resume beside it, refused in plain words…
+  await assert.rejects(env.service.bringUp(first.sandboxId!), (error: unknown) => {
+    assert.ok(error instanceof TaskError);
+    assert.equal(error.code, "boat_at_capacity");
+    assert.match(error.message, /^All 1 sandboxes Sandboxes at once allows are running/);
+    return true;
+  });
+  assert.ok(!(env.box.state().calls as string[]).some((call) => call.startsWith("stop ") && call.includes(second.sandboxId!)), "nothing stopped to make room on Instabox");
+  // …and it resumes once the other is stopped, though two machines are kept.
+  await env.box.provider.stop(second.sandboxId!);
+  assert.equal((await env.service.bringUp(first.sandboxId!)).state, "idle");
+  // A new machine counts against the cap too.
+  await assert.rejects(env.service.launchTask({ title: "Three", role: "implement", brief: "z", project: env.project }, 10_000), (error: unknown) => error instanceof TaskError && error.code === "boat_at_capacity");
+});
+
+test("an automatic review of an Instabox task reads Instabox's room: at its limit it shares the parent's running machine, whatever boat.dev says", async (t) => {
+  const env = await bothProviders(t, { state: { autoReply: REPORT, maxMachines: 1 }, settings: { reviewSandbox: "auto" } });
+  const { task } = await env.service.launchTask({ title: "Fix it", role: "implement", brief: "x", project: env.project }, 10_000);
+  await env.service.sweep();
+  assert.equal(env.store.get(task.id)!.status, "idle");
+  // boat.dev has room, and can't even be listed: neither matters for a review that stays on Instabox.
+  env.fakeBoat.list = async () => {
+    throw new Error("boat is down");
+  };
+  const { task: review } = await env.service.launchTask(await env.service.reviewInput(task.id), 10_000);
+  assert.equal(review.status, "running", review.error ?? "");
+  assert.equal(review.sandboxProvider, "instabox");
+  assert.equal(review.sandboxId, task.sandboxId, "Instabox is full: the review shares the parent's running machine");
+  assert.deepEqual(env.fakeBoat.created, []);
+  // With room on Instabox, the review gets its own machine there.
+  const env2 = await bothProviders(t, { state: { autoReply: REPORT, maxMachines: 5 }, settings: { reviewSandbox: "auto" } });
+  const parent = (await env2.service.launchTask({ title: "Fix it", role: "implement", brief: "x", project: env2.project }, 10_000)).task;
+  await env2.service.sweep();
+  const own = (await env2.service.launchTask(await env2.service.reviewInput(parent.id), 10_000)).task;
+  assert.equal(own.sandboxProvider, "instabox");
+  assert.notEqual(own.sandboxId, parent.sandboxId);
+  assert.match(own.sandboxId ?? "", /^m_/);
 });

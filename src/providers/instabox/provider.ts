@@ -118,7 +118,8 @@ export const INSTABOX_MACHINE: MachineSpec = {
       environmentProviderId: "personal-workspace",
     },
   ],
-  machineName: (key) => `bb-machine-${key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24)}`,
+  // Found again by this name after a lost create (src/providers/machine.ts), so it's already a valid Instabox name.
+  machineName: (key) => machineName(`bb-machine-${key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24)}`),
   machineLabel: (sandboxId, hostId) => `Instabox ${sandboxId} (${hostId.slice(-6)})`,
   words: {
     invalidInputs: "Instabox machine options are invalid. Choose a supported size, snapshot and reviewer.",
@@ -143,6 +144,24 @@ export const INSTABOX_REPO_WORDS: RepoWords = {
   expired: () => "The Instabox machine's GitHub token has expired. Replace the GitHub Secret (`instabox secrets set GH_TOKEN …`), or start the work in a new machine.",
   error: (message, options) => new InstaboxError(message, options),
 };
+
+/** Instabox's rule for a machine name (OpenAPI CreateMachineRequest.name): 1-63 lowercase letters, digits or `-`, starting with a letter or digit. */
+export const MACHINE_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+/**
+ * A name Instabox takes: lowercase, anything else (`_`, `.`, spaces) a
+ * single `-`, no `-` at either end, at most 63 characters. "bb t_1a2b fix
+ * the login" → "bb-t-1a2b-fix-the-login".
+ */
+export function machineName(text: string): string {
+  const name = text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+/, "")
+    .slice(0, 63)
+    .replace(/-+$/, "");
+  return name === "" ? "bb-machine" : name;
+}
 
 /** The size flags for a size (none for Default: Instabox's default size is 4 vCPU, 8 GiB). */
 export function sizeArgs(type: string | null | undefined): string[] {
@@ -279,7 +298,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     },
     async create(create) {
       // --fail-fast: no room means no machine (exit 75, no_capacity), never one left behind.
-      const args = ["create", "--name", create.name.replace(/[^A-Za-z0-9_.-]+/g, "-").slice(0, 63), "--json", "--fail-fast", "--ready-timeout", "10m", "--meta", CREATED_BY, ...sizeArgs(create.type)];
+      const args = ["create", "--name", machineName(create.name), "--json", "--fail-fast", "--ready-timeout", "10m", "--meta", CREATED_BY, ...sizeArgs(create.type)];
       if (create.snapshot) args.push("--snapshot", create.snapshot);
       if (create.gitGuard) for (const [key, value] of Object.entries(INSTABOX_GIT_ENV)) args.push("--env", `${key}=${value}`);
       const record = await cli.json(args, { signal: create.signal, timeoutMs: 11 * 60_000 });
