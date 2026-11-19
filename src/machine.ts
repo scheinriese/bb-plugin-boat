@@ -22,6 +22,7 @@ import { bootstrapExecutor, bootstrapFailureMessage, retryableBootstrap } from "
 import { directWakes, type WakeGuard } from "./wake-retry.ts";
 import { createLoginQuieter, type QuietLogin } from "./login-scripts.ts";
 import { TeardownBackoff } from "./teardown-backoff.ts";
+import type { HostPrep } from "./bb-update.ts";
 import { stopOutcome } from "./node-move.ts";
 
 export const MACHINE_PROVIDER_ID = "boat-sandbox";
@@ -131,6 +132,11 @@ export function registerBoatMachine(
     wakes?: Pick<WakeGuard, "machine"> & Partial<Pick<WakeGuard, "stopRefused">>;
     /** Turn off the login message scripts before bb's SSH setup (src/login-scripts.ts). */
     quietLogins?: (sandboxId: string, signal?: AbortSignal) => Promise<QuietLogin>;
+    /**
+     * Before bb's setup on a resume: read bb's files, update bb there safely
+     * (src/bb-update.ts); forget: the sandbox is deleted. Absent: bb's setup goes straight ahead.
+     */
+    prepareHost?: ((prep: HostPrep) => Promise<unknown>) & { forget?(sandboxId: string): Promise<void> };
     /** Tests: the teardown backoff's clock. */
     now?: () => number;
     /** How long a suspend follows a pending stop, and how often it asks (default 5 s, up to 90 s). */
@@ -245,7 +251,10 @@ export function registerBoatMachine(
       try {
         if (await keptSandbox(key)) return { status: "removed" as const };
         const sandbox = await findByKey(key);
-        if (sandbox !== null) await boat.delete(sandbox.id);
+        if (sandbox !== null) {
+          await boat.delete(sandbox.id);
+          await deps.prepareHost?.forget?.(sandbox.id).catch(() => undefined);
+        }
         teardown.succeeded(`key:${key}`, "delete");
         return { status: "removed" as const };
       } catch (error) {
@@ -294,12 +303,18 @@ export function registerBoatMachine(
       await wakes.machine({ sandboxId, hostId: hostId ?? null, signal, report }, async (permit) => {
         const sandbox = await boat.findInfo(sandboxId, signal);
         if (sandbox === null) throw new Error(`boat sandbox ${sandboxId} no longer exists`);
+        let woke = false;
         if (!ACTIVE_STATES.has(sandbox.state)) {
           const slot = await permit();
           report.step("Resuming the boat sandbox");
           await service.bringUp(sandboxId, signal, { permit: slot });
+          woke = true;
         }
         await quietLogins(sandboxId, signal);
+        // bb's own update can hang on a disk boat.dev is still restoring: Boat updates it first, safely.
+        // No check for a running turn: bb calls resume() only for a suspended machine, so no turn runs
+        // there, and stopping bb's unit for the install interrupts nothing.
+        await deps.prepareHost?.({ sandboxId, hostId: hostId ?? null, woke, signal, report });
         report.step("Restarting bb on the sandbox");
         await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(sshExecutor(cli, sandboxId), report), report, signal });
       });
@@ -315,6 +330,7 @@ export function registerBoatMachine(
         if (held !== null) return { status: "failed" as const, message: held };
         await boat.delete(sandboxId);
         teardown.succeeded(sandboxId, "delete");
+        await deps.prepareHost?.forget?.(sandboxId).catch(() => undefined);
         await bb.storage.kv.delete(adoptedKey(parsed.key)).catch(() => undefined);
         return { status: "removed" as const };
       } catch (error) {

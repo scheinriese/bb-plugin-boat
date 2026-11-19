@@ -46,8 +46,11 @@ import { BoatService, DeliveryDeferred, type BoatSettings, type Notification } f
 import { TaskStore, type Provider } from "./src/store.ts";
 import { TOOL_NAMES, registerTools } from "./src/tools.ts";
 import { WakePacer, kvWakeStorage } from "./src/wake-pacer.ts";
-import { createWakeGuard } from "./src/wake-retry.ts";
+import { WAKE_EVENT, createWakeGuard } from "./src/wake-retry.ts";
 import { threadsOnMachine } from "./src/activity.ts";
+import { createBbUpdater } from "./src/bb-update.ts";
+import { prefetchBbFiles } from "./src/bb-prefetch.ts";
+import { RETRY_CONSENT_METHOD, createResetPacing, retryConsentContract, type LimitFailure } from "./src/reset-pacing.ts";
 
 const REALTIME_CHANNEL = "boat-changed";
 /** bb thread states with a turn under way. */
@@ -444,7 +447,48 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.cli.register(buildCli(runtime));
-  registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect, wakes });
+  // Before bb's setup on a resumed sandbox: read bb's files first, and update bb there in a fresh prefix.
+  const prepareHost = createBbUpdater({
+    boat,
+    kv: bb.storage.kv,
+    // The server's own bb-app version: what its machines run (bb's setup installs the server's build).
+    serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
+    prefetch: (sandboxId, request, signal) => prefetchBbFiles(boat, sandboxId, request, { signal, log: (line) => bb.log.info(line) }),
+    tell: (sandboxId, text) => {
+      const tasks = store.liveSandboxTasks(sandboxId);
+      for (const task of tasks) store.addEvent(task.id, WAKE_EVENT, text);
+      if (tasks.length > 0) changed();
+    },
+    log: (line) => bb.log.warn(line),
+    info: (line) => bb.log.info(line),
+  });
+  registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect, wakes, prepareHost });
+
+  // A usage limit's reset: Boat's chats go on without waking every sandbox at once.
+  const resets = createResetPacing({
+    isBoatChat: (threadId) => store.byThread(threadId) !== null || store.orchestratorThreadIds().current.has(threadId),
+    decision: (threadId) =>
+      bb.sdk.plugins.callRpc({ pluginId: "provider-retry", method: "decision.get", input: { threadId }, outputSchema: z.unknown(), signal: AbortSignal.timeout(5_000) } as never),
+    retry: (args) => bb.sdk.threads.retry(args),
+    queuedRetry: async (threadId) => {
+      const rows = (await bb.sdk.threads.queuedMessages.list({ threadId } as never)) as unknown;
+      return Array.isArray(rows) ? rows.some((row) => (row as { payload?: { kind?: unknown } } | null)?.payload?.kind === "retry") : null;
+    },
+    kv: bb.storage.kv,
+    // The shared wake pacing: the pacer's next slot, and the hold the paid resume and watchdog share.
+    nextWakeAt: async () => Math.max(await wakePacer.nextWakeAt(), await wakeBudget.heldUntil().catch(() => 0)),
+    log: (line) => bb.log.info(line),
+  });
+  void resets.load();
+  // bb 0.49 asks the sender before retrying a failed turn (0.50 doesn't ask: the dispatch hook paces it there).
+  bb.rpc.register(
+    retryConsentContract,
+    { [RETRY_CONSENT_METHOD]: (input) => resets.consent(input) },
+    { experimental_discoverable: true, experimental_description: "Boat declines a usage-limit retry of a chat it runs and resumes it itself after the reset, paced. Everything else is allowed." },
+  );
+  bb.events.on("turn.failed", (payload: unknown) => {
+    void resets.failed(payload as LimitFailure).catch((error: unknown) => bb.log.warn(`reset resume: ${error instanceof Error ? error.message : String(error)}`));
+  });
   registerTools(runtime);
   registerRpc(runtime);
   registerMergeRpc(runtime);
@@ -731,6 +775,9 @@ export default async function plugin(bb: BbPluginApi) {
       service.store.dropQueuedGuard(guard.queuedMessageId);
       clearDeadline(guard.queuedMessageId);
     }
+    // A retry at a usage limit's reset that would wake a Boat sandbox: one every 30 s.
+    const paced = await resets.dispatch(context).catch(() => null);
+    if (paced !== null) return paced;
     const start = await nativeStart(context, runtime, quotas);
     if (start?.action === "wait" || start?.action === "reject") return start;
     return watchdog.dispatch({

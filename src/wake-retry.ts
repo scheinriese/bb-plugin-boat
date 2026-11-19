@@ -192,6 +192,12 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** The diagnosis a failure carries itself (`wakeDiagnosis`), if any. */
+function diagnosedBy(error: unknown): WakeDiagnosis | null {
+  const given = error !== null && typeof error === "object" ? (error as { wakeDiagnosis?: unknown }).wakeDiagnosis : undefined;
+  return given !== null && typeof given === "object" && typeof (given as WakeDiagnosis).kind === "string" ? (given as WakeDiagnosis) : null;
+}
+
 /** The progress line while a wake waits for its slot. */
 export function waitStep(until: number, reason: WakeWait, now = Date.now()): string {
   return reason === "backoff"
@@ -488,7 +494,8 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
           await update(wake.sandboxId, next);
           throw new Error(heldMessage({ ...next, kind: "paced" }, at));
         }
-        const diagnosis = await diagnoseWakeFailure(error, diskCheck(wake.sandboxId, wake.signal));
+        // A failure can come already diagnosed (bb's own update hung there: src/bb-update.ts).
+        const diagnosis = diagnosedBy(error) ?? (await diagnoseWakeFailure(error, diskCheck(wake.sandboxId, wake.signal)));
         const hostId = wake.hostId ?? entry?.hostId ?? null;
         if (diagnosis.kind === "daemon-broken") {
           // A repair by hand: Needs you once, no retries, nothing held.
