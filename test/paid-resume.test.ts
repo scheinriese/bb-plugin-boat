@@ -825,7 +825,8 @@ test("machines: one starting, stopping, failed or offline is left alone; waking 
   const second = await env.resume.pass(usage(), settings());
   assert.deepEqual(second.resumed.map((work) => work.threadId), ["thr_sleep3"]);
 
-  // A task chat whose sandbox is in error: left alone, and no machine is woken for a while.
+  // A task chat whose sandbox is in error, and a machine bb couldn't resume some time ago: each is left alone,
+  // and neither holds the other machines' wakes.
   skippedStop(env, "thr_sbx_error");
   env.machines.sandboxes.set("sbx_err", "error");
   skippedStop(env, "thr_sleep4");
@@ -833,13 +834,61 @@ test("machines: one starting, stopping, failed or offline is left alone; waking 
   skippedStop(env, "thr_failed_resume");
   phase("thr_failed_resume", { phase: "suspended", connected: false, message: "Machine resume failed: EIO" });
   env.advance(120_000);
-  const third = await env.resume.pass(usage(), settings());
+  const third = await env.resume.pass(fresh(env), settings());
   const later = new Map(third.skipped.map((entry) => [entry.id, entry.reason]));
   assert.equal(later.get("thr_sbx_error"), "its sandbox is error");
   assert.equal(later.get("thr_failed_resume"), "its machine failed: Machine resume failed: EIO");
-  assert.equal(later.get("thr_sleep4"), "machines aren't woken for now (one failed to start)");
-  assert.equal(env.store.wakeHold(), NOW + 150_000 + WAKE_HOLD_MS);
-  assert.deepEqual(third.resumed, []);
+  assert.deepEqual(third.resumed.map((work) => work.threadId), ["thr_sleep4"]);
+  assert.equal(env.store.wakeHold(), 0);
+});
+
+test("a machine that failed to start long ago never holds the others: clean sleepers still wake, two a minute", async () => {
+  const env = setup();
+  const suspended = (id: string, message: string | null = null) => {
+    skippedStop(env, id);
+    env.machines.hosts.set(`host_${id}`, { phase: "suspended", connected: false, message });
+  };
+  // bb keeps this message for as long as the machine stays suspended (days, if nobody resumes it).
+  suspended("thr_stale", "Machine resume failed: Failed to restore snapshot: Please reduce your request rate");
+  for (let index = 1; index <= 6; index++) suspended(`thr_clean${index}`);
+  const woken: string[] = [];
+  for (let minute = 0; minute < 6 && woken.length < 6; minute++) {
+    const report = await env.resume.pass(fresh(env), settings());
+    woken.push(...report.resumed.map((work) => work.threadId!));
+    assert.ok(report.resumed.length <= 2, "two wakes a minute at most");
+    assert.equal(new Map(report.skipped.map((entry) => [entry.id, entry.reason])).get("thr_stale"), "its machine failed: Machine resume failed: Failed to restore snapshot: Please reduce your request rate");
+    env.advance(60_000);
+  }
+  assert.deepEqual(woken.sort(), ["thr_clean1", "thr_clean2", "thr_clean3", "thr_clean4", "thr_clean5", "thr_clean6"]);
+  assert.equal(env.store.wakeHold(), 0);
+  assert.equal(env.threads.calls.includes("thr_stale"), false);
+});
+
+test("a machine the paid resume woke that then fails to start holds all wakes once, for 15 minutes", async () => {
+  const env = setup();
+  const host = (id: string, state: Partial<MachineState>) => env.machines.hosts.set(`host_${id}`, { phase: "suspended", connected: false, message: null, ...state });
+  skippedStop(env, "thr_woken");
+  host("thr_woken", {});
+  await env.resume.pass(fresh(env), settings());
+  assert.deepEqual(env.threads.calls, ["thr_woken"]);
+  // bb's resume of it failed (boat.dev throttling): the turn stops again, and the machine says why.
+  env.threads.threads.get("thr_woken")!.status = "error";
+  env.threads.events.set("thr_woken", stoppedEvents("req_new", { at: env.now() }));
+  env.threads.decisions.set("thr_woken", { requestId: "req_new", kind: "decline", reason: "beyond-maximum-wait" });
+  env.store.recordStop("thr_woken", "req_new", new Date(env.now()));
+  host("thr_woken", { message: "Machine resume failed: Please reduce your request rate" });
+  // Stopped after it, so it comes up after it in the pass.
+  skippedStop(env, "thr_next", {}, env.now() + 1);
+  host("thr_next", {});
+  env.advance(60_000);
+  const held = await env.resume.pass(fresh(env), settings());
+  assert.equal(env.store.wakeHold(), NOW + 60_000 + WAKE_HOLD_MS);
+  assert.deepEqual(held.skipped.find((entry) => entry.id === "thr_next"), { id: "thr_next", reason: "machines aren't woken for now (a wake failed)" });
+  // Once the hold is over, the same old message doesn't hold them again.
+  env.advance(WAKE_HOLD_MS);
+  const after = await env.resume.pass(fresh(env), settings());
+  assert.deepEqual(after.resumed.map((work) => work.threadId), ["thr_next"]);
+  assert.equal(env.store.wakeHold(), NOW + 60_000 + WAKE_HOLD_MS);
 });
 
 test("the wake budget: two a minute, one at a time, kept across a restart", async () => {

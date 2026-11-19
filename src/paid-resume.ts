@@ -24,9 +24,11 @@
 // storage). Every attempt counts toward RESUME_CAP and waits RESUME_STAGGER_MS
 // after the last one; a failure ends the pass and backs off (5 min, doubling to
 // an hour, kept across restarts). A machine that is starting, stopping or
-// failed is left alone; waking a suspended one takes a token from the wake
-// budget the watchdog shares (src/wake-budget.ts: 2 a minute). A failed wake
-// holds further wakes for WAKE_HOLD_MS. One headless follow-up a pass.
+// failed is left alone (only that one: an old failure on one machine never
+// holds the others); waking a suspended one takes a token from the wake
+// budget the watchdog shares (src/wake-budget.ts: 2 a minute). A wake this
+// plugin made that failed holds further wakes for WAKE_HOLD_MS. One headless
+// follow-up a pass.
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -53,7 +55,7 @@ export const MAX_ATTEMPTS = 3;
 export const BACKOFF_FIRST_MS = 5 * 60_000;
 /** …up to this. */
 export const BACKOFF_MAX_MS = 60 * 60_000;
-/** After a machine failed to start (or a wake failed), no machine is woken for this long. */
+/** After a wake the paid resume made failed, no machine is woken for this long. */
 export const WAKE_HOLD_MS = 15 * 60_000;
 /** provider-retry records its decision right after a failure: wait this long for it before a core retry. */
 export const DECISION_WAIT_MS = 60_000;
@@ -308,6 +310,23 @@ export class PaidResumeStore {
   setWakeHold(until: number): void {
     this.write("wakeHold", { until });
   }
+
+  /** Machines the paid resume woke (host:<id>, sandbox:<id>), and when: older than `since` are forgotten. */
+  noteWoke(ids: readonly string[], at: number, since: number): void {
+    const woke = Object.fromEntries(Object.entries(this.read<Record<string, number>>("woke") ?? {}).filter(([, when]) => Number.isFinite(when) && when >= since));
+    for (const id of ids) woke[id] = at;
+    this.write("woke", Object.keys(woke).length > 0 ? woke : null);
+  }
+
+  /** Did the paid resume wake this machine since `since`? Answered once: the record goes. */
+  takeWoke(id: string, since: number): boolean {
+    const woke = this.read<Record<string, number>>("woke") ?? {};
+    const when = woke[id];
+    if (when === undefined) return false;
+    delete woke[id];
+    this.write("woke", Object.keys(woke).length > 0 ? woke : null);
+    return Number.isFinite(when) && when >= since;
+  }
 }
 
 /** The wait after `failures` failed passes in a row. */
@@ -320,32 +339,53 @@ export function backoffMs(failures: number): number {
 /**
  * Where a resume would run: up (it runs at once), asleep (the resume wakes a
  * suspended machine or a stopped sandbox), or not now (starting, stopping,
- * failed, offline or unknown). `failed`: it failed to start; wakes hold.
+ * failed, offline or unknown). A skip concerns that one machine only.
  */
-export type MachineCheck = { state: "up" } | { state: "asleep" } | { state: "skip"; why: string; failed?: boolean };
+export type MachineCheck =
+  | { state: "up" }
+  /** `ids`: the machines a resume wakes (host:<id>, sandbox:<id>). */
+  | { state: "asleep"; ids?: string[] }
+  /** `failure`: it shows a failed start (perhaps old); `id`: which machine. */
+  | { state: "skip"; why: string; failure?: boolean; id?: string };
 
 /** bb's machine record (hosts.get). */
-export function hostCheck(machine: MachineState | null): MachineCheck {
+export function hostCheck(machine: MachineState | null, id?: string): MachineCheck {
+  const check = hostState(machine);
+  return withId(check, id);
+}
+
+function withId(check: MachineCheck, id: string | undefined): MachineCheck {
+  if (id === undefined || check.state === "up") return check;
+  return check.state === "asleep" ? { state: "asleep", ids: [id] } : { ...check, id };
+}
+
+function hostState(machine: MachineState | null): MachineCheck {
   if (machine === null) return { state: "skip", why: "bb doesn't know its machine" };
   const { phase } = machine;
   if ((phase === "active" || phase === null) && machine.connected) return { state: "up" };
-  // bb clears the message on a good suspend; one left there is a failed resume or suspend.
-  if (phase === "suspended") return machine.message === null ? { state: "asleep" } : { state: "skip", why: `its machine failed: ${machine.message}`, failed: true };
+  // bb clears the message on a good suspend; one left there is a failed resume or suspend. It stays
+  // until the machine starts again, so it says nothing about now: only this machine is left alone.
+  if (phase === "suspended") return machine.message === null ? { state: "asleep" } : { state: "skip", why: `its machine failed: ${machine.message}`, failure: true };
   if (phase === "active") return { state: "skip", why: "its machine is offline" };
   return { state: "skip", why: `its machine is ${phase ?? "in an unknown state"}` };
 }
 
 /** A boat sandbox's state (null: gone). */
-export function sandboxCheck(state: string | null): MachineCheck {
-  if (state === null) return { state: "skip", why: "its sandbox is gone" };
+export function sandboxCheck(state: string | null, id?: string): MachineCheck {
+  if (state === null) return withId({ state: "skip", why: "its sandbox is gone" }, id);
   if (ACTIVE_STATES.has(state)) return { state: "up" };
-  if (state === "stopped" || state === "archived") return { state: "asleep" };
-  return { state: "skip", why: `its sandbox is ${state}`, failed: state === "error" || state === "failed" };
+  if (state === "stopped" || state === "archived") return withId({ state: "asleep" }, id);
+  return withId({ state: "skip", why: `its sandbox is ${state}`, failure: state === "error" || state === "failed" }, id);
 }
 
 /** Several checks of one resume: the worst wins (skip, then asleep, then up). */
 export function worstCheck(checks: readonly MachineCheck[]): MachineCheck {
-  return checks.find((check) => check.state === "skip") ?? checks.find((check) => check.state === "asleep") ?? { state: "up" };
+  const skip = checks.find((check) => check.state === "skip");
+  if (skip !== undefined) return skip;
+  const asleep = checks.filter((check): check is Extract<MachineCheck, { state: "asleep" }> => check.state === "asleep");
+  if (asleep.length === 0) return { state: "up" };
+  const ids = asleep.flatMap((check) => check.ids ?? []);
+  return ids.length > 0 ? { state: "asleep", ids } : { state: "asleep" };
 }
 
 /** What the machine check reads. */
@@ -362,10 +402,10 @@ export interface MachineReader {
 export async function readMachine(reader: MachineReader, thread: Pick<ThreadFacts, "environmentId"> | null, task: Pick<Task, "runner" | "hostId" | "sandboxId"> | null): Promise<MachineCheck> {
   try {
     const checks: MachineCheck[] = [];
-    if (task?.sandboxId) checks.push(sandboxCheck(await reader.sandbox(task.sandboxId)));
+    if (task?.sandboxId) checks.push(sandboxCheck(await reader.sandbox(task.sandboxId), `sandbox:${task.sandboxId}`));
     if (task?.runner !== "boat") {
       const hostId = task?.hostId ?? (thread?.environmentId ? await reader.hostOf(thread.environmentId) : null);
-      checks.push(hostId === null ? { state: "skip", why: "its machine is unknown" } : hostCheck(await reader.host(hostId)));
+      checks.push(hostId === null ? { state: "skip", why: "its machine is unknown" } : hostCheck(await reader.host(hostId), `host:${hostId}`));
     }
     return worstCheck(checks);
   } catch (error) {
@@ -730,16 +770,19 @@ export function createPaidResume(deps: PaidResumeDeps) {
     /** The machine check before an attempt: up goes; asleep goes with a wake (if one is left); else why not. */
     const ready = async (check: MachineCheck): Promise<{ go: true; wake: boolean } | { go: false; reason: string; defer: boolean }> => {
       if (check.state === "skip") {
-        if (check.failed) {
-          // A machine that failed to start: no wakes for a while (boat.dev may be struggling).
+        // A failure a machine shows may be days old (bb keeps it until the machine starts again): only this
+        // machine is left alone. One the paid resume woke in the last WAKE_HOLD_MS failed because of that
+        // wake: then no machine is woken for a while. Counted once; the record goes.
+        if (check.failure && check.id !== undefined && deps.store.takeWoke(check.id, at - WAKE_HOLD_MS)) {
           deps.store.setWakeHold(at + WAKE_HOLD_MS);
           wakesHeld = true;
         }
         return { go: false, reason: check.why, defer: false };
       }
       if (check.state === "up") return { go: true, wake: false };
-      if (wakesHeld) return { go: false, reason: "machines aren't woken for now (one failed to start)", defer: true };
+      if (wakesHeld) return { go: false, reason: "machines aren't woken for now (a wake failed)", defer: true };
       if (!(await deps.wakes.take())) return { go: false, reason: "waiting for a wake (at most 2 a minute)", defer: true };
+      deps.store.noteWoke(check.ids ?? [], at, at - WAKE_HOLD_MS);
       return { go: true, wake: true };
     };
     const attempt = async (id: string, run: () => Promise<Attempt>) => {
