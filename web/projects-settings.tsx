@@ -446,6 +446,9 @@ function ProjectForm({
   const [machineType, setMachineType] = useState<ProjectDto["machineType"]>(
     project?.machineType ?? null,
   );
+  const [neverPaidClaude, setNeverPaidClaude] = useState(
+    project?.neverPaidClaude ?? false,
+  );
   const workers = useSettings().values?.workers;
   const snapshots = experimental_useRpcQuery({
     contract: rpcContract,
@@ -508,6 +511,7 @@ function ProjectForm({
         protectedBranches: protectedText,
         instructions: instructions.trim(),
         machineType,
+        neverPaidClaude,
       });
       toast.success(project ? `Saved ${saved.name}` : `Added ${saved.name}`);
       onSaved?.(saved);
@@ -672,6 +676,23 @@ function ProjectForm({
             {workers === "projects" || workers === "all"
               ? "Each task is a bb chat you can open and type into (needs bb Connect). Its sandbox can reach your bb, so keep this for repos you trust. Off: tasks run headless in boat."
               : "Only matters when How tasks run is set to As chats for projects or As chats everywhere; now every task runs headless in boat."}
+          </span>
+        </span>
+      </label>
+      <label
+        htmlFor="ca-project-never-paid"
+        className="flex items-start gap-2 text-sm"
+      >
+        <Checkbox
+          id="ca-project-never-paid"
+          className="mt-0.5"
+          checked={neverPaidClaude}
+          onCheckedChange={(checked) => setNeverPaidClaude(checked === true)}
+        />
+        <span className="min-w-0">
+          Never continue on paid Claude
+          <span className="block text-xs text-pretty text-muted-foreground">
+            Chats of this project that stop at a usage limit wait for included usage, even when paid Claude is available.
           </span>
         </span>
       </label>

@@ -557,6 +557,9 @@ export function ProjectEditor({
   const [snapshot, setSnapshot] = useState(
     initialState?.snapshot ?? project?.snapshot ?? "",
   );
+  const [neverPaidClaude, setNeverPaidClaude] = useState(
+    initialState?.neverPaidClaude ?? project?.neverPaidClaude ?? false,
+  );
   const [failure, setFailure] = useState<string | null>(null);
   useLayoutEffect(() => {
     onDraftChange?.({
@@ -575,6 +578,7 @@ export function ProjectEditor({
       environment,
       workerMode,
       snapshot,
+      neverPaidClaude,
     });
   });
   const local = catalog.data?.local.find(
@@ -630,6 +634,7 @@ export function ProjectEditor({
         environment: environment.trim() || null,
         workerMode,
         snapshot: snapshot.trim() || null,
+        neverPaidClaude,
         localBbProjectId: project
           ? (project.localBbProjectId ?? null)
           : useLocal
@@ -1055,6 +1060,19 @@ export function ProjectEditor({
                 onCheckedChange={(checked) =>
                   setWorkerMode(checked ? "chat" : "boat")
                 }
+              />
+            </label>
+            <label className="flex items-center justify-between gap-3">
+              <span className="min-w-0">
+                Never continue on paid Claude
+                <span className="block text-xs leading-4 text-[color:var(--boat-faint)]">
+                  Chats stopped at a usage limit wait for included usage.
+                </span>
+              </span>
+              <Switch
+                aria-label="Never continue on paid Claude"
+                checked={neverPaidClaude}
+                onCheckedChange={setNeverPaidClaude}
               />
             </label>
             <FieldGroup label="Saved snapshot name">

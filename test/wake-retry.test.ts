@@ -23,7 +23,7 @@ test("the retry schedule: 2, 4, 8, 16 minutes, at most 30, and Boat gives up at 
   assert.deepEqual(plan, [2, 4, 8, 16, null]);
 });
 
-async function env(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean }; threads?: boolean } = {}) {
+async function env(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean }; threads?: boolean; storageMs?: number } = {}) {
   const fake = makeService();
   const { task } = await fake.service.launchTask({ title: "Cart spacing", role: "implement", brief: "Fix the spacing." }, 5_000);
   fake.store.addOrchestrator("thr_orch");
@@ -46,9 +46,10 @@ async function env(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean 
     const stdout = script.includes("BOAT_GIT_SCAN_END") ? scan : on.startsWith("bx_fork") ? fork : check;
     return { exitCode: 0, stdout, stderr: "" };
   };
-  const guard = createWakeGuard({
+  const makeGuard = () => createWakeGuard({
     pacer,
-    kv: { async get<T>(key: string) { return kv.get(key) as T | undefined; }, async set(key: string, value: unknown) { kv.set(key, structuredClone(value)); } },
+    // storageMs: the clock moves on while the guard reads and writes its plans (a real kv takes a moment).
+    kv: { async get<T>(key: string) { at += options.storageMs ?? 0; return kv.get(key) as T | undefined; }, async set(key: string, value: unknown) { at += options.storageMs ?? 0; kv.set(key, structuredClone(value)); } },
     boat: fake.boat as never,
     store: fake.store,
     resumeHost: async (hostId) => { resumed.push(hostId); },
@@ -57,10 +58,11 @@ async function env(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean 
     log: (line) => logs.push(line),
     ...(options.moves ? { moves: options.moves } : {}),
   });
+  const guard = makeGuard();
   const steps: string[] = [];
   const wake = (): MachineWake => ({ sandboxId, hostId: "host_orch1", signal: new AbortController().signal, report: { step: (text) => steps.push(text), log: () => undefined } });
   return {
-    ...fake, task, sandboxId, pacer, guard, kv, resumed, logs, steps, wake, now: () => at, advance(ms: number) { at += ms; },
+    ...fake, task, sandboxId, pacer, guard, makeGuard, kv, resumed, logs, steps, wake, now: () => at, advance(ms: number) { at += ms; },
     setCheck(text: string) { check = text; }, setScan(text: string) { scan = text; }, setFork(text: string) { fork = text; }, setThreads(rows: ThreadRow[]) { threads = rows; },
     /** One pass of the monitor, and the move step it started. */
     async pass() {
@@ -150,6 +152,29 @@ test("the monitor's pass fires a due retry through bb: once, one a pass, only wi
   assert.equal(await e.guard.tick(), e.sandboxId);
   assert.deepEqual(e.resumed, ["host_orch1"]);
   assert.equal(await e.guard.tick(), null, "not fired again while bb's resume is out");
+});
+
+test("the monitor's pass fires a due retry even when time moves on while it reads its plans", async () => {
+  // A free pacer answers "now" by its own clock, a little after the pass began.
+  const e = await env({ storageMs: 3 });
+  await assert.rejects(e.guard.machine(e.wake(), async (permit) => { await permit(); throw new Error(KEY_STEP); }));
+  e.advance(2 * 60_000);
+  // After a restart: the first pass reads its plans from storage, and the clock moves on meanwhile.
+  const restarted = e.makeGuard();
+  assert.equal(await restarted.tick(), e.sandboxId);
+  assert.deepEqual(e.resumed, ["host_orch1"]);
+});
+
+test("a due node move starts even when time moves on while the pass reads its plans", async () => {
+  const e = await env({ moves: {}, storageMs: 3 });
+  e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
+  const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
+  await failUntilStuck(e, { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" });
+  // After a restart the first pass reads its plans from storage first.
+  const restarted = e.makeGuard();
+  assert.equal(await restarted.tick(), orch.id);
+  await restarted.idle();
+  assert.equal(e.boat.forks.length, 1, "the move's test fork ran");
 });
 
 test("too many wakes at once: the third is told when Boat wakes it, and Boat does", async () => {

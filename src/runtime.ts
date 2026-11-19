@@ -25,6 +25,7 @@ import {
 import { toOrchestratorProject, type OrchestratorProject, type ProjectStore } from "./projects.ts";
 import { ensureProjectSection, threadSection } from "./sections.ts";
 import type { QuotaReader, Quotas } from "./quota.ts";
+import { resumeEnabled, type PaidResume, type ResumeReport } from "./paid-resume.ts";
 import type { ConnectCheck, ConnectStatus } from "./connect.ts";
 import type { ConfigDeps } from "./config.ts";
 import type { SettingsStore } from "./settings-store.ts";
@@ -128,6 +129,13 @@ export interface Runtime {
   relayIdle(threadId: string, text: string | null, at: number | null): Promise<void>;
   /** Each agent's usage, as the relay reads it (null in tests that don't wire it). */
   quotas: QuotaReader | null;
+  /**
+   * Continue what stopped at a usage limit if paid Claude is available now:
+   * one pass, on its own timer (never under the relay's lock), one at a time.
+   */
+  paidResumeCheck(): Promise<RelayAction[]>;
+  /** Chats and headless tasks continued on paid Claude in the last day. */
+  recentPaidResumes(): number;
   /** Usage per agent and what the relay would do for each orchestrator. */
   relayStatus(): Promise<{ quotas: Quotas; orchestrators: { threadId: string; title: string | null; provider: Provider | null; decision: RelayDecision; state: RelayState | null }[] }>;
   /** bb Connect's status (cloud orchestrators and worker chats need it). */
@@ -150,6 +158,8 @@ export type RelayAction =
   | { threadId: string; kind: "requested-handoff"; to: Provider; reason: string }
   | { threadId: string; kind: "took-over"; to: Provider; reason: string; successor: string }
   | { threadId: string; kind: "both-out"; reason: string }
+  /** A chat (or headless task: threadId task:<id>) that stopped at a usage limit continues on paid Claude. */
+  | { threadId: string; kind: "resumed"; taskId: string | null; reason: string }
   | { threadId: string; kind: "skipped"; reason: string };
 
 const PROVIDER_FROM_ID: Record<string, Provider> = { "claude-code": "claude", codex: "codex" };
@@ -172,6 +182,8 @@ export interface RuntimeDeps {
   settings: SettingsStore;
   /** The setup checks (bb boat doctor, the page, the checks before a sandbox). */
   setup?: Setup;
+  /** Chats stopped at a usage limit continue on paid Claude (src/paid-resume.ts). */
+  paidResume?: PaidResume;
   changed(): void;
   wake(): void;
 }
@@ -688,6 +700,21 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     return actions;
   }
 
+  /** The relay's notes for what the paid resume pass did. */
+  function resumedActions(report: ResumeReport | null): RelayAction[] {
+    return (report?.resumed ?? []).map((work) => ({ threadId: work.threadId ?? `task:${work.taskId}`, kind: "resumed" as const, taskId: work.taskId, reason: work.reason }));
+  }
+
+  async function paidResumePass(quotas: Quotas, settings: Awaited<ReturnType<BoatService["settings"]>>): Promise<RelayAction[]> {
+    if (deps.paidResume === undefined || !resumeEnabled(settings)) return [];
+    const report = await deps.paidResume.pass(quotas, settings).catch((error: unknown) => {
+      bb.log.warn(`paid resume: ${message(error)}`);
+      return null;
+    });
+    if ((report?.resumed.length ?? 0) > 0) deps.changed();
+    return resumedActions(report);
+  }
+
   async function relayStatus() {
     const settings = await service.settings();
     const quotas = deps.quotas ? await deps.quotas.read() : new Map();
@@ -953,6 +980,13 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     relaySwitch: (threadId, to, options) => exclusive(() => relaySwitch(threadId, to, options)),
     relayStatus,
     quotas: deps.quotas ?? null,
+    async paidResumeCheck() {
+      const settings = await service.settings();
+      if (deps.quotas === undefined || deps.paidResume === undefined || !resumeEnabled(settings)) return [];
+      // The relay's pass keeps the reading fresh each minute; this one only reads it.
+      return paidResumePass(await deps.quotas.read(), settings);
+    },
+    recentPaidResumes: () => deps.paidResume?.recent() ?? 0,
     isHandingOver,
     relayIdle,
     chatApproval,

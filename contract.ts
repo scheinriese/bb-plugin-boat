@@ -201,6 +201,8 @@ export const projectSchema = z.object({
   /** Size of its new task sandboxes (null: the Default sandbox size setting). */
   machineType: machineTypeSchema.nullable(),
   reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
+  /** Its chats stopped at a usage limit never continue on paid Claude. */
+  neverPaidClaude: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -227,6 +229,8 @@ export const projectInputSchema = z.object({
   /** null: the Default sandbox size setting; absent: unchanged. */
   machineType: machineTypeSchema.nullable().optional(),
   reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
+  /** absent: unchanged. */
+  neverPaidClaude: z.boolean().optional(),
 });
 export type ProjectInputDto = z.infer<typeof projectInputSchema>;
 

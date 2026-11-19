@@ -60,6 +60,7 @@ inherits the global setting; an explicit native task drawer choice wins.
 | Advanced | Don't start work on paid extra usage | `avoidExtraUsage` | on |
 | Usage limits | Allow automatic paid Claude fallback | `paidClaudeFallback` | off |
 | Usage limits | Include headless Boat tasks in paid fallback | `paidClaudeHeadless` | off |
+| Usage limits | Resume chats stopped at a limit when paid Claude is available | `resumeStoppedChats` | on (only with `paidClaudeFallback`) |
 | Advanced | Claude ↔ Codex switching for orchestrators | `relayEnabled` | off |
 | Advanced | Switch at (% of a usage limit) | `relaySwitchAt` | `90` |
 | Advanced | Switch back below (%) | `relaySwitchBackBelow` | `50` (at least 5 below Switch at) |
@@ -206,3 +207,84 @@ uses included quota or credits. Disable the policy to prevent new automatic
 paid admissions; already running turns are governed by the provider's billing
 controls. The setting persists across restarts and is included in config
 backups. Tests use fake providers, never paid requests.
+
+### Chats stopped at a limit
+
+With the fallback on, `resumeStoppedChats` (on by default) continues Claude
+Code chats whose latest turn stopped at a usage limit (a 429, such as the
+Account Pooler's "No Account Pooler account is currently eligible") once paid
+Claude is available. That uses the same check a start makes. It covers any
+Claude Code chat on this bb, not only Boat tasks. It runs on its own
+one-minute timer, apart from the relay and the task checks, and once a few
+seconds after chats stop while paid Claude is already available. A burst of
+stops makes one check.
+
+Which chats it finds: the ones bb reported stopped at a limit while this
+version of the plugin was running, and any chat with a provider retry waiting
+in bb's queue. A chat that stopped before this version was installed, or while
+the plugin was off, and has no retry waiting, isn't found; continue it by hand
+(`bb thread retry <id>`).
+
+- A retry bb's provider-retry plugin queued for the reset is sent now, the same
+  as `bb provider-retry retry`. A retry that goes out within ten minutes anyway
+  is left alone.
+- A turn provider-retry skipped (`beyond-maximum-wait`), or one with no
+  decision a minute after it failed, is retried like `bb thread retry`. A
+  retry that someone cancelled stays cancelled. If provider-retry can't be
+  asked, or bb answers in a shape this version doesn't know, the chat is left
+  alone (the plugin log says so), never retried on a guess. So on a bb whose
+  provider-retry has no `decision.get`, only retries waiting in bb's queue are
+  sent; a turn provider-retry skipped stays stopped.
+- Not continued: archived chats, chats with a turn running or a message
+  queued, Codex chats, an orchestrator that is being handed over or was taken
+  over, an older chat of a task, and failures that aren't a usage limit
+  (authentication, credits, a spend limit).
+- Each stopped turn is continued once. A continued turn that stops again
+  stays stopped, so a spend limit can't cause a loop.
+- Nothing is continued while the reading is stale, Claude is on hold after a
+  refused turn, or extra usage is rejected.
+- Headless Boat tasks that stopped at a limit in the last week get a
+  follow-up, only with `paidClaudeHeadless`, at most one a check.
+- A project can stay on included usage: **Never continue on paid Claude** in
+  its settings, or `bb boat project set <id> --paid-claude never`. It applies
+  to the project's task chats, its orchestrators and every chat in its linked
+  bb project. A backup restores it as it was, on or off.
+
+Pacing, so that continuing many chats never becomes a burst of wakes that
+boat.dev's start limit or its storage can't take:
+
+- A check makes at most ten attempts, three seconds apart; failed attempts
+  count too. The rest wait for the next check.
+- The first failure ends the check, and the next one waits 5 minutes, doubling
+  up to an hour (this survives a restart). A failed stopped turn gets three
+  tries in all; a refusal that proves nothing was sent (the turn moved on, or
+  the chat is gone) doesn't use one. A chat's try cut off by a restart may go
+  again after ten minutes, as bb refuses a retry that already went out. A
+  failed or cut-off try goes again only while the request it re-submitted is
+  still the chat's failed one; a newer failed request in the same chain means
+  it went out. A headless follow-up that failed while its sandbox is up, or
+  was cut off, isn't tried again, as it may have reached the agent.
+- The chat's machine is checked first. One that is starting, stopping, being
+  created or removed, offline or failed is left alone. Waking a suspended
+  machine or a stopped sandbox takes one of two wakes a minute, a budget the
+  watchdog's own resumes share (kept across restarts). It also waits while
+  the sandbox wake pacer, which every resume goes through (2 a minute
+  account-wide, and a pause after a failed wake), has no slot free, so the
+  two never add up to more than 2 wakes a minute. A machine bb couldn't
+  start is left alone on its own (bb keeps that message until it starts
+  again), never holding the others. Only when a wake the plugin made fails
+  is no machine woken for 15 minutes: the call fails, or the machine fails to
+  start. Each check first looks again at the machines it woke in the last 15
+  minutes, whether or not their chats are still waiting. A woken machine that
+  stays active but never connects (a start that hangs instead of failing) is
+  forgotten after those 15 minutes, without a hold. The watchdog's resumes
+  take from the same budget and wait out the hold, but a failed watchdog
+  resume doesn't set it: the watchdog tries that machine again on its own
+  every few minutes, and one machine that keeps failing never holds the
+  others.
+
+A task records a `paid-resume` event. `bb boat relay check` (which also runs
+a check now) and the plugin log list each chat that continued, and an
+orchestrator gets one message per check naming its workers that continued.
+The next step line in Settings › Usage limits counts the stopped chats
+continued on paid Claude in the last day.

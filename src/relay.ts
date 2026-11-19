@@ -19,6 +19,8 @@ export interface RelaySettings {
   paidClaudeFallback?: boolean;
   /** Owner confirms headless environments use the same Claude subscription/billing account. */
   paidClaudeHeadless?: boolean;
+  /** Chats stopped at a usage limit continue once paid Claude is available (src/paid-resume.ts); unset: on. */
+  resumeStoppedChats?: boolean;
 }
 
 export const PAID_USAGE_EVIDENCE_MS = 5 * 60_000;

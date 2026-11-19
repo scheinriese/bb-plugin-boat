@@ -91,6 +91,7 @@ const EVERY_SETTING = {
   avoidExtraUsage: false,
   paidClaudeFallback: true,
   paidClaudeHeadless: true,
+  resumeStoppedChats: false,
   relayEnabled: true,
   relaySwitchAt: 85,
   relaySwitchBackBelow: 40,
@@ -326,7 +327,7 @@ test("a version 1 backup with every old setting imports into today's settings", 
   assert.match(dry.stdout, /From an older backup: workers from workerMode "chat" and adhocWorkerMode "boat": "projects"/);
   assert.match(dry.stdout, /Ignored, no longer settings: pollIntervalSeconds/);
   // The settings newer than the file are named, with the values they keep (the defaults here).
-  assert.match(dry.stdout, /Not in the file, stay as they are: experimentalUiTweaks = false, notifyNeedsYou = true, notifyReady = true, notifyProgress = false, paidClaudeFallback = false, paidClaudeHeadless = false, orchestratorEffort = "high", tasksBeforeAsking = 5 and 2 more settings\n/);
+  assert.match(dry.stdout, /Not in the file, stay as they are: experimentalUiTweaks = false, notifyNeedsYou = true, notifyReady = true, notifyProgress = false, paidClaudeFallback = false, paidClaudeHeadless = false, resumeStoppedChats = true, orchestratorEffort = "high" and 3 more settings\n/);
   assert.doesNotMatch(dry.stdout, /Skipped, not settings of this version/);
 
   const result = await importFile(file);
@@ -346,7 +347,7 @@ test("a version 1 backup with every old setting imports into today's settings", 
 
   // The effective settings are the intended ones: the file's values by today's keys, defaults for the rest.
   const { workerMode: _w, adhocWorkerMode: _a, pollIntervalSeconds: _p, ...rest } = V1_SETTINGS;
-  const intended = { ...rest, workers: "projects", experimentalUiTweaks: false, notifyNeedsYou: true, notifyReady: true, notifyProgress: false, paidClaudeFallback: false, paidClaudeHeadless: false, orchestratorEffort: "high", tasksBeforeAsking: 5, cloudOrchestratorFullAccess: true, recoverChatsAfterSteer: true };
+  const intended = { ...rest, workers: "projects", experimentalUiTweaks: false, notifyNeedsYou: true, notifyReady: true, notifyProgress: false, paidClaudeFallback: false, paidClaudeHeadless: false, resumeStoppedChats: true, orchestratorEffort: "high", tasksBeforeAsking: 5, cloudOrchestratorFullAccess: true, recoverChatsAfterSteer: true };
   const after = await exported();
   assert.deepEqual(after.settings, Object.fromEntries(Object.keys(ALL_SETTINGS).map((key) => [key, intended[key as keyof typeof intended]])));
   assert.equal(after.version, 2);
@@ -623,6 +624,35 @@ test("a project's sandbox size: exported, kept by older files, listed when it ch
   assert.equal((await exported()).projects.find((project) => project.id === "web")?.machineType, "large");
 });
 
+
+test("a project's Never continue on paid Claude: a backup turns it on, and one taken with it off turns it off again", async (t) => {
+  const { harness, exported, importFile } = await setup();
+  t.after(() => harness.lifecycle.dispose());
+  assert.equal((await importFile(ownerFile())).exitCode, 0);
+  // Off: not even written down, in the store or the backup.
+  const off = await exported();
+  assert.equal(off.projects.some((project) => "neverPaidClaude" in project), false);
+
+  // A backup with it on turns it on, as a change of that field.
+  const on = PROJECTS.map((project) => (project.id === "web" ? { ...project, neverPaidClaude: true } : project));
+  const turnedOn = await importFile({ format: CONFIG_FORMAT, version: 2, projects: on });
+  assert.equal(turnedOn.exitCode, 0, turnedOn.stderr);
+  assert.match(turnedOn.stdout, /Update web \(Web app\): neverPaidClaude/);
+  const withOptOut = await exported();
+  assert.equal(withOptOut.projects.find((project) => project.id === "web")?.neverPaidClaude, true);
+
+  // The backup taken while it was off (no key) restores it off.
+  const restored = await importFile({ format: CONFIG_FORMAT, version: 2, projects: off.projects });
+  assert.equal(restored.exitCode, 0, restored.stderr);
+  assert.match(restored.stdout, /Update web \(Web app\): neverPaidClaude/);
+  assert.equal("neverPaidClaude" in (await exported()).projects.find((project) => project.id === "web")!, false);
+
+  // Round trip: the backup taken with it on gives it back on, and then changes nothing.
+  assert.equal((await importFile({ format: CONFIG_FORMAT, version: 2, projects: withOptOut.projects })).exitCode, 0);
+  assert.equal((await exported()).projects.find((project) => project.id === "web")?.neverPaidClaude, true);
+  const again = await importFile({ format: CONFIG_FORMAT, version: 2, projects: withOptOut.projects }, ["--dry-run"]);
+  assert.match(again.stdout, /Projects: 0 added, 0 updated, 3 unchanged/);
+});
 
 test("local bb project links survive backup roundtrip and unrelated legacy imports", async (t) => {
   const { harness, exported, importFile } = await setup();

@@ -109,6 +109,12 @@ function paidClaudeHeld(view: UsageViewDto, now: number): string {
  * "Both are at their limits · work waits until Thu 01:00".
  */
 export function nextStepLine(view: UsageViewDto, now = Date.now()): string {
+  const line = nextStep(view, now);
+  const resumed = view.resumedOnPaid ?? 0;
+  return resumed > 0 ? `${line} · ${resumed} stopped ${resumed === 1 ? "chat" : "chats"} resumed on paid Claude` : line;
+}
+
+function nextStep(view: UsageViewDto, now: number): string {
   const { next } = view;
   const fact = (provider: Provider) => agentFact(view.agents.find((agent) => agent.provider === provider), provider);
   const both = view.onlyAgent === null && view.agents.length === 2 && view.agents.every((agent) => agent.usedPercent !== null && agent.usedPercent >= view.switchAtPercent);

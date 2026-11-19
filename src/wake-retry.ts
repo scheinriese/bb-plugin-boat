@@ -556,7 +556,8 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
       // A move first (in the background: a test fork and a stop take a while), with a wake slot free.
       const step = deps.moves === undefined ? undefined : Object.values(all).find((entry) => moving(entry) && !firing.has(entry.sandboxId) && (entry.move?.nextAt ?? 0) <= at);
       if (step !== undefined) {
-        if (step.move!.state === "due" && (await deps.pacer.nextWakeAt()) > at) return null;
+        // Against the time after the read: a free pacer answers with its own clock, later than `at` after the loads above.
+        if (step.move!.state === "due" && (await deps.pacer.nextWakeAt()) > now()) return null;
         firing.add(step.sandboxId);
         log(`node move: ${step.sandboxId}: ${step.move!.state === "due" ? "checking before moving it off its node" : "following its stop"}`);
         const running: Promise<void> = runMove(step)
@@ -573,8 +574,8 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
         .filter((entry) => entry.retryAt !== null && entry.retryAt <= at && entry.hostId !== null && !firing.has(entry.sandboxId) && (entry.firedAt === null || at - entry.firedAt >= LEASE_MS))
         .sort((a, b) => a.retryAt! - b.retryAt!);
       const first = due[0];
-      // One a pass, and only with a wake slot free: the pacer would only make it wait.
-      if (first === undefined || (await deps.pacer.nextWakeAt()) > at) return null;
+      // One a pass, and only with a wake slot free: the pacer would only make it wait (checked against the time now, as above).
+      if (first === undefined || (await deps.pacer.nextWakeAt()) > now()) return null;
       all[first.sandboxId] = { ...first, firedAt: at };
       await plans.save();
       firing.add(first.sandboxId);

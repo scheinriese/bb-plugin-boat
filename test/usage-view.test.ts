@@ -390,6 +390,17 @@ test("next step: both at their limits with fresh paid Claude evidence: paid Clau
   assert.match(nextStepLine(viewOf(old, paid, { claudeExtraUsage: { status: "allowed", observedAt: Date.now() - 6 * MIN, pool: "on" } })), /^Both are at their limits · paid Claude needs a newer check · work waits until /);
 });
 
+test("next step: chats stopped at a limit that continued on paid Claude are counted", () => {
+  const paid = { ...BASE, relay: { ...BASE.relay, paidClaudeFallback: true, paidClaudeHeadless: true } };
+  const quotas = usage(100, 99, { allowed: true, status: "allowed", observedAt: Date.now() - MIN, pool: "on" });
+  assert.equal(
+    nextStepLine(viewOf(quotas, paid, { paidClaudeAvailable: true, resumedOnPaid: 3 })),
+    "Codex is at 99% · Claude is at its weekly limit · paid Claude is available, so new work goes to Claude · 3 stopped chats resumed on paid Claude",
+  );
+  assert.match(nextStepLine(viewOf(quotas, paid, { paidClaudeAvailable: true, resumedOnPaid: 1 })), / · 1 stopped chat resumed on paid Claude$/);
+  assert.doesNotMatch(nextStepLine(viewOf(quotas, paid, { paidClaudeAvailable: true, resumedOnPaid: 0 })), /resumed/);
+});
+
 test("next step: both at their limits, so work waits until the first reset", () => {
   const quotas = usage(100, 95);
   const next = nextForNewWork(quotas, BASE);

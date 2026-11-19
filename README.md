@@ -145,6 +145,9 @@ What the plugin does to keep that down:
   reports recent availability. Claude enforces your billing limits; Boat cannot
   read the money cap or balance and never buys credits. Headless tasks need
   a separate same-account opt-in or their per-task paid confirmation. [Policy and limits](docs/settings.md#automatic-paid-claude-fallback).
+- With the fallback on, Claude chats that stopped at a usage limit continue
+  on their own once paid Claude is available, each stopped turn once. A
+  project can opt out. [How it works](docs/settings.md#chats-stopped-at-a-limit).
 - It never turns on boat's paid extra starts (`boat billing extra-starts`,
   off by default).
 
