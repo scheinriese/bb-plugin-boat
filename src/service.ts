@@ -563,14 +563,14 @@ export function defaultModelFor(provider: Provider, settings: BoatSettings): str
 }
 
 /** States a sandbox passes through on its way up or down. */
-const TRANSITIONAL_STATES = new Set(["provisioning", "starting", "stopping", "archiving", "resuming", "pending"]);
+export const TRANSITIONAL_STATES = new Set(["provisioning", "starting", "stopping", "archiving", "resuming", "pending"]);
 const TRANSITION_WAIT_MS = 120_000;
 
 /**
  * boat resumes it: stopped or archived, or a resume that failed (boat's state
  * "error" with "Resume failed: …", its snapshot still there).
  */
-function resumable(sandbox: Sandbox): boolean {
+export function resumable(sandbox: Pick<Sandbox, "state" | "error">): boolean {
   return sandbox.state === "stopped" || sandbox.state === "archived" || (sandbox.state === "error" && /resume failed|restore/i.test(sandbox.error ?? ""));
 }
 /** How long a turn may look finished in one endpoint but not the other. */
@@ -844,7 +844,8 @@ export class BoatService {
    * least recently used plugin-created sandbox whose tasks are all waiting
    * (their conversations survive the stop and resume on follow-up).
    */
-  private async ensureSlot(signal?: AbortSignal, forSandbox?: string): Promise<{ limits: Limits | null; stopped: string | null }> {
+  /** paidStart: the user allowed a paid extra start (`bb boat sandbox wake --allow-paid-start`), so used-up included starts don't refuse it. */
+  private async ensureSlot(signal?: AbortSignal, forSandbox?: string, options: { paidStart?: boolean } = {}): Promise<{ limits: Limits | null; stopped: string | null }> {
     const settings = await this.settings();
     const { limits, active, cap, free } = await this.capacity(signal, forSandbox);
     if (limits?.checkoutRequired) {
@@ -861,7 +862,7 @@ export class BoatService {
         "Run `boat limits --all` for details, or start a bigger plan (`boat billing plan`).",
       );
     }
-    if (limits?.startsLeftToday === 0 || limits?.startsLeftThisHour === 0) {
+    if (options.paidStart !== true && (limits?.startsLeftToday === 0 || limits?.startsLeftThisHour === 0)) {
       throw new TaskError(
         "The boat start limit is used up for now.",
         "boat_start_limit",
@@ -987,9 +988,10 @@ export class BoatService {
   /**
    * Make sure a sandbox is up (resuming it within the slot limit). `wake.permit`:
    * the caller already took the wake slot and reports the outcome itself.
+   * `wake.paidStart`: the user allowed a paid extra start for it.
    */
-  bringUp(sandboxId: string, signal?: AbortSignal, wake?: { permit?: WakePermit }): Promise<Sandbox> {
-    return this.ensureRunning(sandboxId, signal, wake?.permit);
+  bringUp(sandboxId: string, signal?: AbortSignal, wake?: { permit?: WakePermit; paidStart?: boolean }): Promise<Sandbox> {
+    return this.ensureRunning(sandboxId, signal, wake?.permit, wake?.paidStart === true);
   }
 
   /**
@@ -997,7 +999,7 @@ export class BoatService {
    * transitions, and resume a stopped one (one resume at a time, each
    * within the account's wake pacing).
    */
-  private async ensureRunning(sandboxId: string, signal?: AbortSignal, given?: WakePermit): Promise<Sandbox> {
+  private async ensureRunning(sandboxId: string, signal?: AbortSignal, given?: WakePermit, paidStart = false): Promise<Sandbox> {
     // A move to a new node stops it, maybe dropping what's written meanwhile: no work goes there now.
     if (await this.hooks.wakes?.moving?.(sandboxId)) {
       throw new TaskError(`Boat is moving sandbox ${sandboxId} to a new boat.dev node: its node keeps failing its disk.`, "sandbox_moving", "Try again once it's back, in a few minutes (or see Needs you).");
@@ -1018,7 +1020,7 @@ export class BoatService {
           if (current === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
           if (ACTIVE_STATES.has(current.state)) return current;
           if (!resumable(current)) return null;
-          const { limits } = await this.ensureSlot(signal, sandboxId);
+          const { limits } = await this.ensureSlot(signal, sandboxId, { paidStart });
           // A move to another size resumes onto it, whoever resumes (sizes).
           const type = this.sizes.pendingType(sandboxId);
           try {

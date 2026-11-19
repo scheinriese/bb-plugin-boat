@@ -252,7 +252,15 @@ export async function diagnoseWakeFailure(error: unknown, check: DiskCheckRunner
     return fromText;
   }
   if (result === null) return fromText;
-  const seen = parseDiskCheck(result.stdout);
+  return classifyDiskCheck(parseDiskCheck(result.stdout), fromText);
+}
+
+/**
+ * What a look at the sandbox (DISK_CHECK_SCRIPT) shows, given what the
+ * error's text said (`fromText`; kind "other" when there's no error, as for
+ * `bb boat sandbox wake`). Kind "other" back: nothing wrong was seen.
+ */
+export function classifyDiskCheck(seen: DiskCheck, fromText: WakeDiagnosis = { kind: "other", detail: null, checked: false }): WakeDiagnosis {
   const textDetail = fromText.kind === "disk-restoring" ? fromText.detail : null;
   if (seen.hydrator !== null || seen.unreadable.length > 0) {
     return { kind: "disk-restoring", detail: seen.hydrator ?? textDetail ?? `${seen.unreadable.map((file) => `~/${file}`).join(", ")}: Input/output error`, checked: true };
