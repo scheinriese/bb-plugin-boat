@@ -105,6 +105,8 @@ if [ "$1" = pack ]; then
   dest=; spec=
   while [ $# -gt 0 ]; do case "$1" in --pack-destination) dest=$2; shift 2 ;; *) spec=$1; shift ;; esac; done
   [ -n "\${FAKE_PACK_HANG:-}" ] && exec sleep 600
+  # Something else happens on the sandbox while the registry answers (bb repairs itself, say).
+  [ -f "${fake}/pack-hook" ] && bash "${fake}/pack-hook"
   if [ -n "\${FAKE_PACK_FAIL:-}" ]; then echo "npm error code $FAKE_PACK_FAIL" >&2; exit 1; fi
   v=\${FAKE_PACK_VERSION:-\${spec#bb-app@}}
   s=$(mktemp -d); mkdir -p "$s/package"
@@ -687,7 +689,8 @@ test("a broken install the npm registry couldn't replace still goes aside for bb
   const failed = (await update(prep())) as { kind: string; text: string };
   assert.equal(prefetched[0]!.skipInstall, true, "a broken install isn't read: it's replaced or goes aside");
   assert.equal(failed.text, "Boat couldn't update bb on this sandbox to 0.50.1: the npm registry couldn't be reached (ENOTFOUND). bb's install there was already broken, so Boat moved it aside and bb's own setup installs it again. Boat tries the update again after 02:30 UTC.");
-  assert.deepEqual(exec.scripts.map((script) => (script.includes("say end") ? "look" : script.includes("BOAT_BBUP") ? "install" : script.includes("BOAT_BBFIX") ? "set aside" : "other")), ["look", "install", "set aside"]);
+  assert.deepEqual(exec.scripts.map((script) => (script.includes("say end") ? "look" : script.includes("BOAT_BBUP") ? "install" : script.includes("BOAT_BBFIX") ? "set aside" : "other")), ["look", "install", "look", "set aside"], "looked at again after the failed fetch, before anything stops");
+  assert.match(exec.scripts[3]!, /BOAT_BBFIX busy/, "and the set-aside checks once more right before the stop");
   // Held after that: no fetch, and a broken install there again goes aside again.
   at += 10 * 60_000;
   const step = prep();
@@ -695,6 +698,107 @@ test("a broken install the npm registry couldn't replace still goes aside for bb
   assert.equal(exec.scripts.filter((script) => script.includes("BOAT_BBUP")).length, 1);
   assert.equal(exec.scripts.filter((script) => script.includes("BOAT_BBFIX")).length, 2);
   assert.deepEqual(step.logs, ["bb's install on the sandbox was broken (npm/bin/bb-app is missing); Boat moved it aside so bb's setup installs it again"]);
+});
+
+/** The updater over the real scripts, run on a sandbox copy (procfs and the look's 5 s sample faked). */
+function realUpdater(box: ReturnType<typeof sandboxHome>, env: Record<string, string>, options: { proc: string; now?: () => number; sleep?: (ms: number) => Promise<unknown> }) {
+  const told: string[] = [];
+  const update = createBbUpdater({
+    boat: { exec: async (_id: string, script: string) => ({ exitCode: 0, stdout: box.run(script.replace(/^PR='\/proc'$/m, `PR='${options.proc}'`).replace(/^  sleep 5$/m, "  sleep 0"), env), stderr: "" }) },
+    kv: kvStore(),
+    serverVersion: async () => "0.50.1",
+    tell: (_id, text) => told.push(text),
+    now: options.now,
+    sleep: options.sleep,
+  });
+  return { update, told };
+}
+
+test("bb repairs its broken install while the npm registry answers: after the failed fetch Boat looks again and leaves it alone", async (t) => {
+  // The reviewer's case, with the real scripts: the bin is missing at the look; during the fetch
+  // bb's own setup puts back a complete 0.50.1; then the registry says E404.
+  const box = sandboxHome(t, { tgz: null, bin: false });
+  const pkg = join(box.data, "npm", "lib", "node_modules", "bb-app");
+  writeFileSync(join(box.fake, "pack-hook"), `mkdir -p "${box.data}/npm/bin"\nln -sf ../lib/node_modules/bb-app/dist/bb-app.js "${box.data}/npm/bin/bb-app"\nsed -i 's/0.49.0/0.50.1/' "${pkg}/package.json"\n`);
+  const { update, told } = realUpdater(box, { FAKE_PACK_FAIL: "E404" }, { proc: join(box.root, "proc") });
+  const result = (await update(prep({ hostId: HOST, woke: false }))) as { kind: string; text: string };
+  assert.equal(result.kind, "failed");
+  assert.match(result.text, /^Boat couldn't update bb on this sandbox to 0\.50\.1: the npm registry doesn't have bb-app 0\.50\.1 \(E404\)\. Meanwhile bb's install there became complete again, so Boat left it as it is; bb's own setup goes ahead\. Boat tries the update again after /);
+  assert.deepEqual(told, [result.text]);
+  assert.equal(box.log().includes("systemctl --user stop"), false, "bb's service never stopped");
+  assert.equal(box.version(), "0.50.1", "the repaired install stays where it is");
+  assert.deepEqual(readdirSync(box.data).filter((name) => /^npm\./.test(name)), [], "nothing moved aside");
+  // Still broken after the fetch: then, and only then, it goes aside, as before.
+  const still = sandboxHome(t, { tgz: null, bin: false });
+  writeFileSync(join(still.data, "host-artifact.sha256"), "a".repeat(64));
+  const second = realUpdater(still, { FAKE_PACK_FAIL: "E404" }, { proc: join(still.root, "proc") });
+  assert.match(((await second.update(prep({ hostId: HOST, woke: false }))) as { text: string }).text, /bb's install there was already broken, so Boat moved it aside and bb's own setup installs it again/);
+  assert.equal(existsSync(join(still.data, "npm")), false);
+  assert.equal(readdirSync(still.data).filter((name) => name.startsWith("npm.broken-")).length, 1);
+});
+
+test("bb's own update starts while the npm registry answers: Boat waits for it after the failed fetch, and never stops it or moves its install", async (t) => {
+  let at = Date.parse("2026-11-19T02:00:00Z");
+  const sleeps: number[] = [];
+  // It's still running after the 3 minutes: left to Boat's wake retries, nothing touched.
+  const box = sandboxHome(t, { tgz: null, bin: false });
+  const proc = join(box.root, "proc");
+  mkdirSync(join(proc, "4242"), { recursive: true });
+  writeFileSync(join(proc, "4242", "status"), "Name:\tnpm install -g \nState:\tS (sleeping)\n");
+  writeFileSync(join(proc, "4242", "io"), "rchar: 100\n");
+  const running = `   4242 Sl     20 npm install -g --prefix ${box.data}/npm ${box.data}/host-package-download/bb-app.tgz\n`;
+  writeFileSync(join(box.fake, "pack-hook"), `printf '%s' '${running}' > "${box.fake}/ps"\n`);
+  const { update, told } = realUpdater(box, { FAKE_PACK_FAIL: "ENOTFOUND" }, { proc, now: () => at, sleep: async (ms) => { sleeps.push(ms); at += ms; } });
+  const error = (await update(prep({ hostId: HOST, woke: false })).catch((caught: unknown) => caught)) as BbUpdateHung;
+  assert.ok(error instanceof BbUpdateHung, String(error));
+  assert.equal(error.wakeDiagnosis.kind, "disk-restoring", "Boat's wake retries take it, as for any update of bb's own that won't end");
+  assert.ok(sleeps.length >= 18 && sleeps.every((ms) => ms === 10_000), "it waited, looking again every 10 s");
+  assert.equal(told.length, 1);
+  assert.match(told[0]!, /: the npm registry couldn't be reached \(ENOTFOUND\)\. bb's own update was running there, so Boat left its install alone\. Boat tries the update again after /);
+  assert.equal(box.log().includes("systemctl --user stop"), false);
+  assert.ok(existsSync(join(box.data, "npm")), "its install stays where bb's update writes it");
+  assert.deepEqual(readdirSync(box.data).filter((name) => /^npm\./.test(name)), []);
+  // It ends during the wait and leaves the install complete: nothing more to do, nothing moved.
+  const waits: number[] = [];
+  const ends = sandboxHome(t, { tgz: null, bin: false });
+  const proc2 = join(ends.root, "proc");
+  mkdirSync(join(proc2, "4242"), { recursive: true });
+  writeFileSync(join(proc2, "4242", "status"), "Name:\tnpm install -g \nState:\tS (sleeping)\n");
+  writeFileSync(join(proc2, "4242", "io"), "rchar: 100\n");
+  writeFileSync(join(ends.fake, "pack-hook"), `printf '%s' '${running.replaceAll(box.data, ends.data)}' > "${ends.fake}/ps"\n`);
+  const done = realUpdater(ends, { FAKE_PACK_FAIL: "ENOTFOUND" }, {
+    proc: proc2,
+    now: () => at,
+    sleep: async (ms) => {
+      waits.push(ms);
+      at += ms;
+      rmSync(join(ends.fake, "ps"), { force: true });
+      mkdirSync(join(ends.data, "npm", "bin"), { recursive: true });
+      if (!existsSync(join(ends.data, "npm", "bin", "bb-app"))) symlinkSync("../lib/node_modules/bb-app/dist/bb-app.js", join(ends.data, "npm", "bin", "bb-app"));
+    },
+  });
+  assert.match(((await done.update(prep({ hostId: HOST, woke: false }))) as { text: string }).text, /Meanwhile bb's install there became complete again, so Boat left it as it is/);
+  assert.deepEqual(waits, [10_000]);
+  assert.equal(ends.log().includes("systemctl --user stop"), false);
+  assert.deepEqual(readdirSync(ends.data).filter((name) => /^npm\./.test(name)), []);
+});
+
+test("the set-aside after a failed fetch checks once more right before the stop: bb's own npm install, or an install complete again, is left alone", (t) => {
+  const box = sandboxHome(t, { tgz: null, bin: false });
+  box.set("ps", `   4242 Sl     20 npm install -g --prefix ${box.data}/npm ${box.data}/host-package-download/bb-app.tgz\n`);
+  assert.match(box.run(setAsideScript({ dataDir: box.data, unit: box.unit, recheck: { files: true }, proc: join(box.root, "proc") })), /^BOAT_BBFIX busy 4242$/m);
+  rmSync(join(box.fake, "ps"));
+  mkdirSync(join(box.data, "npm", "bin"), { recursive: true });
+  symlinkSync("../lib/node_modules/bb-app/dist/bb-app.js", join(box.data, "npm", "bin", "bb-app"));
+  assert.match(box.run(setAsideScript({ dataDir: box.data, unit: box.unit, recheck: { files: true } })), /^BOAT_BBFIX intact$/m);
+  // Broken only by a module it couldn't load: its service running again counts as repaired.
+  assert.match(box.run(setAsideScript({ dataDir: box.data, unit: box.unit, recheck: { files: false } })), /^BOAT_BBFIX intact$/m);
+  assert.equal(box.log().includes("systemctl --user stop"), false);
+  assert.ok(existsSync(join(box.data, "npm")));
+  // Still broken and nobody at it: moved aside.
+  rmSync(join(box.data, "npm", "bin", "bb-app"));
+  assert.match(box.run(setAsideScript({ dataDir: box.data, unit: box.unit, recheck: { files: true } })), /^BOAT_BBFIX moved$/m);
+  assert.equal(existsSync(join(box.data, "npm")), false);
 });
 
 test("backoffs of sandboxes long gone are dropped, and a removed machine's goes at once", async () => {

@@ -45,7 +45,10 @@
 //    setup install the server's build in place over it, which then reads only
 //    files Boat has just written. A broken install the fallback didn't
 //    replace (npm failed before the stop, or a backoff holds it) is moved
-//    aside, as before;
+//    aside, as before. After a failed fetch only once a new look still finds
+//    it broken: bb may have repaired it meanwhile (left as it is), or be
+//    updating it right now (waited for, never stopped, as in 1.); the
+//    set-aside checks once more right before it stops anything;
 // 4. no download and the server's version unknown: nothing to install from
 //    without the server's credentials, so bb's own update runs (a broken
 //    install is moved aside first, so bb's setup installs into an empty
@@ -108,6 +111,9 @@ const OWN_NPM_SCRIPT = [
   `rc() { timeout 2 sed -n 's/^rchar: //p' "$PR/$1/io" 2>/dev/null; }`,
   'mine() { case "$1" in *"$D/npm"*|*"$D/host-package-download"*) return 0 ;; esac; [ -n "$U" ] && timeout 2 grep -qF -- "/$U" "$PR/$2/cgroup" 2>/dev/null; }',
 ];
+
+/** B1: the pid of an npm install of bb's own running right now (empty: none), after OWN_NPM_SCRIPT. */
+const OWN_NPM_RUNNING = 'B1=$(timeout 5 ps -eo pid=,stat=,args= 2>/dev/null | while read -r pid stat args; do case "$stat" in Z*) ;; *) case "$args" in *"$I"*) mine "$args" "$pid" && echo "$pid" ;; esac ;; esac; done | head -n 1)';
 
 /**
  * Look at bb's install on the sandbox. Plain `bash -c`; every read is capped,
@@ -447,7 +453,7 @@ export function installScript(input: { dataDir: string; unit: string | null; nod
     'if [ -e "$D/npm.new" ] || [ -L "$D/npm.new" ]; then mv -- "$D/npm.new" "$D/npm.trash-$(date +%s)-$$" || fail leftover; fi',
     // bb's own update started since the look (even during the copy and checks above): never
     // stopped half way (Boat waits, then looks again). Right before the stop, nothing between.
-    'B1=$(timeout 5 ps -eo pid=,stat=,args= 2>/dev/null | while read -r pid stat args; do case "$stat" in Z*) ;; *) case "$args" in *"$I"*) mine "$args" "$pid" && echo "$pid" ;; esac ;; esac; done | head -n 1)',
+    OWN_NPM_RUNNING,
     '[ -n "$B1" ] && { say busy "$B1"; exit 0; }',
     // Stop bb's service.
     'if [ -n "$U" ]; then',
@@ -492,20 +498,38 @@ export function installScript(input: { dataDir: string; unit: string | null; nod
   ].join("\n");
 }
 
-/** Broken, nothing to install from: move it aside (bb's setup then installs into an empty prefix). */
-export function setAsideScript(input: { dataDir: string; unit: string | null }): string {
+/**
+ * Broken, nothing to install from: move it aside (bb's setup then installs into an empty prefix).
+ * recheck: the look is a while old (a fetch from the npm registry ran since), so right before the
+ * stop the script looks again and leaves it alone when bb's own npm install runs ("busy") or the
+ * install is complete again ("intact": its files, or, broken only by a module it couldn't load,
+ * its service running).
+ */
+export function setAsideScript(input: { dataDir: string; unit: string | null; recheck?: { files: boolean }; proc?: string }): string {
+  const recheck = input.recheck
+    ? [
+        `PR=${shellQuote(input.proc ?? "/proc")}`,
+        ...OWN_NPM_SCRIPT,
+        OWN_NPM_RUNNING,
+        '[ -n "$B1" ] && { echo "BOAT_BBFIX busy $B1"; exit 0; }',
+        input.recheck.files
+          ? 'P="$D/npm/lib/node_modules/bb-app"; if [ -e "$D/npm/bin/bb-app" ] && [ -e "$P/package.json" ] && [ -e "$P/dist/bb-app.js" ] && [ -e "$P/host-daemon/dist/daemon-bundle.mjs" ]; then echo "BOAT_BBFIX intact"; exit 0; fi'
+          : '[ -n "$U" ] && [ "$(timeout 5 systemctl --user show "$U" --property=ActiveState --value 2>/dev/null)" = active ] && { echo "BOAT_BBFIX intact"; exit 0; }',
+      ]
+    : [];
   return [
     `D=${shellQuote(input.dataDir)}`,
     `U=${shellQuote(input.unit ?? "")}`,
     'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"',
     '[ -e "$D/npm" ] || [ -L "$D/npm" ] || { echo "BOAT_BBFIX none"; exit 0; }',
+    ...recheck,
     '[ -n "$U" ] && timeout 30 systemctl --user stop "$U" >/dev/null 2>&1',
     'if mv -- "$D/npm" "$D/npm.broken-$(date +%s)"; then rm -f -- "$D/host-artifact.sha256"; echo "BOAT_BBFIX moved"; else [ -n "$U" ] && timeout 30 systemctl --user start "$U" >/dev/null 2>&1; echo "BOAT_BBFIX failed"; fi',
   ].join("\n");
 }
 
 /** The old install after a failed one: as it was, broken (and moved aside), or not readable yet. */
-export type OldInstall = "intact" | "broken" | "set-aside" | "unknown";
+export type OldInstall = "intact" | "broken" | "set-aside" | "unknown" | "repaired" | "busy";
 
 export type InstallResult =
   | { kind: "done"; version: string; unit: string | null }
@@ -751,6 +775,25 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
     }
   }
 
+  /**
+   * The install again, after a failed fetch from the npm registry: still broken, complete again,
+   * or bb's own update running (waited for as before the install, up to 3 minutes) or hung.
+   */
+  async function recheck(prep: HostPrep, goal: string): Promise<
+    | { kind: "broken"; seen: BbInstall; why: string }
+    | { kind: "repaired" | "busy" | "unknown"; seen: BbInstall | null }
+    | { kind: "hung"; seen: BbInstall; plan: Extract<BbUpdatePlan, { kind: "hung" | "waiting" }> }
+  > {
+    let seen = await inspect(prep);
+    let plan = seen === null ? null : decideBbUpdate(seen, goal);
+    if (plan?.kind === "busy") ({ seen, plan } = await waitForOwnUpdate(prep, goal, plan.detail));
+    if (seen === null || plan === null || !seen.complete) return { kind: "unknown", seen };
+    if (plan.kind === "hung" || plan.kind === "waiting") return { kind: "hung", seen, plan };
+    if (plan.kind === "busy") return { kind: "busy", seen };
+    const why = brokenInstall(seen);
+    return why === null ? { kind: "repaired", seen } : { kind: "broken", seen, why };
+  }
+
   /** What became of the old install, in words (the end of a failure's text). */
   function oldText(result: Extract<InstallResult, { kind: "fail" }>, plan: Extract<BbUpdatePlan, { kind: "update" }>): string {
     switch (result.old) {
@@ -764,19 +807,30 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
         return "Boat couldn't check the bb that was there (its files aren't readable yet); bb's own setup goes ahead.";
       case "intact":
         return "It kept the bb that was there, and bb's own setup goes ahead.";
+      case "repaired":
+        return "Meanwhile bb's install there became complete again, so Boat left it as it is; bb's own setup goes ahead.";
+      case "busy":
+        return "bb's own update was running there, so Boat left its install alone.";
       default:
         return "bb's own setup goes ahead and checks the bb that's there.";
     }
   }
 
-  /** Move a broken install aside, so bb's setup installs into an empty prefix: true when it was. */
-  async function setAside(prep: HostPrep, seen: BbInstall, why: string): Promise<boolean> {
+  /**
+   * Move a broken install aside, so bb's setup installs into an empty prefix: true when it was.
+   * recheck: the script looks again right before the stop; "intact" or "busy" when it left it alone.
+   */
+  async function setAside(prep: HostPrep, seen: BbInstall, why: string): Promise<boolean>;
+  async function setAside(prep: HostPrep, seen: BbInstall, why: string, recheck: { files: boolean }): Promise<boolean | "repaired" | "busy">;
+  async function setAside(prep: HostPrep, seen: BbInstall, why: string, recheck?: { files: boolean }): Promise<boolean | "repaired" | "busy"> {
     try {
-      const said = (await deps.boat.exec(prep.sandboxId, setAsideScript({ dataDir: seen.dataDir!, unit: seen.unit }), { timeoutMs: 60_000, signal: prep.signal, login: false })).stdout;
+      const said = (await deps.boat.exec(prep.sandboxId, setAsideScript({ dataDir: seen.dataDir!, unit: seen.unit, recheck }), { timeoutMs: 60_000, signal: prep.signal, login: false })).stdout;
       if (/BOAT_BBFIX moved/.test(said)) {
         info(`bb update ${prep.sandboxId}: broken install (${why}) moved aside`);
         return true;
       }
+      if (/BOAT_BBFIX intact/.test(said)) return "repaired";
+      if (/BOAT_BBFIX busy/.test(said)) return "busy";
     } catch (error) {
       prep.signal.throwIfAborted();
       log(`bb update ${prep.sandboxId}: couldn't move the broken install aside (${errorText(error)})`);
@@ -818,9 +872,23 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
       return plan.npm ? { kind: "updated", from: plan.from, to: plan.to, npm: true } : { kind: "updated", from: plan.from, to: plan.to };
     }
     // From the npm registry, failed with an install the look found broken still in place (the
-    // registry failed before bb's service stopped): it goes aside, as it did without the fallback.
-    const brokenWhy = plan.npm && plan.broken && result.old === "broken" ? brokenInstall(seen) : null;
-    if (brokenWhy !== null && (await setAside(prep, seen, brokenWhy))) result = { ...result, old: "set-aside" };
+    // registry failed before bb's service stopped): it goes aside, as it did without the fallback,
+    // but only once a new look says it's still broken. The fetch took a while, and bb may have
+    // repaired it meanwhile, or be updating it right now (never stopped half way).
+    let hang: Extract<BbUpdatePlan, { kind: "hung" | "waiting" }> | null = null;
+    let again: BbInstall | null = null;
+    if (plan.npm && plan.broken && result.old === "broken") {
+      const after = await recheck(prep, plan.to);
+      again = after.seen;
+      if (after.kind === "broken") {
+        const moved = await setAside(prep, after.seen, after.why, { files: after.seen.bin !== "ok" || after.seen.lacks.length > 0 || after.seen.installed === "none" });
+        if (moved !== false) result = { ...result, old: moved === true ? "set-aside" : moved };
+      } else if (after.kind === "repaired" || after.kind === "busy") result = { ...result, old: after.kind };
+      else if (after.kind === "hung") {
+        result = { ...result, old: "busy" };
+        hang = after.plan;
+      }
+    }
     const at = now();
     const failures = ((await loadBackoffs())[prep.sandboxId]?.failures ?? 0) + 1;
     const retryAt = at + updateBackoffMs(failures);
@@ -834,6 +902,8 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
     prep.report.log(text);
     deps.tell?.(prep.sandboxId, text);
     log(`bb update ${prep.sandboxId}: bb-update-failed (${result.reason}${result.detail ? ` ${result.detail}` : ""}, old install ${result.old ?? "unknown"}, failure ${failures})`);
+    // bb's own update still runs (or hangs) after the wait: bb's setup doesn't run into it either.
+    if (hang !== null && again !== null) throw new BbUpdateHung(hungDiagnosis(again, hang));
     return { kind: "failed", text };
   }
 
