@@ -137,9 +137,13 @@ export function createProjectSources(bb: BbPluginApi): ProjectSources {
         try {
           await kv().set(keyFor(row.sourceId), row);
         } catch (error) {
-          // Untracked, it would never go: take it back (best effort).
-          await bb.sdk.projects.sources.delete({ projectId, sourceId: row.sourceId }).catch(() => undefined);
-          throw error;
+          // Untracked, it would never go: take it back (best effort). When bb refuses (a project's only source), say so.
+          const kept = await bb.sdk.projects.sources.delete({ projectId, sourceId: row.sourceId }).then(
+            () => null,
+            (deleteError: unknown) => (deleteError instanceof Error ? deleteError.message : String(deleteError)),
+          );
+          if (kept === null) throw error;
+          throw new Error(`${error instanceof Error ? error.message : String(error)}; bb kept source ${row.sourceId}, which Boat couldn't record or remove (${kept})`);
         }
         return { sourceId: row.sourceId, created: true, own: true, isDefault: source.isDefault === true };
       }),
