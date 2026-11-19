@@ -5,10 +5,13 @@ import { unavailableProvider } from "../registry.ts";
 import { isNotFound, type SandboxProvider, type SandboxInfo, type MacModel, type MachineSpec } from "../types.ts";
 import type { MacLeaseLedger } from "../../mac-leases.ts";
 import { LEASE_DAY_MS } from "../../mac-leases.ts";
-import { SPECS } from "../instabox/parse.ts";
+import { SIZE_SPECS } from "../../memory.ts";
 import { shellQuote } from "../shell.ts";
 import { ScalewayApi, serverSchema, typeSchema, productSchema, quotaSchema, fail, type Server } from "./api.ts";
 import { ScalewayKeys, sshExec, type SshExec, type SshRequest } from "./ssh.ts";
+/** Task reservations exposed through the provider interface. Hardware models
+ * and prices remain live; aliases follow Boat's existing task size choices. */
+export const SCALEWAY_TASK_SIZES = Object.entries(SIZE_SPECS).map(([id, spec]) => ({ id: id as "small" | "default" | "large" | "xlarge", label: spec.label, cpus: spec.cpus, memoryGb: spec.memoryGb }));
 export const SCALEWAY_ID_PATTERN = /^scw_(fr-par-[13])_([0-9a-f-]{36})$/;
 const TAG = "bb-boat-key:";
 const uuid = (id: string) => { const match = SCALEWAY_ID_PATTERN.exec(id); if (!match) throw fail("Invalid Scaleway machine ID."); return match[2]!; };
@@ -119,7 +122,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
   }
   const provider: SandboxProvider = {
     ...unavailableProvider("scaleway"), id: "scaleway", displayName: "Scaleway", caps, idPattern: SCALEWAY_ID_PATTERN, machine,
-    sizes: Object.entries(SPECS).map(([id, spec]) => ({ id: id as "small" | "default" | "large" | "xlarge", label: id, cpus: spec.vcpus, memoryGb: spec.memMiB / 1024 })),
+    sizes: SCALEWAY_TASK_SIZES,
     macModels: signal => models(signal),
     async pricing(signal) { const list = await models(signal); return list.map(m => `${m.label} EUR ${(m.hourPrice).toFixed(2)}/h · EUR ${m.minimumCost.toFixed(2)} minimum (24 h)`).join("; ") || null; },
     async capacity(signal) {
@@ -141,8 +144,8 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     async create(input) {
       if (input.system !== "macos" || input.snapshot) throw fail("Scaleway supports new Mac task leases only.", "unsupported");
       const { choices } = await available(input.signal);
-      const need = SPECS[input.type ?? "default"];
-      const choice = choices.find(c => c.ready && c.model.cpus >= need.vcpus && c.model.memoryMiB >= need.memMiB);
+      const need = SCALEWAY_TASK_SIZES.find(size => size.id === (input.type ?? "default"))!;
+      const choice = choices.find(c => c.ready && c.model.cpus >= need.cpus && c.model.memoryMiB >= need.memoryGb*1024);
       if (!choice) throw fail("Scaleway has no Mac with enough stock, quota and room.", "at_capacity");
       if ((await keys.records()).some(record => !record.serverId)) throw fail("A previous Scaleway create is unresolved. Check its console before retrying.", "creation_unknown");
       const generated = await keys.generate();
