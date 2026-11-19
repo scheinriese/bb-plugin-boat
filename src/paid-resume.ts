@@ -27,8 +27,9 @@
 // failed is left alone (only that one: an old failure on one machine never
 // holds the others); waking a suspended one takes a token from the wake
 // budget the watchdog shares (src/wake-budget.ts: 2 a minute). A wake this
-// plugin made that failed holds further wakes for WAKE_HOLD_MS. One headless
-// follow-up a pass.
+// plugin made that failed, at once or found failed when a later pass looks
+// at the machines it woke, holds every wake (the budget's hold, which the
+// watchdog's failed resumes set too). One headless follow-up a pass.
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -41,7 +42,7 @@ import { isBusy, subscriptionRoom, type SubscriptionRoom } from "./relay.ts";
 import { TaskError, type BoatSettings } from "./service.ts";
 import type { TurnEventRow } from "./steer-retry.ts";
 import type { Task } from "./store.ts";
-import type { WakeBudget } from "./wake-budget.ts";
+import { WAKE_FAILURE_HOLD_MS, type WakeBudget } from "./wake-budget.ts";
 
 /** At most this many attempts per pass (failed ones count too); the rest wait for the next pass. */
 export const RESUME_CAP = 10;
@@ -55,8 +56,11 @@ export const MAX_ATTEMPTS = 3;
 export const BACKOFF_FIRST_MS = 5 * 60_000;
 /** …up to this. */
 export const BACKOFF_MAX_MS = 60 * 60_000;
-/** After a wake the paid resume made failed, no machine is woken for this long. */
-export const WAKE_HOLD_MS = 15 * 60_000;
+/**
+ * After a wake fails, no machine is woken for this long (the budget's hold).
+ * The machines a pass woke are looked at again for this long.
+ */
+export const WAKE_HOLD_MS = WAKE_FAILURE_HOLD_MS;
 /** A chat's try still "claimed" after this long was cut off (a restart): it counts, and may go again. */
 export const CLAIM_TTL_MS = 10 * 60_000;
 /** provider-retry records its decision right after a failure: wait this long for it before a core retry. */
@@ -314,16 +318,6 @@ export class PaidResumeStore {
     this.write("backoff", value);
   }
 
-  /** No machine is woken before this (epoch ms; 0: no hold). */
-  wakeHold(): number {
-    const value = this.read<{ until: number }>("wakeHold");
-    return value !== null && Number.isFinite(value.until) ? value.until : 0;
-  }
-
-  setWakeHold(until: number): void {
-    this.write("wakeHold", { until });
-  }
-
   /** Machines the paid resume woke (host:<id>, sandbox:<id>), and when: older than `since` are forgotten. */
   noteWoke(ids: readonly string[], at: number, since: number): void {
     const woke = Object.fromEntries(Object.entries(this.read<Record<string, number>>("woke") ?? {}).filter(([, when]) => Number.isFinite(when) && when >= since));
@@ -331,14 +325,20 @@ export class PaidResumeStore {
     this.write("woke", Object.keys(woke).length > 0 ? woke : null);
   }
 
-  /** Did the paid resume wake this machine since `since`? Answered once: the record goes. */
-  takeWoke(id: string, since: number): boolean {
+  /** The machines the paid resume woke since `since` (older ones are forgotten). */
+  woken(since: number): string[] {
+    const all = this.read<Record<string, number>>("woke") ?? {};
+    const live = Object.fromEntries(Object.entries(all).filter(([, when]) => Number.isFinite(when) && when >= since));
+    if (Object.keys(live).length !== Object.keys(all).length) this.write("woke", Object.keys(live).length > 0 ? live : null);
+    return Object.keys(live);
+  }
+
+  /** Done looking at a machine the paid resume woke. */
+  dropWoke(id: string): void {
     const woke = this.read<Record<string, number>>("woke") ?? {};
-    const when = woke[id];
-    if (when === undefined) return false;
+    if (!(id in woke)) return;
     delete woke[id];
     this.write("woke", Object.keys(woke).length > 0 ? woke : null);
-    return Number.isFinite(when) && when >= since;
   }
 }
 
@@ -752,6 +752,34 @@ export function createPaidResume(deps: PaidResumeDeps) {
     }
   }
 
+  /**
+   * The machines the paid resume woke in the last WAKE_HOLD_MS, read again
+   * directly (their chats may not be candidates any more: a retry bb took,
+   * then a resume that failed later). Failed to start: hold every wake, done
+   * with it. Up: done with it. Still on the way (or unreadable): look again.
+   */
+  async function checkWoken(at: number): Promise<void> {
+    for (const id of deps.store.woken(at - WAKE_HOLD_MS)) {
+      let check: MachineCheck;
+      try {
+        if (id.startsWith("host:")) check = hostCheck(await deps.machines.host(id.slice("host:".length)));
+        else if (id.startsWith("sandbox:")) check = sandboxCheck(await deps.machines.sandbox(id.slice("sandbox:".length)));
+        else {
+          deps.store.dropWoke(id);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (check.state === "up") deps.store.dropWoke(id);
+      else if (check.state === "skip" && check.failure) {
+        deps.log.warn(`paid resume: a machine it woke failed to start (${id}: ${check.why}); no machine is woken for a while`);
+        await deps.wakes.failed();
+        deps.store.dropWoke(id);
+      }
+    }
+  }
+
   /** One pass: resume what stopped at a limit when paid Claude is available. */
   async function runPass(quotas: Quotas, settings: BoatSettings): Promise<ResumeReport> {
     const report: ResumeReport = { resumed: [], skipped: [], deferred: [], told: [], attempts: 0, backoffUntil: null };
@@ -784,19 +812,13 @@ export function createPaidResume(deps: PaidResumeDeps) {
     for (const row of pendingRows === UNKNOWN ? [] : pendingRows) if (row.retry && !ids.includes(row.threadId)) ids.push(row.threadId);
 
     let stopped = false;
-    let wakesHeld = deps.store.wakeHold() > at;
+    // The machines earlier passes woke, before anything is woken now: one that failed to start holds every wake.
+    await checkWoken(at);
+    let wakesHeld = (await deps.wakes.heldUntil()) > at;
     /** The machine check before an attempt: up goes; asleep goes with a wake (if one is left); else why not. */
     const ready = async (check: MachineCheck): Promise<{ go: true; wake: boolean } | { go: false; reason: string; defer: boolean }> => {
-      if (check.state === "skip") {
-        // A failure a machine shows may be days old (bb keeps it until the machine starts again): only this
-        // machine is left alone. One the paid resume woke in the last WAKE_HOLD_MS failed because of that
-        // wake: then no machine is woken for a while. Counted once; the record goes.
-        if (check.failure && check.id !== undefined && deps.store.takeWoke(check.id, at - WAKE_HOLD_MS)) {
-          deps.store.setWakeHold(at + WAKE_HOLD_MS);
-          wakesHeld = true;
-        }
-        return { go: false, reason: check.why, defer: false };
-      }
+      // A failure a machine shows may be days old (bb keeps it until the machine starts again): only this machine is left alone.
+      if (check.state === "skip") return { go: false, reason: check.why, defer: false };
       if (check.state === "up") return { go: true, wake: false };
       if (wakesHeld) return { go: false, reason: "machines aren't woken for now (a wake failed)", defer: true };
       if (!(await deps.wakes.take())) return { go: false, reason: "waiting for a wake (at most 2 a minute)", defer: true };
@@ -819,7 +841,7 @@ export function createPaidResume(deps: PaidResumeDeps) {
         const until = now() + backoffMs(failures);
         deps.store.setBackoff({ until, failures });
         if (outcome.wake) {
-          deps.store.setWakeHold(now() + WAKE_HOLD_MS);
+          await deps.wakes.failed();
           wakesHeld = true;
         }
         report.backoffUntil = until;

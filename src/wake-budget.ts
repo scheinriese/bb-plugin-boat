@@ -2,10 +2,19 @@
 // machine, or a stopped boat sandbox): a token bucket kept in kv, so neither a
 // restart nor an extra pass resets it. The watchdog and the paid Claude
 // resume share one, so together they never wake more than this a minute: a
-// burst of wakes is what overloads boat.dev's snapshot storage.
+// burst of wakes is what overloads boat.dev's snapshot storage. A wake that
+// fails (at once, or found failed later) holds every wake for a while.
+//
+// The interface is kept small on purpose, so this bucket and a shared pacer
+// (a saved, account-wide wake limit with failure backoff, such as
+// src/wake-pacer.ts from another change) can be unified later:
+// take ≈ acquire without waiting (false instead of WakeDeferred), and
+// failed ≈ permit.failed, also for a failure found after the wake.
 
 /** Wakes a minute, at most. */
 export const WAKES_PER_MINUTE = 2;
+/** After a wake fails, no machine is woken for this long. */
+export const WAKE_FAILURE_HOLD_MS = 15 * 60_000;
 export const WAKE_BUDGET_KEY = "wakeBudget";
 
 interface KvStore {
@@ -14,47 +23,69 @@ interface KvStore {
 }
 
 export interface WakeBudget {
-  /** Take one wake if there's one left now (true), else false. */
+  /** Take one wake if there's one left now and wakes aren't held (true), else false. */
   take(): Promise<boolean>;
+  /** A wake failed (the call, or the machine found failed to start later): hold every wake. */
+  failed(): Promise<void>;
+  /** Wakes are held until then (epoch ms; 0: not held). */
+  heldUntil(): Promise<number>;
 }
 
 interface Bucket {
   tokens: number;
   at: number;
+  /** No wake before this (epoch ms; absent or 0: none). */
+  heldUntil?: number;
 }
 
-export function createWakeBudget(kv: KvStore, options: { perMinute?: number; now?: () => number } = {}): WakeBudget {
+export function createWakeBudget(kv: KvStore, options: { perMinute?: number; holdMs?: number; now?: () => number } = {}): WakeBudget {
   const perMinute = options.perMinute ?? WAKES_PER_MINUTE;
+  const holdMs = options.holdMs ?? WAKE_FAILURE_HOLD_MS;
   const now = options.now ?? (() => Date.now());
   const refillMs = 60_000 / perMinute;
   let chain: Promise<unknown> = Promise.resolve();
 
-  async function load(): Promise<Bucket> {
+  async function load(): Promise<Required<Bucket>> {
     const raw = (await kv.get<Bucket>(WAKE_BUDGET_KEY).catch(() => null)) as Bucket | null | undefined;
-    if (raw && Number.isFinite(raw.tokens) && Number.isFinite(raw.at)) return { tokens: Math.max(0, Math.min(perMinute, raw.tokens)), at: raw.at };
-    return { tokens: perMinute, at: now() };
+    const heldUntil = raw && Number.isFinite(raw.heldUntil) ? Number(raw.heldUntil) : 0;
+    if (raw && Number.isFinite(raw.tokens) && Number.isFinite(raw.at)) return { tokens: Math.max(0, Math.min(perMinute, raw.tokens)), at: raw.at, heldUntil };
+    return { tokens: perMinute, at: now(), heldUntil };
   }
 
-  async function take(): Promise<boolean> {
+  /** The bucket refilled to now. */
+  async function current(): Promise<Required<Bucket>> {
     const at = now();
     const bucket = await load();
     // A clock that went back refills nothing.
-    const tokens = Math.min(perMinute, bucket.tokens + Math.max(0, at - bucket.at) / refillMs);
-    if (tokens < 1) {
-      await kv.set(WAKE_BUDGET_KEY, { tokens, at } satisfies Bucket).catch(() => undefined);
+    return { tokens: Math.min(perMinute, bucket.tokens + Math.max(0, at - bucket.at) / refillMs), at, heldUntil: bucket.heldUntil };
+  }
+
+  async function take(): Promise<boolean> {
+    const bucket = await current();
+    if (bucket.heldUntil > bucket.at || bucket.tokens < 1) {
+      await kv.set(WAKE_BUDGET_KEY, bucket).catch(() => undefined);
       return false;
     }
     // Saved before the wake: a crash right after can't hand the token out twice.
-    await kv.set(WAKE_BUDGET_KEY, { tokens: tokens - 1, at } satisfies Bucket);
+    await kv.set(WAKE_BUDGET_KEY, { ...bucket, tokens: bucket.tokens - 1 });
     return true;
   }
 
+  async function failed(): Promise<void> {
+    const bucket = await current();
+    await kv.set(WAKE_BUDGET_KEY, { ...bucket, heldUntil: Math.max(bucket.heldUntil, bucket.at + holdMs) });
+  }
+
+  // One at a time, so two callers can't both spend the last token.
+  function serial<T>(run: () => Promise<T>, fallback: T): Promise<T> {
+    const next = chain.then(run, run);
+    chain = next.catch(() => undefined);
+    return next.catch(() => fallback);
+  }
+
   return {
-    take() {
-      // One at a time, so two callers can't both spend the last token.
-      const next = chain.then(take, take);
-      chain = next.catch(() => undefined);
-      return next.catch(() => false);
-    },
+    take: () => serial(take, false),
+    failed: () => serial(failed, undefined),
+    heldUntil: async () => (await load()).heldUntil,
   };
 }

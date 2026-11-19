@@ -218,7 +218,7 @@ function setup(options: { tasks?: Task[]; projects?: { id: string; name: string;
     now: () => clock,
     ...(options.cap ? { timing: { cap: options.cap } } : {}),
   });
-  return { resume, store, threads, machines, tasks, events, followups, followupFailures, sleeps, errors, kv, now: () => clock, advance: (ms: number) => void (clock += ms) };
+  return { resume, store, threads, machines, wakes, tasks, events, followups, followupFailures, sleeps, errors, kv, now: () => clock, advance: (ms: number) => void (clock += ms) };
 }
 
 /** A reading taken just now on the test's clock (an older one is stale: no paid Claude). */
@@ -780,7 +780,7 @@ test("a headless follow-up is tried again only when it provably sent nothing", a
   assert.deepEqual(env.followups.map((entry) => entry.taskId), ["t_boat", "t_restore"]);
   assert.equal(env.store.settled("task:t_restore", "turn:1"), false);
   // A wake that failed holds further wakes as well.
-  assert.ok(env.store.wakeHold() > NOW + BACKOFF_FIRST_MS);
+  assert.ok((await env.wakes.heldUntil()) > NOW + BACKOFF_FIRST_MS);
 
   // The service's own admission check refused it: nothing went out, so no try is used and nothing backs off.
   env.advance(WAKE_HOLD_MS);
@@ -843,7 +843,7 @@ test("machines: one starting, stopping, failed or offline is left alone; waking 
   assert.equal(later.get("thr_sbx_error"), "its sandbox is error");
   assert.equal(later.get("thr_failed_resume"), "its machine failed: Machine resume failed: EIO");
   assert.deepEqual(third.resumed.map((work) => work.threadId), ["thr_sleep4"]);
-  assert.equal(env.store.wakeHold(), 0);
+  assert.equal(await env.wakes.heldUntil(), 0);
 });
 
 test("a machine that failed to start long ago never holds the others: clean sleepers still wake, two a minute", async () => {
@@ -864,35 +864,77 @@ test("a machine that failed to start long ago never holds the others: clean slee
     env.advance(60_000);
   }
   assert.deepEqual(woken.sort(), ["thr_clean1", "thr_clean2", "thr_clean3", "thr_clean4", "thr_clean5", "thr_clean6"]);
-  assert.equal(env.store.wakeHold(), 0);
+  assert.equal(await env.wakes.heldUntil(), 0);
   assert.equal(env.threads.calls.includes("thr_stale"), false);
 });
 
-test("a machine the paid resume woke that then fails to start holds all wakes once, for 15 minutes", async () => {
+for (const [variant, stopAgain] of [
+  ["its retry then fails with another error", (env: ReturnType<typeof setup>) => env.threads.events.set("thr_woken", [...stoppedEvents("req_thr_woken"), ...stoppedEvents("req_eio", { root: "req_thr_woken", seq: 10, category: "internal", status: 500, message: "bb bootstrap failed: EIO" })])],
+  ["its retry then stops at a limit again, in the same chain", (env: ReturnType<typeof setup>) => env.threads.events.set("thr_woken", [...stoppedEvents("req_thr_woken"), ...stoppedEvents("req_again", { root: "req_thr_woken", seq: 10 })])],
+] as const) {
+  test(`a machine the paid resume woke that fails to start later holds every wake once (${variant})`, async () => {
+    const env = setup();
+    const host = (id: string, state: Partial<MachineState>) => env.machines.hosts.set(`host_${id}`, { phase: "suspended", connected: false, message: null, ...state });
+    skippedStop(env, "thr_woken");
+    host("thr_woken", {});
+    await env.resume.pass(fresh(env), settings());
+    // bb took the retry: the chat is continued, its stop is gone.
+    assert.deepEqual(env.threads.calls, ["thr_woken"]);
+    assert.deepEqual(env.store.stops(), []);
+
+    // Then bb's resume of its machine fails (boat.dev throttling), and the chat stops again: it's no candidate any more.
+    host("thr_woken", { message: "Machine resume failed: Failed to restore snapshot: Please reduce your request rate" });
+    env.threads.threads.get("thr_woken")!.status = "error";
+    stopAgain(env);
+    for (let index = 1; index <= 4; index++) {
+      skippedStop(env, `thr_clean${index}`, {}, env.now() + index);
+      host(`thr_clean${index}`, {});
+    }
+    env.advance(60_000);
+    const held = await env.resume.pass(fresh(env), settings());
+    // The machine it woke was read again on its own: every wake waits 15 minutes, nothing else is woken.
+    assert.equal(await env.wakes.heldUntil(), NOW + 60_000 + WAKE_HOLD_MS);
+    assert.deepEqual(held.resumed, []);
+    assert.deepEqual(held.deferred.sort(), ["thr_clean1", "thr_clean2", "thr_clean3", "thr_clean4"]);
+    assert.equal(env.threads.calls.length, 1);
+
+    // After the hold, the same old message doesn't hold them again: two a minute wake.
+    env.advance(WAKE_HOLD_MS);
+    const after = await env.resume.pass(fresh(env), settings());
+    assert.equal(after.resumed.length, 2);
+    assert.equal(await env.wakes.heldUntil(), NOW + 60_000 + WAKE_HOLD_MS);
+  });
+}
+
+test("the machines a pass woke: one still starting is looked at again, one that came up is done with", async () => {
   const env = setup();
   const host = (id: string, state: Partial<MachineState>) => env.machines.hosts.set(`host_${id}`, { phase: "suspended", connected: false, message: null, ...state });
-  skippedStop(env, "thr_woken");
-  host("thr_woken", {});
+  skippedStop(env, "thr_slow");
+  host("thr_slow", {});
   await env.resume.pass(fresh(env), settings());
-  assert.deepEqual(env.threads.calls, ["thr_woken"]);
-  // bb's resume of it failed (boat.dev throttling): the turn stops again, and the machine says why.
-  env.threads.threads.get("thr_woken")!.status = "error";
-  env.threads.events.set("thr_woken", stoppedEvents("req_new", { at: env.now() }));
-  env.threads.decisions.set("thr_woken", { requestId: "req_new", kind: "decline", reason: "beyond-maximum-wait" });
-  env.store.recordStop("thr_woken", "req_new", new Date(env.now()));
-  host("thr_woken", { message: "Machine resume failed: Please reduce your request rate" });
-  // Stopped after it, so it comes up after it in the pass.
-  skippedStop(env, "thr_next", {}, env.now() + 1);
-  host("thr_next", {});
+  assert.deepEqual(env.store.woken(0), ["host:host_thr_slow"]);
+  // Still resuming a minute later: no hold, and it's looked at again.
+  host("thr_slow", { phase: "resuming" });
   env.advance(60_000);
-  const held = await env.resume.pass(fresh(env), settings());
-  assert.equal(env.store.wakeHold(), NOW + 60_000 + WAKE_HOLD_MS);
-  assert.deepEqual(held.skipped.find((entry) => entry.id === "thr_next"), { id: "thr_next", reason: "machines aren't woken for now (a wake failed)" });
-  // Once the hold is over, the same old message doesn't hold them again.
-  env.advance(WAKE_HOLD_MS);
-  const after = await env.resume.pass(fresh(env), settings());
-  assert.deepEqual(after.resumed.map((work) => work.threadId), ["thr_next"]);
-  assert.equal(env.store.wakeHold(), NOW + 60_000 + WAKE_HOLD_MS);
+  await env.resume.pass(fresh(env), settings());
+  assert.deepEqual(env.store.woken(0), ["host:host_thr_slow"]);
+  assert.equal(await env.wakes.heldUntil(), 0);
+  // Up: done with it. A failure it shows much later isn't this wake's.
+  host("thr_slow", { phase: "active", connected: true });
+  env.advance(60_000);
+  await env.resume.pass(fresh(env), settings());
+  assert.deepEqual(env.store.woken(0), []);
+  host("thr_slow", { message: "Machine resume failed: EIO" });
+  env.advance(60_000);
+  await env.resume.pass(fresh(env), settings());
+  assert.equal(await env.wakes.heldUntil(), 0);
+  // A record nobody could read again is forgotten after 15 minutes.
+  skippedStop(env, "thr_quiet", {}, env.now());
+  host("thr_quiet", {});
+  await env.resume.pass(fresh(env), settings());
+  host("thr_quiet", { phase: "resuming" });
+  env.advance(WAKE_HOLD_MS + 1);
+  assert.deepEqual(env.store.woken(env.now() - WAKE_HOLD_MS), []);
 });
 
 test("a chat's try cut off by a restart (still claimed) goes again after ten minutes; a headless one doesn't", async () => {
@@ -910,6 +952,24 @@ test("a chat's try cut off by a restart (still claimed) goes again after ten min
   assert.equal(env.store.attempts("thr_cut", "req_thr_cut"), 2);
   // A headless follow-up may have reached the agent: never again.
   assert.deepEqual(env.followups, []);
+});
+
+test("the wake budget holds every wake after a failure, kept across a restart", async () => {
+  const kv = memoryKv();
+  let clock = NOW;
+  const budget = createWakeBudget(kv, { now: () => clock });
+  assert.equal(await budget.heldUntil(), 0);
+  await budget.failed();
+  assert.equal(await budget.heldUntil(), NOW + WAKE_HOLD_MS);
+  // Tokens are left, but nothing is woken during the hold, and taking doesn't spend one.
+  assert.equal(await budget.take(), false);
+  assert.equal(await createWakeBudget(kv, { now: () => clock }).take(), false);
+  // A second failure later moves the hold on, never back.
+  clock += 60_000;
+  await budget.failed();
+  assert.equal(await budget.heldUntil(), NOW + 60_000 + WAKE_HOLD_MS);
+  clock += WAKE_HOLD_MS;
+  assert.deepEqual([await budget.take(), await budget.take(), await budget.take()], [true, true, false]);
 });
 
 test("the wake budget: two a minute, one at a time, kept across a restart", async () => {
