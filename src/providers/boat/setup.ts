@@ -8,7 +8,7 @@
 // JSON shapes observed from boat CLI 1.0.89 (fixtures/boat-json).
 // `env list` carries the environments' variable VALUES (envContents): they
 // are never kept, logged or returned; only the fields below are read.
-import { BoatError, bool, num, rec, str, type BoatRunOptions, type BoatRunResult, type JsonRecord } from "./cli.ts";
+import { BoatError, bool, num, rec, resolveBoatBinary, str, type BoatCli, type BoatRunOptions, type BoatRunResult, type JsonRecord } from "./cli.ts";
 import { autoStopCapFromLimits } from "./api.ts";
 import { SIZE_ORDER, SIZE_SPECS, sizeDetail } from "../../memory.ts";
 import type { ConnectCheck, ConnectStatus } from "../../connect.ts";
@@ -979,6 +979,18 @@ export async function readBoatFacts(deps: Pick<SetupDeps, "binary" | "run" | "ti
   if (profileList.status === "fulfilled") facts.profiles = parseProfiles(profileList.value);
   else facts.profilesError = errorText(profileList.reason);
   return facts;
+}
+
+/**
+ * The setup checks on the plugin's boat CLI: the binary from the boat CLI
+ * location setting, and its read-only commands through the CLI.
+ */
+export function createBoatSetup(cli: Pick<BoatCli, "run">, boatPath: () => Promise<string>, deps: Omit<SetupDeps, "binary" | "run">): Setup {
+  return createSetup({
+    binary: async () => resolveBoatBinary(await boatPath()),
+    run: (args, options) => cli.run(args, options),
+    ...deps,
+  });
 }
 
 export function createSetup(deps: SetupDeps): Setup {

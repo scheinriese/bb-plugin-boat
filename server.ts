@@ -31,7 +31,7 @@ import { ProtocolStore } from "./src/protocol.ts";
 import { createQuotaReader } from "./src/quota.ts";
 import { DEFAULT_LIMIT_MS, PROVIDER_OF_ID, createLimitTracker, limitFromErrorText, limitFromTurnFailure, type TurnFailure } from "./src/limits.ts";
 import { createEvidenceSource, parseEvidenceSource } from "./src/evidence.ts";
-import { CLI_MISSING_STATUS, createSetup, effectiveAgents, parseAgentsSetting, type SetupSettings } from "./src/providers/boat/setup.ts";
+import { CLI_MISSING_STATUS, createBoatSetup, effectiveAgents, parseAgentsSetting, type SetupSettings } from "./src/providers/boat/setup.ts";
 import { runnersFor } from "./src/settings.ts";
 import { createMigratingSettingsStore } from "./src/settings-store.ts";
 import { createAttentionNotifications, type AttentionNotifications } from "./src/attention-notifications.ts";
@@ -128,9 +128,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   // Setup checks: read-only boat commands, cached about a minute.
-  const setup = createSetup({
-    binary: async () => resolveBoatBinary((await settings.get()).boatPath),
-    run: (args, options) => cli.run(args, options),
+  const setup = createBoatSetup(cli, async () => (await settings.get()).boatPath, {
     settings: setupSettings,
     connect,
     repoAccess: () => store.latestRepoAccess(),
