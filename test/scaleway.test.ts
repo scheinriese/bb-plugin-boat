@@ -25,14 +25,14 @@ async function fixture(t: { after(fn: () => unknown): void }) {
   const dir = await mkdtemp(join(tmpdir(), "scaleway-test-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const store = memoryStore(), keys = new ScalewayKeys(dir);
   const calls: { method: string; path: string; body: any }[] = [], ssh: SshRequest[] = [];
-  let servers: any[] = [], quota = 2, available = true, failSetup = false, ambiguousCreate = false, poll = 0;
+  let servers: any[] = [], quota = 2, available = true, beta = false, failSetup = false, ambiguousCreate = false, poll = 0;
   const api = new ScalewayApi({ key: async () => secret, config: async () => ({ projectId, zone: "fr-par-3" }), fetch: (async (url: string, init: RequestInit) => {
     assert.equal(new Headers(init.headers).get("X-Auth-Token"), secret);
     const u = new URL(url), method = init.method!, path = u.pathname, body = init.body ? JSON.parse(String(init.body)) : null;
     calls.push({ method, path, body });
     const json = (value: unknown) => new Response(JSON.stringify(value));
     if (path.includes("public-catalog")) return json({ products: [product, { ...product, unit_of_measure: { unit: "month", size: 1 } }], total_count: 2 });
-    if (path.endsWith("server-types")) return json({ server_types: [{ ...type, stock: available ? "high_stock" : "no_stock" }] });
+    if (path.endsWith("server-types")) return json({ server_types: [{ ...type, default_os: { ...type.default_os, is_beta: beta }, stock: available ? "high_stock" : "no_stock" }] });
     if (path.includes("/projects/")) return json({ organization_id: "org" });
     if (path.endsWith("quota")) return json({ quota: [{ name: "apple_silicon_m1_m", limits: [{ zone: "fr-par-3", limit: quota }] }], total_count: 1 });
     if (path.endsWith("ssh-keys") && method === "POST") return json({ id: keyId });
@@ -53,7 +53,7 @@ async function fixture(t: { after(fn: () => unknown): void }) {
     return { exitCode: failSetup && request.stdin === BOOTSTRAP ? 1 : 0, stdout: "ok", stderr: "" };
   } });
   const create = () => provider.create({ name: "bb-task", type: "default", system: "macos", ttlSeconds: 3600, gitGuard: true });
-  return { api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, servers: () => servers };
+  return { api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, beta: () => { beta=true; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, servers: () => servers };
 }
 test("Scaleway create waits for delivered and SSH, bootstraps tools, stores a private key and releases it", async t => {
   const f=await fixture(t); const sandbox=await f.create();
@@ -175,4 +175,10 @@ test("an unconfirmed held Mac prevents new rentals on either provider",async()=>
   const f=await routing("instabox",{listFail:"instabox",held:"instabox"});
   await assert.rejects(f.service.startTask({title:"Mac task",brief:"Check tools",role:"custom",sandboxSystem:"macos",runner:"chat"}),/List unavailable/);
   assert.deepEqual(f.creates,[]);
+});
+
+test("Scaleway never selects a beta default OS",async t=>{
+  const f=await fixture(t);f.beta();assert.deepEqual(await f.provider.macModels!(),[]);
+  assert.deepEqual(f.provider.caps.systems,[]);await assert.rejects(f.create(),/stock, quota/);
+  assert.ok(!f.calls.some(c=>c.method==="POST"));
 });

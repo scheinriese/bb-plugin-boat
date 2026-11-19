@@ -33,7 +33,7 @@ Catalog on 2026-11-19:
 - [Pricing](https://www.scaleway.com/en/pricing/apple-silicon/) and
   [billing FAQ](https://www.scaleway.com/en/docs/billing/faq/):
   macOS has a 24-hour minimum. Billing runs from creation to deletion,
-  including when powered off. The [Bare Metal conditions](https://www-uploads.scaleway.com/Specific_Conditions_Bare_Metal_Services_v17072024_4510d272ea.pdf)
+  including when powered off. The [Bare Metal conditions](https://www-uploads.scaleway.com/Specific_Conditions_Bare_Metal_v07042026_c09b37fbab.pdf)
   state that each begun hour is charged. Use the minimum plus subsequent
   hourly charges, not another 24-hour purchase. Tax is excluded from retail prices.
 - [IAM API](https://www.scaleway.com/en/developers/api/iam) and

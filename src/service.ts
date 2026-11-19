@@ -882,7 +882,8 @@ export class BoatService {
     const provider = input.sandboxSystem === "macos" && !["instabox", "scaleway"].includes(project?.sandboxProvider ?? "")
       ? this.sandboxProviders.forTask({ sandboxProvider: "instabox" })
       : this.sandboxProviders.forProject(project);
-    if (this.sandboxProviders.get(provider.id) === null && input.sandboxSystem !== "macos" && project?.sandboxSystem !== "macos") {
+    const macIntent = input.sandboxSystem === "macos" || (input.sandboxSystem == null && (project?.sandboxSystem === "macos" || provider.id === "scaleway"));
+    if (this.sandboxProviders.get(provider.id) === null && !macIntent) {
       throw new TaskError(
         `${project?.name ?? "This project"} runs on ${provider.displayName}, which isn't turned on, so its task can't start.`,
         "provider_unavailable",
