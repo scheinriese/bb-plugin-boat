@@ -71,6 +71,9 @@ export interface SandboxInfo {
   setupStatus: string | null;
   error: string | null;
   /** Its size, when the provider says (not verified that boat.dev does; the memory probe is what counts). */
+  scheduledReleaseAt?: string | null;
+  system?: "linux" | "macos";
+  mac?: { model: string; leaseId: string; startedAt: string; chargeUntil: string; minimumCost: number; hourPrice: number; cpus: number; memoryMiB: number };
   machineType?: MachineType | null;
 }
 
@@ -505,6 +508,7 @@ export interface MachineHookContext {
 // ------------------------------------------------------------------ the provider
 
 export interface CreateSandboxOptions {
+  system?: "linux" | "macos";
   name: string;
   type: MachineType;
   /** The provider environment to start from (null: the account's default). */
@@ -557,7 +561,7 @@ export interface SandboxLifecycle {
   /** boat new: a new sandbox, up (a failed create leaves none behind). */
   create(options: CreateSandboxOptions): Promise<SandboxInfo>;
   /** boat delete --yes */
-  delete(sandboxId: string, signal?: AbortSignal): Promise<void>;
+  delete(sandboxId: string, signal?: AbortSignal, options?: { leaseEndReason?: "handed back" | "deleted" | "failed"; leaseEndAt?: number }): Promise<void>;
   /**
    * boat stop [--force]: keeps the disk and the agent's conversations, and
    * says what became of the stop. force: stop even if the provider can't
@@ -622,7 +626,13 @@ export interface AgentRunner {
 }
 
 /** For later providers: not called yet. */
+export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string }
 export interface LaterMembers {
+  macModels?(signal?: AbortSignal): Promise<MacModel[]>;
+  /** Release an empty lease exactly when its paid minimum ends. Omit if the provider cannot schedule; Boat waits until the minimum ends instead. */
+  scheduleLeaseRelease?(sandboxId: string, at: string, signal?: AbortSignal): Promise<void>;
+  /** Cancel that schedule before attaching more work. */
+  cancelLeaseRelease?(sandboxId: string, signal?: AbortSignal): Promise<void>;
   /**
    * Its prices in one line, as the provider states them now ("M2 $10.80 a
    * day"); null: it doesn't say. Settings shows amounts only from here.
@@ -643,4 +653,17 @@ export interface SandboxProvider extends ProviderAccount, SandboxLifecycle, Sand
   machineHooks?(context: MachineHookContext): MachineHooks;
   /** Its words for the plugin's repo steps (absent: neutral words, ProviderError). */
   readonly repoWords?: RepoWords;
+}
+
+/** Implemented Mac hosting, with live model checks performed before dispatch. */
+export function canHostMac(provider: Pick<SandboxProvider, "macModels" | "caps">): boolean {
+  return typeof provider.macModels === "function" || (provider.caps.systems ?? [provider.caps.os]).includes("macos");
+}
+
+/** Task reservations use this provider's published size aliases, independently
+ * of the whole machine/model selected for a newly created Mac. */
+export function macTaskResources(provider: Pick<SandboxProvider, "sizes" | "displayName">, type: MachineType): { vcpus: number; memMiB: number } {
+  const size = provider.sizes.find(size => size.id === type);
+  if (!size || !Number.isFinite(size.cpus) || size.cpus <= 0 || !Number.isFinite(size.memoryGb) || size.memoryGb <= 0) throw new ProviderError(`${provider.displayName} does not provide resource reservations for ${type}.`, { code: "size_unavailable" });
+  return { vcpus: size.cpus, memMiB: Math.ceil(size.memoryGb*1024) };
 }

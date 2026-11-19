@@ -207,6 +207,7 @@ export const projectSchema = z.object({
   /** Its chats stopped at a usage limit never continue on paid Claude. */
   neverPaidClaude: z.boolean().optional(),
   /** The sandbox provider its new work runs on (Settings › Runs on); null or absent: the default, boat.dev. */
+  sandboxSystem: z.enum(["linux", "macos"]).optional(),
   sandboxProvider: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -237,6 +238,7 @@ export const projectInputSchema = z.object({
   /** absent: unchanged. */
   neverPaidClaude: z.boolean().optional(),
   /** The sandbox provider for its new work; null: the default; absent: unchanged. */
+  sandboxSystem: z.enum(["linux", "macos"]).optional(),
   sandboxProvider: z.string().trim().min(1).max(40).nullable().optional(),
 });
 export type ProjectInputDto = z.infer<typeof projectInputSchema>;
@@ -396,6 +398,7 @@ export const sandboxUseSchema = z.object({
 export type SandboxUseDto = z.infer<typeof sandboxUseSchema>;
 
 export const sandboxSchema = z.object({
+  leaseDaysThisWeek: z.number().optional(),
   id: z.string(),
   name: z.string().nullable(),
   state: z.string(),
@@ -773,6 +776,7 @@ export const rpcContract = defineRpcContract({
       /** Model tier; the plugin picks model and effort (an explicit model wins). */
       tier: tierSchema.nullable().optional(),
       effort: effortSchema.nullable().optional(),
+      sandboxSystem: z.enum(["linux", "macos"]).optional(),
       sandbox: z.string().trim().nullable(),
       machineType: machineTypeSchema.nullable(),
       /** Thread to notify when turns finish (null: nobody). */

@@ -1,3 +1,4 @@
+import { MacLeaseLedger, MAC_LEASE_MIGRATIONS } from "./mac-leases.ts";
 // Plugin-owned task registry (SQLite, <dataDir>/plugins/boat/data.db).
 //
 // A task is one piece of delegated work: a coding agent conversation inside a
@@ -108,6 +109,7 @@ export interface Task {
    * Absent: boat.dev, the only one so far (so tasks read as before).
    */
   sandboxProvider?: string;
+  sandboxSystem?: "linux" | "macos";
 }
 
 /** "What changed since you approved": compared in the sandbox after the turn that followed a conflict. */
@@ -410,6 +412,7 @@ const COLUMN_BY_FIELD: Record<keyof Task, string> = {
   unshipped: "unshipped",
   shipApproval: "ship_approval",
   sandboxProvider: "sandbox_provider",
+  sandboxSystem: "sandbox_system",
 };
 
 function nullableString(value: unknown): string | null {
@@ -462,6 +465,7 @@ function toTask(row: Row): Task {
     unshipped: row.unshipped === null || row.unshipped === undefined ? null : Number(row.unshipped),
     shipApproval: parseShipApproval(row.ship_approval),
     // Only another provider's: a task on boat.dev reads as it did before the column.
+    ...(row.sandbox_system === "macos" ? { sandboxSystem: "macos" as const } : {}),
     ...(typeof row.sandbox_provider === "string" && row.sandbox_provider !== DEFAULT_PROVIDER_ID ? { sandboxProvider: row.sandbox_provider } : {}),
   };
 }
@@ -514,6 +518,7 @@ function parseRepos(value: unknown): { repo: string; baseBranch: string; path?: 
 
 function toColumnValue(field: keyof Task, value: unknown): unknown {
   if (field === "ownsSandbox") return value === true ? 1 : 0;
+  if (field === "sandboxSystem") return value === "macos" ? "macos" : "linux";
   if (field === "sandboxProvider") return typeof value === "string" && value !== "" ? value : DEFAULT_PROVIDER_ID;
   if (field === "extraRepos") return JSON.stringify(Array.isArray(value) ? value : []);
   if (field === "shipApproval") return value === null || value === undefined ? null : JSON.stringify(value);
@@ -532,14 +537,16 @@ export interface TaskFilter {
 }
 
 export class TaskStore {
+  readonly macLeases: MacLeaseLedger;
   private readonly db: () => Database.Database;
 
   constructor(db: () => Database.Database) {
     this.db = db;
+    this.macLeases = new MacLeaseLedger(db);
   }
 
   static migrations(): string[] {
-    return [...MIGRATIONS];
+    return [...MIGRATIONS, ...MAC_LEASE_MIGRATIONS, `ALTER TABLE tasks ADD COLUMN sandbox_system TEXT NOT NULL DEFAULT 'linux'`];
   }
 
   insert(task: Task): Task {

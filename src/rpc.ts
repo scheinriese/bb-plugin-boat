@@ -1,3 +1,4 @@
+import { macRunsOnBatch } from "./mac-lease-view.ts";
 import { projectSnapshotHandlers } from "./project-snapshot.ts";
 import { readProjectCatalog, validateLocalProjectLink } from "./project-catalog.ts";
 import { fidelityHandlers } from "./rpc-fidelity.ts";
@@ -331,16 +332,16 @@ export function registerRpc(runtime: Runtime): void {
     return type;
   };
   /** Where a task's sandbox runs (Settings › Sandbox providers words): "boat.dev · Default". */
-  const runsOn = (task: Task): RunsOnDto =>
-    runsOnOf(
+  const runsOn = (task: Task, macView: ReturnType<typeof macRunsOnBatch>): RunsOnDto =>
+    macView(task.sandboxId, task.id) ?? runsOnOf(
       service.sandboxProvider(task),
       task.sandboxId !== null && OPEN_STATUSES.includes(task.status) ? sizeOf(task.sandboxId, task) : null,
       service.sandboxProviders.default.id,
     );
 
-  const dto = (task: Task, sources: Sourcing, all?: readonly Task[]) =>
+  const dto = (task: Task, sources: Sourcing, all?: readonly Task[], macView = macRunsOnBatch(service.store.macLeases.snapshot(), service.store.sandboxTasks(task.sandboxId ?? ""))) =>
     toTaskDto(task, {
-      runsOn: runsOn(task),
+      runsOn: runsOn(task, macView),
       publicStatus: service.publicStatus(task, { ready: isReady(task, all ?? service.store.list({ parentTaskId: task.id, limit: 100 }).concat(task), latestReview, sources.isOrchestrator) }),
       untrustedRepo: untrusted(task),
       movingToChat: service.isMovingToChat(task.id),
@@ -460,17 +461,24 @@ export function registerRpc(runtime: Runtime): void {
         const sandboxes = listed.sandboxes;
         const tasks = service.store.list({ limit: 1000 });
         const orchestrators = service.store.orchestratorThreadIds().current;
+        const macView = macRunsOnBatch(service.store.macLeases.snapshot(), tasks);
         return {
           sandboxes: sandboxes.map((sandbox) => {
             const own = tasks.filter((task) => task.sandboxId === sandbox.id);
             const live = own.find((task) => OPEN_STATUSES.includes(task.status)) ?? null;
             const size = sandbox.machineType ?? (live === null ? null : sizeOf(sandbox.id, live));
-            return toSandboxDto(
+            const result = toSandboxDto(
               sandbox,
               own.map((task) => task.id),
               sandboxUses(sandbox.id, tasks, chats, orchestrators),
-              runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id),
+              macView(sandbox.id) ?? runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id),
             );
+            if (result.runsOn?.os === "macos") {
+              const now = Date.now();
+              const monday = new Date(now); monday.setUTCHours(0,0,0,0); monday.setUTCDate(monday.getUTCDate()-(monday.getUTCDay()+6)%7);
+              return { ...result, leaseDaysThisWeek: service.store.macLeases.between(monday.getTime(),now+1,now,sandbox.id).leaseDays };
+            }
+            return result;
           }),
           error: listed.failed.length === 0 ? null : listed.failed.map((entry) => `${PROVIDER_NAMES[entry.provider as keyof typeof PROVIDER_NAMES] ?? entry.provider}: ${entry.error}`).join("; "),
         };
@@ -482,7 +490,8 @@ export function registerRpc(runtime: Runtime): void {
     tasks: async ({ statuses, threadId, limit }) => {
       const list = service.store.list({ statuses: statuses ?? undefined, orchestratorThreadId: threadId ?? undefined, limit });
       const sources = await sourcing(list);
-      return { tasks: list.map((task, _index, all) => dto(task, sources, all)) };
+      const macView = macRunsOnBatch(service.store.macLeases.snapshot(), list);
+      return { tasks: list.map((task, _index, all) => dto(task, sources, all, macView)) };
     },
 
     task: async ({ id }) => {
@@ -508,10 +517,11 @@ export function registerRpc(runtime: Runtime): void {
       const result: Record<string, TaskDto[]> = {};
       const lists = keys.slice(0, 200).map((threadId) => [threadId, service.store.list({ orchestratorThreadId: threadId, limit: 100 })] as const);
       const sources = await sourcing(lists.flatMap(([, tasks]) => tasks.slice(0, 1)));
+      const macView = macRunsOnBatch(service.store.macLeases.snapshot(), lists.flatMap(([,tasks]) => tasks));
       for (const [threadId, tasks] of lists) {
         const open = tasks.filter((task) => OPEN_STATUSES.includes(task.status));
         const closed = tasks.filter((task) => !OPEN_STATUSES.includes(task.status));
-        result[threadId] = [...open, ...closed].map((task) => dto(task, sources, tasks));
+        result[threadId] = [...open, ...closed].map((task) => dto(task, sources, tasks, macView));
       }
       return result;
     },
@@ -658,6 +668,7 @@ export function registerRpc(runtime: Runtime): void {
             // The user is the one clicking: their choice is the approval.
             userApproved: true,
             sandbox: input.sandbox || null,
+            sandboxSystem: input.sandboxSystem,
             machineType: (input.machineType as MachineType | null) ?? null,
             orchestratorThreadId: input.notifyThreadId,
             project: input.projectId ? await runtime.resolveProject({ kind: "boat", id: input.projectId }) : null,
@@ -985,12 +996,13 @@ export function registerRpc(runtime: Runtime): void {
       });
       const tasks = found.flatMap(([, task]) => (task === null ? [] : [task]));
       const sources = tasks.length > 0 ? await sourcing(tasks) : null;
+      const macView = macRunsOnBatch(service.store.macLeases.snapshot(), tasks);
       const result: Record<string, ThreadRoleDto> = {};
       for (const [threadId, task] of found) {
         result[threadId] = orchestrators.has(threadId)
           ? { kind: "orchestrator" }
           : task !== null && sources !== null
-            ? { kind: "task", task: dto(task, sources) }
+            ? { kind: "task", task: dto(task, sources, undefined, macView) }
             : { kind: "chat" };
       }
       return result;
@@ -1076,6 +1088,7 @@ export function registerRpc(runtime: Runtime): void {
       const decisions = service.store.decisions({ orchestratorThreadId: threadId, statuses: ["open"] });
       const sources = await sourcing(tasks);
       // A finished turn of a page or plain-chat task is ready for the user (and counts in the badge).
+      const macView = macRunsOnBatch(service.store.macLeases.snapshot(), tasks);
       const board = buildBoard({ tasks, decisions, latestVerdict: latestReview, isOrchestrator: sources.isOrchestrator });
       const toDecisionDto = (decision: (typeof decisions)[number]) => ({
         id: decision.id,
@@ -1095,12 +1108,12 @@ export function registerRpc(runtime: Runtime): void {
       return {
         needsYou: board.needsYou.map(toDecisionDto),
         ready: board.ready.map((task) =>
-          dto(task, sources, tasks),
+          dto(task, sources, tasks, macView),
         ),
         running: board.running.map((task) =>
-          dto(task, sources, tasks),
+          dto(task, sources, tasks, macView),
         ),
-        done: board.done.map((task) => dto(task, sources, tasks)),
+        done: board.done.map((task) => dto(task, sources, tasks, macView)),
       };
     },
 

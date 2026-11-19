@@ -5,6 +5,7 @@
 // server (where the user is logged in to boat), keeps a task registry in its
 // own SQLite database, watches running tasks in a background service, and
 // posts a message into the dispatching thread when a worker finishes a turn.
+import { maintainLeasesAndKeepAwake } from "./src/lease-maintenance.ts";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { PROVIDERS_TAG, TAGS } from "./contract.ts";
@@ -113,7 +114,7 @@ export default async function plugin(bb: BbPluginApi) {
   const providerSecrets = await defineProviderSecrets(bb);
   const instaboxCli = new InstaboxCli(async () => resolveInstaboxBinary((await settings.get()).instaboxPath), () => providerSecrets.instaboxKey());
   const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
-  const instabox = createInstaboxProvider(instaboxCli, instaboxRest);
+  const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases });
   let instaboxOn = (await settings.get()).instaboxEnabled;
   // Sandbox providers: boat.dev, the default; Instabox while it's turned on and its key stored (src/providers/registry.ts).
   const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli }), instabox], {
@@ -171,6 +172,8 @@ export default async function plugin(bb: BbPluginApi) {
       sandboxTtlHours: values.sandboxTtlHours,
       maxActiveSandboxes: values.maxActiveSandboxes,
       stopIdleAfterMinutes: values.stopIdleAfterMinutes,
+      macHandBackMarginMinutes: values.macHandBackMarginMinutes,
+      macIdleNoticeMinutes: values.macIdleNoticeMinutes,
       freeSlotsWhenFull: values.freeSlotsWhenFull,
       deleteSandboxOnClose: values.deleteSandboxOnClose,
       reviewSandbox: values.reviewSandbox as BoatSettings["reviewSandbox"],
@@ -967,14 +970,12 @@ export default async function plugin(bb: BbPluginApi) {
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-        // Instabox doesn't see a bb chat working: an activity lease keeps its machine awake meanwhile.
-        if (keepInstaboxAwake !== null && sandboxProviders.get(INSTABOX_PROVIDER_ID) !== null) {
-          try {
-            await keepInstaboxAwake();
-          } catch (error) {
-            bb.log.warn(`instabox keeper failed: ${error instanceof Error ? error.message : String(error)}`);
-          }
-        }
+        await maintainLeasesAndKeepAwake({
+          hasMacLeases: () => store.macLeases.held().length > 0,
+          mac: () => service.processMacLeases(),
+          keepAwake: () => sandboxProviders.get(INSTABOX_PROVIDER_ID) !== null ? keepInstaboxAwake?.() ?? Promise.resolve() : Promise.resolve(),
+          warn: (line) => bb.log.warn(line),
+        });
         try {
           await watchdog.tick();
         } catch (error) {

@@ -366,7 +366,7 @@ fi`;
     `printf '%s' ${shellQuote(prePushHook())} > "$HOOKS/pre-push"`,
     ...CHAINED_HOOKS.map((hook) => `printf '%s' ${shellQuote(chainedHook(hook))} > "$HOOKS/${hook}"`),
   ].join("\n");
-  const hook = `HOOKS="$HOME/.boat-hooks"
+  const hook = `HOOKS="\${BOAT_HOOKS_DIR:-$HOME/.boat-hooks}"
 mkdir -p "$HOOKS"
 { cat "$HOOKS/protected" 2>/dev/null || true; printf '%s\\n' ${alwaysProtect.map(shellQuote).join(" ")}; } | grep -v '^$' | sort -u > "$HOOKS/protected.new"
 mv "$HOOKS/protected.new" "$HOOKS/protected"

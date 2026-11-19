@@ -39,7 +39,7 @@ process.on("exit", () => {
     // Already gone.
   }
 });
-const initial = () => ({ machines: {}, next: 1, ports: {}, snapshots: [], convos: {}, calls: [], jobs: 0, maxMachines: 5, tier: "pro", fail: null, autoReply: null, execs: [] });
+const initial = () => ({ machines: {}, next: 1, nextLease: 1, ports: {}, snapshots: [], convos: {}, calls: [], jobs: 0, maxMachines: 5, tier: "pro", fail: null, autoReply: null, execs: [] });
 const state = existsSync(statePath) ? { ...initial(), ...JSON.parse(readFileSync(statePath, "utf8")) } : initial();
 // Whole-file writes (the service runs two commands at once): never a half-written file.
 const save = () => {
@@ -83,7 +83,10 @@ const positionals = (skip) => {
   }
   return out;
 };
-const now = () => new Date().toISOString();
+const now = () => new Date(state.nowMs ?? Date.now()).toISOString();
+for (const entry of Object.values(state.machines)) {
+  if (entry.deleteAt && Date.parse(entry.deleteAt) <= (state.nowMs ?? Date.now())) entry.state = "deleted";
+}
 const machine = (id) => {
   const found = state.machines[id] ?? Object.values(state.machines).find((entry) => entry.name === id);
   if (!found || found.state === "deleted") fail(4, { code: "not_found", message: `machine ${id} not found`, status: 404 });
@@ -97,6 +100,9 @@ const [command, sub] = args;
 switch (command) {
   case "whoami":
     print({ user: { login: "acme-dev" }, org: { id: "org_1", name: "acme", tier: state.tier, kind: "personal" } });
+    break;
+  case "templates":
+    print({ templates: state.templates ?? [] });
     break;
   case "usage": {
     const count = Object.values(state.machines).filter((entry) => entry.state !== "deleted").length;
@@ -117,10 +123,15 @@ switch (command) {
     const count = Object.values(state.machines).filter((entry) => entry.state !== "deleted").length;
     if (count >= state.maxMachines && state.maxMachines > 0) fail(5, { code: "quota_exceeded", message: `your plan allows ${state.maxMachines} machines`, status: 402 });
     const id = `m_${String(state.next++).padStart(6, "0")}`;
-    const vcpus = Number(flag("--vcpus") ?? 4);
-    const memMiB = Number(flag("--mem-mib") ?? 8192);
+    const snapshot = state.snapshots.find(s => s.name === flag("--snapshot") || s.id === flag("--snapshot"));
+    const template = (state.templates ?? []).find(t => t.id === (flag("--template") ?? snapshot?.template?.id));
+    const model = template?.models?.find(m => flag("--model") ? m.name === flag("--model") : m.defaultSpec.vcpus === snapshot?.defaultSpec?.vcpus && m.defaultSpec.memMiB === snapshot?.defaultSpec?.memMiB);
+    if (template?.os === "macos" && !has("--accept-24h-minimum")) fail(1,{code:"minimum_lease_required",message:"24 h consent required",status:400});
+    const vcpus = Number(flag("--vcpus") ?? model?.defaultSpec?.vcpus ?? 4);
+    const memMiB = Number(flag("--mem-mib") ?? model?.defaultSpec?.memMiB ?? 8192);
     state.machines[id] = {
       id,
+      ...(template?.os === "macos" ? { template: {id:"macos"}, model:model.name, lease:{id:state.nextLease++,startedAt:now(),chargeUntil:new Date(Date.now()+86400000).toISOString(),hourUSD:model.minimumLease.hourUSD} } : {}),
       name: flag("--name"),
       state: "running",
       createdAt: now(),
@@ -151,6 +162,10 @@ switch (command) {
     const entry = machine(positionals(1)[0]);
     if (command === "resume" && entry.state !== "suspended") fail(1, { code: "operation_conflict", message: `${entry.name} is ${entry.state}, not paused`, status: 409 });
     if (command === "start" && entry.state !== "stopped") fail(1, { code: "operation_conflict", message: `${entry.name} is ${entry.state}, not stopped`, status: 409 });
+    if (entry.template?.id === "macos" && (!entry.lease || Date.parse(entry.lease.chargeUntil) <= (state.nowMs ?? Date.now()))) {
+      if (!has("--accept-24h-minimum")) fail(1,{code:"minimum_lease_required",message:"consent required",status:400});
+      entry.lease = {id:state.nextLease++,startedAt:now(),chargeUntil:new Date((state.nowMs ?? Date.now())+86400000).toISOString(),hourUSD:0.45};
+    }
     entry.state = "running";
     entry.updatedAt = now();
     print(entry);
@@ -166,7 +181,11 @@ switch (command) {
   }
   case "rm": {
     const entry = machine(positionals(1)[0]);
+    if (has("--cancel")) { delete entry.deleteAt; print(entry); break; }
     if (!has("--yes")) fail(2, { code: "usage", message: "rm needs --yes off a terminal" });
+    if (entry.lease && Date.parse(entry.lease.chargeUntil) > (state.nowMs ?? Date.now()) && !has("--now")) {
+      entry.deleteAt = entry.lease.chargeUntil; print(entry); break;
+    }
     entry.state = "deleted";
     print({ id: entry.id, name: entry.name, deleted: true });
     break;

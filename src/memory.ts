@@ -925,6 +925,7 @@ export interface SizedProject {
   machineType: MachineType | null;
   /** Where its new tasks run (absent: boat.dev); the service reads it too (Runs on). */
   sandboxProvider?: string | null;
+  sandboxSystem?: "linux" | "macos";
 }
 
 /**

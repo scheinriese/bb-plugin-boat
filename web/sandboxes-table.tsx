@@ -1,3 +1,4 @@
+import { ThisMonthUsage } from "./mac-usage";
 import { useMemo, useState } from "react";
 import {
   UrlLink,
@@ -32,7 +33,7 @@ import {
 import { ResizeDialog } from "./sandbox-size";
 import { AgentLogo, EmptyBox, InlineAlert, showError } from "./ui";
 import { sandboxFailure, sandboxPrimaryTask } from "./sandboxes-logic";
-import { runsOnMachine } from "./providers-logic";
+import { runsOnMachine, runsOnNote } from "./providers-logic";
 export { sandboxFailure } from "./sandboxes-logic";
 
 export type SandboxAction = "resume" | "stop" | "delete";
@@ -179,6 +180,7 @@ export function SandboxTable() {
     method: "fidelityUsage",
     input: { timezoneOffsetMinutes: new Date().getTimezoneOffset() },
   });
+  const macUsage = experimental_useRpcQuery({ contract: rpcContract, method: "macUsage", input: null });
   const sorted = useMemo(() => {
     const priority = (sandbox: SandboxDto) => {
       const task = sandboxPrimaryTask(sandbox, tasks.data?.tasks ?? []);
@@ -205,54 +207,7 @@ export function SandboxTable() {
   )?.value;
   return (
     <div className="pb-10 dark:[--muted-foreground:#A8A8A8]">
-      <div className="mb-[27px] flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] leading-5 text-muted-foreground dark:text-[#C1C1C1]">
-        <Icon
-          name="boat-sail"
-          fallback="ComputerCloud"
-          className="size-3.5"
-          aria-hidden
-        />
-        {setup.data?.plan?.name && (
-          <>
-            <span className="font-medium text-[color:var(--boat-heading)]">
-              {setup.data.plan.name} plan
-            </span>
-            <span aria-hidden>·</span>
-          </>
-        )}
-        {overview.data && !overview.data.boatError && (
-          <>
-            <span>
-              {overview.data.activeSandboxes}
-              {overview.data.cap === null
-                ? ""
-                : ` of ${overview.data.cap}`}{" "}
-              sandboxes on
-            </span>
-            {typeof hours === "number" && <span aria-hidden>·</span>}
-          </>
-        )}
-        {typeof hours === "number" && (
-          <span>
-            {hours.toLocaleString(undefined, { maximumFractionDigits: 1 })} h
-            left this month
-          </span>
-        )}
-        {typeof idleMinutes === "number" && (
-          <span className="ml-auto text-xs text-[color:var(--boat-faint)]">
-            {idleMinutes > 0
-              ? `Idle sandboxes stop after ${idleMinutes % 60 === 0 ? `${idleMinutes / 60} h` : `${idleMinutes} min`}`
-              : "Idle sandboxes stay on"}{" "}
-            ·{" "}
-            <a
-              href="/settings/plugins/boat"
-              className="text-[#7AA7FF] hover:underline"
-            >
-              change
-            </a>
-          </span>
-        )}
-      </div>
+      <ThisMonthUsage mac={macUsage.data} plan={usage.data?.plan} active={overview.data?.activeSandboxes} boatError={Boolean(overview.data?.boatError)} cap={overview.data?.cap} idleMinutes={typeof idleMinutes === "number" ? idleMinutes : undefined} />
       {failure && <InlineAlert>{failure}</InlineAlert>}
       {tasks.error && <InlineAlert>{tasks.error.message}</InlineAlert>}
       {!sandboxes.data && !failure ? (
@@ -324,7 +279,7 @@ export function SandboxTable() {
       )}
       <div className="flex flex-wrap justify-between gap-x-4 gap-y-2 text-xs leading-[18px] text-[color:var(--boat-faint)]">
         <p className="max-w-[620px]">
-          Stopped sandboxes keep your work and cost nothing; the next message to
+          Stopped Linux sandboxes keep your work and cost nothing; Mac minimums still apply; the next message to
           the chat resumes them. Deleting one removes its files for good.
         </p>
         {usage.data?.week.hours != null && usage.data.week.dollars != null && (
@@ -505,7 +460,7 @@ function SandboxTableRow({
             />
           )}
           <div className="text-[13px] leading-5">
-            <p>{label}</p>
+            <p>{!active && !stopped && sandbox.runsOn?.os === "macos" ? `Idle · ${runsOnNote(sandbox.runsOn)}` : label}</p>
             {task?.previewUrl && !stopped && (
               <UrlLink
                 href={task.previewUrl}
@@ -518,7 +473,7 @@ function SandboxTableRow({
         </div>
       </td>
       <td className="whitespace-nowrap px-[14px] py-2 text-[13px] leading-5 tabular-nums text-muted-foreground">
-        {typeof hours === "number" ? `${hours.toFixed(1)} h` : null}
+        {sandbox.leaseDaysThisWeek !== undefined ? `${sandbox.leaseDaysThisWeek.toLocaleString(undefined, { maximumFractionDigits: 2 })} day${sandbox.leaseDaysThisWeek === 1 ? "" : "s"}` : typeof hours === "number" ? `${hours.toFixed(1)} h` : null}
       </td>
       <td className="py-2 pr-[14px]">
         <div className="flex items-center justify-end gap-1.5">

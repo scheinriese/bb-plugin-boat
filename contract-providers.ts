@@ -39,6 +39,9 @@ export const runsOnSchema = z.object({
    * Sandboxes table: "24 h lease · $10.80"). Null: none.
    */
   detail: z.string().nullable(),
+  leaseCost: z.string().optional(),
+  lease: z.object({ paidUntil: z.string(), endedAt: z.string().nullable(), shared: z.boolean(), kept: z.boolean(), releaseAt: z.string().nullable() }).optional(),
+  sharedTasks: z.number().int().nonnegative().optional(),
 });
 export type RunsOnDto = z.infer<typeof runsOnSchema>;
 
@@ -117,7 +120,16 @@ export const sandboxProvidersResultSchema = z.object({
 });
 export type SandboxProvidersResultDto = z.infer<typeof sandboxProvidersResultSchema>;
 
+const macUsageWindowSchema = z.object({ leaseDays: z.number(), costs: z.record(z.string(),z.number()) });
+export const macUsageSchema = z.object({
+  month: macUsageWindowSchema, rolling30: macUsageWindowSchema,
+  providers: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
+  notices: z.array(z.object({ id: z.string(), provider: z.string(), label: z.string(), machineId: z.string(), at: z.string(), text: z.string() })).optional(),
+  held: z.array(z.object({ machineId: z.string(), size: z.string(), paidUntil: z.string(), minimumCost: z.number(), hourPrice: z.number(), kept: z.boolean(), releaseAt: z.string().nullable(), currency: z.string() })),
+});
+export type MacUsageDto = z.infer<typeof macUsageSchema>;
 export const providerRpcMethods = {
+  macUsage: { input: z.null(), output: macUsageSchema, tags: () => ["boat:sandboxes", "boat:tasks"] },
   /** Settings › Sandbox providers and Runs on. */
   sandboxProviders: {
     input: z.null(),

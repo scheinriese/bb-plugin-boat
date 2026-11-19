@@ -562,6 +562,7 @@ export function buildCli(runtime: Runtime) {
           "Creates (or reuses) a sandbox, checks out the repository, and sends the brief to the agent. Returns in under ~90 s; the invoking thread is messaged when the agent's turn finishes. `--test` starts a small task with no repo that only reports the sandbox's tools: it proves sign-in, plan and agent login (one sandbox start, a minute or two of a small sandbox).",
         options: {
           title: { type: "string", description: "Short task title (required unless --test)" },
+          system: { type: "enum", values: ["linux", "macos"], description: "Task system (default: the project); Macs use an enabled macOS provider" },
           "compact-title": { type: "string", description: "Authored short subject for mobile task chips (at most 120 characters)" },
           test: { type: "boolean", description: "Start the test task: no repo, changes nothing, reports uname, node, git and GitHub access" },
           brief: { type: "string", description: "Self-contained task brief (goal, context, acceptance criteria)" },
@@ -644,6 +645,7 @@ export function buildCli(runtime: Runtime) {
             const result = await runtime.launchTask(
               {
                 title: options.title,
+                sandboxSystem: options.system as "linux" | "macos" | undefined,
                 compactTitle: options["compact-title"] ? compactTitleSchema.parse(options["compact-title"]) : null,
                 role: options.role,
                 brief: `${brief ?? ""}${context}`,
