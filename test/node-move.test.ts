@@ -26,6 +26,7 @@ import {
   type MoveFacts,
 } from "../src/node-move.ts";
 import { FakeBoat } from "./fakes.ts";
+import { LINUX_ONLY } from "./platform.ts";
 
 const LINE = "HYDRATOR FAILED attempt 77 (mount stays up, on-demand serving continues, retrying …): decode/feed: chunk 1 GET 0000.tar.zst: status code 503";
 
@@ -89,7 +90,7 @@ test("on its own only when nothing there could be lost: chats, tasks and every c
   assert.deepEqual(moveDecision(safe({ tasks: [{ ...task, repoPath: null }] })), { auto: true, reasons: [] }, "no checkout of its own: the scan covers its workspace");
 });
 
-test("the git checks, run here on throwaway repos: untracked files, commits on any local branch and stashes count; no network", (t) => {
+test("the git checks, run here on throwaway repos: untracked files, commits on any local branch and stashes count; no network", LINUX_ONLY, (t) => {
   const home = mkdtempSync(join(tmpdir(), "boat-move-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "init.defaultBranch=main", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
