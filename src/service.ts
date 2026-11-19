@@ -2012,11 +2012,8 @@ export class BoatService {
 
   /** The task's chat opened in Personal instead of its project (or shares a workspace there), and no later chat of it opened in the project. */
   private inPersonalFallback(taskId: string): boolean {
-    const last = this.store
-      .events(taskId, 200)
-      .filter((event) => event.kind === "project-fallback" || event.kind === "project-chat")
-      .at(-1);
-    return last?.kind === "project-fallback";
+    // The whole history: a fallback stays in force however many events follow it.
+    return this.store.latestEventOf(taskId, ["project-fallback", "project-chat"])?.kind === "project-fallback";
   }
 
   /** The bb project a task's next chat in its workspace opens in: the one its workspace is in. */

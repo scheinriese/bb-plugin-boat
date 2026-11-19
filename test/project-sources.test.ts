@@ -543,3 +543,27 @@ test("a later chat that opens in the project ends the Personal fallback for the 
   const extra = await made.service.openWorkspaceChat(moved.id, { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "high", permissionMode: "full", input: [] });
   assert.equal(made.chat.composed.find((entry) => entry.threadId === extra)!.projectId, PROJECT);
 });
+
+test("a Personal fallback holds however many events follow it", async () => {
+  const env = withLaptop(makeService({ chat: true, settings: { reviewSandbox: "same" } }));
+  env.chat.sourceAddError = new Error("Host is not connected (503)");
+  const task = await dispatch(env);
+  env.chat.sourceAddError = null;
+  for (let index = 0; index < 250; index++) env.store.addEvent(task.id, "turn", `Turn ${index}`);
+  assert.equal(env.store.events(task.id, 200).filter((event) => event.kind === "project-fallback").length, 0, "the fallback is older than the last 200 events");
+  const extra = await env.service.openWorkspaceChat(task.id, { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "high", permissionMode: "full", input: [] });
+  assert.equal(env.chat.composed.find((entry) => entry.threadId === extra)!.projectId, PERSONAL_PROJECT);
+  const { spawn } = await reviewOf(env, task.id);
+  assert.equal(spawn.where.kind, "environment");
+  assert.equal(spawn.projectId, PERSONAL_PROJECT);
+});
+
+test("a source bb won't take back after a failed registry write is named in the error", async () => {
+  // The project's only source: bb refuses to delete it.
+  const { bb, sources } = fakeBb({ proj_new: [] }, { kvSetError: new Error("database is locked") });
+  await assert.rejects(
+    createProjectSources(bb).ensure({ taskId: "t_1", projectId: "proj_new", hostId: "host_9", path: CHECKOUT }),
+    /^Error: database is locked; bb kept source src_new1, which Boat couldn't record or remove \(Cannot delete the last source of a project \(409\)\)$/,
+  );
+  assert.deepEqual(sources.proj_new!.map((row) => row.id), ["src_new1"]);
+});

@@ -1040,6 +1040,15 @@ export class TaskStore {
     return row === undefined ? null : { taskId: String(row.task_id), at: String(row.at), kind: String(row.kind), text: String(row.text) };
   }
 
+  /** The newest event of any of these kinds (however many other events came after it), or null. */
+  latestEventOf(taskId: string, kinds: readonly string[]): TaskEvent | null {
+    if (kinds.length === 0) return null;
+    const row = this.db()
+      .prepare(`SELECT task_id, at, kind, text FROM task_events WHERE task_id = ? AND kind IN (${kinds.map(() => "?").join(", ")}) ORDER BY seq DESC LIMIT 1`)
+      .get(taskId, ...kinds) as Row | undefined;
+    return row === undefined ? null : { taskId: String(row.task_id), at: String(row.at), kind: String(row.kind), text: String(row.text) };
+  }
+
   /**
    * The task (other than `except`) whose ship landed this commit as its new
    * head: shipped events name it by its first 7 characters.
