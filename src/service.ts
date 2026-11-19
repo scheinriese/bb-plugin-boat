@@ -2053,11 +2053,16 @@ export class BoatService {
     return true;
   }
 
+  /** The project-source sweep when it's due: the first call after a start, then every ten minutes (with or without open tasks). Never throws. */
+  async sweepProjectSourcesIfDue(now = Date.now()): Promise<void> {
+    if (this.hooks.chat === undefined || now - this.lastSourceSweep < SOURCE_SWEEP_MS) return;
+    await this.sweepProjectSources(now).catch((error) => this.hooks.log.warn(`project source sweep: ${errorText(error)}`));
+  }
+
   /**
    * Project sources Boat added that nothing needs any more: their machine is
-   * gone, or no open task uses them (a close cut short, a restart). Runs on
-   * the first sweep after a start, then every few minutes. Returns how many
-   * it removed.
+   * gone, or no open task uses them (a close cut short, a restart). Returns
+   * how many it removed.
    */
   async sweepProjectSources(now = Date.now()): Promise<number> {
     const chat = this.hooks.chat;
@@ -4630,9 +4635,7 @@ export class BoatService {
       this.hooks.log.warn(`move reconcile: ${errorText(error)}`);
       return [];
     });
-    if (this.hooks.chat !== undefined && now - this.lastSourceSweep >= SOURCE_SWEEP_MS) {
-      await this.sweepProjectSources(now).catch((error) => this.hooks.log.warn(`project source sweep: ${errorText(error)}`));
-    }
+    await this.sweepProjectSourcesIfDue(now);
     // Worker chats: bb runs them; mirror their state onto the tasks.
     if (this.hooks.chat !== undefined) {
       for (const task of open) {

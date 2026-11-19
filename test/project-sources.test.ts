@@ -386,3 +386,22 @@ test("continuing a headless task as a chat adds the source first; a move that fa
   assert.equal(failing.made.chat.ownSources.size, 0);
   assert.deepEqual(sourceIds(failing.made), [LAPTOP.id]);
 });
+
+test("with no open task, the sweep still tidies Boat's sources after a start, then waits ten minutes", async () => {
+  const env = withLaptop(makeService({ chat: true }));
+  const leftover = (id: string) => {
+    env.chat.projectSources.get(PROJECT)!.push({ id, hostId: "host_old", path: "/home/user/work/old", isDefault: false });
+    env.chat.ownSources.set(id, { sourceId: id, projectId: PROJECT, hostId: "host_old", path: "/home/user/work/old", taskIds: ["t_gone"], createdAt: 1 });
+  };
+  leftover("src_old");
+  assert.equal(env.service.hasOpenWork(), false);
+  const start = Date.now();
+  await env.service.sweepProjectSourcesIfDue(start);
+  assert.deepEqual(sourceIds(env), [LAPTOP.id]);
+  leftover("src_older");
+  await env.service.sweepProjectSourcesIfDue(start + 60_000);
+  assert.ok(env.chat.ownSources.has("src_older"), "not due yet");
+  await env.service.sweepProjectSourcesIfDue(start + 10 * 60_000);
+  assert.deepEqual(sourceIds(env), [LAPTOP.id]);
+  assert.equal(env.chat.machineStateCalls, 0, "no open task: no need to ask bb about machines");
+});
