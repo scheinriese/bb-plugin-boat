@@ -3,6 +3,8 @@
 // provider, and tasks that keep the provider their sandbox is on.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import type Database from "better-sqlite3";
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { DEFAULT_PROVIDER_ID, createProviderRegistry } from "../src/providers/registry.ts";
 import { ProviderError, isNotFound, type MachineSpec, type SandboxInfo, type SandboxProvider } from "../src/providers/types.ts";
@@ -12,6 +14,7 @@ import { BoatError } from "../src/providers/boat/cli.ts";
 import { explainBoatError } from "../src/providers/boat/words.ts";
 import { registerSandboxMachine } from "../src/providers/machine.ts";
 import type { BoatService } from "../src/service.ts";
+import { TaskStore, type Task } from "../src/store.ts";
 import { FakeBoat, defaultSettings } from "./fakes.ts";
 
 const SANDBOX: SandboxInfo = {
@@ -69,6 +72,56 @@ function recordingClient() {
     interrupt: answer("interrupt", undefined),
   };
   return { calls, client: client as unknown as BoatApi };
+}
+
+function taskRecord(overrides: Partial<Task> = {}): Task {
+  const now = "2026-11-19T00:00:00.000Z";
+  return {
+    id: "t_1",
+    title: "Fix the login",
+    compactTitle: null,
+    role: "implement",
+    status: "running",
+    orchestratorThreadId: null,
+    projectId: null,
+    repo: "acme/web",
+    repoPath: "/home/user/work/web",
+    branch: "fix-login",
+    baseBranch: "main",
+    sandboxId: "bx_1",
+    conversationId: "c_1",
+    promptId: "p_1",
+    provider: "claude",
+    model: null,
+    reasoningEffort: null,
+    tier: null,
+    reason: null,
+    runner: "boat",
+    threadId: null,
+    hostId: null,
+    environmentId: null,
+    readyAt: null,
+    readyNote: null,
+    delivery: "pr",
+    boatProject: null,
+    environment: null,
+    snapshot: null,
+    extraRepos: [],
+    brief: "Fix the login.",
+    parentTaskId: null,
+    prUrl: null,
+    result: null,
+    error: null,
+    turns: 1,
+    ownsSandbox: true,
+    createdAt: now,
+    updatedAt: now,
+    finishedAt: null,
+    notifiedAt: null,
+    unshipped: null,
+    shipApproval: null,
+    ...overrides,
+  };
 }
 
 test("boat.dev is the only provider and the default: projects, tasks and sandboxes get it", () => {
@@ -196,6 +249,32 @@ test("provider errors explain themselves; boat's in boat's words", () => {
   assert.ok(isNotFound(new ProviderError("gone", { status: 404 })));
   assert.ok(!isNotFound(new ProviderError("boat start limit reached", { code: "start_limited" })));
   assert.ok(!isNotFound(new Error("not_found")));
+});
+
+test("tasks keep their sandbox provider; older tasks read as before, on boat.dev", () => {
+  const migrations = TaskStore.migrations();
+  // Appended last: an existing install has applied every earlier index.
+  assert.equal(migrations.at(-1), "ALTER TABLE tasks ADD COLUMN sandbox_provider TEXT NOT NULL DEFAULT 'boat'");
+  const db = new DatabaseSync(":memory:");
+  for (const statement of migrations.slice(0, -1)) db.exec(statement);
+  const store = new TaskStore(() => db as unknown as Database.Database);
+  db.prepare("INSERT INTO tasks (id, title, role, status, provider, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("t_old", "Old task", "implement", "done", "claude", "Fix it", "2026-11-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z");
+  const before = store.get("t_old")!;
+  db.exec(migrations.at(-1)!);
+  const old = store.get("t_old")!;
+  assert.deepEqual(old, before, "a task from before the column reads exactly as it did");
+  assert.equal("sandboxProvider" in old, false);
+  assert.equal((db.prepare("SELECT sandbox_provider FROM tasks WHERE id = 't_old'").get() as { sandbox_provider: string }).sandbox_provider, "boat");
+  const registry = createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi)]);
+  assert.equal(registry.forTask(old).id, "boat");
+
+  const fresh = taskRecord({ id: "t_new" });
+  store.insert(fresh);
+  assert.deepEqual(store.get("t_new"), fresh);
+  assert.equal((db.prepare("SELECT sandbox_provider FROM tasks WHERE id = 't_new'").get() as { sandbox_provider: string }).sandbox_provider, "boat");
+  store.insert(taskRecord({ id: "t_other", sandboxProvider: "other" }));
+  assert.equal(store.get("t_other")!.sandboxProvider, "other");
+  assert.equal(store.update("t_new", { sandboxProvider: "other" })!.sandboxProvider, "other");
 });
 
 test("any provider with bb enrollment registers as a bb machine provider, in its own words", async () => {
