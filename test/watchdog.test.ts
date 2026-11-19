@@ -15,7 +15,7 @@ import plugin from "../server.ts";
 import type { BoatApi } from "../src/boat-api.ts";
 import { RESUME_NOTE_PREFIX, WATCHDOG_PREFIX } from "../src/format.ts";
 import { KEEP_LIMIT_MS } from "../src/activity.ts";
-import { createWatchdog, resumeNoteKey, type QueuedRow, type WatchdogDeps } from "../src/watchdog.ts";
+import { RESUME_RETRY_MAX_MS, createWatchdog, resumeNoteKey, resumeRetryMs, type QueuedRow, type WatchdogDeps } from "../src/watchdog.ts";
 import { createTestHost, makeService } from "./fakes.ts";
 
 const MINUTE = 60_000;
@@ -311,6 +311,15 @@ function waitFor(w: Awaited<ReturnType<typeof world>>, id = `q_${w.task.id}`): v
   w.queued.set(w.task.threadId!, [{ id, threadId: w.task.threadId!, content: [{ type: "text", text: "Status?" }], createdAt: w.now(), updatedAt: w.now(), state: "waiting", waitingOn: { kind: "host-offline" } }]);
 }
 
+/** The world's machine is up again. */
+function backUp(w: Awaited<ReturnType<typeof world>>): void {
+  w.host.lifecycle = { phase: "active", suspendedAt: null };
+  w.host.status = "connected";
+  w.sandbox.state = "running";
+  w.setRow({ queuedWork: "none" });
+  w.queued.delete(w.task.threadId!);
+}
+
 test("a host whose resume keeps failing holds no other wake: a second host with waiting work, and paid resumes, still get theirs", async () => {
   // Two machines share one wake pacer (one watchdog world each, the same clock).
   const failing = await world({ resumeFails: true });
@@ -326,8 +335,8 @@ test("a host whose resume keeps failing holds no other wake: a second host with 
   };
   waitFor(failing);
   for (let at = 0; at < 60; at++) await minute();
-  // The failing host is tried again at its own pace (every few minutes), and never holds the wakes.
-  assert.ok(failing.calls.resume.length >= 15);
+  // The failing host is tried again at its own pace (3, 6, 12, 24 minutes later), and never holds the wakes.
+  assert.equal(failing.calls.resume.length, 5);
   assert.equal(await pacer.heldUntil(), 0);
   // A second suspended host gets work: woken within a couple of minutes.
   waitFor(healthy);
@@ -337,6 +346,61 @@ test("a host whose resume keeps failing holds no other wake: a second host with 
   for (let at = 0; at < 60; at++) await minute();
   assert.equal(await pacer.heldUntil(), 0);
   assert.notEqual(await pacer.take(), null);
+});
+
+test("a failed resume is tried again 3, 6, 12 … minutes later, at most an hour apart, and from the start once the machine is back", async () => {
+  const w = await world({ resumeFails: true });
+  const dog = w.watchdog();
+  const start = w.now();
+  const tries: number[] = [];
+  const tick = async () => {
+    const before = w.calls.resume.length;
+    await dog.tick();
+    if (w.calls.resume.length > before) tries.push((w.now() - start) / MINUTE);
+    w.advance(MINUTE);
+  };
+  waitFor(w);
+  for (let minute = 0; minute < 5 * 60; minute++) await tick();
+  // Seen at 0, resumed at 1 (bb gets a moment), then each failure doubles the wait, up to an hour.
+  assert.deepEqual(tries, [1, 4, 10, 22, 46, 94, 154, 214, 274]);
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 20].map(resumeRetryMs), [3, 6, 12, 24, 48, 60, 60, 60].map((minutes) => minutes * MINUTE));
+  assert.equal(resumeRetryMs(30), RESUME_RETRY_MAX_MS);
+
+  // The machine is back (the user resumed it): its backoff starts over.
+  backUp(w);
+  await tick();
+  tries.length = 0;
+  const again = (w.now() - start) / MINUTE;
+  waitFor(w, "q_again");
+  for (let minute = 0; minute < 12; minute++) await tick();
+  assert.deepEqual(tries.map((at) => at - again), [1, 4, 10]);
+});
+
+test("a failed resume's notice counts from its own backoff when that ends later than the shared pause", async () => {
+  const w = await world({ resumeFails: true });
+  const dog = w.watchdog({ wakes: new WakePacer({ now: w.now }) });
+  const start = w.now();
+  waitFor(w);
+  // Resumes at 1, 4, 10 and 22 minutes fail; the first notice goes out at 3.
+  for (let minute = 0; minute < 23; minute++) {
+    await dog.tick();
+    w.advance(MINUTE);
+  }
+  assert.equal(w.calls.resume.length, 4);
+  assert.equal(w.told.length, 1);
+  assert.match(w.told[0]!.text, /It tries again in about 1 minute;/);
+  // The message is gone, and a new one comes at 32 minutes: its notice, 3 minutes on, has the doubled wait (the next try at 46).
+  w.queued.delete(w.task.threadId!);
+  await dog.tick();
+  w.advance(9 * MINUTE);
+  waitFor(w, "q_later");
+  for (let minute = 0; minute <= 3; minute++) {
+    await dog.tick();
+    w.advance(MINUTE);
+  }
+  assert.equal((w.now() - start) / MINUTE, 36);
+  assert.equal(w.told.length, 2);
+  assert.match(w.told[1]!.text, /The plugin tried to resume it and couldn't: boat start limit reached\. It tries again in about 11 minutes;/);
 });
 
 test("a failed resume's notice says when it's tried again, the shared wake hold included", async () => {
@@ -392,6 +456,35 @@ test("a failed resume's notice counts from the shared pause when that ends later
   clock = w.now();
   await dog.tick();
   assert.equal(w.calls.resume.length, 2);
+});
+
+test("a host failing at boat next to a healthy one: its own backoff keeps it from the shared wakes, the healthy one still wakes", async () => {
+  // bb's resumes go through the shared pacer like the provider's: a failed boat resume pauses every wake a while.
+  let clock = Date.parse("2026-11-06T10:00:00.000Z");
+  const pacer = new WakePacer({ now: () => clock });
+  const failing = await world({ resumeFails: true, pacer });
+  const healthy = await world({ pacer });
+  const dogs = [failing.watchdog({ wakes: pacer }), healthy.watchdog({ wakes: pacer })];
+  const minute = async () => {
+    for (const dog of dogs) await dog.tick();
+    failing.advance(MINUTE);
+    healthy.advance(MINUTE);
+    clock = failing.now();
+  };
+  waitFor(failing);
+  for (let at = 0; at < 3 * 60; at++) {
+    await minute();
+    // Each failed boat resume used exactly the slot claimed for it: no claim is left over a minute on.
+    assert.deepEqual((await pacer.snapshot()).claims, []);
+  }
+  // 3 hours: a handful of tries, not 60.
+  assert.ok(failing.calls.resume.length <= 8, `${failing.calls.resume.length} tries`);
+  assert.equal(await pacer.heldUntil(), 0, "the watchdog never sets the hold");
+  // Work for the healthy machine while the failing one is still failing: it's woken within a few minutes.
+  waitFor(healthy);
+  for (let at = 0; at < 3; at++) await minute();
+  assert.deepEqual(healthy.calls.resume, [healthy.host.id]);
+  assert.equal(await pacer.heldUntil(), 0);
 });
 
 test("a failed resume is said as such", async () => {

@@ -10,7 +10,9 @@
 //   ready" for good;
 // - a suspended machine with messages waiting for it is resumed (the
 //   provider's resume: boat resume, then bb set up there again), with a slot
-//   from the account's wake pacer;
+//   from the account's wake pacer. A resume that fails is tried again 3, 6,
+//   12 … minutes later, at most an hour apart, until the machine is back;
+//   it never holds the other machines' wakes;
 // - one [boat] message per incident to the task's orchestrator: a sandbox
 //   stopped while background work ran there; messages waited more than 3
 //   minutes on a stopped or disconnected machine; a running turn showed no
@@ -48,8 +50,17 @@ const RECONCILE_TRIES = 3;
 const RESUMES_PER_PASS = 2;
 /** The machines are looked at this often (sooner when a message waits for an offline one). */
 export const MACHINES_EVERY_MS = 30_000;
-/** After a failed suspend or resume, leave that machine alone this long. */
+/** After a failed suspend, leave that machine alone this long. */
 const RETRY_MS = 3 * 60_000;
+/** After a failed resume, that machine is resumed again this much later, doubling per failure in a row… */
+export const RESUME_RETRY_MS = 3 * 60_000;
+/** …up to this, until the machine is back. */
+export const RESUME_RETRY_MAX_MS = 60 * 60_000;
+
+/** The wait before resuming a machine again after this many failed resumes in a row: 3, 6, 12 … minutes, at most an hour. */
+export function resumeRetryMs(failures: number): number {
+  return Math.min(RESUME_RETRY_MAX_MS, RESUME_RETRY_MS * 2 ** Math.max(0, Math.min(failures - 1, 20)));
+}
 /** After a resume bb took, ask again only this much later (its setup there can take minutes). */
 const RESUME_AGAIN_MS = 10 * 60_000;
 /** How long a sent notice is remembered (dedupe across restarts). */
@@ -125,7 +136,7 @@ export interface WatchdogDeps {
   now?: () => number;
   /**
    * The account's wake pacer (src/wake-pacer.ts), shared with every wake: the watchdog takes a slot for each
-   * resume and waits out the hold, but never sets one (its own per-host retry covers a failing host);
+   * resume and waits out the hold, but never sets one (its own backoff per machine covers a failing one);
    * absent: only RESUMES_PER_PASS.
    */
   wakes?: Pick<WakePacer, "take" | "pausedUntil">;
@@ -208,6 +219,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   const resources = new Map<string, string | null>();
   /** Host id → when to try a suspend or resume again. */
   const retryAt = new Map<string, number>();
+  /** Host id → the plugin's failed resumes of it in a row (its backoff, until it's back). */
+  const resumeFailures = new Map<string, number>();
   /** Host id → the outcome of the plugin's last resume of it. */
   const resumed = new Map<string, { at: number; ok: boolean; error: string | null }>();
   /** Host id → why the plugin couldn't bring bb's record in line (a failed suspend). */
@@ -523,9 +536,12 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       deps.resumed?.(hostId);
       deps.info?.(`watchdog: resumed ${hostId}: messages were waiting for it`);
     } catch (error) {
-      retryAt.set(hostId, at + RETRY_MS);
+      // Tried again later each time, doubling: a machine that keeps failing isn't resumed every few minutes for hours.
+      const failures = (resumeFailures.get(hostId) ?? 0) + 1;
+      resumeFailures.set(hostId, failures);
+      retryAt.set(hostId, at + resumeRetryMs(failures));
       resumed.set(hostId, { at, ok: false, error: message(error) });
-      deps.log(`watchdog: resume ${hostId}: ${message(error)}`);
+      deps.log(`watchdog: resume ${hostId}: ${message(error)} (failure ${failures} in a row; next try in ${Math.round(resumeRetryMs(failures) / 60_000)} minutes)`);
     }
   }
 
@@ -581,11 +597,13 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   async function machines(at: number, sandboxes: Map<string, Sandbox>): Promise<void> {
     const hosts = ((await bb.sdk.hosts.list()) as unknown as HostRow[]).filter((host) => host.machineProviderId === MACHINE_PROVIDER_ID);
     const live = new Set(hosts.map((host) => host.id));
-    for (const id of new Set([...seen.keys(), ...resources.keys(), ...resumed.keys(), ...problems.keys(), ...upNow.keys(), ...tries.keys()])) {
+    for (const id of new Set([...seen.keys(), ...resources.keys(), ...resumed.keys(), ...problems.keys(), ...upNow.keys(), ...tries.keys(), ...retryAt.keys(), ...resumeFailures.keys()])) {
       if (live.has(id)) continue;
       seen.delete(id);
       resources.delete(id);
       resumed.delete(id);
+      retryAt.delete(id);
+      resumeFailures.delete(id);
       problems.delete(id);
       upNow.delete(id);
       tries.delete(id);
@@ -614,6 +632,9 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       upNow.set(host.id, running);
       if (running) {
         remember(host.id, rows, at);
+        // Back: its backoff starts over.
+        retryAt.delete(host.id);
+        resumeFailures.delete(host.id);
         resumed.delete(host.id);
         problems.delete(host.id);
         tries.delete(host.id);
@@ -677,7 +698,7 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       }
       const stopped = STOPPED_STATES.has(sandbox.state);
       const outcome = resumed.get(host.id);
-      // The next resume: a failed one at its own retry, or when the shared pause (the hold, a pause after a
+      // The next resume: a failed one at its own backoff, or when the shared pause (the hold, a pause after a
       // failed wake) ends, whichever is later.
       const pausedUntil = deps.wakes ? await deps.wakes.pausedUntil().catch(() => 0) : 0;
       const nextAt = Math.max(outcome !== undefined && !outcome.ok ? (retryAt.get(host.id) ?? 0) : 0, pausedUntil);
