@@ -19,8 +19,8 @@
 - Read bb's own files (its data dir and nvm node) right after a wake, before bb starts, so boat.dev restores them first; bounded to 60 seconds and 1.5 GiB.
 - Update bb on a resumed sandbox safely when it's older than the server or its install is broken: the build bb already downloaded there goes into a fresh folder, is checked and swapped in; on any failure bb starts again and the note says what became of the old one, with a backoff. bb's own in-place update is never stopped half way: Boat waits for it (up to 3 minutes). A hung one isn't fought: a zombie `npm install` goes to the daemon repair under Needs you, and one waiting on the disk to Boat's wake retries.
 - Spread usage-limit reset retries that would wake a Boat sandbox to one machine every 30 seconds. On bb 0.49, decline provider retry's consent question for Boat's own chats and resume each stopped turn once itself.
-- Open task chats on a sandbox in any bb project, not only Personal: before the chat opens, add the sandbox's checkout to the project as a source (never the default), or reuse a matching one. If bb refuses, open the chat in Personal, still under its orchestrator, and say why on the task.
-- Remove the sources the plugin added once their task closes or their machine goes, and on a sweep after a restart. Sources it didn't add, like your own computer's, are never touched.
+- Open task chats on a sandbox in any bb project, not only Personal: before the chat opens, add the sandbox's checkout to the project as a source (never asking for the default), or reuse the project's source on that sandbox. If bb refuses, open the chat in Personal, still under its orchestrator, and say why on the task.
+- Remove the sources the plugin added once no open task is on their sandbox (a review in the same workspace counts) or their machine goes, and on a sweep after a restart. Reopening a task adds its source back. Sources it didn't add, like your own computer's, and a project's last source are never deleted.
 
 ## 0.2.8
 

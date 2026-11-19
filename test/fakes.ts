@@ -24,7 +24,7 @@ import { BoatError } from "../src/boat.ts";
 import { SIZE_SPECS, isMachineType, type SizedProject } from "../src/memory.ts";
 import type { MachineTypeFacts } from "../src/setup.ts";
 import { PERSONAL_PROJECT, type ChatRunner, type ChatSpawn, type ChatState, type MachineState, type SendResult } from "../src/chat.ts";
-import { samePath, type OwnProjectSource } from "../src/project-sources.ts";
+import type { OwnProjectSource, RemovedProjectSource } from "../src/project-sources.ts";
 import type { TurnEventRow } from "../src/steer-retry.ts";
 import { NO_WORK, addWork, hasWork, messagesWaiting, rowWork, turnRuns, type MachineActivity, type ThreadRow } from "../src/activity.ts";
 import { BoatService, type BoatSettings, type Notification, type ServiceHooks } from "../src/service.ts";
@@ -780,7 +780,7 @@ export class FakeChat implements ChatRunner {
   private sandboxOf(hostId: string): string | null {
     return this.machines.find((machine) => machine.hostId === hostId)?.sandboxId ?? null;
   }
-  /** bb's project sources (local_path rows) by project: the user's own and the ones Boat added. */
+  /** bb's project sources (local_path rows) by project: the user's own and the ones Boat added. Like bb, at most one per project and machine. */
   projectSources = new Map<string, { id: string; hostId: string; path: string; isDefault: boolean }[]>();
   /** Boat's registry of the sources it added. */
   ownSources = new Map<string, OwnProjectSource>();
@@ -795,30 +795,41 @@ export class FakeChat implements ChatRunner {
   async ensureProjectSource(args: { taskId: string; projectId: string; hostId: string; path: string }) {
     this.sourceCalls.push({ method: "ensure", projectId: args.projectId, hostId: args.hostId, path: args.path });
     const rows = this.projectSources.get(args.projectId) ?? [];
-    const existing = rows.find((row) => row.hostId === args.hostId && samePath(row.path, args.path));
+    const existing = rows.find((row) => row.hostId === args.hostId);
     if (existing) {
       const own = this.ownSources.get(existing.id);
       if (own && !own.taskIds.includes(args.taskId)) own.taskIds.push(args.taskId);
-      return { sourceId: existing.id, created: false, own: own !== undefined };
+      return { sourceId: existing.id, created: false, own: own !== undefined, isDefault: existing.isDefault };
     }
     if (this.sourceAddError) throw this.sourceAddError;
     const id = `src_${++this.nextSource}`;
     this.sourceCalls.push({ method: "add", projectId: args.projectId, hostId: args.hostId, path: args.path, sourceId: id });
-    this.projectSources.set(args.projectId, [...rows, { id, hostId: args.hostId, path: args.path, isDefault: false }]);
+    // Like bb: a project's first source becomes its default.
+    const isDefault = rows.length === 0;
+    this.projectSources.set(args.projectId, [...rows, { id, hostId: args.hostId, path: args.path, isDefault }]);
     this.ownSources.set(id, { sourceId: id, projectId: args.projectId, hostId: args.hostId, path: args.path, taskIds: [args.taskId], createdAt: Date.now() + this.nextSource });
-    return { sourceId: id, created: true, own: true };
+    return { sourceId: id, created: true, own: true, isDefault };
   }
   async ownProjectSources() {
     return [...this.ownSources.values()].map((row) => ({ ...row, taskIds: [...row.taskIds] }));
   }
-  async removeProjectSource(sourceId: string) {
+  /** Runs before a removal reads the registry (another change racing it). */
+  onRemoveSource: ((sourceId: string) => void) | null = null;
+  async removeProjectSource(sourceId: string, inUse?: (row: OwnProjectSource) => boolean): Promise<RemovedProjectSource> {
+    this.onRemoveSource?.(sourceId);
     const own = this.ownSources.get(sourceId);
-    if (!own) return false;
-    if (this.sourceDeleteError) throw this.sourceDeleteError;
-    this.sourceCalls.push({ method: "delete", projectId: own.projectId, sourceId });
-    this.projectSources.set(own.projectId, (this.projectSources.get(own.projectId) ?? []).filter((row) => row.id !== sourceId));
+    if (!own) return "not-ours";
+    if (inUse?.({ ...own, taskIds: [...own.taskIds] })) return "in-use";
+    const rows = this.projectSources.get(own.projectId) ?? [];
+    if (rows.some((row) => row.id === sourceId)) {
+      // Like bb: a project keeps at least one source.
+      if (rows.length <= 1) return "last-source";
+      if (this.sourceDeleteError) throw this.sourceDeleteError;
+      this.sourceCalls.push({ method: "delete", projectId: own.projectId, sourceId });
+      this.projectSources.set(own.projectId, rows.filter((row) => row.id !== sourceId));
+    }
     this.ownSources.delete(sourceId);
-    return true;
+    return "removed";
   }
   async spawn(args: ChatSpawn) {
     if (this.spawnError) throw this.spawnError;
