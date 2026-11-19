@@ -8,4 +8,6 @@ export const PAID_RESUME_MIGRATIONS = [
   `ALTER TABLE paid_resumes ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1`,
   // The pass's pacing that must outlive a restart: its backoff after a failure, and the hold on waking machines.
   `CREATE TABLE IF NOT EXISTS paid_resume_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // The failed request a chat's try re-submitted: a try is repeated only while that request is still the failed one.
+  `ALTER TABLE paid_resumes ADD COLUMN request_id TEXT`,
 ];

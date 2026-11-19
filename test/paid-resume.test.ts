@@ -941,7 +941,7 @@ test("a chat's try cut off by a restart (still claimed) goes again after ten min
   const env = setup({ tasks: [task({ id: "t_head", runner: "boat", error: "Claude AI usage limit reached", sandboxId: "sbx_h" })] });
   skippedStop(env, "thr_cut");
   // The plugin stopped between claiming and marking the try.
-  assert.equal(env.store.claim("thr_cut", "req_thr_cut", "retry", new Date(NOW)), true);
+  assert.equal(env.store.claim("thr_cut", "req_thr_cut", "retry", new Date(NOW), { requestId: "req_thr_cut" }), true);
   assert.equal(env.store.claim("task:t_head", "turn:1", "follow-up", new Date(NOW)), true);
   const early = await env.resume.pass(fresh(env), settings({ paidClaudeHeadless: true }));
   assert.deepEqual(early.skipped.find((entry) => entry.id === "thr_cut"), { id: "thr_cut", reason: "a try of it is under way" });
@@ -952,6 +952,34 @@ test("a chat's try cut off by a restart (still claimed) goes again after ten min
   assert.equal(env.store.attempts("thr_cut", "req_thr_cut"), 2);
   // A headless follow-up may have reached the agent: never again.
   assert.deepEqual(env.followups, []);
+});
+
+test("a cut-off or failed try goes again only while the request it tried is still the failed one", async () => {
+  const env = setup();
+  const again = (id: string) => {
+    // The try went out after all: its retry ran and stopped at a limit again, in the same chain.
+    env.threads.events.set(id, [...stoppedEvents(`req_${id}`), ...stoppedEvents(`req_${id}_2`, { root: `req_${id}`, seq: 10 })]);
+    env.threads.decisions.set(id, { requestId: `req_${id}_2`, kind: "decline", reason: "beyond-maximum-wait" });
+  };
+  // Cut off by a restart after bb took the retry.
+  skippedStop(env, "thr_cut");
+  env.store.claim("thr_cut", "req_thr_cut", "retry", new Date(NOW), { requestId: "req_thr_cut" });
+  again("thr_cut");
+  // A call that failed (a timeout) though bb had taken it.
+  skippedStop(env, "thr_timeout");
+  env.store.claim("thr_timeout", "req_thr_timeout", "retry", new Date(NOW), { requestId: "req_thr_timeout" });
+  env.store.mark("thr_timeout", "req_thr_timeout", "unsent");
+  again("thr_timeout");
+  env.advance(CLAIM_TTL_MS + 1_000);
+  const report = await env.resume.pass(fresh(env), settings());
+  assert.deepEqual(env.threads.calls, []);
+  assert.deepEqual(report.skipped, [
+    { id: "thr_cut", reason: "this stopped turn was continued once already" },
+    { id: "thr_timeout", reason: "this stopped turn was continued once already" },
+  ]);
+  assert.deepEqual(env.store.stops(), []);
+  // The claim can't be taken for the newer request either.
+  assert.equal(env.store.claim("thr_timeout", "req_thr_timeout", "retry", new Date(env.now()), { requestId: "req_thr_timeout_2" }), false);
 });
 
 test("the wake budget holds every wake after a failure, kept across a restart", async () => {

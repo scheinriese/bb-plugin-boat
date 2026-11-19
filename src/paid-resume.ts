@@ -238,31 +238,45 @@ export class PaidResumeStore {
    * A failed try with tries left isn't (it goes again after the backoff), nor,
    * with `claimedBefore`, a try still "claimed" from before then (a restart
    * cut it off; only for chats, where bb refuses a retry that already went out).
+   * With `requestId` (a chat's current failed request), either goes again only
+   * while the request it tried is still the failed one: a newer failed request
+   * in the same chain means the try went out and that turn stopped again.
    */
-  settled(threadId: string, turnKey: string, options: { claimedBefore?: Date } = {}): boolean {
-    const row = this.db().prepare(`SELECT state, attempts, at FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).get(threadId, turnKey) as { state: string; attempts: number; at: string } | undefined;
+  settled(threadId: string, turnKey: string, options: { claimedBefore?: Date; requestId?: string } = {}): boolean {
+    const row = this.row(threadId, turnKey);
     if (row === undefined) return false;
     const again = row.state === "unsent" || (row.state === "claimed" && options.claimedBefore !== undefined && row.at < options.claimedBefore.toISOString());
-    return !(again && Number(row.attempts) < MAX_ATTEMPTS);
+    return !(again && sameRequest(row, options.requestId) && Number(row.attempts) < MAX_ATTEMPTS);
   }
 
-  /** Claim a stopped turn for one try (`claimedBefore` as in settled); false when it's settled. */
-  claim(threadId: string, turnKey: string, how: ResumeHow, at = new Date(), options: { claimedBefore?: Date } = {}): boolean {
+  /** Claim a stopped turn for one try (`claimedBefore`, `requestId` as in settled); false when it's settled. */
+  claim(threadId: string, turnKey: string, how: ResumeHow, at = new Date(), options: { claimedBefore?: Date; requestId?: string } = {}): boolean {
+    const requestId = options.requestId ?? null;
     const inserted = this.db()
-      .prepare(`INSERT OR IGNORE INTO paid_resumes (thread_id, turn_key, how, state, at, attempts) VALUES (?, ?, ?, 'claimed', ?, 1)`)
-      .run(threadId, turnKey, how, at.toISOString());
+      .prepare(`INSERT OR IGNORE INTO paid_resumes (thread_id, turn_key, how, state, at, attempts, request_id) VALUES (?, ?, ?, 'claimed', ?, 1, ?)`)
+      .run(threadId, turnKey, how, at.toISOString(), requestId);
     if (Number(inserted.changes) === 1) return true;
     // ISO times in one format compare as text. Without claimedBefore, no "claimed" row matches ('' sorts first).
     const again = this.db()
-      .prepare(`UPDATE paid_resumes SET state = 'claimed', how = ?, at = ?, attempts = attempts + 1 WHERE thread_id = ? AND turn_key = ? AND (state = 'unsent' OR (state = 'claimed' AND at < ?)) AND attempts < ?`)
-      .run(how, at.toISOString(), threadId, turnKey, options.claimedBefore?.toISOString() ?? "", MAX_ATTEMPTS);
+      .prepare(
+        `UPDATE paid_resumes SET state = 'claimed', how = ?, at = ?, attempts = attempts + 1, request_id = COALESCE(?, request_id)
+         WHERE thread_id = ? AND turn_key = ? AND (state = 'unsent' OR (state = 'claimed' AND at < ?)) AND attempts < ?
+           AND (? IS NULL OR request_id IS NULL OR request_id = ?)`,
+      )
+      .run(how, at.toISOString(), requestId, threadId, turnKey, options.claimedBefore?.toISOString() ?? "", MAX_ATTEMPTS, requestId, requestId);
     return Number(again.changes) === 1;
   }
 
-  /** A try of this stopped turn is "claimed" (going on, or cut off by a restart) with tries left. */
-  inFlight(threadId: string, turnKey: string): boolean {
-    const row = this.db().prepare(`SELECT state, attempts FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).get(threadId, turnKey) as { state: string; attempts: number } | undefined;
-    return row !== undefined && row.state === "claimed" && Number(row.attempts) < MAX_ATTEMPTS;
+  /** A try of this stopped turn is "claimed" (going on, or cut off by a restart) with tries left, for this request. */
+  inFlight(threadId: string, turnKey: string, requestId?: string): boolean {
+    const row = this.row(threadId, turnKey);
+    return row !== undefined && row.state === "claimed" && sameRequest(row, requestId) && Number(row.attempts) < MAX_ATTEMPTS;
+  }
+
+  private row(threadId: string, turnKey: string): { state: string; attempts: number; at: string; request_id: string | null } | undefined {
+    return this.db().prepare(`SELECT state, attempts, at, request_id FROM paid_resumes WHERE thread_id = ? AND turn_key = ?`).get(threadId, turnKey) as
+      | { state: string; attempts: number; at: string; request_id: string | null }
+      | undefined;
   }
 
   /** How many tries this stopped turn had (0: none). */
@@ -340,6 +354,11 @@ export class PaidResumeStore {
     delete woke[id];
     this.write("woke", Object.keys(woke).length > 0 ? woke : null);
   }
+}
+
+/** A try for this request (or no request to compare: headless tasks, rows from before request ids were kept). */
+function sameRequest(row: { request_id: string | null }, requestId: string | undefined): boolean {
+  return requestId === undefined || row.request_id === null || row.request_id === requestId;
 }
 
 /** The wait after `failures` failed passes in a row. */
@@ -634,9 +653,9 @@ export function createPaidResume(deps: PaidResumeDeps) {
     const turn = readStoppedTurn(await deps.threads.stopEvents(threadId));
     if (turn === null) return { skip: "no failed turn", drop: true };
     if (turn.failure.kind !== "usage-limit") return { skip: `it stopped on ${turn.failure.why}`, drop: true };
-    if (deps.store.settled(threadId, turn.rootRequestId, { claimedBefore: new Date(at - CLAIM_TTL_MS) })) {
-      // A try still "claimed" (a restart may have cut it off) keeps its stop: after CLAIM_TTL_MS it may go again.
-      const inFlight = deps.store.inFlight(threadId, turn.rootRequestId);
+    if (deps.store.settled(threadId, turn.rootRequestId, { claimedBefore: new Date(at - CLAIM_TTL_MS), requestId: turn.requestId })) {
+      // A try still "claimed" for this request (a restart may have cut it off) keeps its stop: after CLAIM_TTL_MS it may go again.
+      const inFlight = deps.store.inFlight(threadId, turn.rootRequestId, turn.requestId);
       return { skip: inFlight ? "a try of it is under way" : "this stopped turn was continued once already", drop: !inFlight };
     }
     if (pending !== null) {
@@ -660,7 +679,7 @@ export function createPaidResume(deps: PaidResumeDeps) {
     const { plan: chosen, thread, task } = step;
     const key = chosen.turn.rootRequestId;
     // A chat's try left "claimed" by a restart may go again: bb refuses a retry that already went out (409, 404).
-    if (!deps.store.claim(threadId, key, chosen.how, new Date(now()), { claimedBefore: new Date(now() - CLAIM_TTL_MS) })) return { kind: "released", reason: "this stopped turn was continued once already" };
+    if (!deps.store.claim(threadId, key, chosen.how, new Date(now()), { claimedBefore: new Date(now() - CLAIM_TTL_MS), requestId: chosen.turn.requestId })) return { kind: "released", reason: "this stopped turn was continued once already" };
     try {
       if (chosen.how === "pending-retry") await deps.threads.sendQueued(threadId, chosen.queuedMessageId);
       else await deps.threads.retry(threadId, chosen.turn.requestId, RESUME_REASON);
