@@ -33,7 +33,7 @@ import {
 import { ResizeDialog } from "./sandbox-size";
 import { AgentLogo, EmptyBox, InlineAlert, showError } from "./ui";
 import { sandboxFailure, sandboxPrimaryTask } from "./sandboxes-logic";
-import { runsOnMachine } from "./providers-logic";
+import { runsOnMachine, runsOnNote } from "./providers-logic";
 export { sandboxFailure } from "./sandboxes-logic";
 
 export type SandboxAction = "resume" | "stop" | "delete";
@@ -207,7 +207,7 @@ export function SandboxTable() {
   )?.value;
   return (
     <div className="pb-10 dark:[--muted-foreground:#A8A8A8]">
-      <ThisMonthUsage mac={macUsage.data} plan={usage.data?.plan} active={overview.data?.activeSandboxes} cap={overview.data?.cap} idleMinutes={typeof idleMinutes === "number" ? idleMinutes : undefined} />
+      <ThisMonthUsage mac={macUsage.data} plan={usage.data?.plan} active={overview.data?.activeSandboxes} boatError={Boolean(overview.data?.boatError)} cap={overview.data?.cap} idleMinutes={typeof idleMinutes === "number" ? idleMinutes : undefined} />
       {failure && <InlineAlert>{failure}</InlineAlert>}
       {tasks.error && <InlineAlert>{tasks.error.message}</InlineAlert>}
       {!sandboxes.data && !failure ? (
@@ -460,7 +460,7 @@ function SandboxTableRow({
             />
           )}
           <div className="text-[13px] leading-5">
-            <p>{!active && !stopped && sandbox.runsOn?.os === "macos" ? `Idle · ${sandbox.runsOn.note}` : label}</p>
+            <p>{!active && !stopped && sandbox.runsOn?.os === "macos" ? `Idle · ${runsOnNote(sandbox.runsOn)}` : label}</p>
             {task?.previewUrl && !stopped && (
               <UrlLink
                 href={task.previewUrl}
@@ -473,7 +473,7 @@ function SandboxTableRow({
         </div>
       </td>
       <td className="whitespace-nowrap px-[14px] py-2 text-[13px] leading-5 tabular-nums text-muted-foreground">
-        {sandbox.leaseDaysThisWeek !== undefined ? `${sandbox.leaseDaysThisWeek} day${sandbox.leaseDaysThisWeek === 1 ? "" : "s"}` : typeof hours === "number" ? `${hours.toFixed(1)} h` : null}
+        {sandbox.leaseDaysThisWeek !== undefined ? `${sandbox.leaseDaysThisWeek.toLocaleString(undefined, { maximumFractionDigits: 2 })} day${sandbox.leaseDaysThisWeek === 1 ? "" : "s"}` : typeof hours === "number" ? `${hours.toFixed(1)} h` : null}
       </td>
       <td className="py-2 pr-[14px]">
         <div className="flex items-center justify-end gap-1.5">

@@ -11,8 +11,9 @@ export async function macModels(cli: InstaboxCli, signal?: AbortSignal): Promise
   if (!template || !Array.isArray(template.models)) return [];
   return template.models.flatMap(value => {
     const model = rec(value), spec = rec(model?.defaultSpec), lease = rec(model?.minimumLease);
+    const hours = num(lease?.hours), hourPrice = num(lease?.hourUSD);
     const id = str(model?.name), price = num(lease?.minimumUSD), cpus = num(spec?.vcpus), memoryMiB = num(spec?.memMiB);
-    if (!id || !/^[a-z0-9]+$/.test(id) || !cpus || !memoryMiB || price === null || price < 0 || num(lease?.hours) !== 24) return [];
-    return [{ id, label: str(model?.label) ?? id.toUpperCase(), cpus, memoryMiB, dayPrice: price, currency: "USD" }];
+    if (!id || !/^[a-z0-9]+$/.test(id) || !cpus || !memoryMiB || price === null || price < 0 || hours !== 24 || hourPrice === null || hourPrice < 0) return [];
+    return [{ id, label: str(model?.label) ?? id.toUpperCase(), cpus, memoryMiB, minimumCost: price, minimumHours: hours, hourPrice, currency: "USD" }];
   });
 }

@@ -57,7 +57,7 @@ export function toSandbox(raw: JsonRecord): SandboxInfo {
   const lease = rec(raw.lease);
   const mac = lease && str(lease.startedAt) && str(lease.chargeUntil) && num(lease.hourUSD) !== null ? {
     model: str(metadata?.["boat-mac-model"]) ?? (str(rec(raw.template)?.id) === "macos" ? str(raw.model) : null) ?? str(raw.pool)?.replace(/^mac-/, "") ?? "mac",
-    leaseId: String(lease.id), startedAt: str(lease.startedAt)!, chargeUntil: str(lease.chargeUntil)!, dayPrice: num(lease.hourUSD)! * 24,
+    leaseId: String(lease.id), startedAt: str(lease.startedAt)!, chargeUntil: str(lease.chargeUntil)!, hourPrice: num(lease.hourUSD)!, minimumCost: num(lease.hourUSD)! * (Date.parse(str(lease.chargeUntil)!)-Date.parse(str(lease.startedAt)!))/3_600_000,
     cpus: num(spec?.vcpus) ?? 0, memoryMiB: num(spec?.memMiB) ?? 0,
   } : undefined;
   return {
@@ -70,6 +70,7 @@ export function toSandbox(raw: JsonRecord): SandboxInfo {
     desktopUrl: null,
     environment: null,
     createdAt: str(raw.createdAt),
+    ...(mac ? { scheduledReleaseAt: str(raw.deleteAt) } : {}),
     // Instabox has no auto-stop deadline; it pauses an idle machine instead.
     archiveAfter: str(raw.archiveAt),
     stoppedAt: state === "stopped" || state === "suspended" ? (str(raw.updatedAt) ?? null) : null,

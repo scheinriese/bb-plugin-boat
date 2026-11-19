@@ -419,12 +419,12 @@ export const PLUGIN_SETTINGS = {
   // Sandbox providers (boat.dev is always on; projects choose where they run)
   macHandBackMarginMinutes: {
     section: "advanced", type: "number", label: "Mac hand-back margin (min)",
-    description: "Delete an empty day-lease Mac this long before its next day window. Open tasks always keep their Mac.",
+    description: "Schedule an empty Mac for release at its paid minimum end this many minutes ahead. After the minimum, release on the next pass.",
     experimental_schema: range("macHandBackMarginMinutes"), default: 30,
   },
   macIdleNoticeMinutes: {
     section: "advanced", type: "number", label: "Mac idle heads-up after (min)",
-    description: "Before another Mac day window, tell the orchestrator when every open task has been idle this long.",
+    description: "Near the end of paid Mac time, tell the orchestrator once when every open task has been idle this long.",
     experimental_schema: range("macIdleNoticeMinutes"), default: 60,
   },
   instaboxEnabled: {
