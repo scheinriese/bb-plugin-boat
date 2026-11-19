@@ -139,7 +139,7 @@ function KeyLine({ provider }: { provider: SandboxProviderDto }) {
 }
 
 /** One provider: icon, name and what it is, and its status (on the right, or after a Mac's name). */
-function ProviderRow({ provider }: { provider: SandboxProviderDto }) {
+export function ProviderRow({ provider }: { provider: SandboxProviderDto }) {
   const mac = provider.kind !== "cloud";
   return (
     <div className="flex items-start gap-3 px-3.5 py-3" aria-disabled={provider.available ? undefined : true}>

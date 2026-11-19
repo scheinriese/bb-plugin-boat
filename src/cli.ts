@@ -1545,7 +1545,7 @@ export function buildCli(runtime: Runtime) {
               "never: Never continue on paid Claude. Its chats stopped at a usage limit wait for included usage. allow: they continue when paid Claude is available (default)",
           },
           "user-approved": { type: "boolean", description: "The user approved XLarge sandboxes for this project" },
-          "runs-on": { type: "enum", values: [...PROVIDER_IDS], description: "Where its new tasks' sandboxes run: boat (boat.dev, the default) or instabox (needs Instabox turned on)" },
+          "runs-on": { type: "enum", values: [...PROVIDER_IDS], description: "Where its new tasks' sandboxes run: boat (boat.dev, the default) instabox or scaleway (Mac task chats)" },
           json,
         },
         async run({ positionals, options }, ctx) {
@@ -1572,7 +1572,7 @@ export function buildCli(runtime: Runtime) {
                 ...(instructions !== undefined ? { instructions: instructions.trim() === "none" ? "" : instructions } : {}),
                 ...(options.size !== undefined ? { machineType: options.size === "none" ? null : (options.size as MachineType) } : {}),
                 ...(options["paid-claude"] !== undefined ? { neverPaidClaude: options["paid-claude"] === "never" } : {}),
-                ...(options["runs-on"] !== undefined ? { sandboxProvider: options["runs-on"] as ProviderId } : {}),
+                ...(options["runs-on"] !== undefined ? { sandboxProvider: options["runs-on"] as ProviderId, sandboxSystem: options["runs-on"] === "scaleway" ? "macos" : "linux" } : {}),
               });
             } catch (error) {
               throw new PluginCliError(error instanceof Error ? error.message : String(error), { code: "invalid_value" });
@@ -1630,12 +1630,12 @@ export function buildCli(runtime: Runtime) {
         },
       }),
       "config runs-on": cliCommand({
-        summary: "Show where each project's tasks run, or set one project's: boat (boat.dev, the default) or instabox",
+        summary: "Show where each project's tasks run, or set one project's: boat (boat.dev, the default) instabox or scaleway",
         description:
           "Without arguments: every project with its provider. With a project and a provider: its new tasks' sandboxes run there (tasks already started stay where they are). Instabox needs `bb boat config set instaboxEnabled true` and its API key in bb's settings for this plugin; `bb boat doctor` checks it.",
         positionals: [
           { name: "project", description: "Project id or name", required: false },
-          { name: "provider", description: "boat or instabox", required: false },
+          { name: "provider", description: "boat instabox or scaleway", required: false },
         ],
         options: { json },
         async run({ positionals, options }) {
@@ -1655,13 +1655,13 @@ export function buildCli(runtime: Runtime) {
             if (!(PROVIDER_IDS as readonly string[]).includes(provider)) {
               throw new PluginCliError(`"${positionals.provider}" isn't a sandbox provider.`, { code: "invalid_value", hint: `Use one of: ${PROVIDER_IDS.join(", ")}.` });
             }
-            const saved = runtime.projects.save({ ...project, sandboxProvider: provider as ProviderId });
+            const saved = runtime.projects.save({ ...project, sandboxProvider: provider as ProviderId, sandboxSystem: provider === "scaleway" ? "macos" : "linux" });
             runtime.changed();
             const off = service.sandboxProviders.get(provider) === null;
             return out({ project: saved.id, runsOn: saved.sandboxProvider ?? DEFAULT_PROVIDER_ID, enabled: !off }, options.json, () =>
               [
                 `${saved.id} now runs on ${name(provider)}.`,
-                off ? `${name(provider)} isn't on yet, so its new tasks won't start: turn it on (\`bb boat config set ${provider}Enabled true\`), add its API key in bb's settings for this plugin, then run \`bb boat doctor\`.` : null,
+                off && provider === "scaleway" ? "Add the Scaleway secret key in bb secrets and set scalewayProjectId in Boat settings." : off ? `${name(provider)} isn't on yet, so its new tasks won't start: turn it on (\`bb boat config set ${provider}Enabled true\`), add its API key in bb's settings for this plugin, then run \`bb boat doctor\`.` : null,
               ]
                 .filter(Boolean)
                 .join("\n"),

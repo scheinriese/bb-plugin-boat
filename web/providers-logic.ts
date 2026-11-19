@@ -27,6 +27,7 @@ export function runsOnGlyph(runsOn: Pick<RunsOnDto, "provider" | "os">): Provide
 }
 
 export function providerGlyph(provider: Pick<SandboxProviderDto, "id" | "kind">): ProviderGlyph {
+  if (provider.id === "scaleway") return "laptop";
   if (provider.kind === "own-mac") return "laptop";
   if (provider.kind === "monthly-mac") return "laptop-dashed";
   return provider.id === DEFAULT_SANDBOX_PROVIDER ? "boat" : "box";

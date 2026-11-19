@@ -10,7 +10,7 @@ export function macRunsOn(ledger: MacLeaseLedger, machineId: string | null, task
   const attached = ledger.tasks(lease.id);
   const others = tasks.filter(t => t.id !== taskId && t.sandboxId === machineId && t.status !== "done" && t.status !== "cancelled");
   const shared = taskId !== undefined && attached.findIndex(t => t.taskId === taskId) > 0;
-  return { provider: lease.provider, label: "Instabox", os: "macos", machine: `Mac ${lease.size.toUpperCase().replace("PRO", " Pro")}`,
+  return { provider: lease.provider, label: lease.provider === "scaleway" ? "Scaleway" : "Instabox", os: "macos", machine: `Mac ${lease.size.toUpperCase().replace("PRO", " Pro")}`,
     note: lease.endedAt ? `lease ended ${leaseEnd(lease.endedAt)}` : `${taskId ? shared ? "same lease, ends" : "lease ends" : "leased until"} ${leaseEnd(lease.paidUntil)}`,
     leaseCost: `${leaseMoney(lease.dayPrice,lease.currency)} a day`, sharedTasks: others.length,
     detail: taskId ? (others.length ? `Shares the lease with ${others.map(t => t.title).join(", ")}` : null) : `24 h lease · ${leaseMoney(lease.dayPrice,lease.currency)}` };

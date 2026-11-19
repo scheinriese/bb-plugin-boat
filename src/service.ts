@@ -878,10 +878,11 @@ export class BoatService {
     const named = namedSandbox(input.sandbox);
     if (named !== null) return this.sandboxProvider(named);
     if (parent !== null) return this.sandboxProvider(parent);
-    if (input.sandboxSystem === "macos") return this.sandboxProviders.forTask({ sandboxProvider: "instabox" });
     const project = governingProject(this.hooks.projects?.() ?? [], projectId, repo);
-    const provider = this.sandboxProviders.forProject(project);
-    if (this.sandboxProviders.get(provider.id) === null) {
+    const provider = input.sandboxSystem === "macos" && !["instabox", "scaleway"].includes(project?.sandboxProvider ?? "")
+      ? this.sandboxProviders.forTask({ sandboxProvider: "instabox" })
+      : this.sandboxProviders.forProject(project);
+    if (this.sandboxProviders.get(provider.id) === null && input.sandboxSystem !== "macos" && project?.sandboxSystem !== "macos") {
       throw new TaskError(
         `${project?.name ?? "This project"} runs on ${provider.displayName}, which isn't turned on, so its task can't start.`,
         "provider_unavailable",
@@ -1331,9 +1332,8 @@ export class BoatService {
     // Where its sandbox runs: a named sandbox's provider, its parent's, else its project's (Runs on).
     const sandboxProvider = this.providerForNewTask(input, parent, boatProject, repo);
     const storedProject = governingProject(this.hooks.projects?.() ?? [], boatProject, repo);
-    const sandboxSystem = parent?.sandboxSystem ?? input.sandboxSystem ?? storedProject?.sandboxSystem ?? "linux";
-    if (sandboxSystem === "macos" && sandboxProvider.id !== "instabox") throw new TaskError("Mac tasks need Instabox. Choose Instabox in the project's Runs on setting.", "provider_unavailable");
-    if (sandboxSystem === "macos" && !(await sandboxProvider.macModels?.(this.hooks.lifecycle))?.length) throw new TaskError("This Instabox account cannot create Macs. Check its plan and Mac templates.", "provider_unavailable");
+    const sandboxSystem = parent?.sandboxSystem ?? input.sandboxSystem ?? storedProject?.sandboxSystem ?? (sandboxProvider.id === "scaleway" ? "macos" : "linux");
+    if (sandboxSystem === "macos" && !["instabox", "scaleway"].includes(sandboxProvider.id)) throw new TaskError("Choose a Mac day-lease provider in Runs on.", "provider_unavailable");
     const protect = protectedBranches(
       project,
       [baseBranch, ...extraRepos.map((entry) => entry.baseBranch), ...this.projectBaseBranches([repo, ...extraRepos.map((entry) => entry.repo)])],
@@ -1448,8 +1448,8 @@ export class BoatService {
     // anything is created (a sandbox the setup can't use would cost a start).
     // A review that reuses its task's sandbox needs no start; when it may
     // still get a new one, createSandbox checks the plan right before.
-    if (this.hooks.preflight) {
-      await this.hooks.preflight({ agent: provider, runner, environment, newSandbox: sandboxSystem === "macos" ? false : surelyNewSandbox(input, parent, settings), ...(sandboxProvider.id === DEFAULT_PROVIDER_ID ? {} : { provider: sandboxProvider.id }) });
+    if (this.hooks.preflight && sandboxSystem !== "macos") {
+      await this.hooks.preflight({ agent: provider, runner, environment, newSandbox: surelyNewSandbox(input, parent, settings), ...(sandboxProvider.id === DEFAULT_PROVIDER_ID ? {} : { provider: sandboxProvider.id }) });
     }
     // Headless because the rules don't trust the repo (asked for or not): the Untrusted repo badge.
     const ruled = runner === "boat" && ruleRunner === "boat" && this.hooks.chat !== undefined && settings.workerMode === "chat";
@@ -1903,7 +1903,10 @@ export class BoatService {
       let sandbox!: Sandbox;
       const place = async () => {
         reuse = await this.pickSandbox(input, parent, settings, signal);
-        if (task.sandboxSystem === "macos" && reuse === null) reuse = await this.heldMacFor(task, sizing.type, parent, signal);
+        if (task.sandboxSystem === "macos" && reuse === null) {
+          reuse = await this.heldMacFor(task, sizing.type, parent, signal);
+          task = this.store.get(id) ?? task;
+        }
         stillWanted();
         this.sizes.assertSandboxNotResizing(reuse, "Start the task once the move is done, or in a new sandbox."); // sizes
         if (reuse !== null) {
@@ -1925,15 +1928,11 @@ export class BoatService {
           task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: false }) ?? task;
           this.store.addEvent(id, "sandbox", `Reusing sandbox ${sandbox.id}`);
         } else {
-          sandbox = await this.createSandbox({
-            name: `bb ${id} ${slug(task.title)}`,
-            type: sizing.type,
-            environment: task.environment,
-            snapshot: task.snapshot,
-            sandboxProvider: this.sandboxProvider(task),
-            ...(task.sandboxSystem === "macos" ? { system: "macos" as const } : {}),
-            signal,
+          sandbox = task.sandboxSystem === "macos" ? await this.createMacFor(task, sizing.type, signal) : await this.createSandbox({
+            name: `bb ${id} ${slug(task.title)}`, type: sizing.type, environment: task.environment, snapshot: task.snapshot,
+            sandboxProvider: this.sandboxProvider(task), signal,
           });
+          task = this.store.get(id) ?? task;
           if ((sandbox.system === "macos") !== (task.sandboxSystem === "macos")) throw new TaskError("The created sandbox system does not match this task.", "invalid_task");
           createdSandbox = sandbox.id;
           release = this.claim(sandbox.id);
@@ -1943,7 +1942,7 @@ export class BoatService {
         }
         if (task.sandboxSystem === "macos") {
           const lease = this.store.macLeases.held(sandbox.id)[0];
-          if (!lease) throw new TaskError("Instabox did not report the Mac lease; work cannot safely start.", "lease_unknown");
+          if (!lease) throw new TaskError("The provider did not report the Mac lease; work cannot safely start.", "lease_unknown");
           const spec = INSTABOX_TASK_SPECS[sizing.type];
           this.store.macLeases.attach(lease.id, id, spec.vcpus, spec.memMiB);
         }
@@ -2448,11 +2447,17 @@ export class BoatService {
   }
 
   private async heldMacFor(task: Task, type: MachineType, parent: Task | null, signal?: AbortSignal): Promise<string | null> {
-    const provider = this.sandboxProvider(task);
-    // Only this provider's successful list reconciles its leases. A failed
-    // list never marks machines gone and never authorizes a new rental.
-    const machines = await provider.list({ all: true, signal });
-    this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
+    for (const provider of this.macProviders(task.sandboxProvider ?? "instabox")) {
+      if (!this.sandboxProviders.get(provider.id) || (provider.id === "scaleway" && task.runner !== "chat")) continue;
+      let machines: Sandbox[];
+      try { machines = await provider.list({ all: true, signal }); }
+      catch (error) {
+        // An unconfirmed held lease prevents a second rental. An unavailable
+        // empty provider may give way to the other provider.
+        if (this.store.macLeases.held().some(l => l.provider === provider.id)) throw error;
+        continue;
+      }
+      this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
     const need = INSTABOX_TASK_SPECS[type];
     for (const lease of this.store.macLeases.held()) {
       if (lease.provider !== provider.id || this.holdsSandbox(lease.machineId)) continue;
@@ -2463,9 +2468,42 @@ export class BoatService {
       // Unknown attached tasks consume the whole machine until reconciled.
       if (open.size > reservations.length) continue;
       if (reservations.reduce((n,t) => n+t.cpus,0)+need.vcpus > lease.cpus || reservations.reduce((n,t) => n+t.memoryMiB,0)+need.memMiB > lease.memoryMiB) continue;
+      if (provider.id !== task.sandboxProvider) {
+        this.store.update(task.id, { sandboxProvider: provider.id });
+        this.store.addEvent(task.id, "sandbox-provider", `Using a held ${provider.displayName} Mac lease before renting another.`);
+      }
       return lease.machineId;
     }
+    }
     return null;
+  }
+
+  private macProviders(preferred: string): SandboxProvider[] {
+    return [preferred, ...["instabox", "scaleway"].filter(id => id !== preferred)]
+      .filter(id => id === "instabox" || id === "scaleway")
+      .map(id => this.sandboxProviders.forTask({ sandboxProvider: id }));
+  }
+
+  private async createMacFor(task: Task, type: MachineType, signal: AbortSignal): Promise<Sandbox> {
+    const failures: string[] = [];
+    for (const provider of this.macProviders(task.sandboxProvider ?? "instabox")) {
+      signal.throwIfAborted();
+      try {
+        if (!this.sandboxProviders.get(provider.id)) throw new TaskError(`${provider.displayName} is not configured.`, "provider_unavailable");
+        if (provider.id === "scaleway" && task.runner !== "chat") throw new TaskError("Scaleway needs task chats and bb Connect. Enable Run tasks as chats for this project.", "chat_required");
+        if (!(await provider.macModels?.(signal))?.length) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
+        const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", sandboxProvider: provider, signal });
+        this.store.update(task.id, { sandboxProvider: provider.id });
+        if (failures.length) this.store.addEvent(task.id, "sandbox-provider", `Mac provider fallback: ${failures.join("; ")} Using ${provider.displayName}.`);
+        return sandbox;
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (signal.aborted || code === "creation_unknown" || code === "creation_allocated") throw error;
+        failures.push(`${provider.displayName}: ${errorText(error)}`);
+        this.store.addEvent(task.id, "sandbox-provider", `${provider.displayName} Mac unavailable; trying the other day-lease provider. ${errorText(error)}`);
+      }
+    }
+    throw new TaskError(`No Mac day-lease provider is available. ${failures.join(" ")}`, "provider_unavailable");
   }
 
   /** One serialized hand-back pass, including a final state check after I/O. */

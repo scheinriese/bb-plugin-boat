@@ -57,6 +57,7 @@ export const PROVIDER_CATALOG: readonly CatalogEntry[] = [
     ],
     apiKey: true,
   },
+  { id: "scaleway", label: "Scaleway", kind: "cloud", summary: "Paris Apple silicon · 24 h minimum, then hourly until deleted.", systems: [{ os: "macos", label: "Mac", note: null }], apiKey: true },
   { id: "your-mac", label: "Your Mac", kind: "own-mac", summary: `Agents on your own Mac, enrolled in bb. ${NO_MACS}`, systems: [], apiKey: false, unsupported: NO_MACS },
   {
     id: "monthly-mac",
@@ -161,7 +162,7 @@ function catalogRow(entry: CatalogEntry, provider: SandboxProvider | null, conne
       return { ...system, note, ready: connection === "connected" && provider !== null && offered && note === null };
     }),
     // No setting holds the key until this version has the provider: the row says so instead of pointing at nothing.
-    apiKey: entry.apiKey ? { setting: here === null ? null : `${entry.label} API key` } : null,
+    apiKey: entry.apiKey ? { setting: here === null ? null : entry.id === "scaleway" ? "Scaleway secret key" : `${entry.label} API key` } : null,
     status: available ? null : "Not available yet",
   };
 }
@@ -301,7 +302,7 @@ export function providerHandlers(runtime: Runtime) {
       if (option.disabledReason !== null && provider !== project.sandboxProvider) {
         throw new experimental_PluginRpcRefusal({ code: "conflict", message: `${option.label} can't take new work: ${option.disabledReason.charAt(0).toLowerCase()}${option.disabledReason.slice(1)}.` });
       }
-      const saved = runtime.projects.save({ ...project, sandboxProvider: provider === "instabox-macos" ? "instabox" : provider === service.sandboxProviders.default.id ? null : provider, sandboxSystem: provider === "instabox-macos" ? "macos" : "linux" });
+      const saved = runtime.projects.save({ ...project, sandboxProvider: provider === "instabox-macos" ? "instabox" : provider === service.sandboxProviders.default.id ? null : provider, sandboxSystem: provider === "instabox-macos" || provider === "scaleway" ? "macos" : "linux" });
       runtime.changed();
       bb.rpc.experimental_invalidate([PROVIDERS_TAG]);
       return projectRow(saved, service.sandboxProviders);

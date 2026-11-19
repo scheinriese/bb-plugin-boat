@@ -1,3 +1,7 @@
+import { ScalewayApi } from "./src/providers/scaleway/api.ts";
+import { ScalewayKeys } from "./src/providers/scaleway/ssh.ts";
+import { createScalewayProvider } from "./src/providers/scaleway/provider.ts";
+import { registerSandboxMachine } from "./src/providers/machine.ts";
 // bb-plugin-boat — run coding agents in boat.dev cloud sandboxes and
 // orchestrate them from bb threads.
 //
@@ -114,10 +118,13 @@ export default async function plugin(bb: BbPluginApi) {
   const instaboxCli = new InstaboxCli(async () => resolveInstaboxBinary((await settings.get()).instaboxPath), () => providerSecrets.instaboxKey());
   const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
   const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases });
+  const scaleway = createScalewayProvider({ api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(bb.server.experimental_dataDir, "plugins", bb.pluginId, "scaleway-keys")), ledger: store.macLeases });
+  let scalewayOn = Boolean((await settings.get()).scalewayProjectId);
+  settings.onChange(() => { void settings.get().then(values => { scalewayOn = Boolean(values.scalewayProjectId); }); });
   let instaboxOn = (await settings.get()).instaboxEnabled;
   // Sandbox providers: boat.dev, the default; Instabox while it's turned on and its key stored (src/providers/registry.ts).
-  const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli }), instabox], {
-    isEnabled: (provider) => provider.id !== INSTABOX_PROVIDER_ID || (instaboxOn && providerSecrets.instaboxKeyPresent()),
+  const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli }), instabox, scaleway], {
+    isEnabled: (provider) => provider.id === "scaleway" ? scalewayOn && providerSecrets.scalewayKeyPresent() : provider.id !== INSTABOX_PROVIDER_ID || (instaboxOn && providerSecrets.instaboxKeyPresent()),
   });
   const instaboxSetup = createInstaboxSetup({ cli: instaboxCli, turnedOn: async () => (await settings.get()).instaboxEnabled, keyPresent: () => providerSecrets.instaboxKeyPresent() });
   // Worker chats and cloud orchestrators need bb Connect.
@@ -348,7 +355,7 @@ export default async function plugin(bb: BbPluginApi) {
     usageRefused: provider => limits.record(provider, Date.now() + DEFAULT_LIMIT_MS),
     connect,
     // Each provider's own checks: Instabox's for work there, boat's otherwise.
-    preflight: (input) => (input.provider === INSTABOX_PROVIDER_ID ? instaboxPreflight(instaboxSetup) : setup.preflight(input)),
+    preflight: (input) => input.provider === "scaleway" ? Promise.resolve() : (input.provider === INSTABOX_PROVIDER_ID ? instaboxPreflight(instaboxSetup) : setup.preflight(input)),
     machineProviders: () => registeredMachines,
     // Sandbox sizes: the projects' sizes, the plan's sizes (never waiting unless fresh), and plain messages to chats.
     projects: () => projects.list(),
@@ -473,7 +480,7 @@ export default async function plugin(bb: BbPluginApi) {
           options,
         ),
       instabox: (options) => instaboxSetup.status(options),
-      keyPresent: (providerId) => (providerId === INSTABOX_PROVIDER_ID ? providerSecrets.instaboxKeyPresent() : null),
+      keyPresent: (providerId) => (providerId === "scaleway" ? providerSecrets.scalewayKeyPresent() : providerId === INSTABOX_PROVIDER_ID ? providerSecrets.instaboxKeyPresent() : null),
     },
     changed,
     wake: () => wakeMonitor(),
@@ -527,6 +534,12 @@ export default async function plugin(bb: BbPluginApi) {
   });
   registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect, wakes, prepareHost });
   registeredMachines.add("boat-sandbox");
+  registerSandboxMachine(bb, scaleway, { service, settings: readSettings, availability: async () => {
+    if (!sandboxProviders.get("scaleway")) return { status: "setup-required", message: "Add the Scaleway secret key in bb secrets and set its project ID in Boat settings." };
+    const state = await connect().catch(() => null);
+    return state?.state === "off" ? { status: "setup-required", message: "Turn on bb Connect for Scaleway task chats." } : { status: "available" };
+  } });
+  registeredMachines.add(scaleway.machine!.id);
   // Instabox machines for task chats, when it's on at load (turning it on later needs a reload for these).
   let keepInstaboxAwake: (() => Promise<void>) | null = null;
   if (instaboxOn) {

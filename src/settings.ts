@@ -435,6 +435,15 @@ export const PLUGIN_SETTINGS = {
       "Lets projects run on Instabox Linux machines instead of boat.dev (a project's Runs on). Needs the instabox CLI and your Instabox API key, stored in bb's settings for this plugin (Instabox API key). Task chats on Instabox are offered once the plugin reloads. Hard stop after doesn't apply there (Instabox pauses idle machines instead), and Instabox's own machine limit counts stopped machines too.",
     default: false,
   },
+  scalewayProjectId: {
+    section: "advanced", type: "string", label: "Scaleway project ID",
+    description: "Project for hourly Mac task leases. Add the Scaleway secret key in bb secrets. Task chats need bb Connect and agent logins.",
+    experimental_schema: z.union([z.literal(""), z.string().uuid()]), default: "",
+  },
+  scalewayZone: {
+    section: "advanced", type: "select", label: "Scaleway zone", options: ["fr-par-3", "fr-par-1"], default: "fr-par-3",
+    description: "Paris availability zone for new Mac leases. Release held Macs before changing zones.",
+  },
   instaboxPath: {
     section: "advanced",
     type: "string",
@@ -452,6 +461,7 @@ export const PLUGIN_SETTINGS = {
  * Agents) is where the owner enters them; only the server reads them.
  */
 export const SECRET_SETTINGS = {
+  scalewaySecretKey: { type: "string", label: "Scaleway secret key", description: "Only used for Scaleway API authentication. Enter it here, never in chat.", secret: true },
   instaboxApiKey: {
     type: "string",
     label: "Instabox API key",
