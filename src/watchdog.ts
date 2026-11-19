@@ -9,7 +9,10 @@
 //   it on the next message instead of queueing it as "Waiting for … to be
 //   ready" for good;
 // - a suspended machine with messages waiting for it is resumed (the
-//   provider's resume: boat resume, then bb set up there again);
+//   provider's resume: boat resume, then bb set up there again), with a slot
+//   from the account's wake pacer. A resume that fails is tried again 3, 6,
+//   12 … minutes later, at most an hour apart, until the machine is back;
+//   it never holds the other machines' wakes;
 // - one [boat] message per incident to the task's orchestrator: a sandbox
 //   stopped while background work ran there; messages waited more than 3
 //   minutes on a stopped or disconnected machine; a running turn showed no
@@ -23,7 +26,7 @@ import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { KEEP_LIMIT_MS, NO_WORK, addWork, describeWork, hasWork, messagesWaiting, rowWork, threadsOnMachine, type BackgroundWork, type ThreadRow } from "./activity.ts";
 import { ACTIVE_STATES, busyProcesses, type BoatApi, type Sandbox } from "./boat-api.ts";
-import type { WakeBudget } from "./wake-budget.ts";
+import { wakeIds, type WakePacer } from "./wake-pacer.ts";
 import { RESUME_NOTE_PREFIX, WATCHDOG_PREFIX, quietNotice, resumeNoteText, stoppedNotice, waitingNotice, type NoticeSubject } from "./format.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import { OPEN_STATUSES, type Task, type TaskStore } from "./store.ts";
@@ -47,8 +50,17 @@ const RECONCILE_TRIES = 3;
 const RESUMES_PER_PASS = 2;
 /** The machines are looked at this often (sooner when a message waits for an offline one). */
 export const MACHINES_EVERY_MS = 30_000;
-/** After a failed suspend or resume, leave that machine alone this long. */
+/** After a failed suspend, leave that machine alone this long. */
 const RETRY_MS = 3 * 60_000;
+/** After a failed resume, that machine is resumed again this much later, doubling per failure in a row… */
+export const RESUME_RETRY_MS = 3 * 60_000;
+/** …up to this, until the machine is back. */
+export const RESUME_RETRY_MAX_MS = 60 * 60_000;
+
+/** The wait before resuming a machine again after this many failed resumes in a row: 3, 6, 12 … minutes, at most an hour. */
+export function resumeRetryMs(failures: number): number {
+  return Math.min(RESUME_RETRY_MAX_MS, RESUME_RETRY_MS * 2 ** Math.max(0, Math.min(failures - 1, 20)));
+}
 /** After a resume bb took, ask again only this much later (its setup there can take minutes). */
 const RESUME_AGAIN_MS = 10 * 60_000;
 /** How long a sent notice is remembered (dedupe across restarts). */
@@ -123,10 +135,11 @@ export interface WatchdogDeps {
   signal?: AbortSignal;
   now?: () => number;
   /**
-   * Wakes shared with the paid Claude resume (src/wake-budget.ts): the watchdog takes from it, and waits out
-   * its hold, but never sets one (its own per-host retry covers a failing host); absent: only RESUMES_PER_PASS.
+   * The account's wake pacer (src/wake-pacer.ts), shared with every wake: the watchdog takes a slot for each
+   * resume and waits out the hold, but never sets one (its own backoff per machine covers a failing one);
+   * absent: only RESUMES_PER_PASS.
    */
-  wakeBudget?: WakeBudget;
+  wakes?: Pick<WakePacer, "take" | "pausedUntil">;
 }
 
 export interface Watchdog {
@@ -204,8 +217,10 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   const seen = new Map<string, Seen>();
   /** Host id → resource (sandbox id). */
   const resources = new Map<string, string | null>();
-  /** Host id → when to try a suspend or resume again. */
+  /** Host id → when to try a failed suspend again. */
   const retryAt = new Map<string, number>();
+  /** Host id → the plugin's failed resumes of it in a row, and when to resume it again (until it's back). */
+  const resumeBackoff = new Map<string, { failures: number; retryAt: number }>();
   /** Host id → the outcome of the plugin's last resume of it. */
   const resumed = new Map<string, { at: number; ok: boolean; error: string | null }>();
   /** Host id → why the plugin couldn't bring bb's record in line (a failed suspend). */
@@ -521,9 +536,11 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       deps.resumed?.(hostId);
       deps.info?.(`watchdog: resumed ${hostId}: messages were waiting for it`);
     } catch (error) {
-      retryAt.set(hostId, at + RETRY_MS);
+      // Tried again later each time, doubling: a machine that keeps failing isn't resumed every few minutes for hours.
+      const failures = (resumeBackoff.get(hostId)?.failures ?? 0) + 1;
+      resumeBackoff.set(hostId, { failures, retryAt: at + resumeRetryMs(failures) });
       resumed.set(hostId, { at, ok: false, error: message(error) });
-      deps.log(`watchdog: resume ${hostId}: ${message(error)}`);
+      deps.log(`watchdog: resume ${hostId}: ${message(error)} (failure ${failures} in a row; next try in ${Math.round(resumeRetryMs(failures) / 60_000)} minutes)`);
     }
   }
 
@@ -579,11 +596,13 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
   async function machines(at: number, sandboxes: Map<string, Sandbox>): Promise<void> {
     const hosts = ((await bb.sdk.hosts.list()) as unknown as HostRow[]).filter((host) => host.machineProviderId === MACHINE_PROVIDER_ID);
     const live = new Set(hosts.map((host) => host.id));
-    for (const id of new Set([...seen.keys(), ...resources.keys(), ...resumed.keys(), ...problems.keys(), ...upNow.keys(), ...tries.keys()])) {
+    for (const id of new Set([...seen.keys(), ...resources.keys(), ...resumed.keys(), ...problems.keys(), ...upNow.keys(), ...tries.keys(), ...retryAt.keys(), ...resumeBackoff.keys()])) {
       if (live.has(id)) continue;
       seen.delete(id);
       resources.delete(id);
       resumed.delete(id);
+      retryAt.delete(id);
+      resumeBackoff.delete(id);
       problems.delete(id);
       upNow.delete(id);
       tries.delete(id);
@@ -612,6 +631,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       upNow.set(host.id, running);
       if (running) {
         remember(host.id, rows, at);
+        // Back: its resume backoff starts over.
+        resumeBackoff.delete(host.id);
         resumed.delete(host.id);
         problems.delete(host.id);
         tries.delete(host.id);
@@ -661,19 +682,24 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       const fresh = (await bb.sdk.hosts.get({ hostId: host.id } as never).catch(() => null)) as unknown as HostRow | null;
       const phaseNow = fresh?.lifecycle?.phase ?? phase;
       const last = resumed.get(host.id);
-      if (phaseNow === "suspended" && at - watched >= RESUME_AFTER_MS && (retryAt.get(host.id) ?? 0) <= at && !(last?.ok === true && at - last.at < RESUME_AGAIN_MS) && resumes < RESUMES_PER_PASS) {
+      if (phaseNow === "suspended" && at - watched >= RESUME_AFTER_MS && (retryAt.get(host.id) ?? 0) <= at && (resumeBackoff.get(host.id)?.retryAt ?? 0) <= at && !(last?.ok === true && at - last.at < RESUME_AGAIN_MS) && resumes < RESUMES_PER_PASS) {
         // bb resumes a suspended machine for a new message itself; one queued before the stop it may not.
-        // The wakes a minute are shared with the paid Claude resume: none left, the next pass tries.
-        if (deps.wakeBudget === undefined || (await deps.wakeBudget.take())) {
+        // A slot from the account's wake pacer, claimed for this machine (its boat resume uses it): none free now
+        // (2 a minute, a pause after a failed wake, the hold), the next pass tries.
+        const claim = deps.wakes === undefined ? null : await deps.wakes.take(wakeIds({ sandboxId, hostId: host.id })).catch(() => null);
+        if (deps.wakes === undefined || claim !== null) {
           resumes += 1;
           await resume(host.id, at);
+          // A resume that never got to boat (it failed first, or the sandbox was up) gives its slot back.
+          await claim?.release();
         }
       }
       const stopped = STOPPED_STATES.has(sandbox.state);
       const outcome = resumed.get(host.id);
-      // The next resume: a failed one at its own retry, or when the shared wake hold ends, whichever is later.
-      const heldUntil = deps.wakeBudget ? await deps.wakeBudget.heldUntil().catch(() => 0) : 0;
-      const nextAt = Math.max(outcome !== undefined && !outcome.ok ? (retryAt.get(host.id) ?? 0) : 0, heldUntil);
+      // The next resume: a failed one at its own backoff, or when the shared pause (the hold, a pause after a
+      // failed wake) ends, whichever is later.
+      const pausedUntil = deps.wakes ? await deps.wakes.pausedUntil().catch(() => 0) : 0;
+      const nextAt = Math.max(outcome !== undefined && !outcome.ok ? (resumeBackoff.get(host.id)?.retryAt ?? 0) : 0, pausedUntil);
       const inAbout = (ms: number) => {
         const minutes = Math.max(1, Math.ceil(ms / 60_000));
         return `in about ${minutes} minute${minutes === 1 ? "" : "s"}`;
@@ -695,8 +721,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
               : phaseNow === "suspending"
                 ? "bb's suspend hasn't finished; the plugin resumes it once it has."
                 : stopped
-                  ? heldUntil > at
-                    ? `The plugin resumes it ${inAbout(heldUntil - at)}: wakes wait after one failed (boat.dev may be overloaded).`
+                  ? pausedUntil > at
+                    ? `The plugin resumes it ${inAbout(pausedUntil - at)}: wakes wait after one failed (boat.dev may be overloaded).`
                     : "The plugin resumes it on its next check."
                   : "The plugin left it alone: bb usually reconnects on its own. If it doesn't, restart the machine from bb's machine menu.";
       const threshold = phaseNow === "resuming" ? RESUMING_NOTICE_MS : WAIT_NOTICE_MS;
