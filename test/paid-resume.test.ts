@@ -323,7 +323,9 @@ test("headless Boat tasks continue only with the headless opt-in, and once per s
   const headless = task({ id: "t_headless", runner: "boat", orchestratorThreadId: "thr_orch", error: "Claude AI usage limit reached|1763600000", turns: 3 });
   const spent = task({ id: "t_spent", runner: "boat", error: "You're out of extra usage" });
   const codex = task({ id: "t_codex", runner: "boat", provider: "codex", error: "You've hit your usage limit" });
-  const env = setup({ tasks: [headless, spent, codex], orchestrators: [{ threadId: "thr_orch", projectId: null }] });
+  // Stopped weeks ago and never closed: not picked up again out of the blue.
+  const stale = task({ id: "t_stale", runner: "boat", error: "Claude AI usage limit reached", finishedAt: "2026-10-01T00:00:00Z" });
+  const env = setup({ tasks: [headless, spent, codex, stale], orchestrators: [{ threadId: "thr_orch", projectId: null }] });
   env.threads.add("thr_orch", { status: "idle" }, []);
 
   // Without the opt-in, a start would wait too: nothing.

@@ -233,7 +233,8 @@ Claude is already available.
   ten chats, three seconds apart; the rest wait for the next pass.
 - Nothing is continued while the reading is stale, Claude is on hold after a
   refused turn, or extra usage is rejected.
-- Headless Boat tasks get a follow-up only with `paidClaudeHeadless`.
+- Headless Boat tasks that stopped at a limit in the last week get a
+  follow-up, only with `paidClaudeHeadless`.
 - A project can stay on included usage: **Never continue on paid Claude** in
   its settings, or `bb boat project set <id> --paid-claude never`. It applies
   to the project's task chats, its orchestrators and every chat in its linked

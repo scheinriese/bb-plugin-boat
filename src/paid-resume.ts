@@ -449,11 +449,14 @@ export function createPaidResume(deps: PaidResumeDeps) {
     return { threadId: null, taskId: task.id, title: task.title, how: "follow-up", reason: "on paid Claude: sent the headless task a follow-up" };
   }
 
-  /** Headless tasks that stopped at a Claude usage limit, oldest first. */
-  function headlessCandidates(): Task[] {
+  /** Headless tasks that stopped at a Claude usage limit in the last STOP_TTL_MS (like chats), oldest first. */
+  function headlessCandidates(at: number): Task[] {
     return deps.tasks
       .failedHeadless()
-      .filter((task) => task.runner === "boat" && task.provider === "claude" && task.status === "failed" && headlessUsageLimit(task.error))
+      .filter((task) => {
+        const stoppedAt = Date.parse(task.finishedAt ?? "");
+        return task.runner === "boat" && task.provider === "claude" && task.status === "failed" && headlessUsageLimit(task.error) && Number.isFinite(stoppedAt) && at - stoppedAt <= STOP_TTL_MS;
+      })
       .sort((a, b) => (a.finishedAt ?? "").localeCompare(b.finishedAt ?? ""));
   }
 
@@ -539,7 +542,7 @@ export function createPaidResume(deps: PaidResumeDeps) {
     }
 
     if (headlessRoom === "paid") {
-      for (const task of headlessCandidates()) {
+      for (const task of headlessCandidates(at)) {
         const id = `task:${task.id}`;
         // The resumed turn stopped again: never a second time.
         if (deps.store.claimed(id, `turn:${task.turns}`) || deps.store.claimed(id, `turn:${task.turns - 1}`)) continue;
