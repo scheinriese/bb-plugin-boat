@@ -10,7 +10,7 @@ export const serverSchema = z.object({
   tags: z.array(z.string()).default([]),
 });
 export type Server = z.infer<typeof serverSchema>;
-export const typeSchema = z.object({ name: z.string(), stock: z.string(), cpu: z.object({ core_count: z.number().positive() }), memory: z.object({ capacity: z.coerce.number().positive() }), default_os: z.object({ id: z.string(), name: z.string() }) });
+export const typeSchema = z.object({ name: z.string(), stock: z.string(), cpu: z.object({ core_count: z.number().positive() }), memory: z.object({ capacity: z.coerce.number().positive() }), default_os: z.object({ id: z.string(), name: z.string(), is_beta: z.boolean().optional() }) });
 export const productSchema = z.object({ locality: z.object({ zone: z.string().optional() }), status: z.string(), properties: z.object({ apple_silicon: z.object({ server_type: z.string().optional() }).optional() }), unit_of_measure: z.object({ unit: z.string(), size: z.number() }), price: z.object({ retail_price: z.object({ currency_code: z.string(), units: z.coerce.number(), nanos: z.number() }) }) });
 export const quotaSchema = z.object({ name: z.string(), limit: z.coerce.number().optional(), unlimited: z.boolean().optional(), limits: z.array(z.object({ zone: z.string().optional(), region: z.string().optional(), global: z.boolean().optional(), limit: z.coerce.number().optional(), unlimited: z.boolean().optional() })).default([]) });
 export interface ScalewayConfig { projectId: string; zone: string }

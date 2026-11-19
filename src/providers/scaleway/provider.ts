@@ -63,7 +63,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     const types = await api.parse(z.object({ server_types: z.array(typeSchema) }), "GET", `${await api.base()}/server-types`, undefined, signal);
     const products = await api.pages(`/product-catalog/v2alpha1/public-catalog/products?product_types=apple_silicon&zone=${zone}`, "products", productSchema, signal);
     const result = types.server_types.flatMap(type => {
-      if (/asahi|linux/i.test(type.name + type.default_os.name) || (stockOnly && !["low_stock", "high_stock"].includes(type.stock))) return [];
+      if (type.default_os.is_beta || /asahi|linux/i.test(type.name + type.default_os.name) || (stockOnly && !["low_stock", "high_stock"].includes(type.stock))) return [];
       const price = products.find(p => p.locality.zone === zone && ["general_availability", "public_beta"].includes(p.status) && p.properties.apple_silicon?.server_type === type.name && p.unit_of_measure.unit === "hour" && p.unit_of_measure.size === 1 && p.price.retail_price.currency_code === "EUR")?.price.retail_price;
       if (!price || price.units + price.nanos / 1e9 <= 0) return [];
       return [{ id: type.name, label: type.name, cpus: type.cpu.core_count, memoryMiB: type.memory.capacity / 1048576, dayPrice: (price.units + price.nanos / 1e9) * 24, currency: "EUR" }];
