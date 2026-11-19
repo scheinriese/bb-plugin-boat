@@ -271,10 +271,77 @@ export class FakeBoat {
     this.calls.push(`delete ${id}`);
     this.sandboxes.delete(id);
   }
-  async stop(id: string): Promise<void> {
-    this.calls.push(`stop ${id}`);
+  /**
+   * How a plain stop goes: it stops; refused (boat says failing, the sandbox
+   * stays up); pending (boat gives a stop id and works on it: the sandbox
+   * stays up while stopStatuses says pending); quiet (nothing said, it stays up).
+   */
+  stopBehavior: "stops" | "refused" | "pending" | "quiet" | "error" = "stops";
+  /** What `boat stop --status <stop id>` says, per stop id, and boat's error on it (error: boat refuses with these words, the status still pending). */
+  stopStatuses = new Map<string, string>();
+  stopErrors = new Map<string, string>();
+  stopError = "Final snapshot failed; stop aborted to protect unsaved data (lazy volume not fully hydrated)";
+  /** A pending stop completes after this many status reads (null: it stays pending). */
+  pendingCompletesAfter: number | null = null;
+  private statusReads = new Map<string, number>();
+  /** --force while a stop is pending hands that stop back (forced false), as boat does. */
+  forceWhilePending = false;
+  private stopIds = 0;
+  async stop(id: string, _signal?: AbortSignal, options: { force?: boolean } = {}): Promise<{ status: string | null; stopId: string | null; forced: boolean | null; error?: string | null }> {
+    this.calls.push(`stop ${id}${options.force ? " --force" : ""}`);
     const sandbox = this.sandboxes.get(id);
-    if (sandbox) sandbox.state = "stopped";
+    if (options.force) {
+      const pending = [...this.stopStatuses.entries()].find(([, status]) => status === "pending");
+      if (pending !== undefined && this.forceWhilePending) return { status: "pending", stopId: pending[0], forced: false };
+      if (sandbox) sandbox.state = "stopped";
+      return { status: "completed", stopId: `stop_${++this.stopIds}`, forced: true };
+    }
+    const stopId = `stop_${++this.stopIds}`;
+    switch (this.stopBehavior) {
+      case "stops":
+        if (sandbox) sandbox.state = "stopped";
+        return { status: "completed", stopId, forced: null };
+      case "refused":
+        this.stopStatuses.set(stopId, "failing");
+        return { status: "failing", stopId, forced: null };
+      case "pending":
+        this.stopStatuses.set(stopId, "pending");
+        return { status: "pending", stopId, forced: null };
+      case "quiet":
+        return { status: null, stopId: null, forced: null };
+      case "error":
+        this.stopStatuses.set(stopId, "pending");
+        this.stopErrors.set(stopId, this.stopError);
+        return { status: "pending", stopId, forced: null, error: this.stopError };
+    }
+  }
+  async stopStatus(id: string, stopId: string): Promise<{ status: string | null; stopId: string | null; forced: null; error: string | null }> {
+    this.calls.push(`stop ${id} --status ${stopId}`);
+    const reads = (this.statusReads.get(stopId) ?? 0) + 1;
+    this.statusReads.set(stopId, reads);
+    if (this.stopStatuses.get(stopId) === "pending" && this.pendingCompletesAfter !== null && reads >= this.pendingCompletesAfter) this.stopStatuses.set(stopId, "completed");
+    const status = this.stopStatuses.get(stopId) ?? null;
+    if (status === "completed") {
+      const sandbox = this.sandboxes.get(id);
+      if (sandbox) sandbox.state = "stopped";
+    }
+    return { status, stopId, forced: null, error: this.stopErrors.get(stopId) ?? null };
+  }
+  /** Test forks made (`boat fork --no-snapshots --wait`), and how one fails. */
+  forks: { from: string; id: string; noSnapshots: boolean; ttlSeconds: number | null }[] = [];
+  forkError: Error | null = null;
+  /** When boat last completed a snapshot (`boat snapshots <id>`). */
+  lastSnapshot: string | null = "2026-11-19T00:41:00.000Z";
+  async fork(id: string, options: { noSnapshots?: boolean; ttlSeconds?: number } = {}): Promise<{ id: string }> {
+    this.calls.push(`fork ${id}`);
+    if (this.forkError) throw this.forkError;
+    counter += 1;
+    const fork = this.addSandbox(`bx_fork${counter}`, this.sandboxes.get(id)?.machineType ?? "default", "idle");
+    this.forks.push({ from: id, id: fork.id, noSnapshots: options.noSnapshots === true, ttlSeconds: options.ttlSeconds ?? null });
+    return { id: fork.id };
+  }
+  async lastSnapshotAt(): Promise<string | null> {
+    return this.lastSnapshot;
   }
   /** A resume waits for this. */
   resumeGate: Promise<void> | null = null;
@@ -836,6 +903,8 @@ export function makeService(
     sizeTiming?: ServiceHooks["sizeTiming"];
     /** Another service's store, chat and boat: the plugin after a reload. */
     reuse?: { store: TaskStore; chat?: FakeChat; boat?: FakeBoat };
+    /** Sandbox wakes: the account's pacer and the retry plans (default: none, resumes go out at once). */
+    wakes?: ServiceHooks["wakes"];
   } = {},
 ) {
   const boat = options.reuse?.boat ?? new FakeBoat();
@@ -886,6 +955,7 @@ export function makeService(
     ...(options.repoWorkerMode ? { repoWorkerMode: options.repoWorkerMode } : {}),
     ...(options.projectReviewer ? { projectReviewer: options.projectReviewer } : {}),
     checkPreview: options.checkPreview ?? (async () => "up" as const),
+    ...(options.wakes ? { wakes: options.wakes } : {}),
   });
   if (chat && options.linkedMachines) chat.link(boat, (sandboxId) => service.bringUp(sandboxId));
   return {

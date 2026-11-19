@@ -294,6 +294,77 @@ machine that's offline):
   its own note, so a second interruption is told too. After a stop at
   the 12-hour limit, the note says the job may have been stuck instead.
 
+### Waking sandboxes gently
+
+boat.dev restores a woken sandbox's disk lazily, from its storage. Waking
+many at once (a usage limit's reset retrying every chat that stopped at
+it) can overload that storage, so the plugin wakes sandboxes gently:
+
+- **At most 2 wakes a minute** for the whole account, whoever asks: bb
+  resuming a machine, the watchdog, a follow-up, a preview's wake, a start,
+  Resume in Sandboxes. A third waits for its slot, up to 2 minutes; past
+  that it fails at once, saying when the plugin wakes it itself. After a
+  wake fails, the next one waits 30 seconds, doubling up to 10 minutes.
+- **Login message scripts off.** Before bb is set up over `boat ssh`, the
+  plugin turns off Ubuntu's login message scripts (`/etc/update-motd.d`)
+  over boat's exec API, once per sandbox. Right after a wake, one of them
+  can hang on a file that isn't restored yet, and SSH sessions then never
+  start. Only the folder changes: its scripts lose their execute bit, and
+  links in it (such as `50-landscape-sysinfo`) get a `.disabled` suffix,
+  so the files they point to are left alone.
+- **A failed wake in plain words.** The plugin looks at the sandbox over
+  boat's exec API (no SSH): files that fail with "Input/output error",
+  lazyfs's `HYDRATOR FAILED` or "hydration in progress" in the journal,
+  processes stuck reading from the disk (`fuse_*`), hung login scripts.
+  bb's machine card and the sandbox's tasks then say what's going on, for
+  example "boat.dev is still restoring this sandbox's disk (its storage is
+  returning errors). Boat will retry at 01:52 UTC; pressing Resume earlier
+  won't help."
+- **Boat retries later.** For a disk still being restored, a restore boat
+  refused ("Please reduce your request rate") or an SSH session that never
+  starts, the plugin wakes the machine again itself after 2, 4, 8 and 16
+  minutes, and refuses earlier resumes without asking boat.dev. After 5
+  failures it stops and puts it under Needs you for the orchestrator,
+  with the sandbox and boat.dev's error. `bb boat sandbox resume <id>`
+  tries again at once.
+- **bb's daemon broken by an update.** An `npm install` left as a zombie,
+  a missing `npm/bin/bb-app`, or a module it can't load (a unit only
+  "deactivating" isn't enough, and a read still waiting on the disk comes
+  first): the machine says so, and Needs you has the repair by hand
+  (reinstall bb's downloaded package into a fresh folder, swap it in,
+  restart this machine's own daemon unit).
+- **Off a node that keeps failing.** Once the plugin itself has seen the
+  same hydrator failure at least 3 times over more than 15 minutes (on
+  wakes, or on stops boat refused), it moves the sandbox to a new node.
+  lazyfs's own attempt count doesn't count: an outage across boat.dev
+  shows high counts everywhere.
+  - First it checks that nothing there could be lost: no task or chat
+    mid-turn or with background work running, and every git checkout in
+    the sandbox has no unpushed commits on any branch, no changes (untracked
+    files included) and no stashes.
+  - It also checks the snapshot with a short-lived test fork (never
+    snapshotted, deleted right after). A fork that can't tell is tried
+    again once; then, like any unsafe case, it goes under Needs you with
+    the commands and the time of the last completed snapshot. If the fork
+    can't read the files either, the snapshot itself is the problem.
+  - Then a plain `boat stop`, which takes a fresh snapshot. The plugin
+    follows that stop (`boat stop --status`, never a second stop) and uses
+    `boat stop --force`, which keeps only the last completed snapshot, only
+    once boat refuses the stop (its error, a failing status, or the sandbox
+    staying up). Right before forcing it checks again that nothing there
+    would be lost, since the sandbox stayed up meanwhile. A stop still
+    pending after 20 minutes goes under Needs you. Then a resume puts it on
+    a new node. Files git ignores (a local `.env`, build output) written
+    since the last snapshot aren't kept; the messages say so.
+  - While a move is under way, the plugin sends no work to that sandbox
+    (follow-ups, starts, previews, ships wait, saying why).
+- **Suspending follows boat's stop.** boat usually answers a stop with
+  "pending" while it takes the final snapshot; a suspend follows it (its
+  status) for up to 90 seconds and counts as done, unless boat refuses it.
+- **Teardown backs off too.** After boat.dev fails to stop or delete a
+  sandbox, bb's retries in between fail at once, without asking boat.dev
+  again (30 seconds, doubling up to 15 minutes).
+
 ![A task chat: the worker's brief and progress, its parent orchestrator, and the boat sandbox it runs on](screenshots/worker-chat.png)
 
 ## How work lands: pull requests, or ship after approval
