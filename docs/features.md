@@ -328,9 +328,11 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   with the sandbox and boat.dev's error. `bb boat sandbox resume <id>`
   tries again at once.
 - **bb's daemon broken by an update.** An `npm install` left as a zombie,
-  the daemon's unit stuck "deactivating", or a module it can't load: the
-  machine says so, and Needs you has the repair by hand (reinstall bb's
-  downloaded package into a fresh folder, swap it in, restart the unit).
+  a missing `npm/bin/bb-app`, or a module it can't load (a unit only
+  "deactivating" isn't enough, and a read still waiting on the disk comes
+  first): the machine says so, and Needs you has the repair by hand
+  (reinstall bb's downloaded package into a fresh folder, swap it in,
+  restart this machine's own daemon unit).
 - **Off a node that keeps failing.** Once the plugin itself has seen the
   same hydrator failure at least 3 times over more than 15 minutes (on
   wakes, or on stops boat refused), it moves the sandbox to a new node.
@@ -348,9 +350,17 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   - Then a plain `boat stop`, which takes a fresh snapshot. The plugin
     follows that stop (`boat stop --status`, never a second stop) and uses
     `boat stop --force`, which keeps only the last completed snapshot, only
-    once boat says the stop failed or the sandbox stayed up. A stop still
+    once boat refuses the stop (its error, a failing status, or the sandbox
+    staying up). Right before forcing it checks again that nothing there
+    would be lost, since the sandbox stayed up meanwhile. A stop still
     pending after 20 minutes goes under Needs you. Then a resume puts it on
-    a new node.
+    a new node. Files git ignores (a local `.env`, build output) written
+    since the last snapshot aren't kept; the messages say so.
+  - While a move is under way, the plugin sends no work to that sandbox
+    (follow-ups, starts, previews, ships wait, saying why).
+- **Suspending follows boat's stop.** boat usually answers a stop with
+  "pending" while it takes the final snapshot; a suspend follows it (its
+  status) for up to 90 seconds and counts as done, unless boat refuses it.
 - **Teardown backs off too.** After boat.dev fails to stop or delete a
   sandbox, bb's retries in between fail at once, without asking boat.dev
   again (30 seconds, doubling up to 15 minutes).
