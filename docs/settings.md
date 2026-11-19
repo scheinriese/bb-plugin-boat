@@ -272,8 +272,13 @@ boat.dev's start limit or its storage can't take:
   again), never holding the others. Only when a wake the plugin made fails
   is no machine woken for 15 minutes: the call fails, or the machine fails to
   start. Each check first looks again at the machines it woke in the last 15
-  minutes, whether or not their chats are still waiting. A failed watchdog
-  resume holds wakes the same way.
+  minutes, whether or not their chats are still waiting. A woken machine that
+  stays active but never connects (a start that hangs instead of failing) is
+  forgotten after those 15 minutes, without a hold. The watchdog's resumes
+  take from the same budget and wait out the hold, but a failed watchdog
+  resume doesn't set it: the watchdog tries that machine again on its own
+  every few minutes, and one machine that keeps failing never holds the
+  others.
 
 A task records a `paid-resume` event. `bb boat relay check` (which also runs
 a check now) and the plugin log list each chat that continued, and an
