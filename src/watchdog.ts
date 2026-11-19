@@ -122,7 +122,10 @@ export interface WatchdogDeps {
   info?: (message: string) => void;
   signal?: AbortSignal;
   now?: () => number;
-  /** Wakes shared with the paid Claude resume (src/wake-budget.ts), and their hold after a failed one; absent: only RESUMES_PER_PASS. */
+  /**
+   * Wakes shared with the paid Claude resume (src/wake-budget.ts): the watchdog takes from it, and waits out
+   * its hold, but never sets one (its own per-host retry covers a failing host); absent: only RESUMES_PER_PASS.
+   */
   wakeBudget?: WakeBudget;
 }
 
@@ -521,8 +524,6 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       retryAt.set(hostId, at + RETRY_MS);
       resumed.set(hostId, { at, ok: false, error: message(error) });
       deps.log(`watchdog: resume ${hostId}: ${message(error)}`);
-      // A failed wake holds every wake for a while (boat.dev may be overloaded), the paid resume's too.
-      await deps.wakeBudget?.failed().catch(() => undefined);
     }
   }
 
@@ -670,13 +671,21 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       }
       const stopped = STOPPED_STATES.has(sandbox.state);
       const outcome = resumed.get(host.id);
+      // The next resume: a failed one at its own retry, or when the shared wake hold ends, whichever is later.
+      const heldUntil = deps.wakeBudget ? await deps.wakeBudget.heldUntil().catch(() => 0) : 0;
+      const nextAt = Math.max(outcome !== undefined && !outcome.ok ? (retryAt.get(host.id) ?? 0) : 0, heldUntil);
+      const inAbout = (ms: number) => {
+        const minutes = Math.max(1, Math.ceil(ms / 60_000));
+        return `in about ${minutes} minute${minutes === 1 ? "" : "s"}`;
+      };
+      const again = nextAt > at ? `It tries again ${inAbout(nextAt - at)}` : "It tries again on its next check";
       const problem = problems.get(host.id);
       const machine = phaseNow === "resuming" ? "starting up" : stopped ? "stopped" : phaseNow === "suspending" ? "being suspended by bb" : "running, but bb has lost its connection to it";
       const did =
         outcome !== undefined
           ? outcome.ok
             ? "The plugin resumed it; the messages go out once bb is set up there again."
-            : `The plugin tried to resume it and couldn't: ${outcome.error}. It tries again in a few minutes; the user can also resume the machine from bb's machine menu.`
+            : `The plugin tried to resume it and couldn't: ${outcome.error}. ${again}; the user can also resume the machine from bb's machine menu.`
           : problem !== undefined
             ? (tries.get(host.id)?.count ?? 0) >= RECONCILE_TRIES
               ? `The plugin couldn't resume it: bb still has the machine as running and refused to suspend it (${problem}). Ask the user to resume the machine from bb's machine menu.`
@@ -686,7 +695,9 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
               : phaseNow === "suspending"
                 ? "bb's suspend hasn't finished; the plugin resumes it once it has."
                 : stopped
-                  ? "The plugin resumes it on its next check."
+                  ? heldUntil > at
+                    ? `The plugin resumes it ${inAbout(heldUntil - at)}: wakes wait after one failed (boat.dev may be overloaded).`
+                    : "The plugin resumes it on its next check."
                   : "The plugin left it alone: bb usually reconnects on its own. If it doesn't, restart the machine from bb's machine menu.";
       const threshold = phaseNow === "resuming" ? RESUMING_NOTICE_MS : WAIT_NOTICE_MS;
       for (const { row, since } of waitingRows) {
