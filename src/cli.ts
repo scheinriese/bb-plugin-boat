@@ -1457,7 +1457,7 @@ export function buildCli(runtime: Runtime) {
         },
       }),
       "project set": cliCommand({
-        summary: "Change one project's settings (how work lands, task chats, snapshot, environment, protected branches, instructions)",
+        summary: "Change one project's settings (how work lands, task chats, snapshot, environment, protected branches, instructions, paid Claude)",
         positionals: [{ name: "id", description: "Project id", required: true }],
         options: {
           delivery: { type: "enum", values: ["pr", "push"], description: "pr: draft pull requests; push: approved work ships to the base branch" },
@@ -1471,6 +1471,12 @@ export function buildCli(runtime: Runtime) {
             type: "enum",
             values: [...MACHINE_TYPES, "none"],
             description: 'Sandbox size for its new tasks and their reviews ("none": the Default sandbox size setting); xlarge from an agent\'s chat needs --user-approved',
+          },
+          "paid-claude": {
+            type: "enum",
+            values: ["allow", "never"],
+            description:
+              "never: Never continue on paid Claude. Its chats stopped at a usage limit wait for included usage. allow: they continue when paid Claude is available (default)",
           },
           "user-approved": { type: "boolean", description: "The user approved XLarge sandboxes for this project" },
           json,
@@ -1498,6 +1504,7 @@ export function buildCli(runtime: Runtime) {
                   : {}),
                 ...(instructions !== undefined ? { instructions: instructions.trim() === "none" ? "" : instructions } : {}),
                 ...(options.size !== undefined ? { machineType: options.size === "none" ? null : (options.size as MachineType) } : {}),
+                ...(options["paid-claude"] !== undefined ? { neverPaidClaude: options["paid-claude"] === "never" } : {}),
               });
             } catch (error) {
               throw new PluginCliError(error instanceof Error ? error.message : String(error), { code: "invalid_value" });
@@ -1664,7 +1671,7 @@ export function buildCli(runtime: Runtime) {
 
 function projectLine(project: BoatProject): string {
   const repos = project.repos.map((entry) => `${entry.repo}@${entry.baseBranch}`).join(" + ");
-  return `${project.id}  ${project.name}  ${repos}  env ${project.environment ?? "default"}${project.snapshot ? `  snapshot ${project.snapshot}` : ""}${project.protocolPath ? `  protocol ${project.protocolPath}` : ""}  ${project.workerMode === "boat" ? "tasks in boat only" : "tasks as chats allowed"}  ${project.delivery === "push" ? "ships after approval" : "draft PRs"}${project.machineType ? `  ${SIZE_SPECS[project.machineType].label.toLowerCase()} sandboxes` : ""}${project.protectedBranches.length > 0 ? `  protects ${project.protectedBranches.join(", ")}` : ""}${project.instructions ? "  has instructions" : ""}`;
+  return `${project.id}  ${project.name}  ${repos}  env ${project.environment ?? "default"}${project.snapshot ? `  snapshot ${project.snapshot}` : ""}${project.protocolPath ? `  protocol ${project.protocolPath}` : ""}  ${project.workerMode === "boat" ? "tasks in boat only" : "tasks as chats allowed"}  ${project.delivery === "push" ? "ships after approval" : "draft PRs"}${project.machineType ? `  ${SIZE_SPECS[project.machineType].label.toLowerCase()} sandboxes` : ""}${project.protectedBranches.length > 0 ? `  protects ${project.protectedBranches.join(", ")}` : ""}${project.instructions ? "  has instructions" : ""}${project.neverPaidClaude ? "  never continues on paid Claude" : ""}`;
 }
 
 /**

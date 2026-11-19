@@ -16,6 +16,7 @@ export interface EditorDraft {
   environment: string;
   workerMode: NonNullable<ProjectDto["workerMode"]>;
   snapshot: string;
+  neverPaidClaude?: boolean;
 }
 
 // Own UI draft memory only. BB can remount a nav panel at its compact breakpoint.

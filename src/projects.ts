@@ -33,6 +33,8 @@ export const projectInputSchema = z.object({
   machineType: z.enum(MACHINE_TYPES).nullable().optional(),
   /** null: configured reviewer; none: no automatic review. */
   reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
+  /** Chats of this project never continue on paid Claude after a usage limit; absent: unchanged. */
+  neverPaidClaude: z.boolean().optional(),
 });
 export type ProjectInput = z.infer<typeof projectInputSchema>;
 
@@ -65,6 +67,8 @@ export interface BoatProject {
   /** Size of new task sandboxes for this project (and their reviews); null: the Default sandbox size setting. */
   machineType: MachineType | null;
   reviewer?: "codex" | "claude" | "none" | null;
+  /** Its chats stopped at a usage limit wait for included usage instead of continuing on paid Claude (src/paid-resume.ts). */
+  neverPaidClaude?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -128,6 +132,8 @@ export function normalizeProject(input: ProjectInput, existing?: BoatProject | n
     instructions: parsed.instructions !== undefined ? parsed.instructions.trim() : (existing?.instructions ?? ""),
     machineType: parsed.machineType !== undefined ? parsed.machineType : (existing?.machineType ?? null),
     reviewer: parsed.reviewer !== undefined ? parsed.reviewer : (existing?.reviewer ?? null),
+    // Kept only when on, so older projects and their backups stay as they were.
+    ...((parsed.neverPaidClaude ?? existing?.neverPaidClaude) === true ? { neverPaidClaude: true } : {}),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -160,9 +166,11 @@ export function protectedBranches(
 type Row = Record<string, unknown>;
 
 /** Projects saved before a field existed get its default. */
-function withDefaults(project: BoatProject): BoatProject {
+function withDefaults(stored: BoatProject): BoatProject {
+  const { neverPaidClaude, ...project } = stored;
   return {
     ...project,
+    ...(neverPaidClaude === true ? { neverPaidClaude: true } : {}),
     localBbProjectId: typeof project.localBbProjectId === "string" && project.localBbProjectId.length <= 200 ? project.localBbProjectId : null,
     workerMode: project.workerMode === "boat" ? "boat" : "chat",
     delivery: project.delivery === "push" ? "push" : "pr",
