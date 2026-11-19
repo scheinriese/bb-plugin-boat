@@ -267,7 +267,10 @@ boat.dev's start limit or its storage can't take:
 - The chat's machine is checked first. One that is starting, stopping, being
   created or removed, offline or failed is left alone. Waking a suspended
   machine or a stopped sandbox takes one of two wakes a minute, a budget the
-  watchdog's own resumes share (kept across restarts). A machine bb couldn't
+  watchdog's own resumes share (kept across restarts). It also waits while
+  the sandbox wake pacer, which every resume goes through (2 a minute
+  account-wide, and a pause after a failed wake), has no slot free, so the
+  two never add up to more than 2 wakes a minute. A machine bb couldn't
   start is left alone on its own (bb keeps that message until it starts
   again), never holding the others. Only when a wake the plugin made fails
   is no machine woken for 15 minutes: the call fails, or the machine fails to

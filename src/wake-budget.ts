@@ -5,10 +5,13 @@
 // burst of wakes is what overloads boat.dev's snapshot storage. A wake that
 // fails (at once, or found failed later) holds every wake for a while.
 //
-// The interface is kept small on purpose, so this bucket and a shared pacer
-// (a saved, account-wide wake limit with failure backoff, such as
-// src/wake-pacer.ts from another change) can be unified later:
-// take ≈ acquire without waiting (false instead of WakeDeferred), and
+// Every boat resume itself takes a slot from the sandbox wake pacer
+// (src/wake-pacer.ts: 2 a minute account-wide, a pause after a failed wake).
+// This budget only decides whether the watchdog or the paid resume starts a
+// wake at all, so it also says no while the pacer has no slot free now
+// (pacer.nextWakeAt, which takes nothing: a slot taken here too would count
+// each wake twice). The interface is kept small for a later unification with
+// the pacer: take ≈ acquire without waiting (false instead of WakeDeferred),
 // failed ≈ permit.failed, also for a failure found after the wake.
 
 /** Wakes a minute, at most. */
@@ -38,7 +41,13 @@ interface Bucket {
   heldUntil?: number;
 }
 
-export function createWakeBudget(kv: KvStore, options: { perMinute?: number; holdMs?: number; now?: () => number } = {}): WakeBudget {
+/** What the budget reads from the sandbox wake pacer (src/wake-pacer.ts WakePacer). */
+export interface WakeSlots {
+  /** When the next wake may start (now or later); reads only. */
+  nextWakeAt(): Promise<number>;
+}
+
+export function createWakeBudget(kv: KvStore, options: { perMinute?: number; holdMs?: number; now?: () => number; pacer?: WakeSlots } = {}): WakeBudget {
   const perMinute = options.perMinute ?? WAKES_PER_MINUTE;
   const holdMs = options.holdMs ?? WAKE_FAILURE_HOLD_MS;
   const now = options.now ?? (() => Date.now());
@@ -62,7 +71,9 @@ export function createWakeBudget(kv: KvStore, options: { perMinute?: number; hol
 
   async function take(): Promise<boolean> {
     const bucket = await current();
-    if (bucket.heldUntil > bucket.at || bucket.tokens < 1) {
+    // The pacer has no slot free now (two wakes this minute, or its pause after a failed one): not now either.
+    const pacerBusy = options.pacer !== undefined && (await options.pacer.nextWakeAt()) > bucket.at;
+    if (pacerBusy || bucket.heldUntil > bucket.at || bucket.tokens < 1) {
       await kv.set(WAKE_BUDGET_KEY, bucket).catch(() => undefined);
       return false;
     }

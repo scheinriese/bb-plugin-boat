@@ -44,6 +44,7 @@ import type { MachineState } from "../src/chat.ts";
 import { BoatError } from "../src/boat.ts";
 import { TaskError } from "../src/service.ts";
 import { createWakeBudget } from "../src/wake-budget.ts";
+import { WakePacer } from "../src/wake-pacer.ts";
 import { PAID_USAGE_EVIDENCE_MS } from "../src/relay.ts";
 import type { Quotas } from "../src/quota.ts";
 import type { BoatSettings } from "../src/service.ts";
@@ -176,7 +177,7 @@ function task(overrides: Partial<Task>): Task {
   };
 }
 
-function setup(options: { tasks?: Task[]; projects?: { id: string; name: string; localBbProjectId?: string | null; neverPaidClaude?: boolean }[]; orchestrators?: { threadId: string; projectId: string | null }[]; held?: Record<string, string>; cap?: number; kv?: ReturnType<typeof memoryKv> } = {}) {
+function setup(options: { tasks?: Task[]; projects?: { id: string; name: string; localBbProjectId?: string | null; neverPaidClaude?: boolean }[]; orchestrators?: { threadId: string; projectId: string | null }[]; held?: Record<string, string>; cap?: number; kv?: ReturnType<typeof memoryKv>; pacer?: WakePacer } = {}) {
   const db = new DatabaseSync(":memory:");
   for (const statement of TaskStore.migrations()) db.exec(statement);
   const store = new PaidResumeStore(() => db as unknown as Database.Database);
@@ -191,7 +192,7 @@ function setup(options: { tasks?: Task[]; projects?: { id: string; name: string;
   const followupFailures = new Map<string, Error>();
   let clock = NOW;
   const kv = options.kv ?? memoryKv();
-  const wakes = createWakeBudget(kv, { now: () => clock });
+  const wakes = createWakeBudget(kv, { now: () => clock, ...(options.pacer ? { pacer: options.pacer } : {}) });
   const resume = createPaidResume({
     threads,
     store,
@@ -1031,6 +1032,43 @@ test("the wake budget: two a minute, one at a time, kept across a restart", asyn
   clock += 3_600_000;
   const restarted = createWakeBudget(kv, { now: () => clock });
   assert.deepEqual([await restarted.take(), await restarted.take(), await restarted.take()], [true, true, false]);
+});
+
+test("the wake budget waits while the sandbox wake pacer has no slot free, and takes none of its slots", async () => {
+  let clock = NOW;
+  const pacer = new WakePacer({ now: () => clock, sleep: async () => undefined });
+  const budget = createWakeBudget(memoryKv(), { now: () => clock, pacer });
+  // Two boat resumes this minute (bb's own, a user's): the pacer is full, so no wake starts here either.
+  await pacer.acquire();
+  await pacer.acquire();
+  assert.equal(await budget.take(), false);
+  assert.equal((await pacer.snapshot()).taken.length, 2, "the budget took no slot of the pacer's");
+  clock += 60_000;
+  assert.equal(await budget.take(), true);
+  assert.equal((await pacer.snapshot()).taken.length, 0);
+  // The pacer's pause after a failed wake is waited out too.
+  await (await pacer.acquire()).failed();
+  assert.equal(await budget.take(), false);
+  clock = await pacer.nextWakeAt();
+  assert.equal(await budget.take(), true);
+});
+
+test("a pass doesn't wake a machine while the sandbox wake pacer is full; chats on machines that are up still go", async () => {
+  let pacerClock = NOW;
+  const pacer = new WakePacer({ now: () => pacerClock, sleep: async () => undefined });
+  const env = setup({ pacer });
+  skippedStop(env, "thr_up");
+  skippedStop(env, "thr_asleep");
+  env.machines.hosts.set("host_thr_asleep", { phase: "suspended", connected: false, message: null });
+  await pacer.acquire();
+  await pacer.acquire();
+  const full = await env.resume.pass(fresh(env), settings());
+  assert.deepEqual(full.resumed.map((work) => work.threadId), ["thr_up"]);
+  assert.deepEqual(full.skipped.find((entry) => entry.id === "thr_asleep"), { id: "thr_asleep", reason: "waiting for a wake (at most 2 a minute)" });
+  env.advance(60_000);
+  pacerClock = env.now();
+  const free = await env.resume.pass(fresh(env), settings());
+  assert.deepEqual(free.resumed.map((work) => work.threadId), ["thr_asleep"]);
 });
 
 test("a reply bb gives in another shape is never taken as no decision or an empty queue", async () => {

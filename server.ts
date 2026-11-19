@@ -367,7 +367,8 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // Machine wakes the plugin makes on its own (the watchdog's resumes, paid Claude resumes): 2 a minute, kept in kv.
-  const wakeBudget = createWakeBudget(bb.storage.kv);
+  // It also waits while the sandbox wake pacer above has no slot free, so the two never add up past 2 a minute.
+  const wakeBudget = createWakeBudget(bb.storage.kv, { pacer: wakePacer });
   // Chats stopped at a usage limit continue once paid Claude is available (its own timer, below).
   const paidResume = createPaidResume({
     threads: bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(), { error: (line) => bb.log.error(line) }),
