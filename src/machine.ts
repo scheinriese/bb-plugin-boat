@@ -24,6 +24,7 @@ import { createLoginQuieter, type QuietLogin } from "./login-scripts.ts";
 import { TeardownBackoff } from "./teardown-backoff.ts";
 import type { HostPrep } from "./bb-update.ts";
 import { stopOutcome } from "./node-move.ts";
+import { trimFreedBlocks } from "./disk-trim.ts";
 
 export const MACHINE_PROVIDER_ID = "boat-sandbox";
 
@@ -141,6 +142,8 @@ export function registerBoatMachine(
     now?: () => number;
     /** How long a suspend follows a pending stop, and how often it asks (default 5 s, up to 90 s). */
     stopWait?: { pollMs: number; maxMs: number };
+    /** Tests: the trim's budget before a stop (default TRIM_TIMEOUT_MS, a minute). */
+    trimTimeoutMs?: number;
   },
 ): void {
   const { boat, cli, service } = deps;
@@ -271,6 +274,9 @@ export function registerBoatMachine(
         const sandbox = await boat.findInfo(sandboxId);
         // Already stopped (for example by boat's auto-stop) is fine: the disk is kept.
         if (sandbox !== null && ACTIVE_STATES.has(sandbox.state)) {
+          // Blocks deleted files freed first: boat's snapshot counts them until they're trimmed, and the
+          // sandbox outgrows its size (src/disk-trim.ts). At most a minute; it never fails the stop.
+          await trimFreedBlocks(boat, sandboxId, { state: sandbox.state, signal, log: (line) => bb.log?.debug?.(line), ...(deps.trimTimeoutMs === undefined ? {} : { timeoutMs: deps.trimTimeoutMs }) });
           stop = await boat.stop(sandboxId);
           // boat usually answers "pending" while it takes the final snapshot: follow that stop
           // a while (its status, never a second stop). It may refuse: it can't snapshot a disk

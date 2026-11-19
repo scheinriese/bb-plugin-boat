@@ -15,9 +15,12 @@
 //   not restored yet. Every SSH try leaves one more stuck session;
 // - boat refuses the restore ("Please reduce your request rate"), or the
 //   sandbox's SSH doesn't answer at all.
+// boat may also refuse the resume for the sandbox's size: its data doesn't
+// fit (src/disk-trim.ts).
 import { clockTime } from "./format.ts";
+import { DISK_TOO_LARGE, diskTooLarge, tooLargeMessage, type DiskTooLarge } from "./disk-trim.ts";
 
-export type WakeFailureKind = "disk-restoring" | "restore-rate-limited" | "ssh-session-stuck" | "daemon-broken" | "ssh-unreachable" | "other";
+export type WakeFailureKind = "disk-restoring" | "restore-rate-limited" | "ssh-session-stuck" | "daemon-broken" | "disk-too-large" | "ssh-unreachable" | "other";
 
 export interface WakeDiagnosis {
   kind: WakeFailureKind;
@@ -31,6 +34,8 @@ export interface WakeDiagnosis {
    * an npm zombie remains, and every folder and unit seen.
    */
   daemon?: { dir: string | null; unit: string | null; zombie: boolean; dirs?: string[]; units?: string[] };
+  /** disk-too-large: what boat said of the sandbox's data and its size. */
+  size?: DiskTooLarge;
 }
 
 const RATE_LIMITED = /reduce your request rate|too many requests|\brate[- ]limit(?:ed)?\b|\bslow ?down\b|status(?: code)?:? 429\b/i;
@@ -49,6 +54,7 @@ const STALLED = /timed? ?out|timeout|did not start within|didn't start within/i;
 
 /** What an error's text alone says (no look at the sandbox). */
 export function classifyWakeText(text: string): WakeFailureKind {
+  if (DISK_TOO_LARGE.test(text)) return "disk-too-large";
   // The hydrator's own words first: its storage error may read like a rate limit (S3's SlowDown).
   if (HYDRATOR.test(text)) return "disk-restoring";
   if (RATE_LIMITED.test(text)) return "restore-rate-limited";
@@ -69,6 +75,7 @@ const PATTERN: Record<WakeFailureKind, RegExp | null> = {
   "disk-restoring": DISK,
   "ssh-session-stuck": MOTD,
   "daemon-broken": null,
+  "disk-too-large": DISK_TOO_LARGE,
   "ssh-unreachable": SSH,
   other: RESTORE,
 };
@@ -238,6 +245,9 @@ export type DiskCheckRunner = () => Promise<{ stdout: string; stderr: string } |
  * hangs, then a disk still being restored. A failed look keeps the text's verdict.
  */
 export async function diagnoseWakeFailure(error: unknown, check: DiskCheckRunner | null): Promise<WakeDiagnosis> {
+  // Refused for its size: nothing runs there to look at.
+  const size = diskTooLarge(error);
+  if (size !== null) return { kind: "disk-too-large", detail: size.detail, checked: false, size };
   const text = error instanceof Error ? error.message : String(error);
   const kind = classifyWakeText(text);
   const fromText: WakeDiagnosis = { kind, detail: wakeDetail(text, kind), checked: false };
@@ -334,6 +344,8 @@ export function wakeFailureMessage(diagnosis: WakeDiagnosis, plan: WakePlan, ori
       return `The sandbox took Boat's SSH login, but the session never started: its login message scripts hang while boat.dev restores the disk. Boat turns them off before each try. ${next}`;
     case "daemon-broken":
       return `bb's daemon on this sandbox broke during an update${diagnosis.detail ? ` (${diagnosis.detail})` : ""}, so bb can't start there. It needs a repair by hand; the steps are under Needs you.`;
+    case "disk-too-large":
+      return tooLargeMessage(diagnosis.size ?? null);
     case "ssh-unreachable":
       return `Boat couldn't reach the sandbox over SSH to restart bb there${diagnosis.detail ? ` (${diagnosis.detail})` : ""}. Press Resume to try again; if it keeps failing, check the sandbox on boat.dev.`;
     case "other":

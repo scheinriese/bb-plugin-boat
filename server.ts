@@ -304,7 +304,7 @@ export default async function plugin(bb: BbPluginApi) {
     lifecycle: lifecycle.signal,
     changed,
     notify,
-    log: { info: (message) => bb.log.info(message), warn: (message) => bb.log.warn(message) },
+    log: { info: (message) => bb.log.info(message), warn: (message) => bb.log.warn(message), debug: (message) => bb.log.debug(message) },
     chat: chatRunner,
     // Tests answer preview checks without the network.
     ...(process.env.BOAT_PLUGIN_PREVIEW_CHECK ? { checkPreview: async () => process.env.BOAT_PLUGIN_PREVIEW_CHECK as "up" | "down" | "unknown" } : {}),

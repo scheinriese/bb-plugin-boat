@@ -11,6 +11,8 @@
 //   After 5 failures it stops, and the orchestrator gets a Needs you item
 //   naming the sandbox and boat.dev's error;
 // - bb's daemon broken by an update: Needs you, with the repair by hand;
+// - boat refusing the resume for the sandbox's size: Needs you, with the way
+//   back by hand (src/disk-trim.ts); Boat never starts it on a larger size;
 // - when Boat itself has seen the node fail the same file for a while (on
 //   wakes, or on stops boat refused), it moves the sandbox to a new node, or
 //   asks first when anything there could be lost (src/node-move.ts).
@@ -18,6 +20,7 @@ import type { ThreadRow } from "./activity.ts";
 import { ACTIVE_STATES, type BoatApi, type StopReport } from "./boat-api.ts";
 import { clockTime } from "./format.ts";
 import type { TaskStore } from "./store.ts";
+import { resizeRefused, tooLargeQuestion } from "./disk-trim.ts";
 import { DISK_CHECK_SCRIPT, daemonRepairQuestion, diagnoseWakeFailure, parseDiskCheck, retriesLater, wakeFailureMessage, type DiskCheckRunner, type RetriedKind, type WakeDiagnosis } from "./wake-diagnosis.ts";
 import { WakeDeferred, type WakePacer, type WakePermit, type WakeWait } from "./wake-pacer.ts";
 import {
@@ -101,7 +104,7 @@ export interface WakeRetry {
   sandboxId: string;
   hostId: string | null;
   /** The last failure's kind; "paced": no failure, the wake waits for a slot. */
-  kind: RetriedKind | "paced" | "daemon-broken";
+  kind: RetriedKind | "paced" | ByHandKind;
   /** Failed wakes in a row (waits for a slot don't count). */
   failures: number;
   /** Boat wakes it again then (null: it gave up, or it doesn't on its own). */
@@ -116,6 +119,12 @@ export interface WakeRetry {
   move?: NodeMove | null;
 }
 
+/** Failures fixed by hand (Needs you once): Boat neither retries nor holds resumes. */
+type ByHandKind = "daemon-broken" | "disk-too-large";
+function byHand(kind: WakeRetry["kind"] | WakeDiagnosis["kind"]): kind is ByHandKind {
+  return kind === "daemon-broken" || kind === "disk-too-large";
+}
+
 /** What the next failure leads to: Boat's retry later, or giving up. */
 export function nextFailure(previous: WakeRetry | null, now: number): { failures: number; retryAt: number | null } {
   const failures = (previous?.failures ?? 0) + 1;
@@ -127,9 +136,9 @@ function moving(entry: WakeRetry | null): boolean {
   return entry?.move?.state === "due" || entry?.move?.state === "stopping";
 }
 
-/** No resume before this (null: go ahead). After giving up, resumes stay RETRY_MAX_MS apart. A broken daemon holds nothing: its repair is by hand. */
+/** No resume before this (null: go ahead). After giving up, resumes stay RETRY_MAX_MS apart. A fix by hand (a broken daemon, a sandbox too large) holds nothing. */
 export function holdUntil(entry: WakeRetry | null): number | null {
-  if (entry === null || entry.kind === "daemon-broken") return null;
+  if (entry === null || byHand(entry.kind)) return null;
   return entry.retryAt ?? entry.lastAt + RETRY_MAX_MS;
 }
 
@@ -488,7 +497,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
         const at = now();
         if (error instanceof WakeDeferred) {
           // Boat gave up on it: a wait for a slot doesn't start its retries again.
-          if (entry !== null && entry.retryAt === null && entry.kind !== "daemon-broken") throw new Error(heldMessage({ ...entry, kind: "paced", retryAt: error.retryAt }, at));
+          if (entry !== null && entry.retryAt === null && !byHand(entry.kind)) throw new Error(heldMessage({ ...entry, kind: "paced", retryAt: error.retryAt }, at));
           // Too many wakes at once: Boat wakes this one itself when its turn comes.
           const next: WakeRetry = { ...(entry ?? { sandboxId: wake.sandboxId, kind: "paced", failures: 0, detail: null, decisionId: null }), hostId: wake.hostId ?? entry?.hostId ?? null, retryAt: error.retryAt, lastAt: at, firedAt: null };
           await update(wake.sandboxId, next);
@@ -497,14 +506,28 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
         // A failure can come already diagnosed (bb's own update hung there: src/bb-update.ts).
         const diagnosis = diagnosedBy(error) ?? (await diagnoseWakeFailure(error, diskCheck(wake.sandboxId, wake.signal)));
         const hostId = wake.hostId ?? entry?.hostId ?? null;
-        if (diagnosis.kind === "daemon-broken") {
-          // A repair by hand: Needs you once, no retries, nothing held.
-          const next: WakeRetry = { sandboxId: wake.sandboxId, hostId, kind: "daemon-broken", failures: (entry?.failures ?? 0) + 1, retryAt: null, detail: diagnosis.detail, lastAt: at, firedAt: null, decisionId: entry?.kind === "daemon-broken" ? entry.decisionId : null };
-          if (next.decisionId === null) next.decisionId = await ask(next, daemonRepairQuestion({ sandboxId: wake.sandboxId, detail: diagnosis.detail, daemon: diagnosis.daemon, hostId }));
+        // A resize boat refused onto the smaller size: the resize says so and rolls back (src/sandbox-size.ts).
+        if (diagnosis.kind === "disk-too-large" && resizeRefused(error)) {
+          if (entry !== null) await update(wake.sandboxId, null);
+          throw error;
+        }
+        if (byHand(diagnosis.kind)) {
+          // A fix by hand: Needs you once, no retries, nothing held. Too large: never a larger size on its own (it costs more);
+          // without a size in boat's words, it was asked for its own (no resize here).
+          const kind = diagnosis.kind;
+          const next: WakeRetry = { sandboxId: wake.sandboxId, hostId, kind, failures: (entry?.failures ?? 0) + 1, retryAt: null, detail: diagnosis.detail, lastAt: at, firedAt: null, decisionId: entry?.kind === kind ? entry.decisionId : null };
+          if (next.decisionId === null) {
+            next.decisionId = await ask(
+              next,
+              kind === "daemon-broken"
+                ? daemonRepairQuestion({ sandboxId: wake.sandboxId, detail: diagnosis.detail, daemon: diagnosis.daemon, hostId })
+                : tooLargeQuestion({ sandboxId: wake.sandboxId, size: diagnosis.size ?? null, type: diagnosis.size?.type ?? (await deps.boat.findInfo(wake.sandboxId).catch(() => null))?.machineType ?? null }),
+            );
+          }
           await update(wake.sandboxId, next);
           const text = wakeFailureMessage(diagnosis, { retryAt: null, now: at }, errorText(error));
           tellTasks(wake.sandboxId, text);
-          log(`wake ${wake.sandboxId}: daemon-broken: ${diagnosis.detail ?? ""}`);
+          log(`wake ${wake.sandboxId}: ${kind}: ${diagnosis.detail ?? ""}`);
           throw new Error(text);
         }
         // Not boat.dev's restore any more: Boat's retry plan for it ends.

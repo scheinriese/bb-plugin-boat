@@ -259,3 +259,34 @@ test("a stop boat refuses with its own words is refused, and they're quoted", as
   env.boat.stopBehavior = "error";
   await assert.rejects(env.provider().suspend(env.lifecycle(created.resource)), /^Error: boat\.dev failed to stop this sandbox \(boat didn't stop it: boat said: "Final snapshot failed; stop aborted to protect unsaved data \(lazy volume not fully hydrated\)"\)\. Boat asks it again at \d\d:\d\d UTC\.$/);
 });
+
+test("a machine resume boat refuses for the sandbox's size: plain words on the machine, the way back under Needs you, nothing larger started", async () => {
+  const env = setup();
+  env.store.addOrchestrator("thr_orch");
+  const resource = await env.stoppedMachine("orch");
+  const TOO_LARGE = "This sandbox uses 84.1 GB of disk, which does not fit any available 'small' machine (largest budget: 76.0 GB)";
+  env.boat.resumeError = (type) => (type === null ? new BoatError(TOO_LARGE, { code: "type_too_small" }) : null);
+  const bootstraps = env.order.filter((step) => step === "bootstrap").length;
+  await assert.rejects(env.provider().resume(env.lifecycle(resource)), /^Error: This sandbox won't start: its data is 84\.1 GB, too large for its size \(Small fits 76\.0 GB\)\. One start on Large plus a cleanup brings it back to Small; the steps are under Needs you\.$/);
+  assert.equal(env.order.filter((step) => step === "bootstrap").length, bootstraps, "bb's setup didn't run");
+  assert.deepEqual(resumes(env.boat.calls).map((call) => call.includes("type=")), [false], "one plain resume, never --type large");
+  const decision = env.store.decisions({ statuses: ["open"] })[0]!;
+  assert.equal(decision.shortLabel, "Sandbox too large for its size");
+  assert.equal(decision.context!.split("\n")[1], `boat resume ${resource.sandboxId} --type large`);
+  assert.equal((await env.pacer.snapshot()).failures, 0);
+});
+
+test("a machine resize onto a smaller size boat refuses: the resize's own error, no Needs you, nothing larger started", async () => {
+  const env = setup();
+  env.store.addOrchestrator("thr_orch");
+  const resource = await env.stoppedMachine("orch");
+  env.boat.sandboxes.get(resource.sandboxId)!.machineType = "large";
+  // A resize to Small under way (SandboxSizes sets this before it resumes; it's private, so set here).
+  (env.service.sizes as unknown as { pendingTypes: Map<string, string> }).pendingTypes.set(resource.sandboxId, "small");
+  const TYPED = "This sandbox uses 84.1 GB of disk, which does not fit a 'small' machine (76.0 GB). … or resume it as 'large' or larger.";
+  env.boat.resumeError = (type) => (type === "small" ? new BoatError(TYPED, { code: "type_too_small" }) : null);
+  await assert.rejects(env.provider().resume(env.lifecycle(resource)), (error: Error) => error.message === TYPED);
+  assert.deepEqual(resumes(env.boat.calls).map((call) => call.replace(/ ttl=\d+/, "")), [`resume ${resource.sandboxId} type=small`]);
+  assert.equal(env.store.decisions({ statuses: ["open"] }).length, 0, "the resize rolls back and says so itself");
+  assert.equal(await env.wakes.scheduled(resource.sandboxId), null);
+});

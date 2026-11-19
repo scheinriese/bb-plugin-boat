@@ -1,6 +1,7 @@
 // Why a sandbox didn't wake: boat.dev's real error texts, the check over boat's exec API, the plain message.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BoatError } from "../src/boat.ts";
 import {
   DISK_CHECK_SCRIPT,
   classifyWakeText,
@@ -215,4 +216,23 @@ test("the daemon unit is this machine's: bb-host-daemon-<server with dashes>-<ho
   const text = daemonRepairQuestion({ sandboxId: "bx_demo1", detail: null, hostId: "host_nope", daemon: { dir: null, unit: daemon.units[0]!, zombie: false, ...daemon } });
   assert.match(text.context, /systemctl --user reset-failed <this machine's unit, bb-host-daemon-<server>-host_nope\.service: systemctl --user list-units 'bb-host-daemon\*'>/);
   assert.match(text.context, /^D=~\/\.bb-machines\/<server>$/m);
+});
+
+test("boat refusing a resume for the sandbox's size: its own kind, no look at the sandbox, the plain message", async () => {
+  const TOO_LARGE = "This sandbox uses 84.1 GB of disk, which does not fit any available 'small' machine (largest budget: 76.0 GB)";
+  assert.equal(classifyWakeText(TOO_LARGE), "disk-too-large");
+  assert.equal(classifyWakeText(`Sandbox bx_abc is error (Resume failed: ${TOO_LARGE}).`), "disk-too-large");
+  assert.equal(needsDiskCheck(TOO_LARGE), false);
+  assert.equal(retriesLater("disk-too-large"), false, "waiting doesn't fix it");
+  let looked = false;
+  const look: DiskCheckRunner = async () => {
+    looked = true;
+    return { stdout: "BOAT_DISK_END\n", stderr: "" };
+  };
+  const diagnosis = await diagnoseWakeFailure(new BoatError(TOO_LARGE, { code: "type_too_small" }), look);
+  assert.equal(looked, false);
+  assert.deepEqual(diagnosis, { kind: "disk-too-large", detail: TOO_LARGE, checked: false, size: { usedGb: 84.1, type: "small", budgetGb: 76, detail: TOO_LARGE } });
+  // boat's code alone is enough.
+  assert.equal((await diagnoseWakeFailure(new BoatError("Requested machine type is too small", { code: "type_too_small" }), look)).kind, "disk-too-large");
+  assert.equal(wakeFailureMessage(diagnosis, { retryAt: null }, TOO_LARGE), "This sandbox won't start: its data is 84.1 GB, too large for its size (Small fits 76.0 GB). One start on Large plus a cleanup brings it back to Small; the steps are under Needs you.");
 });

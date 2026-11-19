@@ -973,6 +973,8 @@ export function makeService(
   let settings = defaultSettings({ ...(options.chat ? { workerMode: "chat" as const } : {}), ...options.settings });
   const told: { threadId: string; text: string }[] = [];
   const warnings: string[] = [];
+  /** The service's debug lines (the trim before a stop). */
+  const debugs: string[] = [];
   /** Notes a worker gets once with its next prompt after a stop (the watchdog's), per task. */
   const resumeNotes = new Map<string, string>();
   /** Machines the service suspended itself, and whether background work still ran. */
@@ -990,7 +992,7 @@ export function makeService(
     notify: async (notification) => {
       notifications.push(notification);
     },
-    log: { info: () => undefined, warn: (message) => void warnings.push(message) },
+    log: { info: () => undefined, warn: (message) => void warnings.push(message), debug: (message) => void debugs.push(message) },
     ...(chat ? { chat } : {}),
     projects: () => projects,
     sizePlan: async () => plan,
@@ -1025,6 +1027,7 @@ export function makeService(
     notifications,
     told,
     warnings,
+    debugs,
     resumeNotes,
     planned,
     computingStopped,
