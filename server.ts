@@ -475,6 +475,15 @@ export default async function plugin(bb: BbPluginApi) {
   // scripts, bb's safe update and the chat retries above (src/sandbox-wake.ts).
   sandboxWaker = createSandboxWaker({
     boat,
+    kv: bb.storage.kv,
+    // A wake runs under the plugin's lifetime, not the CLI's request: the call waits 90 s, then it goes on.
+    lifecycle: lifecycle.signal,
+    notify: (threadId, text) => runtime.tellOrchestrator(threadId, text),
+    tell: (sandboxId, text) => {
+      const tasks = store.liveSandboxTasks(sandboxId);
+      for (const task of tasks) store.addEvent(task.id, WAKE_EVENT, text);
+      if (tasks.length > 0) changed();
+    },
     bringUp: (sandboxId, signal, wake) => service.bringUp(sandboxId, signal, wake),
     pacer: wakePacer,
     guard: wakes,
@@ -496,6 +505,8 @@ export default async function plugin(bb: BbPluginApi) {
     },
     log: (line) => bb.log.info(line),
   });
+  // A wake cut off between its stop and its start (a reload): the sandbox is started again.
+  void sandboxWaker.recover().catch((error: unknown) => bb.log.warn(`sandbox wake recovery failed: ${error instanceof Error ? error.message : String(error)}`));
 
   // A usage limit's reset: Boat's chats go on without waking every sandbox at once.
   const resets = createResetPacing({
@@ -889,6 +900,12 @@ export default async function plugin(bb: BbPluginApi) {
           await wakes.tick();
         } catch (error) {
           bb.log.warn(`wake retries failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        // A sandbox a cut-off `bb boat sandbox wake` left stopped: started again (paced).
+        try {
+          await sandboxWaker?.recover();
+        } catch (error) {
+          bb.log.warn(`sandbox wake recovery failed: ${error instanceof Error ? error.message : String(error)}`);
         }
         // Running turns are checked often; waiting tasks (idle-stop, notices) slowly.
         const intervalMs = service.hasActiveWork() ? POLL_INTERVAL_MS : 60_000;

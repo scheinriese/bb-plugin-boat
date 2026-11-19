@@ -360,21 +360,25 @@ export function buildCli(runtime: Runtime) {
       "sandbox wake": cliCommand({
         summary: "Bring a stuck sandbox and its chat back (a sandbox, task or chat id)",
         description:
-          "For a chat or task stuck on \"Machine is paused\" or \"resuming\". Resumes the sandbox (paced, within the start limit), waits until it answers, and looks at it. A disk that's unreadable or stuck, or an npm zombie: it stops the sandbox with a plain stop and starts it again (boat.dev's fix); --force only when nothing there could be lost. Then it turns off the login message scripts, updates bb there safely if it's old or broken, restarts bb's service, resumes bb's machine and retries the chat. Exits 1 with \"Needs you\" when it stops for safety. A start may use one boat start; never a paid extra start without --allow-paid-start.",
+          "For a chat or task stuck on \"Machine is paused\" or \"resuming\". Resumes the sandbox (paced, within the start limit), waits until it answers, and looks at it. A read waiting on the disk is waited for first. A disk that's unreadable, reads still stuck after that, or an npm zombie: it stops the sandbox with a plain stop and starts it again (boat.dev's fix); --force only when nothing there could be lost and a test fork of its snapshot reads fine. Never under a running turn. Then it turns off the login message scripts, updates bb there safely if it's old or broken, brings bb's machine back and retries the chat. One wake per sandbox at a time, at most 25 minutes: the command waits up to 90 seconds, then the wake goes on (--status shows it, and the chat that asked hears when it's done). Exits 1 with \"Needs you\" when it stops for safety. A start may use one boat start; never a paid extra start without --allow-paid-start.",
         positionals: [{ name: "id", description: "Sandbox id (bx_…), task id (t_…) or a chat's thread id", required: true }],
         options: {
           "dry-run": { type: "boolean", description: "Only look and print the plan; change nothing" },
           "allow-paid-start": { type: "boolean", description: "Allow a paid extra start when no included boat start is left (only when the user agreed)" },
+          status: { type: "boolean", description: "Show the running or last wake of this sandbox; starts nothing" },
           json,
         },
         async run({ positionals, options }, ctx) {
           return guard(async () => {
-            const report = await runtime.wakeSandbox({
-              target: positionals.id,
-              dryRun: options["dry-run"] === true,
-              allowPaidStart: options["allow-paid-start"] === true,
-              ...(ctx.signal ? { signal: ctx.signal } : {}),
-            });
+            const report = options.status
+              ? await runtime.wakeStatus(positionals.id)
+              : await runtime.wakeSandbox({
+                  target: positionals.id,
+                  dryRun: options["dry-run"] === true,
+                  allowPaidStart: options["allow-paid-start"] === true,
+                  threadId: ctx.threadId ?? null,
+                  ...(ctx.signal ? { signal: ctx.signal } : {}),
+                });
             return {
               exitCode: report.outcome === "needs-you" ? 1 : 0,
               stdout: `${options.json ? JSON.stringify(report, null, 2) : wakeText(report)}\n`,

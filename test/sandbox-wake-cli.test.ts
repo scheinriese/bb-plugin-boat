@@ -102,6 +102,14 @@ test("bb boat sandbox wake resumes a stopped sandbox and brings it back", async 
   assert.match(result.stdout, /✓ The sandbox looks healthy: its disk reads fine and nothing hangs\./);
   assert.match(result.stdout, /\nIt's back\.$/m);
   assert.equal(state().sandboxes[sandboxId].state, "idle");
+
+  // --status: the last wake of that sandbox, and nothing started.
+  const before = (state().calls as string[][]).length;
+  const status = await harness.runCli(["sandbox", "wake", "--status", sandboxId]);
+  assert.equal(status.exitCode, 0, status.stdout);
+  assert.match(status.stdout, /✓ Resumed the sandbox, with an included boat start/);
+  assert.match(status.stdout, /\nIt's back\.$/m);
+  assert.equal((state().calls as string[][]).length, before, "--status asks boat nothing");
 });
 
 test("bb boat sandbox wake with an id that isn't a sandbox, task or chat: a plain error", async (t) => {

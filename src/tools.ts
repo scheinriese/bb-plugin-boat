@@ -591,11 +591,12 @@ export function registerTools(runtime: Runtime): void {
   bb.agents.registerTool({
     name: "boat_wake",
     description:
-      "Bring a stuck sandbox and its chat back: when the user says \"wake this machine\", or a chat or task is stuck on \"Machine is paused\" or \"resuming\". Give a sandbox id (bx_…), a task id or a chat's thread id. It resumes the sandbox (paced, within the start limit), stops and starts it again if its disk is unreadable or stuck, turns off the login message scripts, updates bb there safely, restarts bb's service, resumes bb's machine and retries the chat. Use it instead of repairing the sandbox by hand. When it ends with Needs you, tell the user what it says.",
+      "Bring a stuck sandbox and its chat back: when the user says \"wake this machine\", or a chat or task is stuck on \"Machine is paused\" or \"resuming\". Give a sandbox id (bx_…), a task id or a chat's thread id. It resumes the sandbox (paced, within the start limit), waits for a disk still restoring, stops and starts it again if its disk is unreadable or stuck (never under a running turn), turns off the login message scripts, updates bb there safely, brings bb's machine back and retries the chat. Use it instead of repairing the sandbox by hand. It waits up to 90 seconds; a wake still running then goes on, and you get a [boat] message when it ends (status: true shows it meanwhile). When it ends with Needs you, tell the user what it says.",
     presentation: { label: { pending: "Waking the sandbox", completed: "Woke the sandbox" }, icon: { glyph: "ComputerCloud" } },
     parameters: z.object({
       id: z.string().trim().min(1).max(200).describe("Sandbox id (bx_…), task id (t_…) or a chat's thread id"),
       dry_run: z.boolean().optional().describe("Only look and report the plan; change nothing"),
+      status: z.boolean().optional().describe("Show the running or last wake of this sandbox; starts nothing"),
       allow_paid_start: z
         .boolean()
         .optional()
@@ -603,7 +604,9 @@ export function registerTools(runtime: Runtime): void {
     }),
     execute: (params, ctx) =>
       attempt(async () => {
-        const report = await runtime.wakeSandbox({ target: params.id, dryRun: params.dry_run === true, allowPaidStart: params.allow_paid_start === true, signal: ctx.signal });
+        const report = params.status
+          ? await runtime.wakeStatus(params.id)
+          : await runtime.wakeSandbox({ target: params.id, dryRun: params.dry_run === true, allowPaidStart: params.allow_paid_start === true, threadId: ctx.threadId, signal: ctx.signal });
         return wakeText(report);
       }),
   });
