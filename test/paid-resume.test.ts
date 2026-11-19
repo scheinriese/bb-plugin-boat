@@ -1053,6 +1053,24 @@ test("the wake budget waits while the sandbox wake pacer has no slot free, and t
   assert.equal(await budget.take(), true);
 });
 
+test("the wake budget sees a free pacer as free, however long its storage takes (real clocks)", async () => {
+  // Real clocks, and a kv that takes a few milliseconds a call: time moves on while the budget reads.
+  const values = new Map<string, unknown>();
+  const slowKv = {
+    async get<T>(key: string) {
+      await new Promise((resolve) => setTimeout(resolve, 3));
+      return (values.get(key) as T | undefined) ?? null;
+    },
+    async set(key: string, value: unknown) {
+      await new Promise((resolve) => setTimeout(resolve, 3));
+      values.set(key, value);
+    },
+  };
+  const budget = createWakeBudget(slowKv, { pacer: new WakePacer() });
+  // An empty pacer: the budget's own two a minute decide.
+  assert.deepEqual([await budget.take(), await budget.take(), await budget.take()], [true, true, false]);
+});
+
 test("a pass doesn't wake a machine while the sandbox wake pacer is full; chats on machines that are up still go", async () => {
   let pacerClock = NOW;
   const pacer = new WakePacer({ now: () => pacerClock, sleep: async () => undefined });

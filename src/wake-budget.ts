@@ -72,7 +72,8 @@ export function createWakeBudget(kv: KvStore, options: { perMinute?: number; hol
   async function take(): Promise<boolean> {
     const bucket = await current();
     // The pacer has no slot free now (two wakes this minute, or its pause after a failed one): not now either.
-    const pacerBusy = options.pacer !== undefined && (await options.pacer.nextWakeAt()) > bucket.at;
+    // Compared with the time after the read: a free pacer answers with its own clock, later than bucket.at.
+    const pacerBusy = options.pacer !== undefined && (await options.pacer.nextWakeAt()) > now();
     if (pacerBusy || bucket.heldUntil > bucket.at || bucket.tokens < 1) {
       await kv.set(WAKE_BUDGET_KEY, bucket).catch(() => undefined);
       return false;
