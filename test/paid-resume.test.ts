@@ -43,8 +43,7 @@ import {
 import type { MachineState } from "../src/chat.ts";
 import { BoatError } from "../src/boat.ts";
 import { TaskError } from "../src/service.ts";
-import { createWakeBudget } from "../src/wake-budget.ts";
-import { WakePacer } from "../src/wake-pacer.ts";
+import { WakePacer, kvWakeStorage } from "../src/wake-pacer.ts";
 import { PAID_USAGE_EVIDENCE_MS } from "../src/relay.ts";
 import type { Quotas } from "../src/quota.ts";
 import type { BoatSettings } from "../src/service.ts";
@@ -153,7 +152,7 @@ class FakeMachines implements MachineReader {
   }
 }
 
-/** kv in memory (the wake budget's). */
+/** kv in memory (the wake pacer's). */
 function memoryKv() {
   const values = new Map<string, unknown>();
   return {
@@ -192,7 +191,7 @@ function setup(options: { tasks?: Task[]; projects?: { id: string; name: string;
   const followupFailures = new Map<string, Error>();
   let clock = NOW;
   const kv = options.kv ?? memoryKv();
-  const wakes = createWakeBudget(kv, { now: () => clock, ...(options.pacer ? { pacer: options.pacer } : {}) });
+  const wakes = options.pacer ?? new WakePacer({ now: () => clock, sleep: async () => undefined, storage: kvWakeStorage(kv) });
   const resume = createPaidResume({
     threads,
     store,
@@ -823,10 +822,10 @@ test("machines: one starting, stopping, failed or offline is left alone; waking 
   // Machines on the move keep their stop for a later look.
   assert.deepEqual(env.store.stops().map((stop) => stop.threadId).sort(), ["thr_creating", "thr_offline", "thr_resuming", "thr_sleep3", "thr_suspending"]);
 
-  // The budget is in kv: a restart (a new budget on the same kv) has no wake to give yet…
-  assert.equal(await createWakeBudget(env.kv, { now: () => NOW }).take(), false);
-  // …and half a minute later there is one.
-  env.advance(30_000);
+  // The pacer is in kv: a restart (a new pacer on the same kv) has no wake to give yet…
+  assert.equal(await new WakePacer({ now: () => NOW, storage: kvWakeStorage(env.kv) }).take(), null);
+  // …and a minute after they were taken there is one.
+  env.advance(60_000);
   const second = await env.resume.pass(usage(), settings());
   assert.deepEqual(second.resumed.map((work) => work.threadId), ["thr_sleep3"]);
 
@@ -998,62 +997,71 @@ test("a cut-off or failed try goes again only while the request it tried is stil
   assert.equal(env.store.claim("thr_timeout", "req_thr_timeout", "retry", new Date(env.now()), { requestId: "req_thr_timeout_2" }), false);
 });
 
-test("the wake budget holds every wake after a failure, kept across a restart", async () => {
+test("the wake pacer's hold stops every wake the plugin starts on its own after a failure, kept across a restart", async () => {
   const kv = memoryKv();
   let clock = NOW;
-  const budget = createWakeBudget(kv, { now: () => clock });
-  assert.equal(await budget.heldUntil(), 0);
-  await budget.failed();
-  assert.equal(await budget.heldUntil(), NOW + WAKE_HOLD_MS);
-  // Tokens are left, but nothing is woken during the hold, and taking doesn't spend one.
-  assert.equal(await budget.take(), false);
-  assert.equal(await createWakeBudget(kv, { now: () => clock }).take(), false);
+  const pacer = new WakePacer({ now: () => clock, storage: kvWakeStorage(kv) });
+  assert.equal(await pacer.heldUntil(), 0);
+  await pacer.hold();
+  assert.equal(await pacer.heldUntil(), NOW + WAKE_HOLD_MS);
+  // Slots are free, but nothing is woken during the hold, and asking doesn't spend one.
+  assert.equal(await pacer.take(), null);
+  assert.equal(await new WakePacer({ now: () => clock, storage: kvWakeStorage(kv) }).take(), null);
+  assert.equal((await pacer.snapshot()).taken.length, 0);
+  // A wake someone asks for (a boat resume) isn't held.
+  assert.equal(await pacer.nextWakeAt(), NOW);
+  assert.equal(await pacer.nextWakeAt({ held: true }), NOW + WAKE_HOLD_MS);
   // A second failure later moves the hold on, never back.
   clock += 60_000;
-  await budget.failed();
-  assert.equal(await budget.heldUntil(), NOW + 60_000 + WAKE_HOLD_MS);
+  await pacer.hold();
+  assert.equal(await pacer.heldUntil(), NOW + 60_000 + WAKE_HOLD_MS);
   clock += WAKE_HOLD_MS;
-  assert.deepEqual([await budget.take(), await budget.take(), await budget.take()], [true, true, false]);
+  const after = [await pacer.take(), await pacer.take(), await pacer.take()];
+  assert.deepEqual(after.map((claim) => claim !== null), [true, true, false]);
 });
 
-test("the wake budget: two a minute, one at a time, kept across a restart", async () => {
+test("the wake pacer's take: two a minute, one at a time, kept across a restart", async () => {
   const kv = memoryKv();
   let clock = NOW;
-  const budget = createWakeBudget(kv, { now: () => clock });
+  const pacer = new WakePacer({ now: () => clock, storage: kvWakeStorage(kv) });
+  const took = (claims: unknown[]) => claims.map((claim) => claim !== null);
   // The watchdog and the paid resume ask at once: two wakes, no more.
-  assert.deepEqual(await Promise.all([budget.take(), budget.take(), budget.take()]), [true, true, false]);
-  clock += 29_000;
-  assert.equal(await budget.take(), false);
+  assert.deepEqual(took(await Promise.all([pacer.take(), pacer.take(), pacer.take()])), [true, true, false]);
+  clock += 59_000;
+  assert.equal(await pacer.take(), null);
+  // A slot comes back a minute after it was taken.
   clock += 1_000;
-  assert.equal(await budget.take(), true);
+  assert.deepEqual(took([await pacer.take(), await pacer.take(), await pacer.take()]), [true, true, false]);
   // A restart can't refill it.
-  assert.equal(await createWakeBudget(kv, { now: () => clock }).take(), false);
-  // An hour idle refills it to two, not more.
+  assert.equal(await new WakePacer({ now: () => clock, storage: kvWakeStorage(kv) }).take(), null);
+  // An hour idle gives two again, not more.
   clock += 3_600_000;
-  const restarted = createWakeBudget(kv, { now: () => clock });
-  assert.deepEqual([await restarted.take(), await restarted.take(), await restarted.take()], [true, true, false]);
+  const restarted = new WakePacer({ now: () => clock, storage: kvWakeStorage(kv) });
+  assert.deepEqual(took([await restarted.take(), await restarted.take(), await restarted.take()]), [true, true, false]);
 });
 
-test("the wake budget waits while the sandbox wake pacer has no slot free, and takes none of its slots", async () => {
+test("take says no while the pacer has no slot free, and a no takes none of its slots", async () => {
   let clock = NOW;
   const pacer = new WakePacer({ now: () => clock, sleep: async () => undefined });
-  const budget = createWakeBudget(memoryKv(), { now: () => clock, pacer });
-  // Two boat resumes this minute (bb's own, a user's): the pacer is full, so no wake starts here either.
+  // Two boat resumes this minute (bb's own, a user's): the pacer is full, so no wake starts on its own either.
   await pacer.acquire();
   await pacer.acquire();
-  assert.equal(await budget.take(), false);
-  assert.equal((await pacer.snapshot()).taken.length, 2, "the budget took no slot of the pacer's");
+  assert.equal(await pacer.take(), null);
+  assert.equal((await pacer.snapshot()).taken.length, 2, "a no took no slot");
   clock += 60_000;
-  assert.equal(await budget.take(), true);
-  assert.equal((await pacer.snapshot()).taken.length, 0);
-  // The pacer's pause after a failed wake is waited out too.
+  assert.notEqual(await pacer.take(["host:h1"]), null);
+  assert.equal((await pacer.snapshot()).taken.length, 1);
+  // That machine's boat resume uses the claimed slot: one wake, one slot.
+  await pacer.acquire({ ids: ["host:h1"] });
+  assert.equal((await pacer.snapshot()).taken.length, 1);
+  // The pause after a failed wake is waited out too.
   await (await pacer.acquire()).failed();
-  assert.equal(await budget.take(), false);
+  assert.equal(await pacer.take(), null);
   clock = await pacer.nextWakeAt();
-  assert.equal(await budget.take(), true);
+  assert.notEqual(await pacer.take(), null);
 });
 
-test("the wake budget sees a free pacer as free, however long its storage takes (real clocks)", async () => {
+test("take sees a free pacer as free, however long its storage takes (real clocks)", async () => {
   // Real clocks, and a kv that takes a few milliseconds a call: time moves on while the budget reads.
   const values = new Map<string, unknown>();
   const slowKv = {
@@ -1066,9 +1074,9 @@ test("the wake budget sees a free pacer as free, however long its storage takes 
       values.set(key, value);
     },
   };
-  const budget = createWakeBudget(slowKv, { pacer: new WakePacer() });
-  // An empty pacer: the budget's own two a minute decide.
-  assert.deepEqual([await budget.take(), await budget.take(), await budget.take()], [true, true, false]);
+  const pacer = new WakePacer({ storage: kvWakeStorage(slowKv) });
+  // An empty pacer: two a minute decide.
+  assert.deepEqual([await pacer.take(), await pacer.take(), await pacer.take()].map((claim) => claim !== null), [true, true, false]);
 });
 
 test("a pass doesn't wake a machine while the sandbox wake pacer is full; chats on machines that are up still go", async () => {

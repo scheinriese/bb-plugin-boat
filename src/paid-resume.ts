@@ -25,11 +25,12 @@
 // after the last one; a failure ends the pass and backs off (5 min, doubling to
 // an hour, kept across restarts). A machine that is starting, stopping or
 // failed is left alone (only that one: an old failure on one machine never
-// holds the others); waking a suspended one takes a token from the wake
-// budget the watchdog shares (src/wake-budget.ts: 2 a minute). A wake this
-// plugin made that failed, at once or found failed when a later pass looks
-// at the machines it woke, holds every wake (the budget's hold, which the
-// watchdog waits out but never sets). One headless follow-up a pass.
+// holds the others); waking a suspended one takes a slot from the wake
+// pacer every wake shares (src/wake-pacer.ts: 2 a minute), claimed for that
+// machine so its boat resume counts once. A wake this plugin made that
+// failed, at once or found failed when a later pass looks at the machines it
+// woke, holds every wake the plugin starts on its own (the pacer's hold,
+// which the watchdog waits out but never sets). One headless follow-up a pass.
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
@@ -42,7 +43,7 @@ import { isBusy, subscriptionRoom, type SubscriptionRoom } from "./relay.ts";
 import { TaskError, type BoatSettings } from "./service.ts";
 import type { TurnEventRow } from "./steer-retry.ts";
 import type { Task } from "./store.ts";
-import { WAKE_FAILURE_HOLD_MS, type WakeBudget } from "./wake-budget.ts";
+import { WAKE_FAILURE_HOLD_MS, type OwnWakes } from "./wake-pacer.ts";
 
 /** At most this many attempts per pass (failed ones count too); the rest wait for the next pass. */
 export const RESUME_CAP = 10;
@@ -57,7 +58,7 @@ export const BACKOFF_FIRST_MS = 5 * 60_000;
 /** …up to this. */
 export const BACKOFF_MAX_MS = 60 * 60_000;
 /**
- * After a wake fails, no machine is woken for this long (the budget's hold).
+ * After a wake fails, no machine is woken for this long (the pacer's hold).
  * The machines a pass woke are looked at again for this long.
  */
 export const WAKE_HOLD_MS = WAKE_FAILURE_HOLD_MS;
@@ -502,8 +503,8 @@ export interface PaidResumeDeps {
   threads: ResumeThreads;
   store: PaidResumeStore;
   machines: MachineReader;
-  /** Wakes of suspended machines and stopped sandboxes, shared with the watchdog. */
-  wakes: WakeBudget;
+  /** Wakes of suspended machines and stopped sandboxes: the account's wake pacer, shared with every wake. */
+  wakes: OwnWakes;
   tasks: {
     /** The Boat task this chat belongs to (any chat it used), or null. */
     byThread(threadId: string): Task | null;
@@ -544,7 +545,7 @@ export interface ResumeReport {
   resumed: ResumedWork[];
   /** Candidates not resumed, and why. */
   skipped: { id: string; reason: string }[];
-  /** Candidates left for the next pass (the cap, a failure, the wake budget). */
+  /** Candidates left for the next pass (the cap, a failure, no wake slot free). */
   deferred: string[];
   /** Orchestrators told (one message each). */
   told: string[];
@@ -793,7 +794,7 @@ export function createPaidResume(deps: PaidResumeDeps) {
       if (check.state === "up") deps.store.dropWoke(id);
       else if (check.state === "skip" && check.failure) {
         deps.log.warn(`paid resume: a machine it woke failed to start (${id}: ${check.why}); no machine is woken for a while`);
-        await deps.wakes.failed();
+        await deps.wakes.hold();
         deps.store.dropWoke(id);
       }
     }
@@ -841,7 +842,8 @@ export function createPaidResume(deps: PaidResumeDeps) {
       if (check.state === "skip") return { go: false, reason: check.why, defer: false };
       if (check.state === "up") return { go: true, wake: false };
       if (wakesHeld) return { go: false, reason: "machines aren't woken for now (a wake failed)", defer: true };
-      if (!(await deps.wakes.take())) return { go: false, reason: "waiting for a wake (at most 2 a minute)", defer: true };
+      // The slot is claimed for this machine: bb's resume of it uses that slot, not a second one.
+      if ((await deps.wakes.take(check.ids ?? []).catch(() => null)) === null) return { go: false, reason: "waiting for a wake (at most 2 a minute)", defer: true };
       deps.store.noteWoke(check.ids ?? [], at, at - WAKE_HOLD_MS);
       return { go: true, wake: true };
     };
@@ -861,7 +863,7 @@ export function createPaidResume(deps: PaidResumeDeps) {
         const until = now() + backoffMs(failures);
         deps.store.setBackoff({ until, failures });
         if (outcome.wake) {
-          await deps.wakes.failed();
+          await deps.wakes.hold();
           wakesHeld = true;
         }
         report.backoffUntil = until;

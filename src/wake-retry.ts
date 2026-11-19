@@ -22,7 +22,7 @@ import { clockTime } from "./format.ts";
 import type { TaskStore } from "./store.ts";
 import { resizeRefused, tooLargeQuestion } from "./disk-trim.ts";
 import { DISK_CHECK_SCRIPT, daemonRepairQuestion, diagnoseWakeFailure, parseDiskCheck, retriesLater, wakeFailureMessage, type DiskCheckRunner, type RetriedKind, type WakeDiagnosis } from "./wake-diagnosis.ts";
-import { WakeDeferred, type WakePacer, type WakePermit, type WakeWait } from "./wake-pacer.ts";
+import { WakeDeferred, wakeIds, type WakePacer, type WakePermit, type WakeWait } from "./wake-pacer.ts";
 import {
   brokenSnapshotQuestion,
   forcedOutcome,
@@ -481,7 +481,8 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
       if (entry !== null && ((hold !== null && hold > now()) || moving(entry))) throw new Error(heldMessage(entry, now()));
       let permit: WakePermit | null = null;
       const take = async () => {
-        permit ??= await deps.pacer.acquire({ signal: wake.signal, onWait: (until, reason) => wake.report.step(waitStep(until, reason, now())) });
+        // A slot the watchdog or the paid resume claimed for this machine is this wake's (it counts once).
+        permit ??= await deps.pacer.acquire({ signal: wake.signal, ids: wakeIds(wake), onWait: (until, reason) => wake.report.step(waitStep(until, reason, now())) });
         return permit;
       };
       try {

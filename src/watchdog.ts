@@ -9,7 +9,8 @@
 //   it on the next message instead of queueing it as "Waiting for … to be
 //   ready" for good;
 // - a suspended machine with messages waiting for it is resumed (the
-//   provider's resume: boat resume, then bb set up there again);
+//   provider's resume: boat resume, then bb set up there again), with a slot
+//   from the account's wake pacer;
 // - one [boat] message per incident to the task's orchestrator: a sandbox
 //   stopped while background work ran there; messages waited more than 3
 //   minutes on a stopped or disconnected machine; a running turn showed no
@@ -23,7 +24,7 @@ import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { KEEP_LIMIT_MS, NO_WORK, addWork, describeWork, hasWork, messagesWaiting, rowWork, threadsOnMachine, type BackgroundWork, type ThreadRow } from "./activity.ts";
 import { ACTIVE_STATES, busyProcesses, type BoatApi, type Sandbox } from "./boat-api.ts";
-import type { WakeBudget } from "./wake-budget.ts";
+import { wakeIds, type WakePacer } from "./wake-pacer.ts";
 import { RESUME_NOTE_PREFIX, WATCHDOG_PREFIX, quietNotice, resumeNoteText, stoppedNotice, waitingNotice, type NoticeSubject } from "./format.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import { OPEN_STATUSES, type Task, type TaskStore } from "./store.ts";
@@ -123,10 +124,11 @@ export interface WatchdogDeps {
   signal?: AbortSignal;
   now?: () => number;
   /**
-   * Wakes shared with the paid Claude resume (src/wake-budget.ts): the watchdog takes from it, and waits out
-   * its hold, but never sets one (its own per-host retry covers a failing host); absent: only RESUMES_PER_PASS.
+   * The account's wake pacer (src/wake-pacer.ts), shared with every wake: the watchdog takes a slot for each
+   * resume and waits out the hold, but never sets one (its own per-host retry covers a failing host);
+   * absent: only RESUMES_PER_PASS.
    */
-  wakeBudget?: WakeBudget;
+  wakes?: Pick<WakePacer, "take" | "pausedUntil">;
 }
 
 export interface Watchdog {
@@ -663,17 +665,22 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       const last = resumed.get(host.id);
       if (phaseNow === "suspended" && at - watched >= RESUME_AFTER_MS && (retryAt.get(host.id) ?? 0) <= at && !(last?.ok === true && at - last.at < RESUME_AGAIN_MS) && resumes < RESUMES_PER_PASS) {
         // bb resumes a suspended machine for a new message itself; one queued before the stop it may not.
-        // The wakes a minute are shared with the paid Claude resume: none left, the next pass tries.
-        if (deps.wakeBudget === undefined || (await deps.wakeBudget.take())) {
+        // A slot from the account's wake pacer, claimed for this machine (its boat resume uses it): none free now
+        // (2 a minute, a pause after a failed wake, the hold), the next pass tries.
+        const claim = deps.wakes === undefined ? null : await deps.wakes.take(wakeIds({ sandboxId, hostId: host.id })).catch(() => null);
+        if (deps.wakes === undefined || claim !== null) {
           resumes += 1;
           await resume(host.id, at);
+          // A resume that never got to boat (it failed first, or the sandbox was up) gives its slot back.
+          await claim?.release();
         }
       }
       const stopped = STOPPED_STATES.has(sandbox.state);
       const outcome = resumed.get(host.id);
-      // The next resume: a failed one at its own retry, or when the shared wake hold ends, whichever is later.
-      const heldUntil = deps.wakeBudget ? await deps.wakeBudget.heldUntil().catch(() => 0) : 0;
-      const nextAt = Math.max(outcome !== undefined && !outcome.ok ? (retryAt.get(host.id) ?? 0) : 0, heldUntil);
+      // The next resume: a failed one at its own retry, or when the shared pause (the hold, a pause after a
+      // failed wake) ends, whichever is later.
+      const pausedUntil = deps.wakes ? await deps.wakes.pausedUntil().catch(() => 0) : 0;
+      const nextAt = Math.max(outcome !== undefined && !outcome.ok ? (retryAt.get(host.id) ?? 0) : 0, pausedUntil);
       const inAbout = (ms: number) => {
         const minutes = Math.max(1, Math.ceil(ms / 60_000));
         return `in about ${minutes} minute${minutes === 1 ? "" : "s"}`;
@@ -695,8 +702,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
               : phaseNow === "suspending"
                 ? "bb's suspend hasn't finished; the plugin resumes it once it has."
                 : stopped
-                  ? heldUntil > at
-                    ? `The plugin resumes it ${inAbout(heldUntil - at)}: wakes wait after one failed (boat.dev may be overloaded).`
+                  ? pausedUntil > at
+                    ? `The plugin resumes it ${inAbout(pausedUntil - at)}: wakes wait after one failed (boat.dev may be overloaded).`
                     : "The plugin resumes it on its next check."
                   : "The plugin left it alone: bb usually reconnects on its own. If it doesn't, restart the machine from bb's machine menu.";
       const threshold = phaseNow === "resuming" ? RESUMING_NOTICE_MS : WAIT_NOTICE_MS;

@@ -41,7 +41,6 @@ import { registerNativeReviews } from "./src/native-review.ts";
 import { nativeStart, adoptNativeChat } from "./src/native-start.ts";
 import { createRuntime, type Runtime } from "./src/runtime.ts";
 import { PaidResumeStore, bbMachineReader, bbResumeThreads, createPaidResume, createPaidResumeTimer, mayBeLimitStop, type TurnFailedPayload } from "./src/paid-resume.ts";
-import { createWakeBudget } from "./src/wake-budget.ts";
 import { BoatService, DeliveryDeferred, type BoatSettings, type Notification } from "./src/service.ts";
 import { TaskStore, type Provider } from "./src/store.ts";
 import { TOOL_NAMES, registerTools } from "./src/tools.ts";
@@ -276,8 +275,9 @@ export default async function plugin(bb: BbPluginApi) {
     await attentionNotifications?.flush();
   }
 
-  // Sandbox wakes: at most 2 a minute account-wide, a pause after a failure, and
-  // Boat's own later retry while boat.dev is still restoring a disk.
+  // Sandbox wakes: one limiter for every wake (at most 2 a minute account-wide, a pause after a failure,
+  // and the hold on the plugin's own wakes after one of them failed), and Boat's own later retry while
+  // boat.dev is still restoring a disk.
   const wakePacer = new WakePacer({ storage: kvWakeStorage(bb.storage.kv), log: (line) => bb.log.warn(line) });
   const wakes = createWakeGuard({
     pacer: wakePacer,
@@ -371,9 +371,6 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  // Machine wakes the plugin makes on its own (the watchdog's resumes, paid Claude resumes): 2 a minute, kept in kv.
-  // It also waits while the sandbox wake pacer above has no slot free, so the two never add up past 2 a minute.
-  const wakeBudget = createWakeBudget(bb.storage.kv, { pacer: wakePacer });
   // A chat's queue, failed turn and retries, and the machine it runs on (the paid resume and `bb boat sandbox wake`).
   const resumeThreads = bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(), { error: (line) => bb.log.error(line) });
   const machineReader = bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await boat.findInfo(sandboxId))?.state ?? null);
@@ -382,7 +379,8 @@ export default async function plugin(bb: BbPluginApi) {
     threads: resumeThreads,
     store: new PaidResumeStore(() => bb.storage.database()),
     machines: machineReader,
-    wakes: wakeBudget,
+    // Its wakes take a slot from the wake pacer, claimed for the machine; one that failed sets the hold.
+    wakes: wakePacer,
     tasks: {
       byThread: (threadId) => service.store.byThread(threadId),
       failedHeadless: () => service.store.list({ statuses: ["failed"], limit: 500 }).filter((task) => task.runner === "boat"),
@@ -534,8 +532,8 @@ export default async function plugin(bb: BbPluginApi) {
       return Array.isArray(rows) ? rows.some((row) => (row as { payload?: { kind?: unknown } } | null)?.payload?.kind === "retry") : null;
     },
     kv: bb.storage.kv,
-    // The shared wake pacing: the pacer's next slot, and the hold the paid resume and watchdog share.
-    nextWakeAt: async () => Math.max(await wakePacer.nextWakeAt(), await wakeBudget.heldUntil().catch(() => 0)),
+    // The shared wake pacing: the pacer's next slot, and the hold after a wake the plugin made failed.
+    nextWakeAt: () => wakePacer.nextWakeAt({ held: true }),
     log: (line) => bb.log.info(line),
   });
   void resets.load();
@@ -723,8 +721,8 @@ export default async function plugin(bb: BbPluginApi) {
     boat,
     store: service.store,
     kv: bb.storage.kv,
-    // Its resumes share the 2-a-minute wake budget with the paid Claude resume.
-    wakeBudget,
+    // Its resumes take slots from the same wake pacer (it waits out the hold, never sets it).
+    wakes: wakePacer,
     // The same boat ps readings the idle stop and the keeper go by.
     computing: (sandboxId) => service.processesBusy(sandboxId),
     tell: (threadId, text) => runtime.tellOrchestrator(threadId, text),

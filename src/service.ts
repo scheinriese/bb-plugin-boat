@@ -79,7 +79,7 @@ import type { ConnectCheck } from "./connect.ts";
 import { renderBoatTranscript, transcriptDir, transcriptPath } from "./transcript.ts";
 import type { PreflightInput } from "./setup.ts";
 import type { PlanSize, SizedProject } from "./memory.ts";
-import type { WakePacer, WakePermit } from "./wake-pacer.ts";
+import { wakeIds, type WakePacer, type WakePermit } from "./wake-pacer.ts";
 import { SandboxSizes } from "./sandbox-size.ts";
 import { markResize, trimFreedBlocks } from "./disk-trim.ts";
 import { completedReview, isReady, resolveTaskStatus, reviewState, type StatusContext, type TaskPublicStatus } from "./board.ts";
@@ -1027,7 +1027,8 @@ export class BoatService {
       this.observedSandboxStates.set(sandboxId, sandbox.state);
       if (ACTIVE_STATES.has(sandbox.state)) return sandbox;
       if (resumable(sandbox)) {
-        if (permit === null && this.hooks.wakes !== undefined) permit = await this.hooks.wakes.pacer.acquire({ signal });
+        // A slot the paid resume claimed for this sandbox is this wake's (it counts once).
+        if (permit === null && this.hooks.wakes !== undefined) permit = await this.hooks.wakes.pacer.acquire({ signal, ids: wakeIds({ sandboxId }) });
         const owned = given === undefined ? permit : null;
         const resumed = await this.withSlotLock(async () => {
           const current = await this.boat.findInfo(sandboxId, signal);
@@ -3147,8 +3148,8 @@ export class BoatService {
   }
 
   /** A boat resume within the account's wake pacing (src/wake-pacer.ts). */
-  private async pacedResume<T>(resume: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const permit = await this.hooks.wakes?.pacer.acquire({ signal });
+  private async pacedResume<T>(sandboxId: string, resume: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const permit = await this.hooks.wakes?.pacer.acquire({ signal, ids: wakeIds({ sandboxId }) });
     try {
       const result = await resume();
       await permit?.succeeded();
@@ -3172,7 +3173,7 @@ export class BoatService {
       if (action === "stop") {
         await this.trimBeforeStop(sandboxId, signal);
         await this.boat.stop(sandboxId, signal);
-      } else if (action === "resume") await this.pacedResume(() => withinAutoStopCap(ttlSeconds, (ttl) => this.boat.resume(sandboxId, ttl, signal)), signal);
+      } else if (action === "resume") await this.pacedResume(sandboxId, () => withinAutoStopCap(ttlSeconds, (ttl) => this.boat.resume(sandboxId, ttl, signal)), signal);
       else await this.boat.delete(sandboxId, signal);
       this.observedSandboxStates.set(sandboxId, action === "stop" ? "stopped" : action === "resume" ? "running" : "deleted");
       return;
