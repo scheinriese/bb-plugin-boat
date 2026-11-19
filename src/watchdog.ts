@@ -122,7 +122,7 @@ export interface WatchdogDeps {
   info?: (message: string) => void;
   signal?: AbortSignal;
   now?: () => number;
-  /** Wakes shared with the paid Claude resume (src/wake-budget.ts); absent: only RESUMES_PER_PASS. */
+  /** Wakes shared with the paid Claude resume (src/wake-budget.ts), and their hold after a failed one; absent: only RESUMES_PER_PASS. */
   wakeBudget?: WakeBudget;
 }
 
@@ -521,6 +521,8 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       retryAt.set(hostId, at + RETRY_MS);
       resumed.set(hostId, { at, ok: false, error: message(error) });
       deps.log(`watchdog: resume ${hostId}: ${message(error)}`);
+      // A failed wake holds every wake for a while (boat.dev may be overloaded), the paid resume's too.
+      await deps.wakeBudget?.failed().catch(() => undefined);
     }
   }
 

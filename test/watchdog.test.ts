@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createWakeBudget } from "../src/wake-budget.ts";
+import { WAKE_FAILURE_HOLD_MS, createWakeBudget } from "../src/wake-budget.ts";
 import { fileURLToPath } from "node:url";
 import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { makeMessageDispatchHookContext, makeQueueEntry } from "@get-bb/plugin-sdk/testing";
@@ -285,6 +285,33 @@ test("the watchdog's resumes share the wake budget: none left, the machine waits
   clock = w.now();
   await dog.tick();
   assert.deepEqual(w.calls.resume, [w.host.id]);
+});
+
+test("a failed watchdog resume holds every wake, the paid Claude resume's too", async () => {
+  const w = await world({ resumeFails: true });
+  let clock = w.now();
+  const budget = createWakeBudget(w.kv, { now: () => clock });
+  const dog = w.watchdog({ wakeBudget: budget });
+  w.host.lifecycle = { phase: "suspended", suspendedAt: w.now() };
+  w.host.status = "disconnected";
+  w.sandbox.state = "stopped";
+  w.setRow({ queuedWork: "waiting" });
+  w.queued.set(w.task.threadId!, [{ id: "q1", threadId: w.task.threadId!, content: [{ type: "text", text: "Status?" }], createdAt: w.now(), updatedAt: w.now(), state: "waiting", waitingOn: { kind: "host-offline" } }]);
+  await dog.tick();
+  w.advance(MINUTE);
+  clock = w.now();
+  await dog.tick();
+  assert.deepEqual(w.calls.resume, [w.host.id]);
+  assert.equal(await budget.heldUntil(), w.now() + WAKE_FAILURE_HOLD_MS);
+  // Its own retry after a few minutes waits for the hold too.
+  w.advance(5 * MINUTE);
+  clock = w.now();
+  await dog.tick();
+  assert.deepEqual(w.calls.resume, [w.host.id]);
+  w.advance(WAKE_FAILURE_HOLD_MS);
+  clock = w.now();
+  await dog.tick();
+  assert.deepEqual(w.calls.resume, [w.host.id, w.host.id]);
 });
 
 test("a failed resume is said as such", async () => {
