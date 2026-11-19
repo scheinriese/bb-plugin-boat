@@ -24,7 +24,7 @@ hidden. Reload the plugin once more to finish the transition; see
 | How tasks run | `workers` | `boat` | Delegated work: In boat (`boat`), As chats for projects (`projects`) or As chats everywhere (`all`). Native starts keep the environment selected in bb. Chats need bb Connect |
 | Boat environment | `environment` | empty | The boat environment new sandboxes start from; empty is your boat default. A project can pick its own |
 | Default sandbox size | `machineType` | `default` | For new task sandboxes: `small`, `default`, `large` or `xlarge` ([sizes](features.md#sandbox-sizes-and-memory)). A project or a task can pick another |
-| Sandboxes at once | `maxActiveSandboxes` | `3` | The most sandboxes running at the same time; 0 is your plan's limit |
+| Sandboxes at once | `maxActiveSandboxes` | `3` | The most sandboxes running at the same time, on each provider; 0 is your plan's limit (on Instabox the plan's limit counts stopped and paused machines too) |
 | Agent for tasks | `implementProvider` | `claude` | For tasks that don't name an agent. With one agent connected, it runs everything |
 | Agent for reviews | `reviewProvider` | `codex` | When a task already ran on this agent, its review uses the other one. With one agent connected, it reviews too |
 | Stop idle sandboxes after (min) | `stopIdleAfterMinutes` | `60` | A sandbox whose agent has finished and is waiting for you stops after this long, to save sandbox hours. Work still running, background jobs included, keeps it on (up to 12 hours). Your next message starts it again; anything the agent kept in memory or `/tmp` is lost. 0 is never |
@@ -84,7 +84,7 @@ inherits the global setting; an explicit native task drawer choice wins.
 | Orchestrators | Orchestrators in the sidebar | `sidebarLayout` | `sections` |
 | Orchestrators | Size for chats on a Boat sandbox | `orchestratorMachineType` | `small` |
 | Orchestrators | Full access for cloud orchestrators | `cloudOrchestratorFullAccess` | on |
-| Advanced | Hard stop after (hours) | `sandboxTtlHours` | `2` |
+| Advanced | Hard stop after (hours) | `sandboxTtlHours` | `2` (boat.dev only; Instabox pauses idle machines instead) |
 | Advanced | Recover any chat after a steer Bad Request | `recoverChatsAfterSteer` | on |
 | Advanced | Make room at your sandbox limit | `freeSlotsWhenFull` | on |
 | Advanced | Delete sandboxes when tasks close | `deleteSandboxOnClose` | on (sandboxes with unshipped work are kept) |
@@ -120,6 +120,19 @@ provider, off until you turn it on:
 6. Pick where each project runs: `bb boat config runs-on <project> instabox`
    (or `bb boat project set <project> --runs-on instabox`). New tasks of that
    project start there; tasks already started stay where they are.
+
+What works differently on Instabox:
+
+- **Hard stop after** doesn't apply: Instabox has no deadline. It pauses a
+  machine after 30 idle minutes instead (memory kept), and a paused machine
+  resumes on the next task turn.
+- **Sandboxes at once** counts per provider: the machines running on
+  Instabox, apart from boat.dev's. Instabox's own plan limit counts every
+  machine you keep, stopped and paused ones included, so a new task there
+  can wait at that limit even when few machines run. Resuming a machine you
+  already have is never held up by it, and the plugin never stops one to
+  make room (a stop frees nothing there); close finished tasks to delete
+  their machines.
 
 Task chats on Instabox (bb on the machine) are offered once the plugin
 reloads with Instabox on. Instabox pauses a machine that looks idle for 30

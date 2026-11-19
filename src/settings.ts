@@ -87,7 +87,7 @@ export const SETTINGS = {
   maxActiveSandboxes: {
     type: "number",
     label: "Sandboxes at once",
-    description: "The most sandboxes running at the same time. Each one uses sandbox hours on your boat plan. 0: your plan's limit.",
+    description: "The most sandboxes running at the same time, on each provider. Each one uses sandbox hours on your plan. 0: your plan's limit. On Instabox the plan's limit counts stopped and paused machines too, so new work there can wait even when few run.",
     experimental_schema: range("maxActiveSandboxes"),
     default: 3,
   },
@@ -359,7 +359,7 @@ export const PLUGIN_SETTINGS = {
     section: "advanced",
     type: "number",
     label: "Hard stop after (hours)",
-    description: "boat stops a sandbox after this long unless an agent is working. Your plan may stop sandboxes sooner.",
+    description: "boat stops a sandbox after this long unless an agent is working. Your plan may stop sandboxes sooner. Doesn't apply on Instabox, which has no deadline: it pauses a machine after 30 idle minutes instead.",
     experimental_schema: range("sandboxTtlHours"),
     default: 2,
   },
@@ -420,7 +420,7 @@ export const PLUGIN_SETTINGS = {
     type: "boolean",
     label: "Instabox",
     description:
-      "Lets projects run on Instabox Linux machines instead of boat.dev (a project's Runs on). Needs the instabox CLI and your Instabox API key, stored in bb's settings for this plugin (Instabox API key). Task chats on Instabox are offered once the plugin reloads.",
+      "Lets projects run on Instabox Linux machines instead of boat.dev (a project's Runs on). Needs the instabox CLI and your Instabox API key, stored in bb's settings for this plugin (Instabox API key). Task chats on Instabox are offered once the plugin reloads. Hard stop after doesn't apply there (Instabox pauses idle machines instead), and Instabox's own machine limit counts stopped machines too.",
     default: false,
   },
   instaboxPath: {
