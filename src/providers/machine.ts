@@ -143,6 +143,8 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
             // Any bb chat can use this machine; keep the repo's own git hooks.
             gitGuard: false,
             snapshot: parsed.success ? parsed.data.snapshot ?? null : null,
+            // On this provider, within its own limits.
+            sandboxProvider: provider,
             signal,
           });
         } else if (!ACTIVE_STATES.has(sandbox.state)) {

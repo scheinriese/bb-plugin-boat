@@ -333,6 +333,38 @@ test("a task's sandbox calls go to the provider its record names", async () => {
   assert.equal(interrupts.length, 1);
 });
 
+test("a new sandbox on another provider takes that provider's limits and create", async () => {
+  const { calls, client } = recordingClient();
+  const boat = createBoatProvider(client);
+  const asked: unknown[][] = [];
+  const other: SandboxProvider = {
+    ...createBoatProvider(new FakeBoat() as unknown as BoatApi),
+    id: "other",
+    displayName: "Other",
+    idPattern: /^ot_[a-z0-9]+$/,
+    machine: undefined,
+    capacity: async (...args) => {
+      asked.push(["capacity", ...args]);
+      return { tier: null, summary: null, activeSandboxes: 0, maxActiveSandboxes: 5, startsLeftToday: null, startsLeftThisHour: null, canStart: true, blockedReason: null, checkoutRequired: false, autoStopCapHours: 1 };
+    },
+    list: async (...args) => {
+      asked.push(["list", ...args]);
+      return [];
+    },
+    create: async (options) => {
+      asked.push(["create", options.name, options.type, options.ttlSeconds, options.gitGuard]);
+      return { ...SANDBOX, id: "ot_1", name: options.name };
+    },
+  };
+  const service = new BoatService(createProviderRegistry([boat, other]), memoryStore(), hooks());
+  const sandbox = await service.createSandbox({ name: "bb machine k1", type: "small", gitGuard: false, sandboxProvider: other });
+  assert.equal(sandbox.id, "ot_1");
+  // The other provider's plan caps the auto-stop at 1 hour.
+  assert.deepEqual(asked.map((call) => call[0]), ["capacity", "list", "create"]);
+  assert.deepEqual(asked.at(-1), ["create", "bb machine k1", "small", 3600, false]);
+  assert.deepEqual(calls, [], "boat.dev isn't asked");
+});
+
 test("any provider with bb enrollment registers as a bb machine provider, in its own words", async () => {
   const definitions: Record<string, unknown>[] = [];
   const environments: Record<string, unknown>[] = [];

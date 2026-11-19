@@ -834,14 +834,14 @@ export class BoatService {
   // -------------------------------------------------------------------------
   // Capacity
 
-  async capacity(signal?: AbortSignal, forSandbox?: string): Promise<{
+  async capacity(signal?: AbortSignal, forSandbox?: string, given?: SandboxProvider): Promise<{
     limits: Limits | null;
     active: Sandbox[];
     cap: number | null;
     free: number | null;
   }> {
     const settings = await this.settings();
-    const sandboxProvider = forSandbox === undefined ? this.sandboxProviders.default : this.sandboxProvider(forSandbox);
+    const sandboxProvider = given ?? (forSandbox === undefined ? this.sandboxProviders.default : this.sandboxProvider(forSandbox));
     const [limits, sandboxes] = await Promise.all([
       sandboxProvider.capacity(signal).catch(() => null),
       sandboxProvider.list({ signal }),
@@ -862,10 +862,13 @@ export class BoatService {
    * least recently used plugin-created sandbox whose tasks are all waiting
    * (their conversations survive the stop and resume on follow-up).
    */
-  /** paidStart: the user allowed a paid extra start (`bb boat sandbox wake --allow-paid-start`), so used-up included starts don't refuse it. */
-  private async ensureSlot(signal?: AbortSignal, forSandbox?: string, options: { paidStart?: boolean } = {}): Promise<{ limits: Limits | null; stopped: string | null }> {
+  /**
+   * paidStart: the user allowed a paid extra start (`bb boat sandbox wake --allow-paid-start`), so used-up included starts don't refuse it.
+   * sandboxProvider: where the sandbox goes (default: the sandbox's own, else the default provider).
+   */
+  private async ensureSlot(signal?: AbortSignal, forSandbox?: string, options: { paidStart?: boolean; sandboxProvider?: SandboxProvider } = {}): Promise<{ limits: Limits | null; stopped: string | null }> {
     const settings = await this.settings();
-    const { limits, active, cap, free } = await this.capacity(signal, forSandbox);
+    const { limits, active, cap, free } = await this.capacity(signal, forSandbox, options.sandboxProvider);
     if (limits?.checkoutRequired) {
       throw new TaskError(
         "Your boat.dev account has no plan yet, so it can't start sandboxes.",
@@ -966,7 +969,7 @@ export class BoatService {
     await this.hooks.preflight?.({ newSandbox: true, environment });
     if (environment !== null) await this.assertEnvironment(sandboxProvider, environment, options.signal);
     return this.withSlotLock(async () => {
-      const { limits } = await this.ensureSlot(options.signal);
+      const { limits } = await this.ensureSlot(options.signal, undefined, { sandboxProvider });
       // Snapshot errors in plain words, only when a snapshot was asked for.
       const plain = (error: unknown) => (options.snapshot ? snapshotError(error, options.snapshot) : null) ?? error;
       try {
