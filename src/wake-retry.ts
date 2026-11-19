@@ -493,7 +493,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
         if (diagnosis.kind === "daemon-broken") {
           // A repair by hand: Needs you once, no retries, nothing held.
           const next: WakeRetry = { sandboxId: wake.sandboxId, hostId, kind: "daemon-broken", failures: (entry?.failures ?? 0) + 1, retryAt: null, detail: diagnosis.detail, lastAt: at, firedAt: null, decisionId: entry?.kind === "daemon-broken" ? entry.decisionId : null };
-          if (next.decisionId === null) next.decisionId = await ask(next, daemonRepairQuestion({ sandboxId: wake.sandboxId, detail: diagnosis.detail, daemon: diagnosis.daemon }));
+          if (next.decisionId === null) next.decisionId = await ask(next, daemonRepairQuestion({ sandboxId: wake.sandboxId, detail: diagnosis.detail, daemon: diagnosis.daemon, hostId }));
           await update(wake.sandboxId, next);
           const text = wakeFailureMessage(diagnosis, { retryAt: null, now: at }, errorText(error));
           tellTasks(wake.sandboxId, text);

@@ -25,8 +25,12 @@ export interface WakeDiagnosis {
   detail: string | null;
   /** The sandbox was looked at through boat's exec API. */
   checked: boolean;
-  /** daemon-broken: bb's machine folder and daemon unit there, and whether an npm zombie remains. */
-  daemon?: { dir: string | null; unit: string | null; zombie: boolean };
+  /**
+   * daemon-broken: bb's machine folder and daemon unit there (a best guess
+   * when there are several: daemonRepairQuestion picks by host id), whether
+   * an npm zombie remains, and every folder and unit seen.
+   */
+  daemon?: { dir: string | null; unit: string | null; zombie: boolean; dirs?: string[]; units?: string[] };
 }
 
 const RATE_LIMITED = /reduce your request rate|too many requests|\brate[- ]limit(?:ed)?\b|\bslow ?down\b|status(?: code)?:? 429\b/i;
@@ -158,7 +162,35 @@ export interface DiskCheck {
 /** bb's daemon broke during an update (what the check saw says so). */
 export function daemonBroken(check: DiskCheck): boolean {
   const daemon = check.daemon;
-  return daemon.zombies.length > 0 || daemon.units.some((unit) => unit.active === "deactivating") || daemon.log !== null || daemon.missing.length > 0;
+  // A unit only "deactivating" isn't enough: npm blocked on a disk still restoring looks the same, and waiting fixes that.
+  return daemon.zombies.length > 0 || daemon.log !== null || daemon.missing.length > 0;
+}
+
+/** "acme.example.com" → "acme-example-com", as bb names its units. */
+function dashed(text: string): string {
+  return text.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+/**
+ * The daemon unit and machine folder of this bb machine: its unit is
+ * bb-host-daemon-<server with dashes>-<host id>.service, the server being
+ * the folder's name under ~/.bb-machines. Without a match, the only one there
+ * is, else none (the repair text says how to find it).
+ */
+export function pickDaemon(daemon: { dirs: readonly string[]; units: readonly string[] }, hostId: string | null): { dir: string | null; unit: string | null } {
+  const server = (dir: string) => dashed(dir.replace(/\/+$/, "").split("/").at(-1) ?? "");
+  const dirOf = (unit: string) => daemon.dirs.find((dir) => unit.startsWith(`bb-host-daemon-${server(dir)}-`)) ?? (daemon.dirs.length === 1 ? daemon.dirs[0]! : null);
+  if (hostId) {
+    const hosts = [...new Set([hostId, dashed(hostId)])];
+    for (const dir of daemon.dirs) {
+      const unit = daemon.units.find((name) => hosts.some((host) => name === `bb-host-daemon-${server(dir)}-${host}.service`));
+      if (unit !== undefined) return { dir, unit };
+    }
+    const byHost = daemon.units.filter((name) => hosts.some((host) => name.endsWith(`-${host}.service`)));
+    if (byHost.length === 1) return { dir: dirOf(byHost[0]!), unit: byHost[0]! };
+  }
+  if (daemon.units.length === 1) return { dir: dirOf(daemon.units[0]!), unit: daemon.units[0]! };
+  return { dir: daemon.dirs.length === 1 ? daemon.dirs[0]! : null, unit: null };
 }
 
 export function parseDiskCheck(stdout: string): DiskCheck {
@@ -225,6 +257,14 @@ export async function diagnoseWakeFailure(error: unknown, check: DiskCheckRunner
   if (seen.hydrator !== null || seen.unreadable.length > 0) {
     return { kind: "disk-restoring", detail: seen.hydrator ?? textDetail ?? `${seen.unreadable.map((file) => `~/${file}`).join(", ")}: Input/output error`, checked: true };
   }
+  if (seen.motdHung.length > 0) {
+    return { kind: "ssh-session-stuck", detail: `login message script hangs: ${seen.motdHung[0]}`, checked: true };
+  }
+  // A read waiting on lazyfs: the disk is still restoring, and waiting fixes it (before a broken daemon:
+  // an npm install blocked on it leaves its unit "deactivating" without anything broken).
+  if (seen.fuseBlocked.length > 0) {
+    return { kind: "disk-restoring", detail: textDetail ?? `waiting on a file not restored yet: ${seen.fuseBlocked.slice(0, 2).join(", ")}`, checked: true };
+  }
   // bb's daemon broke during an update: retrying won't fix it, a repair by hand does.
   if (daemonBroken(seen)) {
     const daemon = seen.daemon;
@@ -234,19 +274,18 @@ export async function diagnoseWakeFailure(error: unknown, check: DiskCheckRunner
       ...daemon.missing.slice(0, 1).map((dir) => `${shortHome(dir)}/npm/bin/bb-app is missing`),
       ...(daemon.log === null ? [] : [daemon.log]),
     ];
+    const dirs = [...new Set([...daemon.missing, ...daemon.dirs])];
+    const units = daemon.units.map((unit) => unit.unit);
+    const guess = pickDaemon({ dirs, units }, null);
     return {
       kind: "daemon-broken",
       detail: cleanDetail(what.join("; "), 300),
       checked: true,
-      daemon: { dir: daemon.missing[0] ?? daemon.dirs[0] ?? null, unit: daemon.units[0]?.unit ?? null, zombie: daemon.zombies.length > 0 },
+      daemon: { dir: guess.dir ?? daemon.missing[0] ?? null, unit: guess.unit, zombie: daemon.zombies.length > 0, dirs, units },
     };
   }
-  if (seen.motdHung.length > 0) {
-    return { kind: "ssh-session-stuck", detail: `login message script hangs: ${seen.motdHung[0]}`, checked: true };
-  }
-  if (seen.fuseBlocked.length > 0 || seen.hydrating !== null || fromText.kind === "disk-restoring") {
-    const blocked = seen.fuseBlocked.length > 0 ? `waiting on a file not restored yet: ${seen.fuseBlocked.slice(0, 2).join(", ")}` : null;
-    return { kind: "disk-restoring", detail: textDetail ?? blocked ?? seen.hydrating, checked: true };
+  if (seen.hydrating !== null || fromText.kind === "disk-restoring") {
+    return { kind: "disk-restoring", detail: textDetail ?? seen.hydrating, checked: true };
   }
   return { ...fromText, checked: true };
 }
@@ -310,9 +349,13 @@ function shortHome(path: string): string {
  * repair is out of scope: it depends on bb's own layout). Reinstall the
  * package bb downloaded into a fresh folder, swap it in, restart the unit.
  */
-export function daemonRepairQuestion(input: { sandboxId: string; detail: string | null; daemon: WakeDiagnosis["daemon"] }) {
-  const dir = input.daemon?.dir ? shortHome(input.daemon.dir) : "~/.bb-machines/<server>";
-  const unit = input.daemon?.unit ?? "<the bb-host-daemon unit: systemctl --user list-units 'bb-host-daemon*'>";
+export function daemonRepairQuestion(input: { sandboxId: string; detail: string | null; daemon: WakeDiagnosis["daemon"]; hostId?: string | null }) {
+  // This machine's own unit and folder (a sandbox can be enrolled with more than one bb server).
+  const picked = input.daemon?.units || input.daemon?.dirs ? pickDaemon({ dirs: input.daemon.dirs ?? [], units: input.daemon.units ?? [] }, input.hostId ?? null) : { dir: null, unit: null };
+  const chosenDir = picked.dir ?? input.daemon?.dir ?? null;
+  const chosenUnit = picked.unit ?? (input.hostId ? null : (input.daemon?.unit ?? null));
+  const dir = chosenDir ? shortHome(chosenDir) : "~/.bb-machines/<server>";
+  const unit = chosenUnit ?? `<this machine's unit, bb-host-daemon-<server>-${input.hostId ?? "<host id>"}.service: systemctl --user list-units 'bb-host-daemon*'>`;
   const steps = [
     `D=${dir}`,
     `cp "$D/host-package-download/bb-app.tgz" /tmp/bb-app.tgz`,

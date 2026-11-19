@@ -528,3 +528,18 @@ test("a stop boat refuses with its own words: forced at once when still safe, qu
   assert.match(decision.recommendation, /because boat refused the plain stop \(boat said: "Final snapshot failed; stop aborted to protect unsaved data \(lazy volume not fully hydrated\)"\); ~\/notes has changes that aren't committed\./);
 });
 
+test("the repair names this machine's own daemon unit when the sandbox has several", async () => {
+  const e = await env({ moves: {} });
+  e.setCheck([
+    "BOAT_UNIT bb-host-daemon-other-example-host_zz9.service active running",
+    "BOAT_UNIT bb-host-daemon-bb-example-com-host_orch1.service deactivating stop-sigterm",
+    "BOAT_BB_DIR /home/user/.bb-machines/other.example",
+    "BOAT_BB_DIR /home/user/.bb-machines/bb.example.com",
+    "BOAT_BB_MISSING /home/user/.bb-machines/bb.example.com",
+    "BOAT_DISK_END",
+  ].join("\n"));
+  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error("Machine daemon did not start within 20 seconds"); }), /bb's daemon on this sandbox broke during an update/);
+  const steps = e.store.decisions({ statuses: ["open"] })[0]!.context!.split("\n").slice(1);
+  assert.equal(steps[0], "D=~/.bb-machines/bb.example.com");
+  assert.equal(steps.at(-1), "systemctl --user reset-failed bb-host-daemon-bb-example-com-host_orch1.service && systemctl --user start bb-host-daemon-bb-example-com-host_orch1.service");
+});
