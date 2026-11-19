@@ -7,6 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { createWakeBudget } from "../src/wake-budget.ts";
 import { fileURLToPath } from "node:url";
 import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { makeMessageDispatchHookContext, makeQueueEntry } from "@get-bb/plugin-sdk/testing";
@@ -259,6 +260,31 @@ test("a message waiting for a stopped machine resumes it; the orchestrator hears
   w.advance(10 * MINUTE);
   await dog.tick();
   assert.equal(w.told.length, 1, "one notice per wait");
+});
+
+test("the watchdog's resumes share the wake budget: none left, the machine waits for the next one", async () => {
+  const w = await world();
+  let clock = w.now();
+  const budget = createWakeBudget(w.kv, { now: () => clock });
+  const dog = w.watchdog({ wakeBudget: budget });
+  w.host.lifecycle = { phase: "suspended", suspendedAt: w.now() };
+  w.host.status = "disconnected";
+  w.sandbox.state = "stopped";
+  w.setRow({ queuedWork: "waiting" });
+  w.queued.set(w.task.threadId!, [{ id: "q1", threadId: w.task.threadId!, content: [{ type: "text", text: "Status?" }], createdAt: w.now(), updatedAt: w.now(), state: "waiting", waitingOn: { kind: "host-offline" } }]);
+  await dog.tick();
+  // A minute on it would resume the machine (as above), but the paid Claude resume just used this minute's two wakes.
+  w.advance(MINUTE);
+  clock = w.now();
+  assert.equal(await budget.take(), true);
+  assert.equal(await budget.take(), true);
+  await dog.tick();
+  assert.deepEqual(w.calls.resume, [], "no wake left");
+  // Half a minute later the bucket has one again.
+  w.advance(MINUTE / 2);
+  clock = w.now();
+  await dog.tick();
+  assert.deepEqual(w.calls.resume, [w.host.id]);
 });
 
 test("a failed resume is said as such", async () => {

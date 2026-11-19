@@ -23,6 +23,7 @@ import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { KEEP_LIMIT_MS, NO_WORK, addWork, describeWork, hasWork, messagesWaiting, rowWork, threadsOnMachine, type BackgroundWork, type ThreadRow } from "./activity.ts";
 import { ACTIVE_STATES, busyProcesses, type BoatApi, type Sandbox } from "./boat-api.ts";
+import type { WakeBudget } from "./wake-budget.ts";
 import { RESUME_NOTE_PREFIX, WATCHDOG_PREFIX, quietNotice, resumeNoteText, stoppedNotice, waitingNotice, type NoticeSubject } from "./format.ts";
 import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import { OPEN_STATUSES, type Task, type TaskStore } from "./store.ts";
@@ -121,6 +122,8 @@ export interface WatchdogDeps {
   info?: (message: string) => void;
   signal?: AbortSignal;
   now?: () => number;
+  /** Wakes shared with the paid Claude resume (src/wake-budget.ts); absent: only RESUMES_PER_PASS. */
+  wakeBudget?: WakeBudget;
 }
 
 export interface Watchdog {
@@ -657,8 +660,11 @@ export function createWatchdog(bb: BbPluginApi, deps: WatchdogDeps): Watchdog {
       const last = resumed.get(host.id);
       if (phaseNow === "suspended" && at - watched >= RESUME_AFTER_MS && (retryAt.get(host.id) ?? 0) <= at && !(last?.ok === true && at - last.at < RESUME_AGAIN_MS) && resumes < RESUMES_PER_PASS) {
         // bb resumes a suspended machine for a new message itself; one queued before the stop it may not.
-        resumes += 1;
-        await resume(host.id, at);
+        // The wakes a minute are shared with the paid Claude resume: none left, the next pass tries.
+        if (deps.wakeBudget === undefined || (await deps.wakeBudget.take())) {
+          resumes += 1;
+          await resume(host.id, at);
+        }
       }
       const stopped = STOPPED_STATES.has(sandbox.state);
       const outcome = resumed.get(host.id);
