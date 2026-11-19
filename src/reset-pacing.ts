@@ -68,6 +68,11 @@ const RETRY_WAITS_MS = [5_000, 30_000];
 const REFUSED_FOR_GOOD = /\b409\b|\b404\b|no_failed_turn|not[ _-]?found|conflict|archived|deleted/i;
 /** One wake slot: the pacer's rate (2 a minute). */
 export const RESET_GAP_MS = Math.round(WAKE_WINDOW_MS / WAKES_PER_WINDOW);
+/** A machine's slot stays this long after it came, so its other retries go at once too. */
+export const SLOT_KEPT_MS = 15 * 60_000;
+/** bb 0.49 asks Boat (consent) right after a failure; Boat waits this long for that question (0.50 never asks). */
+export const CONSENT_WAIT_MS = 10_000;
+const CONSENT_POLL_MS = 1_000;
 /** kv: the stopped turns Boat resumed itself, and when. */
 export const RESET_RESUMES_KEY = "resetResumes";
 
@@ -83,7 +88,7 @@ export interface LimitFailure {
 
 /** The parts of a message.dispatch hook's context this reads. */
 export interface ResetDispatch {
-  host: { machineProviderId?: string | null; lifecycle?: { phase?: string } | null } | null;
+  host: { id?: string; machineProviderId?: string | null; lifecycle?: { phase?: string } | null } | null;
   queuedMessages: readonly { id: string; payload?: { kind?: string; reason?: string } | null }[];
 }
 
@@ -111,7 +116,10 @@ export function parseDecision(raw: unknown): { requestId: string; kind: string; 
   return { requestId: value.requestId, kind: value.decision.kind, reason: typeof value.decision.reason === "string" ? value.decision.reason : null };
 }
 
-/** Wake slots for reset retries, 30 s apart, each kept across its dispatch's re-attempts. */
+/**
+ * Wake slots for reset retries, 30 s apart: one per machine (every retry for it goes in its
+ * slot), kept across re-attempts and for a while after it passed.
+ */
 export class ResetLane {
   private readonly slots = new Map<string, number>();
   private last = Number.NEGATIVE_INFINITY;
@@ -120,20 +128,16 @@ export class ResetLane {
     this.gapMs = gapMs;
   }
 
-  /** This dispatch's slot: kept when it has one, else the next free one (never before earliest). */
+  /** This machine's slot: kept when it has one, else the next free one (never before earliest). */
   slot(key: string, now: number, earliest = now): number {
-    for (const [other, at] of this.slots) if (at < now - 3_600_000) this.slots.delete(other);
+    // A slot long past: the machine woke then; a new reset gets a new slot.
+    for (const [other, at] of this.slots) if (at < now - SLOT_KEPT_MS) this.slots.delete(other);
     const kept = this.slots.get(key);
     if (kept !== undefined) return kept;
     const at = Math.max(now, earliest, this.last + this.gapMs);
     this.slots.set(key, at);
     this.last = at;
     return at;
-  }
-
-  /** The dispatch went out. */
-  release(key: string): void {
-    this.slots.delete(key);
   }
 }
 
@@ -183,6 +187,8 @@ export function createResetPacing(deps: ResetPacingDeps): ResetPacing {
   const saved: Saved = { handled: {}, resumed: {} };
   /** What Boat declined (request id → the thread and provider retry's planned time). */
   const declined = new Map<string, { threadId: string; sendAt: number; at: number }>();
+  /** Every consent question Boat answered, by request (only bb 0.49 asks). */
+  const answered = new Map<string, number>();
   /** Failures being followed right now. */
   const following = new Set<string>();
   let loading: Promise<void> | null = null;
@@ -191,6 +197,7 @@ export function createResetPacing(deps: ResetPacingDeps): ResetPacing {
     for (const [key, when] of Object.entries(saved.handled)) if (at - when > 7 * 24 * 3_600_000) delete saved.handled[key];
     for (const [key, when] of Object.entries(saved.resumed)) if (at - when > RESUMED_MEMORY_MS) delete saved.resumed[key];
     for (const [key, entry] of declined) if (at - entry.at > 10 * 60_000) declined.delete(key);
+    for (const [key, when] of answered) if (at - when > 10 * 60_000) answered.delete(key);
   }
 
   function load(): Promise<void> {
@@ -218,6 +225,8 @@ export function createResetPacing(deps: ResetPacingDeps): ResetPacing {
 
     consent(input) {
       const at = now();
+      answered.set(input.requestId, at);
+      if (answered.size > 1_000) prune(at);
       if (input.reason !== LIMIT_RETRY_REASON || input.sendAt - at < DECLINE_AFTER_MS) return { kind: "allow" };
       if (!deps.isBoatChat(input.threadId)) return { kind: "allow" };
       // Resumed once already: the next time is provider retry's (one Boat resume per stopped turn).
@@ -235,6 +244,11 @@ export function createResetPacing(deps: ResetPacingDeps): ResetPacing {
       if (saved.handled[requestId] !== undefined || following.has(requestId)) return "skipped";
       following.add(requestId);
       try {
+        // Only a retry Boat itself declined is Boat's to resume. bb 0.49 asks right after the
+        // failure; bb 0.50 never asks, so nothing more is read there (no decision.get polls).
+        const asked = now() + CONSENT_WAIT_MS;
+        while (!answered.has(requestId) && now() < asked) await sleep(CONSENT_POLL_MS);
+        if (!declined.has(requestId)) return "skipped";
         // provider retry records its decision after asking: follow it for a minute.
         const deadline = now() + DECISION_WAIT_MS;
         let decision: ReturnType<typeof parseDecision> = null;
@@ -244,7 +258,6 @@ export function createResetPacing(deps: ResetPacingDeps): ResetPacing {
           await sleep(DECISION_POLL_MS);
         }
         if (decision?.requestId !== requestId) {
-          if (!declined.has(requestId)) return "skipped";
           // Boat declined, but provider retry recorded nothing readable: bb's queue tells whether it retries anyway.
           const queued = deps.queuedRetry === undefined ? null : await deps.queuedRetry(threadId).catch(() => null);
           if (queued !== false) {
@@ -255,9 +268,8 @@ export function createResetPacing(deps: ResetPacingDeps): ResetPacing {
           // Only what Boat itself declined (an "allow" bb counted after a slow answer is provider retry's).
           return "skipped";
         }
-        const planned = declined.get(requestId)?.sendAt ?? null;
         const resetAt = failureResetAt(event);
-        const sendAt = planned ?? (resetAt === null ? null : resetAt + 15_000);
+        const sendAt = declined.get(requestId)?.sendAt ?? (resetAt === null ? null : resetAt + 15_000);
         if (sendAt === null) {
           log(`reset resume ${threadId}: no reset time for the declined retry; leaving the chat as it is`);
           return "skipped";
@@ -299,14 +311,12 @@ export function createResetPacing(deps: ResetPacingDeps): ResetPacing {
       if (host?.machineProviderId !== MACHINE_PROVIDER_ID || host.lifecycle?.phase !== "suspended") return null;
       const rows = context.queuedMessages;
       if (rows.length === 0 || !rows.every((row) => row.payload?.kind === "retry" && (row.payload.reason === LIMIT_RETRY_REASON || row.payload.reason === BOAT_RESET_REASON))) return null;
-      const key = rows[0]!.id;
+      // One slot per machine: its first retry wakes it, the others for it go with that one.
+      const key = host.id ?? rows[0]!.id;
       const at = now();
       const earliest = deps.nextWakeAt === undefined ? at : await deps.nextWakeAt().catch(() => at);
       const slot = lane.slot(key, at, earliest);
-      if (slot <= at + 1_000) {
-        lane.release(key);
-        return null;
-      }
+      if (slot <= at + 1_000) return null;
       return { action: "wait", reason: `Boat wakes at most ${WAKES_PER_WINDOW} sandboxes a minute after a usage limit resets; this chat goes on at ${clockTime(slot, at)}.`, sendAt: slot };
     },
   };

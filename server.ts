@@ -475,7 +475,8 @@ export default async function plugin(bb: BbPluginApi) {
       return Array.isArray(rows) ? rows.some((row) => (row as { payload?: { kind?: unknown } } | null)?.payload?.kind === "retry") : null;
     },
     kv: bb.storage.kv,
-    nextWakeAt: () => wakePacer.nextWakeAt(),
+    // The shared wake pacing: the pacer's next slot, and the hold the paid resume and watchdog share.
+    nextWakeAt: async () => Math.max(await wakePacer.nextWakeAt(), await wakeBudget.heldUntil().catch(() => 0)),
     log: (line) => bb.log.info(line),
   });
   void resets.load();

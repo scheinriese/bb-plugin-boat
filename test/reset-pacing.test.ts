@@ -14,6 +14,7 @@ import {
   DECLINE_REASON,
   RESET_GAP_MS,
   RESET_RESUMES_KEY,
+  SLOT_KEPT_MS,
   RETRY_CONSENT_METHOD,
   ResetLane,
   createResetPacing,
@@ -98,19 +99,30 @@ test("after a decline provider retry recorded, Boat queues the stopped turn for 
 });
 
 test("Boat never retries what provider retry kept, or what it can't confirm", async () => {
-  // bb 0.50 (no consent question), or a slow answer bb counted as "allow": provider retry queued it.
+  // bb 0.50: no consent question, so nothing of Boat's to resume, and decision.get is never polled.
   const kept = pacing({ decisions: [{ requestId: "req_1", observedAt: NOW, availability: { kind: "not-routed" }, decision: { kind: "retry", reason: "Rate limited", sendAt: RESET + 20_000 } }] });
   assert.equal(await kept.resets.failed(limitFailure("thr_task")), "skipped");
   assert.deepEqual(kept.retries, []);
-  assert.equal(kept.reads.length, 1, "one read: the decision was there");
-  // Another plugin's decline, or a skip of provider retry's own (beyond its maximum wait): not Boat's.
+  assert.deepEqual(kept.reads, [], "not one decision.get");
+  assert.ok(kept.now() - NOW <= 10_000, "it waited for the consent question at most 10 s");
+  // Boat allowed it (an overload, a chat Boat resumed once): provider retry's, nothing read either.
+  const allowed = pacing();
+  await allowed.resets.load();
+  allowed.resets.consent(consent("thr_task", "Provider overloaded", NOW + 5_000));
+  assert.equal(await allowed.resets.failed(limitFailure("thr_task")), "skipped");
+  assert.deepEqual(allowed.reads, []);
+  // Boat declined, but bb counted a slow answer as "allow": provider retry queued it, Boat doesn't.
+  const slow = pacing({ decisions: [{ requestId: "req_1", decision: { kind: "retry", reason: "Rate limited", sendAt: RESET + 20_000 } }] });
+  await slow.resets.load();
+  slow.resets.consent(consent("thr_task", "Rate limited"));
+  assert.equal(await slow.resets.failed(limitFailure("thr_task")), "skipped");
+  assert.deepEqual(slow.retries, []);
+  // A skip of provider retry's own (beyond its maximum wait): not Boat's, even after Boat's decline.
   const skipped = pacing({ decisions: [{ requestId: "req_1", decision: { kind: "decline", reason: "beyond-maximum-wait" } }] });
+  await skipped.resets.load();
+  skipped.resets.consent(consent("thr_task", "Rate limited"));
   assert.equal(await skipped.resets.failed(limitFailure("thr_task")), "skipped");
   assert.deepEqual(skipped.retries, []);
-  // No decision within a minute, and Boat didn't decline it: left as it is.
-  const silent = pacing({ decisions: [null] });
-  assert.equal(await silent.resets.failed(limitFailure("thr_task")), "skipped");
-  assert.ok(silent.now() - NOW >= 60_000 && silent.reads.length <= 14, "a minute of polls, 5 s apart");
   // Boat declined but provider retry recorded nothing readable: bb's queue decides.
   for (const [queued, outcome] of [[false, "queued"], [true, "skipped"], [null, "skipped"]] as const) {
     const unread = pacing({ decisions: [null], queuedRetry: async () => queued });
@@ -147,50 +159,58 @@ test("Boat never retries what provider retry kept, or what it can't confirm", as
   assert.equal(await offline.resets.failed(limitFailure("thr_task")), "skipped");
   assert.equal(down, 3);
   assert.equal((offline.values.get(RESET_RESUMES_KEY) as { handled?: Record<string, number> } | undefined)?.handled?.req_1, undefined);
-  // Without the consent's planned time (a reload in between), the failure's own reset counts.
+  // No answer of Boat's on record (a reload in between): Boat can't tell it declined, so it leaves the chat.
   const lost = pacing({ decisions: [{ requestId: "req_1", decision: { kind: "decline", reason: "declined-by-sender" } }] });
-  assert.equal(await lost.resets.failed(limitFailure("thr_task")), "queued");
-  assert.equal(lost.retries[0]!.sendAt, RESET + 15_000);
+  assert.equal(await lost.resets.failed(limitFailure("thr_task")), "skipped");
+  assert.deepEqual(lost.reads, []);
   assert.equal(failureResetAt({ rateLimits: { windows: [{ status: "ok", resetsAtMs: 1 }, { status: "blocked", resetsAtMs: 5 }] } }), 5);
 });
 
-test("the lane gives each reset retry its own slot, 30 s apart, kept across re-attempts", () => {
+test("the lane gives each machine its own slot, 30 s apart, kept across re-attempts and for a while after", () => {
   const lane = new ResetLane();
   assert.equal(RESET_GAP_MS, 30_000);
-  assert.equal(lane.slot("qm_1", RESET), RESET);
-  assert.equal(lane.slot("qm_2", RESET + 1_000), RESET + 30_000);
-  assert.equal(lane.slot("qm_3", RESET + 2_000), RESET + 60_000);
-  assert.equal(lane.slot("qm_2", RESET + 5_000), RESET + 30_000, "a re-attempt keeps its slot");
+  assert.equal(lane.slot("host_1", RESET), RESET);
+  assert.equal(lane.slot("host_2", RESET + 1_000), RESET + 30_000);
+  assert.equal(lane.slot("host_3", RESET + 2_000), RESET + 60_000);
+  assert.equal(lane.slot("host_2", RESET + 5_000), RESET + 30_000, "a re-attempt keeps its slot");
   // Never before the pacer's next free wake.
-  assert.equal(lane.slot("qm_4", RESET + 3_000, RESET + 5 * 60_000), RESET + 5 * 60_000);
+  assert.equal(lane.slot("host_4", RESET + 3_000, RESET + 5 * 60_000), RESET + 5 * 60_000);
+  // A slot passed long ago: a new reset of that machine gets a new one.
+  assert.equal(lane.slot("host_1", RESET + 10 * 60_000), RESET);
+  assert.equal(lane.slot("host_1", RESET + SLOT_KEPT_MS + 60_000), RESET + SLOT_KEPT_MS + 60_000);
 });
 
-const suspendedBoat = { machineProviderId: "boat-sandbox", lifecycle: { phase: "suspended" } };
+const suspendedBoat = { id: "host_1", machineProviderId: "boat-sandbox", lifecycle: { phase: "suspended" } };
+const otherBoat = { id: "host_2", machineProviderId: "boat-sandbox", lifecycle: { phase: "suspended" } };
 const resetRow = (id: string, reason = "Rate limited") => ({ id, payload: { kind: "retry", reason } });
 
-test("at dispatch, reset retries that would wake a Boat sandbox go one every 30 s; everything else goes ahead", async () => {
+test("at dispatch, reset retries that would wake a Boat sandbox go one machine every 30 s; everything else goes ahead", async () => {
   let wakeAt = RESET;
   const env = pacing({ nextWakeAt: async () => wakeAt });
   env.advance(RESET - NOW);
   const at = (rows: ResetDispatch["queuedMessages"], host: ResetDispatch["host"] = suspendedBoat) => env.resets.dispatch({ host, queuedMessages: rows });
   assert.equal(await at([resetRow("qm_1")]), null, "the first goes at once");
-  const second = await at([resetRow("qm_2")]);
+  assert.equal(await at([resetRow("qm_2")]), null, "another retry for the same machine goes in its slot");
+  const second = await at([resetRow("qm_3")], otherBoat);
   assert.deepEqual(second, { action: "wait", reason: "Boat wakes at most 2 sandboxes a minute after a usage limit resets; this chat goes on at 09:00 UTC.", sendAt: RESET + 30_000 });
-  const third = await at([resetRow("qm_3", BOAT_RESET_REASON)]);
+  const third = await at([resetRow("qm_4", BOAT_RESET_REASON)], { id: "host_3", machineProviderId: "boat-sandbox", lifecycle: { phase: "suspended" } });
   assert.equal(third?.sendAt, RESET + 60_000, "Boat's own resumes too");
-  // bb re-attempts at sendAt: it goes.
+  // A second row for the waiting machine shares its slot, it doesn't push the others back.
+  assert.equal((await at([resetRow("qm_5")], otherBoat))?.sendAt, RESET + 30_000);
+  // bb re-attempts at sendAt: both go.
   env.advance(30_000);
-  assert.equal(await at([resetRow("qm_2")]), null);
+  assert.equal(await at([resetRow("qm_3")], otherBoat), null);
+  assert.equal(await at([resetRow("qm_5")], otherBoat), null);
   // Not a reset retry that wakes a Boat sandbox: no wait.
-  assert.equal(await at([resetRow("qm_5")], { machineProviderId: "boat-sandbox", lifecycle: { phase: "active" } }), null, "the machine is up");
-  assert.equal(await at([resetRow("qm_6")], { machineProviderId: "local", lifecycle: { phase: "suspended" } }), null, "not a Boat sandbox");
-  assert.equal(await at([resetRow("qm_7")], null), null);
-  assert.equal(await at([resetRow("qm_8", "Provider unavailable")]), null, "bb's quick retries");
-  assert.equal(await at([resetRow("qm_9"), { id: "qm_10", payload: { kind: "inline" } }]), null, "never holds what someone sent");
-  assert.equal(await at([]), null, "an inline send");
-  // The pacer pauses after a failed wake: the next slot waits for it.
+  assert.equal(await at([resetRow("qm_6")], { id: "host_9", machineProviderId: "boat-sandbox", lifecycle: { phase: "active" } }), null, "the machine is up");
+  assert.equal(await at([resetRow("qm_7")], { id: "host_8", machineProviderId: "local", lifecycle: { phase: "suspended" } }), null, "not a Boat sandbox");
+  assert.equal(await at([resetRow("qm_8")], null), null);
+  assert.equal(await at([resetRow("qm_9", "Provider unavailable")], { ...suspendedBoat, id: "host_7" }), null, "bb's quick retries");
+  assert.equal(await at([resetRow("qm_10"), { id: "qm_11", payload: { kind: "inline" } }], { ...suspendedBoat, id: "host_6" }), null, "never holds what someone sent");
+  assert.equal(await at([], { ...suspendedBoat, id: "host_5" }), null, "an inline send");
+  // The shared wake pacing pauses (a failed wake, the paid resume's hold): the next slot waits for it.
   wakeAt = env.now() + 4 * 60_000;
-  assert.equal((await at([resetRow("qm_11")]))?.sendAt, wakeAt);
+  assert.equal((await at([resetRow("qm_12")], { ...suspendedBoat, id: "host_4" }))?.sendAt, wakeAt);
 });
 
 test("in the plugin: the consent RPC answers provider retry, and the dispatch hook spreads reset retries", async (t) => {
@@ -211,14 +231,15 @@ test("in the plugin: the consent RPC answers provider retry, and the dispatch ho
   assert.deepEqual(await harness.callRpc(RETRY_CONSENT_METHOD, { threadId: "thr_orch", requestId: "req_2", reason: "Provider overloaded", sendAt: Date.now() + 5_000 }, caller), { kind: "allow" });
   assert.deepEqual(await harness.callRpc(RETRY_CONSENT_METHOD, { threadId: "thr_plain", requestId: "req_3", reason: "Rate limited", sendAt: later }, caller), { kind: "allow" });
   const hook = harness.inspection.registrations.hooks["message.dispatch"]!;
-  const context = (id: string) =>
+  const context = (id: string, hostId: string) =>
     makeMessageDispatchHookContext({
-      host: { machineProviderId: "boat-sandbox", lifecycle: { phase: "suspended", message: null, pendingLog: "", suspendedAt: Date.now(), teardown: null } },
+      host: { id: hostId, machineProviderId: "boat-sandbox", lifecycle: { phase: "suspended", message: null, pendingLog: "", suspendedAt: Date.now(), teardown: null } },
       queuedMessages: [{ id, payload: { kind: "retry", reason: "Rate limited", attempt: 2, retryOfTurnRequestId: "req_0" } }],
     });
-  const first = await hook(context("qm_1"));
+  const first = await hook(context("qm_1", "host_a"));
   assert.equal(first.action, "proceed");
-  const second = await hook(context("qm_2"));
+  assert.equal((await hook(context("qm_2", "host_a"))).action, "proceed", "the same machine: its slot");
+  const second = await hook(context("qm_3", "host_b"));
   assert.equal(second.action, "wait");
   assert.match((second as { reason: string }).reason, /^Boat wakes at most 2 sandboxes a minute after a usage limit resets; this chat goes on at \d\d:\d\d UTC\.$/);
 });
