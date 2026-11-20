@@ -191,3 +191,17 @@ test("Mac maintenance preserves held accounting when an authoritative read fails
   assert.equal(env.store.macLeases.held()[0]!.id,lease.id);assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);
   assert.equal(env.calls.filter(call=>call==="delete").length,0);
 });
+
+test("cancelling the source request during recovered chat spawn stops and archives the late chat",async()=>{
+  const env=await fixture(),lease=env.record();env.store.macLeases.schedule(lease.id,env.machine().scheduledReleaseAt!);
+  const spawn=env.chat.spawn.bind(env.chat);let entered!:()=>void,finish!:()=>void;
+  const spawning=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});
+  env.chat.spawn=async args=>{const created=await spawn(args);entered();await gate;return created;};
+  const recovery=env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true);
+  await spawning;await env.service.closeTask(env.source.id,{status:"cancelled"});finish();
+  const result=await recovery;
+  assert.equal(result.status,"cancelled");assert.equal(env.store.get(env.failed.id)!.status,"cancelled");assert.equal(env.store.get(env.failed.id)!.turns,0);
+  const thread=env.chat.spawns[0]!.threadId;assert.ok(env.chat.stopped.includes(thread));assert.ok(env.chat.archived.includes(thread));
+  assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);assert.deepEqual(env.chat.removed,[]);
+  assert.deepEqual(env.calls.filter(call=>["create","delete","resume","extend","cancel-release"].includes(call)),["create"]);
+});

@@ -5454,6 +5454,9 @@ export class BoatService {
     const sources=this.store.list({limit:1000}).filter(task=>(this.store.ownMacEventData(task.id,"ownmac-rental-answer") as {replacementId?:string}|null)?.replacementId===original.id);
     if (sources.length!==1) refuse("The original consumed rental approval could not be identified uniquely.");
     const source=sources[0]!;
+    if (this.ownMacStarts.has(source.id)) refuse("The source request is already handling a task start.");
+    const start={controller:new AbortController(),replacementId:original.id};
+    const recoverySignal=AbortSignal.any([start.controller.signal,this.hooks.lifecycle]);
     const consent=macRentalQuoteSchema.safeParse(this.store.ownMacEventData(original.id,"ownmac-rental-approved") ?? this.store.ownMacEventData(source.id,"ownmac-rental-offer"));
     if (!consent.success || consent.data.provider!=="instabox" || source.status!=="cancelled" || source.turns!==0 || source.repo!==original.repo || source.brief!==original.brief || source.boatProject!==original.boatProject || source.projectId!==original.projectId || source.provider!==original.provider || source.model!==original.model || source.runner!==original.runner || source.orchestratorThreadId!==original.orchestratorThreadId || this.store.latestEvent(source.id,"cancelled")) refuse("The original task intent or approved rental terms cannot be confirmed.");
     for (const key of ["role","branch","baseBranch","snapshot","environment","purpose"] as const) if (source[key]!==original[key]) refuse("The linked task no longer matches the original request.");
@@ -5520,15 +5523,16 @@ export class BoatService {
       return machine;
     };
     this.ownMacRestarts.add(original.id);
+    this.ownMacStarts.set(source.id,start);
     try {
       const prepared=await this.withMacLock(async()=>{
-        await validate(this.hooks.lifecycle);
+        await validate(recoverySignal);
         const settings=await this.settings();
         if (settings.notConnectedAgents.includes(original.provider) || (onlyAgent(settings.agents)!==null && onlyAgent(settings.agents)!==original.provider)) refuse("The original agent account is no longer available.");
         await this.hooks.preflight?.({agent:original.provider,runner:original.runner,environment:original.environment,newSandbox:false,provider:"instabox"});
-        await activeProvider.capacity(this.hooks.lifecycle); // Account authentication must still work; no new-start quota is consumed.
-        await activeProvider.assertTaskReady?.({agent:original.provider,repos:[original.repo,...original.extraRepos.map(r=>r.repo)].filter((r):r is string=>r!==null),sandboxId:machineId,signal:this.hooks.lifecycle});
-        await this.assertSubscriptionRoom(original.provider,{settings,runner:original.runner,projectId:original.boatProject,repo:original.repo,signal:this.hooks.lifecycle});
+        await activeProvider.capacity(recoverySignal); // Account authentication must still work; no new-start quota is consumed.
+        await activeProvider.assertTaskReady?.({agent:original.provider,repos:[original.repo,...original.extraRepos.map(r=>r.repo)].filter((r):r is string=>r!==null),sandboxId:machineId,signal:recoverySignal});
+        await this.assertSubscriptionRoom(original.provider,{settings,runner:original.runner,projectId:original.boatProject,repo:original.repo,signal:recoverySignal});
         assertCurrent();assertProject();
         return this.prepareTask({
           title:original.title, brief:original.brief, role:original.role,
@@ -5547,11 +5551,11 @@ export class BoatService {
           sandbox:machineId, sandboxSystem:"macos",
           machineType:original.startOptions?.machineType,
           confirmUntrustedChat:original.startOptions?.confirmUntrustedChat,
-          signal:this.hooks.lifecycle,
+          signal:recoverySignal,
           macRecovery:{machineId,validate,assertCurrent},
           queuedStart:{
             taskId:original.id,
-            beforeInsert:async()=>{await validate(this.hooks.lifecycle);},
+            beforeInsert:async()=>{await validate(recoverySignal);},
             insert:record=>{
           assertCurrent();assertProject();
           for (const key of ["repo","branch","baseBranch","provider","model","reasoningEffort","runner","sandboxSystem","delivery","boatProject"] as const) if ((record[key] ?? null)!==(original[key] ?? null)) refuse("Current task settings would change the approved work.");
@@ -5566,7 +5570,10 @@ export class BoatService {
         });
       });
       return await prepared.run();
-    } finally { this.ownMacRestarts.delete(original.id); }
+    } finally {
+      this.ownMacRestarts.delete(original.id);
+      if (this.ownMacStarts.get(source.id)===start) this.ownMacStarts.delete(source.id);
+    }
   }
 
   /** Explicit owner recovery of a cancelled chat whose original workspace still exists. No turn or VM is started. */
