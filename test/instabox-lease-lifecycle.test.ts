@@ -92,13 +92,13 @@ test("legacy recovery refuses an ambiguous end and repairs only an impossible pr
   assert.equal(f.store.macLeases.list().length, 1);
 });
 
-test("an incomplete create envelope is resolved by get of the allocated machine without another create", async () => {
+for (const missing of ["lease", "lease identity"]) test(`an incomplete create ${missing} is resolved by get of the allocated machine without another create`, async () => {
   const store = memoryStore(), calls: string[][] = [];
   const cli = {json: async (args: string[]) => {
     calls.push(args);
     if (args[0] === "usage") return {org: {tier:"pro"}};
     if (args[0] === "templates") return {templates: [{id:"macos",os:"macos",creatable:true,models:[{name:"m2",defaultSpec:{vcpus:8,memMiB:12288},minimumLease:{hours:24,hourUSD:0.45,minimumUSD:10.8}}]}]};
-    if (args[0] === "create") return {machine: {...machine(), lease: undefined}};
+    if (args[0] === "create") return {machine: {...machine(), lease: missing === "lease" ? undefined : {...(machine().lease as JsonRecord), id: undefined}}};
     if (args[0] === "get") return {machine: machine()};
     assert.fail(`Unexpected fake operation ${args[0]}`);
   }} as unknown as InstaboxCli;

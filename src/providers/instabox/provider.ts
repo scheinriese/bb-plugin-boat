@@ -488,7 +488,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         allocated = sandbox;
         // Some create envelopes omit billing details. Re-read this exact VM;
         // never retry create or accept another physical minimum.
-        if (create.system === "macos" && !sandbox.mac) sandbox = await info(sandbox.id, create.signal);
+        if (create.system === "macos" && (!sandbox.mac || !sandbox.mac.leaseId || ["undefined","null"].includes(sandbox.mac.leaseId))) sandbox = await info(sandbox.id, create.signal);
         allocated = sandbox;
         if (create.system === "macos" && !sandbox.mac) throw new InstaboxError("Instabox allocated a Mac without current physical lease terms", {code: "creation_allocated"});
         remember(sandbox, options.ledger?.revision());
