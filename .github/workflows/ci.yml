@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        bb: ["0.48.1", "0.49.0"]
+        bb: ["0.48.1", "0.49.0", "0.50.1"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,6 +55,7 @@ jobs:
       # bb's CLI from npm (pinned), only to run the build. A value import of a
       # dev dependency (such as @get-bb/plugin-sdk) in bundled code fails here.
       - run: npx --yes --package=bb-app@${{ matrix.bb }} -- bb plugin build .
+      - run: npx --yes --package=bb-app@${{ matrix.bb }} -- bb plugin build ./harbor
 
   gitleaks:
     name: Secret scan
@@ -121,3 +122,4 @@ jobs:
       - run: npm test
       - run: npm prune --omit=dev --omit=optional --ignore-scripts
       - run: npx --yes --package=bb-app@latest -- bb plugin build .
+      - run: npx --yes --package=bb-app@latest -- bb plugin build ./harbor
