@@ -3146,7 +3146,11 @@ export class BoatService {
     if (task.designClaudePreference && (options.provider === "codex" || modelAgent(options.model?.trim() || null) === "codex" || effortAgent(options.effort?.trim() || null) === "codex" || only === "codex" || settings.notConnectedAgents.includes("claude"))) {
       throw new TaskError("This design task prefers Claude. Return it to normal routing before changing agents.", "design_claude_preference");
     }
-    const claudePinned = task.provider === "claude" && (task.designClaudePreference === true || task.claudePaidContinuation === true);
+    const revokedPinned = task.provider === "claude" && task.claudePaidContinuationRevoked === true && task.claudeNormalRouting !== true;
+    if (revokedPinned && options.provider !== "codex" && (only === "codex" || settings.notConnectedAgents.includes("claude"))) {
+      throw new TaskError("This task stays on Claude after payment revocation. Reconnect Claude, return to normal routing, or explicitly choose another agent.", "claude_continuation_provider");
+    }
+    const claudePinned = this.claudeRoutingPinned(task);
     const roomy = namesAgent || claudePinned ? null : await this.agentWithRoomFor(task, settings);
     const wanted = options.provider ?? roomy?.provider ?? task.provider;
     const provider = only ?? wanted;
@@ -3186,7 +3190,12 @@ export class BoatService {
     assertFrontierAllowed(settings.modelTiers, tier, model, reasoningEffort, options.userApproved === true || keepsApproval);
     if (options.dryRun === true) return task;
     await this.assertScopedClaudeCurrent(task, options.signal);
-    if ((settings.relay.paidClaudeFallback || task.designClaudePreference) && !scopedClaude) await this.assertSubscriptionRoom(provider, { settings: task.designClaudePreference ? { ...settings, avoidExtraUsage: true } : settings, signal: options.signal, runner: task.runner, projectId: task.boatProject, repo: task.repo });
+    if ((settings.relay.paidClaudeFallback || task.designClaudePreference || revokedPinned) && !scopedClaude) {
+      const admission = revokedPinned
+        ? { ...settings, avoidExtraUsage: true, relay: { ...settings.relay, paidClaudeFallback: false } }
+        : task.designClaudePreference ? { ...settings, avoidExtraUsage: true } : settings;
+      await this.assertSubscriptionRoom(provider, { settings: admission, signal: options.signal, runner: task.runner, projectId: task.boatProject, repo: task.repo });
+    }
     const newlyApproved =
       options.userApproved === true && !keepsApproval && needsFrontierApproval(settings.modelTiers, tier, model, reasoningEffort);
     const reason = options.reason?.trim()
@@ -3562,6 +3571,9 @@ export class BoatService {
     if (task.hostId === null) return "no";
     const machine = await chat.machineState(task.hostId).catch(() => null);
     if (machine === null || machine.phase !== "active" || !machine.connected) return "no";
+    // Consent reads can overlap newer turns and failures. Finish them before
+    // the final chat/event validation; claim and send below have no other await.
+    try { await this.assertScopedClaudeCurrent(task); } catch { return "no"; }
     // Send now or never: look again right before the send, and skip for good if anything came in.
     const state = await chat.state(task.threadId).catch(() => null);
     if (state === null || state.archived) return "wait";
@@ -3581,7 +3593,6 @@ export class BoatService {
       this.skipRetry(task, turn.key, "the chat moved on");
       return "no";
     }
-    try { await this.assertScopedClaudeCurrent(task); } catch { return "no"; }
     // Claimed in one step with no await before the send: a sweep and an event at once, or a reload, retry at most once.
     const current = this.store.get(task.id);
     if (current === null || current.status !== "running" || current.promptId !== task.promptId || current.threadId !== task.threadId) return "wait";
@@ -3711,6 +3722,20 @@ export class BoatService {
     this.store.addEvent(task.id, "chat", spawned.threadId);
     this.recordChat(task.id, spawned.threadId, next.provider, next.model, next.reasoningEffort);
     return spawned.threadId;
+  }
+
+  /** Removing payment permission does not release the task's provider choice. */
+  private claudeRoutingPinned(task: Task): boolean {
+    return task.provider === "claude" && (task.designClaudePreference === true || task.claudePaidContinuation === true ||
+      task.claudePaidContinuationRevoked === true && task.claudeNormalRouting !== true);
+  }
+
+  /** The same running turn must still permit automatic provider substitution. */
+  private canAutomaticallyFailover(task: Task): boolean {
+    const current = this.store.get(task.id);
+    return current !== null && current.status === "running" && current.provider === task.provider &&
+      current.promptId === task.promptId && current.threadId === task.threadId && current.conversationId === task.conversationId &&
+      !this.claudeRoutingPinned(current);
   }
 
   /** Consent bypasses extra-usage observations, never a known route or login blocker. */
@@ -5848,7 +5873,7 @@ export class BoatService {
 
   /** A worker chat hit a usage limit: the other agent continues in a new chat in the same workspace. */
   private async chatFailover(task: Task, reason: string): Promise<boolean> {
-    if (task.provider === "claude" && (task.designClaudePreference === true || task.claudePaidContinuation === true)) return false;
+    if (!this.canAutomaticallyFailover(task)) return false;
     const settings = await this.settings();
     // With one agent there's nobody to hand over to.
     if (!settings.autoFailover || onlyAgent(settings.agents) !== null) return false;
@@ -5867,6 +5892,7 @@ export class BoatService {
     const fromBoat = start?.kind === "moved-to-chat";
     const lastFollowup =
       start?.kind === "followup" ? start.text : start?.kind === "followup-switch" ? start.text.replace(/^\([a-z]+ → [a-z]+\) /, "") : null;
+    if (!this.canAutomaticallyFailover(task)) return false;
     const marker = chatTurnMarker();
     const claimed = this.store.transition(
       task.id,
@@ -6006,7 +6032,7 @@ export class BoatService {
    * with the other agent (boat hands over the transcript). One switch per turn.
    */
   private async failover(task: Task, reason: string): Promise<Task | null> {
-    if (task.provider === "claude" && (task.designClaudePreference === true || task.claudePaidContinuation === true)) return null;
+    if (!this.canAutomaticallyFailover(task)) return null;
     const settings = await this.settings();
     if (!settings.autoFailover || onlyAgent(settings.agents) !== null || task.sandboxId === null || task.conversationId === null) return null;
     const last = this.store.events(task.id, 1).at(-1);
@@ -6024,6 +6050,7 @@ export class BoatService {
     const release = this.claim(task.sandboxId);
     try {
       await this.ensureRunning(task.sandboxId, this.hooks.lifecycle);
+      if (!this.canAutomaticallyFailover(task)) return null;
       const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: task.sandboxId,
         conversationId: task.conversationId,

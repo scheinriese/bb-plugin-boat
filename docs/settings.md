@@ -246,11 +246,13 @@ preference on does not enable either payment policy.
 
 The task chat and task detail show design preference and paid permission
 separately. **Return to normal routing** clears that task’s preference and
-revokes its scoped paid continuation. Future manual turns follow ordinary routing and any separately enabled
-global payment policy. Revoked scoped permission keeps automatic paid resumes
-disabled for this task, including the global stopped-chat recovery. Already
-running turns are unchanged. Turning the global design setting off affects new tasks, while
-existing task preference stays visible until cleared.
+revokes its scoped paid continuation. Future manual turns follow ordinary
+routing and any separately enabled global payment policy. This explicit routing
+release is persisted separately from payment-only revocation. Revoked scoped
+permission keeps automatic paid resumes disabled for this task, including the
+global stopped-chat recovery. Already running turns are unchanged. Turning the
+global design setting off affects new tasks, while existing task preference
+stays visible until cleared.
 
 ## Weekly Claude pace advice
 
@@ -282,6 +284,14 @@ reset**. **Start with Claude** retains the prior start-only approval; neither
 that choice, an older resolved confirmation, `userApproved`, nor agent-written
 text grants ongoing permission. An agent may request the native confirmation
 but must never submit it for the owner.
+
+**Revoke Claude paid continuation** removes payment authority while retaining
+Claude as the task's provider, including older custom tasks without Design
+metadata. A usage failure then stops with its workspace intact; revocation
+never starts Codex automatically. Default follow-ups require included Claude
+room. To release provider routing as well, choose **Return to normal routing**;
+an explicit manual provider choice is also available. Neither action interrupts
+the running turn, and normal routing does not restore revoked paid recovery.
 
 The permission belongs to that logical queued request and its reserved task ID.
 The confirmed intent is persisted, and transfers to the task in the same

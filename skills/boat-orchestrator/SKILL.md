@@ -218,8 +218,10 @@ are not ongoing payment consent. Preserve the original receipt and task ID.
 Task cards show provider preference separately from paid permission. **Return
 to normal routing** clears that task's design preference and revokes its scoped
 paid continuation; **Revoke paid continuation** only removes the payment
-permission. Neither interrupts a running turn. Never change global/account
-policy to repair one designer request.
+permission and retains the Claude provider pin, even for older custom tasks.
+A revoked task stops on usage failure; only an explicit normal-routing release
+or manual provider choice permits substitution. Neither interrupts a running
+turn. Never change global/account policy to repair one designer request.
 
 ## Goals during handover
 

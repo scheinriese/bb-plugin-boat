@@ -22,6 +22,7 @@ test("owner controls clear one task preference/permission without interrupting i
   assert.equal(cleared.designClaudePreference,false);
   assert.equal(cleared.claudePaidContinuation,false);
   assert.equal(cleared.claudePaidContinuationRevoked,true);
+  assert.equal(cleared.claudeNormalRouting,true);
   assert.equal(cleared.status,before.status);
   assert.equal(cleared.promptId,before.promptId);
   assert.equal(env.boat.calls.length,calls);

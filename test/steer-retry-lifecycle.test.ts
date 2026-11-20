@@ -406,3 +406,79 @@ test("a failure bb reports before it's in the event log is read again, a bounded
   assert.equal(retries(other), 0);
   assert.equal(other.store.get(second.id)!.status, "failed");
 });
+
+/** A real queued-start capability models only the native owner's scoped grant. */
+async function scopedCustomChat(env: ReturnType<typeof makeService>) {
+  const { task } = await env.service.launchTask({
+    title: "Fake panel exploration", role: "custom", brief: "Explore the panel layout.",
+    repo: "acme/web", provider: "claude", runner: "chat", orchestratorThreadId: "thr_orch", projectId: "proj_personal",
+    queuedStart: { taskId: "t_fake_scoped_retry", paidApproved: true, claudePaidContinuation: true, beforeInsert: async () => undefined, insert: (_task, save) => save() },
+  }, 5_000);
+  await env.service.sweep();
+  return task;
+}
+
+function scopedRetryUsage(): import("../src/quota.ts").Quotas {
+  return new Map([
+    ["claude", { provider: "claude", usedPercent: 95, resetsAt: null, window: "Weekly limit", paidAttemptAllowed: true }],
+    ["codex", { provider: "codex", usedPercent: 20, resetsAt: null, window: "Weekly limit" }],
+  ]);
+}
+
+test("scoped custom task still retries a stable accepted-steer Bad Request once", async () => {
+  const env = makeService({ chat: true, quotas: scopedRetryUsage() });
+  const task = await scopedCustomChat(env);
+  await fail(env, task.threadId!, INCIDENT);
+  assert.equal(retries(env), 1);
+  assert.equal(env.store.get(task.id)!.provider, "claude");
+  assert.equal(env.store.get(task.id)!.claudePaidContinuation, true);
+  await env.service.syncChatThread(task.threadId!, { kind: "failed", error: BAD_REQUEST, at: Date.now() });
+  assert.equal(retries(env), 1, "the unchanged stopped turn is not retried twice");
+});
+
+test("a newer authentication failure during scoped consent quota reads vetoes the earlier steer retry", async () => {
+  const usage = scopedRetryUsage();
+  let duringQuotaRead: (() => void) | null = null;
+  const env = makeService({ chat: true, get quotas() { duringQuotaRead?.(); return usage; } });
+  const task = await scopedCustomChat(env);
+  const before = env.chat.sends.length;
+  duringQuotaRead = () => {
+    duringQuotaRead = null;
+    // The chat advances independently of the task registry's prompt marker.
+    // This is the reported race: a new refused request lands while the paid
+    // consent path is still awaiting its fresh account-route reading.
+    env.chat.events.set(task.threadId!, [...INCIDENT, ...laterTurn(200, { status: "failed", error: "Authentication failed" })]);
+    env.chat.states.get(task.threadId!)!.status = "error";
+  };
+  await fail(env, task.threadId!, INCIDENT);
+  assert.equal(duringQuotaRead, null, "the race happened inside the consent quota read");
+  assert.equal(env.chat.sends.length, before, "the old steer is not replayed past the newer authentication refusal");
+  assert.equal(retries(env), 0);
+  assert.equal(env.store.events(task.id).some(event => event.kind === "auto-retry"), false);
+  assert.equal(env.chat.events.get(task.threadId!)?.at(-1)?.data?.status, "failed");
+});
+
+for (const change of ["request", "close", "revoke", "prompt", "chat"] as const) {
+  test(`scoped steer retry rechecks ${change} at the final event-read boundary`, async () => {
+    const env = makeService({ chat: true, quotas: scopedRetryUsage() });
+    const task = await scopedCustomChat(env);
+    const before = env.chat.sends.length;
+    let raced = false;
+    env.chat.onEventRead = (threadId, read) => {
+      if (read !== 2) return;
+      raced = true;
+      if (change === "request") {
+        // A newer request can reach core before Boat's task row is updated.
+        env.chat.events.set(threadId, [...INCIDENT, { id: "evt_new_request", seq: 200, type: "client/turn/requested", data: { requestId: "req_new", target: { kind: "new-turn" }, input: [{ type: "text", text: "Use the updated brief." }] } }]);
+      } else if (change === "close") env.store.update(task.id, { status: "cancelled", claudePaidContinuation: false, claudePaidContinuationRevoked: true });
+      else if (change === "revoke") env.store.update(task.id, { claudePaidContinuation: false, claudePaidContinuationRevoked: true });
+      else if (change === "prompt") env.store.update(task.id, { promptId: "chat:newer-request", turns: task.turns + 1 });
+      else env.store.update(task.id, { threadId: "thr_new_workspace_chat" });
+    };
+    await fail(env, task.threadId!, INCIDENT);
+    assert.equal(raced, true, "the final event read overlapped the competing update");
+    assert.equal(env.chat.sends.length, before, `no retry or steer after ${change}`);
+    assert.equal(retries(env), 0);
+    assert.equal(env.store.events(task.id).some(event => event.kind === "auto-retry"), false);
+  });
+}

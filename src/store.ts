@@ -116,6 +116,8 @@ export interface Task {
   designClaudePreference?: boolean;
   claudePaidContinuation?: boolean;
   claudePaidContinuationRevoked?: boolean;
+  /** Explicit owner return to ordinary routing; payment revocation alone keeps Claude pinned. */
+  claudeNormalRouting?: boolean;
   startOptions?: { machineType: MachineType; confirmUntrustedChat: string[] | null };
 }
 
@@ -425,6 +427,7 @@ const COLUMN_BY_FIELD: Record<keyof Task, string> = {
   designClaudePreference: "design_claude_preference",
   claudePaidContinuation: "claude_paid_continuation",
   claudePaidContinuationRevoked: "claude_paid_continuation_revoked",
+  claudeNormalRouting: "claude_normal_routing",
 };
 
 function nullableString(value: unknown): string | null {
@@ -481,6 +484,7 @@ function toTask(row: Row): Task {
     designClaudePreference: row.design_claude_preference === 1,
     claudePaidContinuation: row.claude_paid_continuation === 1,
     claudePaidContinuationRevoked: row.claude_paid_continuation_revoked === 1,
+    claudeNormalRouting: row.claude_normal_routing === 1,
     ...(startOptions ? { startOptions } : {}),
     ...(row.sandbox_system === "macos" ? { sandboxSystem: "macos" as const } : {}),
     // Only another provider's: a task on boat.dev reads as it did before the column.
@@ -546,7 +550,7 @@ function parseRepos(value: unknown): { repo: string; baseBranch: string; path?: 
 }
 
 function toColumnValue(field: keyof Task, value: unknown): unknown {
-  if (field === "designClaudePreference" || field === "claudePaidContinuation" || field === "claudePaidContinuationRevoked") return value === true ? 1 : 0;
+  if (field === "designClaudePreference" || field === "claudePaidContinuation" || field === "claudePaidContinuationRevoked" || field === "claudeNormalRouting") return value === true ? 1 : 0;
   if (field === "ownsSandbox") return value === true ? 1 : 0;
   if (field === "sandboxSystem") return value === "macos" ? "macos" : "linux";
   if (field === "sandboxProvider") return typeof value === "string" && value !== "" ? value : DEFAULT_PROVIDER_ID;
@@ -589,7 +593,8 @@ export class TaskStore {
       `ALTER TABLE tasks ADD COLUMN claude_paid_continuation_revoked INTEGER NOT NULL DEFAULT 0`,
       ...SCOPED_START_QUEUE_MIGRATIONS,
       `ALTER TABLE tasks ADD COLUMN purpose TEXT`,
-      `ALTER TABLE tasks ADD COLUMN design_claude_preference INTEGER NOT NULL DEFAULT 0`];
+      `ALTER TABLE tasks ADD COLUMN design_claude_preference INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE tasks ADD COLUMN claude_normal_routing INTEGER NOT NULL DEFAULT 0`];
   }
 
   insert(task: Task): Task {

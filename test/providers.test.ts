@@ -331,7 +331,7 @@ test("tasks keep their sandbox provider; older tasks read as before, on boat.dev
 
   const fresh = taskRecord({ id: "t_new" });
   store.insert(fresh);
-  assert.deepEqual(store.get("t_new"), { ...fresh, purpose: null, designClaudePreference: false, claudePaidContinuation: false, claudePaidContinuationRevoked: false });
+  assert.deepEqual(store.get("t_new"), { ...fresh, purpose: null, designClaudePreference: false, claudePaidContinuation: false, claudePaidContinuationRevoked: false, claudeNormalRouting: false });
   assert.equal((db.prepare("SELECT sandbox_provider FROM tasks WHERE id = 't_new'").get() as { sandbox_provider: string }).sandbox_provider, "boat");
   store.insert(taskRecord({ id: "t_other", sandboxProvider: "other" }));
   assert.equal(store.get("t_other")!.sandboxProvider, "other");
