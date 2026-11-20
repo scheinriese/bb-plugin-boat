@@ -1642,13 +1642,13 @@ export function finishedNotice(report: WakeReport): string {
 }
 
 /** The report as text (`bb boat sandbox wake`). */
-export function wakeText(report: WakeReport): string {
+export function wakeText(report: WakeReport, now = Date.now()): string {
   const lines: string[] = [];
   lines.push(
     report.dryRun
       ? `Dry run for sandbox ${report.target.sandboxId}: nothing was changed.`
       : report.outcome === "running"
-        ? `Waking sandbox ${report.target.sandboxId} (still running; started ${clockTime(report.startedAt)}).`
+        ? `Waking sandbox ${report.target.sandboxId} (still running; started ${clockTime(report.startedAt, now)}).`
         : `Waking sandbox ${report.target.sandboxId}.`,
   );
   // The needs-you line is printed once, at the end.
