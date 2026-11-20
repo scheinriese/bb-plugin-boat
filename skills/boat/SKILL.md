@@ -43,6 +43,15 @@ zero-turn request. These operations never rent a machine or change Runs on.
 The `boat_rental_options` tool has the same read, refresh and selection path;
 show its returned task card so the owner can approve the exact cost there.
 Rental approval is separate from any paid Claude approval.
+If the provider allocated a Mac but its linked zero-turn task failed admission,
+do not approve another rental or use generic retry. Inspect the existing task
+and machine. The supported recovery is
+`bb boat task recover-mac <failed-task-id> <existing-machine-id> --user-approved --json`,
+only when the user requested that same-machine start. It validates the original
+approval and current paid lease, preserves the provider release schedule, and
+refuses uncertain or partially started work. It cannot create, resume or extend
+a physical lease. An ambiguous legacy ledger end may require further read-only
+diagnosis and be refused. See [recovery details](../../docs/allocated-mac-recovery.md).
 Waiting tasks that never started can resume when
 Your Mac returns. Never blindly replay work after a disconnect. Close/cancel
 removes task credentials and revokes proxy access. A failed check automatically
