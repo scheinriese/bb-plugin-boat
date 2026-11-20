@@ -19,9 +19,10 @@ function fixture(currency = "USD", preferred = "boat") {
   });
   const first=provider("instabox",10.8,"USD"), second=provider("scaleway",5,currency);
   const project=normalizeProject({id:"mac",name:"Mac app",repos:[{repo:"acme/web",baseBranch:"main"}],sandboxProvider:preferred});
-  const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi),first,second]),store,{settings:async()=>defaultSettings({maxActiveSandboxes:0}),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},projects:()=>[project],log:{info:()=>{},warn:()=>{}}});
+  const providers=[createBoatProvider(new FakeBoat() as unknown as BoatApi),first,second];
+  const service=new BoatService(createProviderRegistry(providers),store,{settings:async()=>defaultSettings({maxActiveSandboxes:0}),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},projects:()=>[project],log:{info:()=>{},warn:()=>{}}});
   const pending=async()=>{await assert.rejects(service.startTask({title:"Mac check",role:"custom",brief:"Check fake native tools",sandboxSystem:"macos",project:{...toOrchestratorProject(project),repos:[]}}),{code:"mac_rental_confirmation_required"});return store.list({limit:10})[0]!;};
-  return {store,service,first,second,creates,pending};
+  return {store,service,first,second,creates,pending,providers};
 }
 
 test("rental recommendation evaluates every provider before choosing the lower comparable minimum",async()=>{
@@ -31,9 +32,9 @@ test("rental recommendation evaluates every provider before choosing the lower c
   assert.deepEqual(env.creates,[]);
 });
 
-test("mixed currencies retain an honest stable recommendation without comparing numbers",async()=>{
+test("mixed currencies retain a stable selection without a price recommendation",async()=>{
   const env=fixture("EUR");const task=await env.pending();const notice=await env.service.ownMacNotice(task);
-  assert.equal(notice?.offer?.provider,"instabox");assert.match(notice!.recommendationReason!,/without conversion/);
+  assert.equal(notice?.offer?.provider,"instabox");assert.equal(notice!.recommendedQuoteId,undefined);assert.match(notice!.recommendationReason!,/without conversion/);
   assert.deepEqual(notice?.offers?.map(q=>q.currency),["USD","EUR"]);
 });
 test("an explicit project preference wins after all offers are evaluated",async()=>{
@@ -89,10 +90,10 @@ test("approved alternate provider alone may create; unknown outcome prevents fal
   await assert.rejects(env.service.answerOwnMacRental(task.id,"rent",selected.offer!.id),{code:"task_busy"});assert.deepEqual(env.creates,["scaleway"]);
 });
 test("pending requests use waiting presentation even when all options become unavailable",async()=>{
-  const env=fixture();const task=await env.pending();assert.equal(env.service.publicStatus(task).label,"Waiting for rental choice");
+  const env=fixture();const task=await env.pending();assert.equal(env.service.publicStatus(task).label,"Waiting for your choice");
   env.first.macModels=async()=>[];env.second.macModels=async()=>[];
   const fresh=await env.service.refreshMacRentalOffers(task.id);assert.equal(fresh.offers!.length,0);assert.equal(fresh.offer,undefined);
-  assert.equal(env.service.publicStatus(task).label,"Waiting for rental choice");assert.deepEqual(env.creates,[]);
+  assert.equal(env.service.publicStatus(task).label,"Waiting for your choice");assert.deepEqual(env.creates,[]);
 });
 
 test("default boat routing preserves an unknown selected rental outcome and cannot approve twice",async()=>{
@@ -125,4 +126,69 @@ test("the public generic retry refuses a selected rental with an unknown create 
   assert.equal(response.task.providerFailure.code,"creation_unknown");assert.equal(response.task.providerFailure.canRetry,false);
   await assert.rejects(harness.callRpc("retryProviderStart",{id:replacement}),/Check the provider machine list/);
   assert.deepEqual(env.creates,["scaleway"]);
+});
+
+
+for(const scenario of [
+  {label:"lower minimum with higher hourly rate",cost:5,rate:0.6,hours:24,recommended:false},
+  {label:"identical terms",cost:10.8,rate:10.8/24,hours:24,recommended:false},
+  {label:"different minimum duration",cost:5,rate:0.2,hours:12,recommended:false},
+  {label:"lower minimum and hourly rate",cost:5,rate:0.2,hours:24,recommended:true},
+  {label:"equal minimum with lower hourly rate",cost:10.8,rate:0.2,hours:24,recommended:true},
+  {label:"lower minimum with equal hourly rate",cost:5,rate:10.8/24,hours:24,recommended:true},
+])test(`price recommendation respects ${scenario.label}`,async()=>{
+  const env=fixture();const original=await env.second.macModels!();
+  env.second.macModels=async()=>original.map(model=>({...model,minimumCost:scenario.cost,hourPrice:scenario.rate,minimumHours:scenario.hours}));
+  const task=await env.pending(),notice=(await env.service.ownMacNotice(task))!;
+  assert.equal(notice.recommendedQuoteId,scenario.recommended?notice.offers!.find(q=>q.provider==="scaleway")!.id:undefined);
+  assert.ok(notice.offer,"a neutral price comparison must still leave an actionable selected quote");
+  if(scenario.label==="lower minimum with higher hourly rate")assert.match(notice.recommendationReason!,/trades against a higher ongoing rate/);
+  assert.deepEqual(env.creates,[]);
+});
+test("explicit mixed-currency preference is identified without a cheapest-price claim",async()=>{
+  const env=fixture("EUR","scaleway"),task=await env.pending(),notice=(await env.service.ownMacNotice(task))!;
+  assert.equal(notice.offer!.provider,"scaleway");assert.equal(notice.recommendedQuoteId,notice.offer!.id);
+  assert.match(notice.recommendationReason!,/Project preference/);assert.doesNotMatch(notice.recommendationReason!,/Lowest comparable|cheaper|cheapest/);
+});
+test("a provider preference with model cost tradeoffs remains a preference, not a savings claim",async()=>{
+  const env=fixture("USD","scaleway"),models=await env.second.macModels!();
+  env.second.macModels=async()=>[...models,{...models[0]!,id:"scaleway-m4",minimumCost:4,hourPrice:1}];
+  const task=await env.pending(),notice=(await env.service.ownMacNotice(task))!;
+  assert.equal(notice.recommendedQuoteId,notice.offer!.id);assert.match(notice.recommendationReason!,/Project preference/);
+  assert.doesNotMatch(notice.recommendationReason!,/Lowest/);
+});
+test("quote display facts are live, optional for legacy data, and never bypass resource revalidation",async()=>{
+  const {macRentalQuoteSchema}=await import("../contract-ownmac.ts");
+  const env=fixture(),models=await env.second.macModels!();
+  env.second.macModels=async()=>models.map(model=>({...model,region:"test-zone-1"}));
+  const task=await env.pending(),notice=(await env.service.ownMacNotice(task))!,offer=notice.offer!;
+  assert.equal(offer.cpus,8);assert.equal(offer.memoryMiB,32768);assert.equal(offer.region,"test-zone-1");assert.ok(Number.isFinite(Date.parse(offer.checkedAt!)));
+  const {cpus,memoryMiB,region,checkedAt,...legacy}=offer;
+  assert.ok(macRentalQuoteSchema.safeParse(legacy).success);
+  env.store.addOwnMacEvent(task.id,"ownmac-rental-choices","legacy",null);env.store.addOwnMacEvent(task.id,"ownmac-rental-offer","legacy",legacy);
+  await env.service.selectMacRentalOffer(task.id,legacy.id);
+  env.second.macModels=async()=>models.map(model=>({...model,cpus:1,memoryMiB:512}));
+  await assert.rejects(env.service.answerOwnMacRental(task.id,"rent",legacy.id),{code:"mac_price_changed"});assert.deepEqual(env.creates,[]);
+});
+test("keeping a rental request queued never auto-starts when Your Mac becomes available",async()=>{
+  const env=fixture();let ownCreates=0;
+  const own:SandboxProvider={...env.first,id:"ownmac",displayName:"Your Mac",caps:{...env.first.caps,os:"macos"},macModels:undefined,ownMacStatus:async()=>({code:"available",status:"Available",running:0,max:1}),create:async()=>{ownCreates++;throw Error("queued task must not start");}};
+  env.providers.push(own);
+  const task=await env.pending(),notice=(await env.service.ownMacNotice(task))!;
+  assert.equal(await env.service.answerOwnMacRental(task.id,"queue"),null);
+  assert.equal((await env.service.ownMacNotice(task))!.answer,"queue");assert.equal(env.service.publicStatus(task).label,"Waiting for your choice");assert.equal(env.service.publicStatus(task).needsYou,false);
+  await env.service.maintainOwnMac();assert.equal(env.store.list({limit:10}).length,1);assert.equal(ownCreates,0);assert.deepEqual(env.creates,[]);
+  const selected=await env.service.selectMacRentalOffer(task.id,notice.offer!.id);
+  await assert.rejects(env.service.answerOwnMacRental(task.id,"rent",selected.offer!.id),{code:"creation_unknown"});assert.equal(env.creates.length,1);assert.equal(ownCreates,0);
+});
+
+
+test("preferred-provider model failure is visible with the alternative quote, without a routing regression",async()=>{
+  const env=fixture("EUR","scaleway");
+  env.second.macModels=async()=>[];
+  const task=await env.pending();const notice=(await env.service.ownMacNotice(task))!;
+  assert.equal(notice.offer!.provider,"instabox");
+  assert.match(notice.recommendationReason!,/scaleway is unavailable: No usable Mac model with confirmed pricing and availability/);
+  assert.equal(notice.unavailable![0]!.provider,"scaleway");
+  assert.deepEqual(env.creates,[]);
 });

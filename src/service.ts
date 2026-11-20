@@ -703,7 +703,7 @@ export class BoatService {
     const notice=ownMacTaskNotice(this.store,task);
     const cleanup=this.sandboxProviders.all.find(p=>p.id==="ownmac")?.ownMacCleanup?.();
     if(task.sandboxId && cleanup?.taskIds.includes(task.sandboxId))return {status:"needs-you",label:"Logins left behind",tone:"danger",reason:"Your Mac is automatically paused for new tasks until Check again passes.",needsYou:true,moving:false};
-    if(task.status==="failed" && notice && (notice.offer || notice.offers) && !notice.replacementId && notice.answer!=="failed")return {status:notice.answer==="wait"?"stopped":"needs-you",label:notice.answer==="wait"?"Waiting for your Mac":"Waiting for rental choice",tone:notice.answer==="wait"?"neutral":"attention",reason:"Nothing was rented. Choose a route for this Mac task.",needsYou:notice.answer!=="wait",moving:false};
+    if(task.status==="failed" && notice && (notice.offer || notice.offers) && !notice.replacementId && notice.answer!=="failed")return {status:notice.answer==="wait" || notice.answer==="queue"?"stopped":"needs-you",label:notice.answer==="wait"?"Waiting for your Mac":"Waiting for your choice",tone:notice.answer==="wait" || notice.answer==="queue"?"neutral":"attention",reason:notice.answer==="queue"?"Kept queued. Nothing will start until you choose a route.":"Nothing was rented. Choose a route for this Mac task.",needsYou:notice.answer!=="wait" && notice.answer!=="queue",moving:false};
     if (task.status==="failed" && task.turns===0 && ["instabox","scaleway","ownmac"].includes(task.sandboxProvider ?? "")) {
       const code=this.store.history({taskId:task.id,limit:30}).events.find(e=>e.kind==="stopped" && e.cause)?.cause ?? "provider_failed";
       const card=providerFailureCard({code,provider:task.sandboxProvider!,mac:task.sandboxSystem==="macos",released:false,canRetry:false},task.error ?? "");
@@ -2638,14 +2638,18 @@ export class BoatService {
         await this.hooks.preflight?.({agent:task.provider,runner:task.runner,environment:provider.caps.environments?task.environment:null,newSandbox:true,...(provider.id===DEFAULT_PROVIDER_ID?{}:{provider:provider.id})});
         if(unlisted.has(provider.id))throw new TaskError("Machine list could not be confirmed.","provider_unavailable");
         await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(r=>r.repo)].filter((r):r is string=>r!==null),signal,onWarning:message=>this.store.addEvent(task.id,"preflight-warning",message)});
-        const capacity=await provider.capacity(signal);
-        if(capacity.canStart===false)throw new TaskError(capacity.blockedReason ?? "No new rental capacity is available.","at_capacity");
+        // Specialized rental models already check per-model stock and quota.
+        // A generic capacity summary can otherwise hide missing live pricing.
+        if (!provider.macRentalModels) {
+          const capacity=await provider.capacity(signal);
+          if(capacity.canStart===false)throw new TaskError(capacity.blockedReason ?? "No new rental capacity is available.","at_capacity");
+        }
         const need=macTaskResources(provider,type);
         const models=await (provider.macRentalModels ? provider.macRentalModels(signal) : provider.macModels?.(signal)) ?? [];
         for(const model of models) {
           if(model.unavailableReason){unavailable.push({provider:provider.id,label:`${provider.displayName} · ${model.label}`,reason:model.unavailableReason});continue;}
           if(model.cpus<need.vcpus || model.memoryMiB<need.memMiB)continue;
-          const parsed=macRentalQuoteSchema.safeParse({id:randomUUID(),provider:provider.id,label:provider.displayName,model:model.id,modelLabel:model.label,minimumCost:model.minimumCost,hourPrice:model.hourPrice,minimumHours:model.minimumHours,currency:model.currency,expiresAt:new Date(Date.now()+600000).toISOString()});
+          const parsed=macRentalQuoteSchema.safeParse({id:randomUUID(),provider:provider.id,label:provider.displayName,model:model.id,modelLabel:model.label,cpus:model.cpus,memoryMiB:model.memoryMiB,...(model.region?{region:model.region}:{}),checkedAt:new Date().toISOString(),minimumCost:model.minimumCost,hourPrice:model.hourPrice,minimumHours:model.minimumHours,currency:model.currency,expiresAt:new Date(Date.now()+600000).toISOString()});
           if(parsed.success)offers.push(parsed.data);
         }
         if(!offers.some(q=>q.provider===provider.id) && !unavailable.some(q=>q.provider===provider.id))throw new TaskError("No usable Mac model with confirmed pricing and availability.","at_capacity");
@@ -2659,21 +2663,33 @@ export class BoatService {
     const pool=preferred.length?preferred:offers;
     const first=pool[0];
     if(!first)return {offers,unavailable};
-    // Compare totals only for the same currency and paid minimum duration.
-    // There is no hidden FX estimate or assumption that a status card reserves stock.
-    const comparable=pool.filter(q=>q.currency===first.currency && q.minimumHours===first.minimumHours);
-    const recommended=[...comparable].sort((a,b)=>a.minimumCost-b.minimumCost || a.hourPrice-b.hourPrice)[0]!;
+    // Without a task duration or FX estimate, a price recommendation must be
+    // no more expensive for both the paid minimum and the ongoing hourly rate.
     const mixed=pool.some(q=>q.currency!==first.currency || q.minimumHours!==first.minimumHours);
-    const recommendationReason=preferred.length
-      ? `${this.store.ownMacEventData(task.id,"ownmac-rental-selection")?"Task choice":"Project preference"}: ${recommended.label}. Lowest comparable minimum for this provider.`
-      : mixed ? `Eligible option. Different currencies or minimum durations are shown without conversion.`
-      : `Lowest ${recommended.currency} minimum total for ${recommended.minimumHours} h among eligible options.`;
-    return {offers,unavailable,recommendedQuoteId:recommended.id,recommendationReason:preference && !preferred.length?`${preference} is unavailable. ${recommendationReason}`:recommendationReason};
+    const winners=mixed?[]:pool.filter(candidate=>!pool.some(other=>
+      other.minimumCost<=candidate.minimumCost && other.hourPrice<=candidate.hourPrice &&
+      (other.minimumCost<candidate.minimumCost || other.hourPrice<candidate.hourPrice)));
+    const cheaper=winners.length===1?winners[0]:undefined;
+    const selection=this.store.ownMacEventData(task.id,"ownmac-rental-selection") as {model?:unknown}|null;
+    const recommended=preferred.length
+      ? preferred.find(q=>q.model===selection?.model) ?? cheaper ?? first
+      : cheaper;
+    let recommendationReason:string;
+    if(preferred.length)recommendationReason=`${selection?"Task choice":"Project preference"}: ${recommended!.label}. Prices are shown in their quoted currencies.`;
+    else if(mixed)recommendationReason="Different currencies or minimum durations are shown without conversion. Choose the terms that suit this task.";
+    else if(cheaper && pool.length===1)recommendationReason="Only eligible live offer with confirmed pricing.";
+    else if(cheaper)recommendationReason=`Lowest comparable minimum and ongoing rate in ${cheaper.currency} for ${cheaper.minimumHours} h minimum.`;
+    else if(pool.every(q=>q.minimumCost===first.minimumCost && q.hourPrice===first.hourPrice))recommendationReason="These offers have the same minimum total and ongoing rate. Choose the provider and model for this task.";
+    else recommendationReason="A lower minimum total trades against a higher ongoing rate. Choose for your expected rental duration.";
+    const preferredFailure=unavailable.find(option=>option.provider===preference);
+    return {offers,unavailable,...(recommended?{recommendedQuoteId:recommended.id}:{}),recommendationReason:preference && !preferred.length?`${preferredFailure?.label ?? preference} is unavailable: ${preferredFailure?.reason ?? "No eligible confirmed model."} ${recommendationReason}`:recommendationReason};
   }
 
   private saveMacRentalChoices(task:Task,choices:Awaited<ReturnType<BoatService["macRentalChoices"]>>,selected?:MacRentalQuote) {
     ownMacEvent(this.store,task.id,"ownmac-rental-choices",choices,`Current task-scoped Mac rental options; nothing was rented.${choices.unavailable?.length?` Unavailable: ${choices.unavailable.map(p=>`${p.label}: ${p.reason}`).join("; ")}`:""}`);
-    const offer=selected ?? choices.offers?.find(q=>q.id===choices.recommendedQuoteId);
+    // A stable initial selection is separate from a recommendation. Mixed
+    // currencies and cost tradeoffs still need an actionable, exact quote.
+    const offer=selected ?? choices.offers?.find(q=>q.id===choices.recommendedQuoteId) ?? choices.offers?.[0];
     ownMacEvent(this.store,task.id,"ownmac-rental-offer",offer ?? null,"A new rental needs approval; nothing was rented.");
     this.hooks.changed([task.id]);
   }
@@ -2689,7 +2705,7 @@ export class BoatService {
       this.saveMacRentalChoices(task,choices,current);
       if(!choices.offers?.length)throw new TaskError(`No Mac day-lease provider is available. ${choices.unavailable?.map(p=>`${p.label}: ${p.reason}`).join(" ")}`,"provider_unavailable");
       if(task.orchestratorThreadId)await this.hooks.tell?.(task.orchestratorThreadId,taskMarker("task",task.id));
-      const recommended=current ?? choices.offers.find(q=>q.id===choices.recommendedQuoteId)!;
+      const recommended=current ?? choices.offers.find(q=>q.id===choices.recommendedQuoteId) ?? choices.offers[0]!;
       throw new TaskError(`Rent a Mac for “${task.title}”? ${recommended.label}: ${recommended.currency} ${recommended.minimumCost.toFixed(2)} minimum for ${recommended.minimumHours} h, then ${recommended.hourPrice.toFixed(2)} / h. Nothing was rented.`,"mac_rental_confirmation_required");
     }
     const provider=this.sandboxProviders.get(approval.provider);
@@ -2767,10 +2783,14 @@ export class BoatService {
       return (await this.ownMacNotice(task))!;
     } finally {this.ownMacAnswers.delete(task.id);}
   }
-  async answerOwnMacRental(id:string,answer:"rent"|"wait",quoteId?:string):Promise<string|null> {
+  async answerOwnMacRental(id:string,answer:"rent"|"wait"|"queue",quoteId?:string):Promise<string|null> {
     const {task,notice}=this.pendingMacRental(id);
     this.ownMacAnswers.add(task.id);
     try {
+      if(answer==="queue") {
+        ownMacEvent(this.store,task.id,"ownmac-rental-answer",{answer},"Kept queued. No task or rental will start until the owner chooses a route.");
+        this.hooks.changed([task.id]);return null;
+      }
       if(answer==="wait") {
         if(this.projectMacRental(task))throw new TaskError("This project's Runs on selects a rented Mac. Choose Your Mac in Runs on before waiting for it.","invalid_task");
         ownMacEvent(this.store,task.id,"ownmac-rental-selection",null,"The owner chose to wait for Your Mac instead of the selected rental.");
@@ -2829,7 +2849,7 @@ export class BoatService {
     for(const task of this.store.list({statuses:["failed"],limit:500})) {
       if(this.explicitMacRental(task))continue;
       const notice=ownMacTaskNotice(this.store,task);
-      if(notice?.offer && !notice.replacementId && notice.answer!=="failed" && task.turns===0 && !task.sandboxId && !this.ownMacRestarts.has(task.id) && !this.ownMacAnswers.has(task.id)) {
+      if(notice?.offer && !notice.replacementId && notice.answer!=="failed" && notice.answer!=="queue" && task.turns===0 && !task.sandboxId && !this.ownMacRestarts.has(task.id) && !this.ownMacAnswers.has(task.id)) {
         await this.restartOwnMacTask(task,undefined,"auto").catch(()=>undefined);
         break;
       }

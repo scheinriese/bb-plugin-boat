@@ -631,7 +631,7 @@ export interface AgentRunner {
 }
 
 /** For later providers: not called yet. */
-export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string; unavailableReason?: string }
+export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string; region?: string; unavailableReason?: string }
 export interface LaterMembers {
   /** Already rented monthly capacity is reused before held day leases; never allocated. */
   macLeaseKind?: "monthly" | "day";

@@ -368,7 +368,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const notices=await Promise.all(tasks.map(task=>service.ownMacNotice(task)));
       return {notices:notices.filter((notice):notice is NonNullable<typeof notice>=>notice!==null)};
     },
-    answerOwnMacRental:async({taskId,answer,quoteId}:{taskId:string;answer:"rent"|"wait";quoteId?:string})=>{try{return {replacementId:await service.answerOwnMacRental(taskId,answer,quoteId)};}finally{ownChanged();}},
+    answerOwnMacRental:async({taskId,answer,quoteId}:{taskId:string;answer:"rent"|"wait"|"queue";quoteId?:string})=>{try{return {replacementId:await service.answerOwnMacRental(taskId,answer,quoteId)};}finally{ownChanged();}},
     refreshMacRentalOffers:async({taskId}:{taskId:string})=>{try{return {notice:await service.refreshMacRentalOffers(taskId)};}finally{ownChanged();}},
     selectMacRentalOffer:async({taskId,quoteId}:{taskId:string;quoteId:string})=>{try{return {notice:await service.selectMacRentalOffer(taskId,quoteId)};}finally{ownChanged();}},
     monthlyMacSuggestions: () => ({ suggestions: service.store.monthlyMacs.active() }),

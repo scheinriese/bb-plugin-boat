@@ -616,15 +616,19 @@ the owner's choices.
 Automatic Mac routing tries Your Mac first, then existing monthly capacity, then a held rental,
 then a new rental. Unavailable, full and refused Macs are skipped. When only a
 new rental remains, the task waits at a cost card with live prices in the
-provider's currency; nothing is rented until the owner chooses **Rent for …**.
+provider's currency; nothing is rented until the owner chooses **Rent … Mac**.
 The quote is checked again before allocation and cannot silently increase.
 The card lists eligible provider/model choices on that same zero-turn task,
 including minimum total, minimum duration and ongoing hourly rate. A selection
 changes only that request. Refresh checks prices and availability again; an
 expired or changed quote needs a fresh review. Unavailable providers show the
 reason they could not offer this task a rental. Recommendations respect an
-explicit saved provider preference and compare costs only within the same
-currency and minimum duration; no exchange rate is assumed.
+explicit saved provider preference. An automatic price recommendation requires
+the same currency and minimum duration, with neither a higher minimum total
+nor a higher ongoing rate. Ties and price tradeoffs have no price recommendation.
+Different currencies have no automatic price recommendation or assumed exchange
+rate. When shown, a break-even boundary is a conditional comparison calculated
+from both quoted prices, rounded down; it is not a current exchange rate.
 
 The supported read/selection paths are `boat_rental_options` and
 `bb boat task rental-options <id> [--refresh | --quote <quote-id>] --json`.
@@ -643,6 +647,15 @@ the existing linked execution-task lifecycle and records its `replacementId`;
 an uncertain start requires inspection before any retry. Task-specific paid
 Claude permission is not transferred to that execution task, whose ordinary
 usage checks can block the start.
+Quotes also carry optional live `cpus`, `memoryMiB`, `region` and `checkedAt`
+facts. Older quotes remain valid without them; missing facts display as not
+listed. Catalog or hardware facts do not establish GUI automation readiness.
+
+**Keep it queued** records a task-only deferral, without rental consent or a
+project setting change. It prevents automatic placement when Your Mac returns;
+the owner can later select an offer, approve it, or choose to wait for Your Mac.
+Native RPC clients send `answerOwnMacRental({taskId, answer:"queue"})` for this
+deferral. Agent tools and the CLI still cannot approve a rental.
 
 **Wait for your Mac** resumes only a task that never began executing. If Your
 Mac returns before an answer, that pending task starts there at $0 rent. Linux
