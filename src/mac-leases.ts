@@ -74,7 +74,7 @@ export class MacLeaseLedger {
   }
   /** Independent of lease state: ending/reconciling compute must not dismiss a token reminder. */
   recordCredentialNotice(id: string, text: string, now = Date.now()): void {
-    this.db().prepare(`INSERT INTO mac_credential_notices (lease_id,created_at,text) VALUES (?,?,?) ON CONFLICT(lease_id) DO UPDATE SET text=excluded.text,dismissed_at=NULL`).run(id,iso(now),text);
+    this.db().prepare(`INSERT INTO mac_credential_notices (lease_id,created_at,text) VALUES (?,?,?) ON CONFLICT(lease_id) DO UPDATE SET created_at=excluded.created_at,text=excluded.text,dismissed_at=NULL`).run(id,iso(now),text);
   }
   credentialNotices(): MacCredentialNotice[] {
     return this.db().prepare(`SELECT 'token-revocation:' || n.lease_id AS id,l.provider,l.machine_id AS machineId,n.created_at AS at,n.text FROM mac_credential_notices n JOIN mac_leases l ON l.id=n.lease_id WHERE n.dismissed_at IS NULL ORDER BY n.created_at,n.lease_id`).all() as MacCredentialNotice[];

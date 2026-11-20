@@ -666,8 +666,9 @@ test("repo-less Macs do not receive a stored token and are ready without one", a
   await assert.rejects(missing.provider.assertTaskReady!({agent:"codex",repos:["acme/web"]}));
 });
 
-function credentialService(f: Awaited<ReturnType<typeof fixture>>, warnings: string[] = []) {
-  return new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:line=>warnings.push(line)}});
+function credentialService(f: Awaited<ReturnType<typeof fixture>>, warnings: string[] = [], ownerApproved = false) {
+  if (ownerApproved) f.store.addOrchestrator("test_owner_thread");
+  return new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{credentialApproval:async()=>({ok:ownerApproved,reason:"test owner decision"}),settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:line=>warnings.push(line)}});
 }
 for (const failure of ["create", "resume", "cancel"] as const) test(`failed ${failure} bootstrap preserves a shared Mac's live-task logins`, async t => {
   const {registerSandboxMachine} = await import("../src/providers/machine.ts");
@@ -786,7 +787,7 @@ test("cleanup failure persists a billing notice, tells attached threads once, an
 });
 test("emergency deletion requires both explicit acknowledgements and skips SSH only on managed Scaleway", async t => {
   const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);f.sshExit(255);
-  const service=credentialService(f);const before=f.ssh.length;
+  const service=credentialService(f, [], true);const before=f.ssh.length;
   for(const options of [{withoutVerifiedCleanup:true},{confirmRevokeGithubToken:true}]) await assert.rejects(service.sandboxAction(sandbox.id,"delete",0,undefined,options),{code:"confirmation_required"});
   await assert.rejects(service.sandboxAction(sandbox.id,"delete",0),{code:"credential_cleanup_failed"});
   const attempts=f.ssh.length;
@@ -795,7 +796,7 @@ test("emergency deletion requires both explicit acknowledgements and skips SSH o
   assert.equal(f.store.macLeases.held().length,0);assert.equal(f.servers().length,0);
   await assert.rejects(service.sandboxAction("bx_example","delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true}),{code:"unsupported"});
 });
-test("CLI refuses emergency deletion even with flags; the owner page retains its confirmed action", async t => {
+test("CLI and client RPC refuse emergency deletion without owner approval even with confirmation flags", async t => {
   const {createTestHost}=await import("./fakes.ts");const {buildCli}=await import("../src/cli.ts");const {registerRpc}=await import("../src/rpc.ts");
   for(const channel of ["cli","page"] as const){
     const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);f.sshExit(255);
@@ -808,9 +809,9 @@ test("CLI refuses emergency deletion even with flags; the owner page retains its
     }else{
       registerRpc(runtime);
       await assert.rejects(harness.callRpc("sandboxAction",{id:sandbox.id,action:"delete",withoutVerifiedCleanup:true}));
-      await harness.callRpc("sandboxAction",{id:sandbox.id,action:"delete",withoutVerifiedCleanup:true,confirmRevokeGithubToken:true});
+      await assert.rejects(harness.callRpc("sandboxAction",{id:sandbox.id,action:"delete",withoutVerifiedCleanup:true,confirmRevokeGithubToken:true},{experimental_caller:{kind:"client"}}),/Owner approval required/);
     }
-    assert.equal(f.servers().length,channel === "page" ? 0 : 1);
+    assert.equal(f.servers().length,1);assert.ok(!f.calls.some(call=>call.method==="DELETE"));
   }
 });
 test("a setup failure with no delivered credentials skips a transient cleanup GET and schedules deletion",async t=>{
@@ -878,23 +879,23 @@ test("secret Settings description and agent checklist expose the credential risk
 });
 
 test("emergency deletion retains the minimum and ownership guards and removes a known bb machine",async t=>{
-  const minimum=await fixture(t,1,rentedCredentials());const young=await minimum.create();const early=credentialService(minimum);
+  const minimum=await fixture(t,1,rentedCredentials());const young=await minimum.create();const early=credentialService(minimum, [], true);
   await assert.rejects(early.sandboxAction(young.id,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true}),{code:"minimum_lease"});
   assert.ok(!minimum.calls.some(call=>call.method==="DELETE"));
   const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);
-  const chat=new FakeChat();const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{chat,settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+  f.store.addOrchestrator("test_owner_thread");const chat=new FakeChat();const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{credentialApproval:async()=>({ok:true,reason:"test owner approval"}),chat,settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
   const task=await service.startTask({title:"Owner task",brief:"Check tools",role:"custom",runner:"boat"});f.store.update(task.id,{sandboxId:sandbox.id,sandboxProvider:"scaleway",hostId:"test_host",status:"idle"});
   f.sshExit(255);await service.sandboxAction(sandbox.id,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true});
   assert.deepEqual(chat.removed,["test_host"]);assert.ok(f.store.events(task.id).some(event=>event.kind==="credential-warning"&&/must revoke/.test(event.text)));
   const foreign=await fixture(t);foreign.servers().push({zone:"fr-par-3",id:serverId,name:"example-foreign",type:"M1-M",project_id:projectId,status:"ready",delivered:true,ip:"192.0.2.1",ssh_username:"m1",created_at:new Date(Date.now()-26*3600_000).toISOString(),deletable_at:new Date(Date.now()-3600_000).toISOString()});
-  await assert.rejects(credentialService(foreign).sandboxAction(`scw_fr-par-3_${serverId}`,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true}),{code:"unmanaged_server"});
+  await assert.rejects(credentialService(foreign).sandboxAction(`scw_fr-par-3_${serverId}`,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true}),{code:"not_found"});
   assert.ok(!foreign.calls.some(call=>call.method==="DELETE"));
 });
 
 test("emergency deletion keeps the owner reminder on the page and provider status until explicit dismissal",async t=>{
   const {createTestHost}=await import("./fakes.ts");const {registerRpc}=await import("../src/rpc.ts");const {providerStates}=await import("../src/provider-status.ts");
   const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);f.sshExit(255);
-  const service=credentialService(f);await service.processMacLeases();
+  const service=credentialService(f, [], true);await service.processMacLeases();
   const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:(await import("node:url")).fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs",import.meta.url))}});t.after(()=>harness.lifecycle.dispose());
   const runtime={bb,service,projects:{list:()=>[]},changed:()=>{},setup:null} as unknown as import("../src/runtime.ts").Runtime;
   const view=providerHandlers(runtime);assert.equal(view.macUsage().notices!.length,1);
@@ -914,20 +915,20 @@ test("emergency deletion keeps the owner reminder on the page and provider statu
 });
 test("the revocation reminder is recorded before the external delete, and failure to persist prevents deletion",async t=>{
   const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);
-  f.sshExit(255);const service=credentialService(f);await service.processMacLeases();
+  f.sshExit(255);const service=credentialService(f, [], true);await service.processMacLeases();
   const view=providerHandlers({service,projects:{list:()=>[]},setup:null} as unknown as import("../src/runtime.ts").Runtime);
   const original=f.provider.deleteWithoutVerifiedCleanup!;
   f.provider.deleteWithoutVerifiedCleanup=async(id,signal,beforeDelete)=>original(id,signal,()=>{beforeDelete!();assert.equal(f.store.macLeases.credentialNotices().length,1);const notices=view.macUsage().notices;assert.equal(notices.length,2);assert.equal(new Set(notices.map(notice=>notice.id)).size,2);assert.ok(!f.calls.some(call=>call.method==="DELETE"));});
   await service.sandboxAction(sandbox.id,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true});
   const failed=await fixture(t,26,rentedCredentials());const other=await failed.create();
   failed.store.macLeases.recordCredentialNotice=()=>{throw new Error("test database unavailable");};
-  await assert.rejects(credentialService(failed).sandboxAction(other.id,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true}));
+  await assert.rejects(credentialService(failed, [], true).sandboxAction(other.id,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true}));
   assert.ok(!failed.calls.some(call=>call.method==="DELETE"));
 });
 test("post-delete unmanaged_server from stale Scaleway visibility is already removed; other removal failures still surface",async t=>{
   for(const code of ["unmanaged_server","test_other_failure"]){
     const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);const stale={...f.servers()[0]};
-    const chat=new FakeChat();const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{chat,settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+    f.store.addOrchestrator("test_owner_thread");const chat=new FakeChat();const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{credentialApproval:async()=>({ok:true,reason:"test owner approval"}),chat,settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
     const task=await service.startTask({title:"Owner task",brief:"Check tools",role:"custom",runner:"boat"});f.store.update(task.id,{sandboxId:sandbox.id,sandboxProvider:"scaleway",hostId:"test_host",status:"idle"});
     chat.removeMachine=async()=>{if(code==="unmanaged_server"){f.servers().push(stale);await f.provider.delete(sandbox.id);}else throw Object.assign(new Error("test cleanup failure"),{code});};
     const action=service.sandboxAction(sandbox.id,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true});
@@ -935,4 +936,55 @@ test("post-delete unmanaged_server from stale Scaleway visibility is already rem
     assert.equal(f.store.macLeases.held().length,0);assert.equal(f.store.macLeases.credentialNotices().length,1);
     assert.equal(f.calls.filter(call=>call.method==="DELETE"&&call.path.includes("/servers/")).length,1);
   }
+});
+
+test("client RPC cannot delete or dismiss with booleans; exact owner chat approval gates both and secret changes cannot clear reminders", async t => {
+  const {createTestHost}=await import("./fakes.ts");const {registerRpc}=await import("../src/rpc.ts");
+  const {credentialChatApproval}=await import("../src/credential-approval.ts");
+  const {defineProviderSecrets}=await import("../src/provider-settings.ts");
+  const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);f.sshExit(255);
+  const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:(await import("node:url")).fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs",import.meta.url))}});t.after(()=>harness.lifecycle.dispose());
+  let messages: unknown[]=[];
+  harness.sdk.stub("threads.events.list", async()=>messages);
+  f.store.addOrchestrator("test_owner_thread");
+  const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{credentialApproval:(thread,request)=>credentialChatApproval(bb,thread,request),settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+  const runtime={bb,service,projects:{list:()=>[]},changed:()=>{},setup:null} as unknown as import("../src/runtime.ts").Runtime;registerRpc(runtime);
+  const caller={experimental_caller:{kind:"client" as const}};
+  const deletion={id:sandbox.id,action:"delete",withoutVerifiedCleanup:true,confirmRevokeGithubToken:true};
+  const instructions=await harness.callRpc("credentialOwnerApproval",{action:"delete-without-cleanup",id:sandbox.id},caller) as {sentence:string;threadIds:string[]};
+  assert.deepEqual(instructions.threadIds,["test_owner_thread"]);
+  const message=(sentence:string,initiator="user")=>({type:"client/turn/requested",createdAt:Date.now(),data:{initiator,senderThreadId:null,input:[{type:"text",text:sentence}]}});
+  await assert.rejects(harness.callRpc("sandboxAction",deletion,caller),/Owner approval required/);
+  messages=[message(instructions.sentence,"agent")];
+  await assert.rejects(harness.callRpc("sandboxAction",deletion,caller),/Owner approval required/);
+  assert.equal(f.servers().length,1);assert.ok(!f.calls.some(call=>call.method==="DELETE"));
+  // The service itself, underneath every RPC/CLI/tool, also fails closed.
+  await assert.rejects(credentialService(f).sandboxAction(sandbox.id,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true}),{code:"owner_approval_required"});
+  messages=[message(instructions.sentence)];
+  await harness.callRpc("sandboxAction",deletion,caller);assert.equal(f.servers().length,0);
+  const notice=f.store.macLeases.credentialNotices()[0]!;
+  const dismiss={id:notice.id,confirmedTokenAction:true};
+  await assert.rejects(harness.callRpc("dismissCredentialNotice",dismiss,caller),/Owner approval required/);
+  // bb permits client updates to secret descriptors. A different secret value
+  // must never stand in for owner approval or evidence of GitHub revocation.
+  const secrets=await defineProviderSecrets(bb);
+  await harness.setSettings({rentedMachineGithubToken:"fake_rotated_github_token"});
+  assert.ok(await secrets.rentedMachineGithubToken());
+  await assert.rejects(harness.callRpc("dismissCredentialNotice",dismiss,caller),/Owner approval required/);
+  assert.equal(f.store.macLeases.credentialNotices().length,1);assert.ok(f.provider.releaseNotice!());
+  const dismissal=await harness.callRpc("credentialOwnerApproval",{action:"dismiss-token-reminder",id:notice.id},caller) as {sentence:string};
+  messages=[message(dismissal.sentence,"agent")];
+  await assert.rejects(harness.callRpc("dismissCredentialNotice",dismiss,caller),/Owner approval required/);
+  messages=[message(dismissal.sentence)];
+  await harness.callRpc("dismissCredentialNotice",dismiss,caller);
+  assert.equal(f.store.macLeases.credentialNotices().length,0);assert.equal(f.provider.releaseNotice!(),null);
+});
+
+test("a refreshed reminder cannot be dismissed using approval for its earlier generation", async t => {
+  const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();const lease=f.store.macLeases.held(sandbox.id)[0]!;
+  f.store.macLeases.recordCredentialNotice(lease.id,"example original reminder",Date.now()-1000);
+  f.store.addOrchestrator("test_owner_thread");
+  const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{credentialApproval:async()=>{f.store.macLeases.recordCredentialNotice(lease.id,"example refreshed reminder");return {ok:true,reason:"test earlier owner approval"};},settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+  await assert.rejects(service.dismissCredentialNotice(f.store.macLeases.credentialNotices()[0]!.id),{code:"owner_approval_required"});
+  assert.equal(f.store.macLeases.credentialNotices()[0]!.text,"example refreshed reminder");
 });

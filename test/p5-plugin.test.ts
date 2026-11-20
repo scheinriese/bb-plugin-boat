@@ -55,7 +55,7 @@ async function setup(t: { after(fn: () => unknown): void }) {
         current.sandboxes[convo.sandboxId].state = "idle";
       }
     });
-  return { harness, state, edit, finishAll };
+  return { bb, harness, state, edit, finishAll };
 }
 
 test("snapshots: save, list, start from one, and plain errors", async (t) => {
@@ -291,4 +291,24 @@ test("a watchdog notice about a task isn't a report of its turn: the user's OK t
   const shipped = await harness.runCli(["task", "ship", task.id], { threadId: "thr_orch" });
   assert.equal(shipped.exitCode, 0, shipped.stderr || shipped.stdout);
   assert.match(shipped.stdout, /Shipped 2 commits to master/);
+});
+
+test("the real runtime gates client reminder dismissal on an owner chat message", async t => {
+  const {bb,harness}=await setup(t);
+  const {TaskStore}=await import("../src/store.ts");
+  const store=new TaskStore(()=>bb.storage.database());
+  const now=Date.now();
+  store.macLeases.record({id:"example-owner-lease",provider:"scaleway",machineId:"example-owner-mac",size:"M1-M",startedAt:new Date(now-1000).toISOString(),paidUntil:new Date(now+86400_000).toISOString(),minimumCost:10,hourPrice:0.5,currency:"EUR",cpus:8,memoryMiB:8192});
+  store.macLeases.recordCredentialNotice("example-owner-lease","example revocation reminder",now);
+  store.macLeases.end("example-owner-lease","deleted");store.addOrchestrator("thr_orch");
+  const notice=store.macLeases.credentialNotices()[0]!;
+  const caller={experimental_caller:{kind:"client" as const}};
+  const instructions=await harness.callRpc("credentialOwnerApproval",{id:notice.id,action:"dismiss-token-reminder"},caller) as {sentence:string};
+  let initiator="agent";const messageAt=Date.now();
+  harness.sdk.stub("threads.events.list",async()=>[{type:"client/turn/requested",createdAt:messageAt,data:{initiator,senderThreadId:null,input:[{type:"text",text:instructions.sentence}]}}]);
+  await assert.rejects(harness.callRpc("dismissCredentialNotice",{id:notice.id,confirmedTokenAction:true},caller),/Owner approval required/);
+  assert.equal(store.macLeases.credentialNotices().length,1);
+  initiator="user";
+  await harness.callRpc("dismissCredentialNotice",{id:notice.id,confirmedTokenAction:true},caller);
+  assert.equal(store.macLeases.credentialNotices().length,0);
 });

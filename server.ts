@@ -367,6 +367,7 @@ export default async function plugin(bb: BbPluginApi) {
     sizePlan: async (options) => (await setup.reading({ force: options?.fresh === true }).catch(() => null))?.plan?.machineTypes ?? null,
     sizePlanNow: () => setup.peek()?.facts.plan?.machineTypes ?? null,
     tell: (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(),
+    credentialApproval: (threadId, request) => runtimeRef?.chatApproval(threadId, request) ?? Promise.resolve({ ok: false, reason: "The owner approval reader is unavailable." }),
     resumeNote: {
       peek: (taskId) => watchdogRef?.noteFor(taskId) ?? Promise.resolve(null),
       sent: (taskId) => watchdogRef?.noteSent(taskId) ?? Promise.resolve(),

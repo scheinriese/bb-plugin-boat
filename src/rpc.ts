@@ -942,8 +942,10 @@ export function registerRpc(runtime: Runtime): void {
         return { ok: true as const };
       }),
 
+    credentialOwnerApproval: ({ action, id }) => refuse(async () => service.credentialOwnerApproval(action, id)),
+
     dismissCredentialNotice: ({ id }) => refuse(async () => {
-      if (!service.store.macLeases.dismissCredentialNotice(id)) throw new experimental_PluginRpcRefusal({ code: "not_found", message: "No active token-revocation reminder has that ID." });
+      await service.dismissCredentialNotice(id);
       runtime.changed();
       return { ok: true as const };
     }),
