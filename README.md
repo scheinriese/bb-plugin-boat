@@ -2,8 +2,9 @@
 
 Harbormaster coordinates cloud agents across sandbox providers. Use `bb harbor`
 with the optional CLI companion below. `bb boat` keeps working with the main
-plugin alone. Both names reach the same handler; help and agent examples still
-say `bb boat`. `bb harbormaster` awaits native alias support in bb.
+plugin alone. Both names reach the same handler; `harbor` help and usage errors
+use `bb harbor`, while agent examples still use `bb boat`. JSON stays unchanged.
+`bb harbormaster` awaits native alias support in bb.
 See [the rename status and step 2 checklist](docs/harbormaster-rename.md).
 
 Run Claude Code and Codex in [boat.dev](https://boat.dev) cloud sandboxes

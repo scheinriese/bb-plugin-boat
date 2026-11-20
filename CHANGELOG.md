@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Use `bb harbor` in the companion's help and usage errors, keep JSON and command data unchanged, and report cancellation as `cancelled`. Document the explicit `bb plugin run harbor` fallback when another plugin owns the short name.
 - Add the optional Harbormaster CLI companion (`harbor/`) for `bb harbor`. It forwards to the existing `bb boat` handler, preserving commands, settings, context, errors and safety checks. `bb boat` continues to work with the main plugin alone; `bb harbormaster` still needs native alias support in bb.
 - Settings has a Sandbox providers section (boat.dev, Instabox, your Mac, a monthly Mac, each with its status) and a Runs on section with one dropdown per project. boat.dev and, once turned on with its key stored, Instabox (Linux) can take work; the Mac rows are greyed out.
 - Show where each task runs: a second line under each task in the tasks-started card ("boat.dev · Default"), the provider on a task chip when it isn't boat.dev (with the details on hover), and a Runs on column in Cloud agents › Sandboxes instead of Size.

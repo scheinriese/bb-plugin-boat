@@ -19,22 +19,37 @@ bb plugin install git:https://github.com/scheinriese/bb-plugin-boat --subdirecto
 The companion registers one command, `harbor`, and forwards argv and the
 invoking cwd, thread id and project id to the main plugin's existing CLI
 endpoint over `bb.server.loopbackBaseUrl`. It passes cancellation through,
-preserves stdout, stderr and exit codes, and never retries a command. It has
+preserves command data, JSON and exit codes, and never retries a command. It has
 no runtime dependencies, settings, database, services or duplicate task
-runtime. Help and protocol/agent examples retain `bb boat`; both names run
-those exact commands. This deliberately leaves user output untouched.
+runtime. The companion changes only CLI prose's leading `bb boat` tokens to
+`bb harbor` in help, usage blocks and formatted hints. Protocol/agent examples
+retain `bb boat`; JSON (including error hints) and arbitrary command output
+stay unchanged. An aborted request returns `Cancelled.` and the JSON error
+code `cancelled`, rather than a missing-plugin message.
 
 Keep both plugins enabled and update both when upgrading. A missing or disabled
 main plugin returns bb's existing CLI error through `harbor`; a transport or
 invalid-response failure returns `harbor_unavailable` with `--json`. Installing
 only the main plugin, including on older supported hosts, keeps `bb boat`
 working. Removing the companion has no effect on the main plugin's data.
+If another plugin owns the `harbor` name, `bb plugin run harbor …` explicitly
+selects this companion by id and still forwards to the main plugin.
 
 The bridge uses bb's CLI HTTP endpoint rather than `sdk.plugins.callRpc`:
 the SDK imposes a 75-second deadline, whereas commands such as `task wait`
 can run for 30 minutes. Node's HTTP client adds no request deadline and accepts
 bb's whitespace keepalives. The ordinary host CLI boundary still enforces
 output limits, handler lifecycle and cancellation on both sides.
+
+### Host usage accounting
+
+The public CLI registration and request context have no switch for suppressing
+usage accounting. On a successful forwarded command, the host can record use
+of both `boat` and `harbor`; its `plugin_use` telemetry is deduplicated once per
+UTC day per measurable plugin when telemetry is enabled. Handler timings also
+include both CLI boundaries. This does not create a second task or duplicate
+sandbox usage. Avoiding the second plugin-use entry needs host support; the
+companion does not change global telemetry settings or use private APIs.
 
 ### Native aliases checked first
 

@@ -15,11 +15,27 @@ function run(args, expectedExit = 0) {
 }
 
 run(["--version"]);
+const command = process.argv.includes("--collision") ? ["plugin", "run", "harbor"] : ["harbor"];
 for (const args of [
-  ["--help"], ["task", "start", "--help"], ["project", "list", "--json"],
-  ["task", "start", "--unknown-option", "--json"],
+  ["--help"], ["task", "start", "--help"], ["help", "sandbox"], ["project", "list", "--json"],
+  ["project", "list", "--unknown-option", "--json"],
 ]) {
   const expectedExit = args.includes("--unknown-option") ? 1 : 0;
-  assert.deepEqual(run(["harbor", ...args], expectedExit), run(["boat", ...args], expectedExit));
+  const harbor = run([...command, ...args], expectedExit);
+  const boat = run(["boat", ...args], expectedExit);
+  if (args.includes("--help") || args[0] === "help") {
+    assert.match(harbor.stdout, /^bb harbor\b/);
+    assert.match(boat.stdout, /^bb boat\b/);
+    assert.equal(harbor.stdout.replaceAll("bb harbor", "bb boat"), boat.stdout);
+  } else {
+    assert.equal(harbor.stdout, boat.stdout, "JSON is unchanged");
+  }
+  assert.equal(harbor.stderr.replaceAll("bb harbor", "bb boat"), boat.stderr);
 }
-console.log("PASS: both names return identical help, read-only results and parser errors.");
+if (process.argv.includes("--collision")) {
+  assert.equal(run(["harbor", "--help"]).stdout, "Collision fixture owns bb harbor.\n");
+  assert.match(run(["plugin", "run", "harbor", "--help"]).stdout, /^bb harbor\b/);
+  assert.equal(run(["plugin", "run", "harbor", "project", "list", "--json"]).stdout,
+    run(["boat", "project", "list", "--json"]).stdout);
+}
+console.log("PASS: harbor help uses its own name; boat help and JSON are unchanged.");

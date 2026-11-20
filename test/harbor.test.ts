@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -52,7 +52,7 @@ test("harbor forwards argv and invoking context unchanged, and preserves output 
   assert.equal(calls, 1, "a failed mutation must never be retried");
 });
 
-test("both command names use the same parser, help, safety refusals and saved state", async t => {
+test("harbor uses its own name in help and errors, keeping boat, JSON and saved state intact", async t => {
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "harbor-test-")), "state.json");
   const main = await createTestHost({ pluginId: "boat", settings: {
     boatPath: fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url)),
@@ -70,14 +70,24 @@ test("both command names use the same parser, help, safety refusals and saved st
   t.after(() => alias.harness.lifecycle.dispose());
   harbor(alias.bb);
   for (const argv of [
-    ["--help"], ["task", "start", "--help"], ["sandbox", "exec", "--help"],
+    [], ["--json"], ["--help"], ["-h"], ["help", "task"],
+    ["task", "start", "--help"], ["sandbox", "exec", "--help"],
     ["project", "list", "--json"], ["task", "show", "t_missing", "--json"],
-    ["task", "start", "--unknown", "--json"],
+    ["project", "list", "--unknown"], ["project", "list", "--unknown", "--json"],
+    ["task", "start", "--title", "x"], ["not-a-command"],
     ["project", "add", "--name", "Unsafe", "--repo", "acme/web@main", "--size", "xlarge", "--json"],
   ]) {
     const ctx = { threadId: "thr_invoker" };
     const direct = await main.harness.runCli(argv, ctx);
-    assert.deepEqual(await alias.harness.runCli(argv, ctx), direct, argv.join(" "));
+    const forwarded = await alias.harness.runCli(argv, ctx);
+    const help = direct.stdout.startsWith("bb boat");
+    if (help) assert.match(forwarded.stdout, /^bb harbor\b/);
+    assert.deepEqual(forwarded, {
+      ...direct,
+      stdout: help ? direct.stdout.replaceAll("bb boat", "bb harbor") : direct.stdout,
+      stderr: direct.stderr.replaceAll("bb boat", "bb harbor"),
+    }, argv.join(" "));
+    assert.deepEqual(await main.harness.runCli(argv, ctx), direct, "boat output stays unchanged");
     if (argv.includes("--unknown") || argv.includes("t_missing") || argv.includes("xlarge")) assert.notEqual(direct.exitCode, 0);
     if (argv.includes("xlarge")) assert.equal(JSON.parse(direct.stdout).error.code, "size_needs_approval");
   }
@@ -87,6 +97,25 @@ test("both command names use the same parser, help, safety refusals and saved st
   assert.match(fromBoat.stdout, /acme\/web/);
   assert.deepEqual(await alias.harness.runCli(["project", "list", "--json"]), fromBoat);
   assert.equal(main.harness.registrations.cli?.name, "boat");
+});
+
+test("harbor leaves command data, JSON and quoted error values unchanged", async t => {
+  const payload = "bb boat\nUsage:\n  bb boat sandbox exec\n`bb boat`\nboat.dev bb boatyard\n";
+  let expected = { exitCode: 0, stdout: payload, stderr: payload };
+  const loopbackBaseUrl = await serve(t, (_req, res) => res.end(JSON.stringify(expected)));
+  const { bb, harness } = createFakePluginHost({ pluginId: "harbor", loopbackBaseUrl });
+  t.after(() => harness.lifecycle.dispose());
+  harbor(bb);
+  assert.deepEqual(await harness.runCli(["task", "events", "t_1"]), expected);
+  expected = { exitCode: 1, stdout: JSON.stringify({ error: { message: payload, hint: "bb boat --help" } }), stderr: 'No project `bb boat` exists.\n' };
+  assert.deepEqual(await harness.runCli(["project", "show", "bb boat", "--json"]), expected);
+  expected = { exitCode: 7, stdout: payload, stderr: payload };
+  assert.deepEqual(await harness.runCli(["sandbox", "exec", "bx_1", "--", "printf", "--help"]), expected);
+});
+
+test("harbor companion and main plugin versions stay in sync", () => {
+  const manifest = (path: string) => JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
+  assert.equal(manifest("../harbor/package.json").version, manifest("../package.json").version);
 });
 
 test("harbor reports malformed endpoints in JSON, without retrying", async t => {
@@ -139,9 +168,13 @@ test("harbor passes cancellation through to the CLI request", { timeout: 10_000 
   t.after(() => harness.lifecycle.dispose());
   harbor(bb);
   const controller = new AbortController();
-  const result = harness.runCli(["task", "wait"], { signal: controller.signal });
+  const result = harness.runCli(["task", "wait", "--json"], { signal: controller.signal });
   await started;
   controller.abort();
-  await result;
+  const cancelled = await result;
+  assert.equal(cancelled.exitCode, 1);
+  assert.equal(cancelled.stderr, "Cancelled.\n");
+  assert.deepEqual(JSON.parse(cancelled.stdout), { ok: false, error: { code: "cancelled", message: "Cancelled." } });
   await disconnected;
+  assert.equal((await harness.runCli(["task", "wait"], { signal: controller.signal })).stderr, "Cancelled.\n");
 });

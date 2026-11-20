@@ -59,10 +59,11 @@ The real host reported these CLI contributions (selected fields):
 ]
 ```
 
-`node scripts/check-harbor-host.mjs` asserted byte-for-byte equality of stdout,
-stderr and exit status for top-level help, nested help, a read-only listing
-and a JSON parser error. Selected transcript follows; long help and error
-usage lines are omitted here.
+`node scripts/check-harbor-host.mjs` checks the companion's own name in help,
+unchanged `boat` help, equal JSON and exit status, and usage errors naming the
+invoked command. The error check uses `project list --unknown-option --json`,
+so even a parser regression cannot launch a task. Selected transcript follows;
+long help and error usage lines are omitted here.
 
 ```text
 $ bb --version
@@ -70,7 +71,7 @@ $ bb --version
 [exit 0]
 
 $ bb harbor --help
-bb boat — Harbormaster: coding agents across cloud sandbox providers, orchestrated from bb
+bb harbor — Harbormaster: coding agents across cloud sandbox providers, orchestrated from bb
 [remaining help omitted; exit 0]
 
 $ bb boat --help
@@ -78,7 +79,7 @@ bb boat — Harbormaster: coding agents across cloud sandbox providers, orchestr
 [remaining help omitted; exit 0]
 
 $ bb harbor task start --help
-bb boat task start — Start a coding agent on a task in a boat sandbox
+bb harbor task start — Start a coding agent on a task in a boat sandbox
 [remaining help omitted; exit 0]
 
 $ bb boat task start --help
@@ -99,29 +100,71 @@ $ bb boat project list --json
 }
 [exit 0]
 
-$ bb harbor task start --unknown-option --json
+$ bb harbor project list --unknown-option --json
 [JSON error code: unknown_option; message: unknown option '--unknown-option']
-[same readable error on stderr; exit 1]
+Usage:
+  bb harbor project list [--local] [--json]
+[exit 1]
 
-$ bb boat task start --unknown-option --json
+$ bb boat project list --unknown-option --json
 [JSON error code: unknown_option; message: unknown option '--unknown-option']
-[same readable error on stderr; exit 1]
+Usage:
+  bb boat project list [--local] [--json]
+[exit 1]
 
-PASS: both names return identical help, read-only results and parser errors.
+PASS: harbor help uses its own name; boat help and JSON are unchanged.
 ```
 
-Help intentionally keeps `bb boat`, as all output comes from the existing
-handler. No user text or command results are rewritten. Unit tests using the
-fake boat CLI additionally prove shared project state, XLarge approval
-refusals, exact argv/context forwarding, cancellation, whitespace keepalives,
-missing-plugin errors and no retries after a failed command.
+Only CLI display prose changes namespace; JSON bodies (including error hints),
+quoted error values and arbitrary command output stay unchanged. Unit tests
+using the fake boat CLI additionally prove shared project state, XLarge
+approval refusals, exact argv/context forwarding, cancellation with a
+`cancelled` JSON code, whitespace keepalives, missing-plugin errors, no retries
+after a failed command, and matching versions in both package manifests.
 
-The same script on the isolated bb 0.48.1 host finished with:
+The updated script also passed on the isolated bb 0.48.1 host with both
+plugins built by that version:
 
 ```text
 $ bb --version
 0.48.1
 [exit 0]
 
-PASS: both names return identical help, read-only results and parser errors.
+PASS: harbor help uses its own name; boat help and JSON are unchanged.
 ```
+
+## Name collision fallback
+
+The small `test/fixtures/harbor-collision` plugin also registers `harbor`.
+Its id, `a-harbor-collision`, sorts before `harbor` in the host's CLI discovery,
+so the short form reaches the fixture. The companion remains reachable by id:
+
+```text
+$ bb harbor --help
+Collision fixture owns bb harbor.
+[exit 0]
+
+$ bb plugin run harbor --help
+bb harbor — Harbormaster: coding agents across cloud sandbox providers, orchestrated from bb
+[remaining help omitted; exit 0]
+
+$ bb plugin run harbor project list --json
+{ "projects": [], "local": [] }
+[exit 0]
+```
+
+Build the fixture with `bb plugin build ./test/fixtures/harbor-collision` and
+make it available only on an isolated test host alongside the two plugins.
+`node scripts/check-harbor-host.mjs --collision` verifies the shadowed short
+form and explicit fallback, including help, read-only JSON and parser errors.
+
+## Host usage accounting
+
+The latest public registration/context contracts have no usage-suppression
+field. The host records successful CLI calls on both sides of the bridge;
+`plugin_use` telemetry is deduplicated per measurable plugin per UTC day when
+enabled. No extra task or sandbox work runs. See the upstream
+[CLI boundary](https://github.com/get-bb/bb/blob/fab82665a3299fae8910f55d7519a3b034a03b9a/apps/server/src/services/plugins/plugin-service.ts)
+and [usage accounting](https://github.com/get-bb/bb/blob/fab82665a3299fae8910f55d7519a3b034a03b9a/apps/server/src/services/plugins/plugin-use-telemetry.ts).
+Avoiding both entries requires a host API change; no private suppression
+mechanism or global settings change is used here.

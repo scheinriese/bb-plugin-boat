@@ -29,6 +29,24 @@ async function forward(baseUrl: string, argv: string[], ctx: PluginCliContext): 
   return { exitCode: result.exitCode as number, stdout: result.stdout, stderr: result.stderr };
 }
 
+/** Only CLI display text changes namespace; command output and JSON are data. */
+function display(argv: string[], result: PluginCliResult): PluginCliResult {
+  const terminator = argv.indexOf("--");
+  const scanned = terminator === -1 ? argv : argv.slice(0, terminator);
+  const help = argv[0] === "help" || scanned.some(arg => arg === "--help" || arg === "-h") ||
+    argv.length === 0 || argv[0]?.startsWith("-");
+  const cliProse = (text: string) => text.replace(/(^[ \t]*|[`(])bb boat(?=\s|`|$)/gm, "$1bb harbor");
+  const helpText = (text: string) => help && /^bb boat(?:[ \w-]*) — /.test(text) ? cliProse(text) : text;
+  let stderr = helpText(result.stderr ?? "");
+  if (result.exitCode !== 0 && terminator === -1) {
+    // Parser usage/list blocks and formatted hints, never quoted error values.
+    stderr = stderr.replace(/(^|\n\n)((?:Usage|Commands):\n)((?: {2}bb boat[^\n]*\n?)+)/g,
+      (_match, before: string, heading: string, commands: string) => before + heading + cliProse(commands));
+    stderr = stderr.replace(/(\((?:Or run|Run) `)bb boat(?=\s|`)/g, "$1bb harbor");
+  }
+  return { ...result, stdout: helpText(result.stdout ?? ""), stderr };
+}
+
 export default function harbor(bb: BbPluginApi): void {
   bb.cli.register({
     name: "harbor",
@@ -37,12 +55,13 @@ export default function harbor(bb: BbPluginApi): void {
     rendersHelp: true,
     async run(argv, ctx) {
       try {
-        return await forward(bb.server.loopbackBaseUrl, argv, ctx);
+        return display(argv, await forward(bb.server.loopbackBaseUrl, argv, ctx));
       } catch {
-        const message = "Could not reach the Harbormaster CLI. Check that the boat plugin is installed and enabled.";
+        const cancelled = ctx.signal?.aborted === true;
+        const message = cancelled ? "Cancelled." : "Could not reach the Harbormaster CLI. Check that the boat plugin is installed and enabled.";
         return {
           exitCode: 1,
-          stdout: argv.includes("--json") ? `${JSON.stringify({ ok: false, error: { code: "harbor_unavailable", message } })}\n` : "",
+          stdout: argv.includes("--json") ? `${JSON.stringify({ ok: false, error: { code: cancelled ? "cancelled" : "harbor_unavailable", message } })}\n` : "",
           stderr: `${message}\n`,
         };
       }
