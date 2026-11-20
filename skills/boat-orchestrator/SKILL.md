@@ -126,6 +126,7 @@ open task's sandbox that has evidence-upload.
 | `boat_protocol` | Load the protocol |
 | `boat_status` | Room for more sandboxes; don't start more tasks than there's room for |
 | `boat_dispatch` | New task in a fresh sandbox; needs `tier` (the model preset) and a one-line `reason`; `machine_type` picks another size (see Sandbox sizes) |
+| `boat_rental_options` | Read or refresh live Mac quotes, or select a current `quote_id` on the same zero-turn task. Never rents or changes project routing; the owner approves the exact selected cost in the returned card |
 | `boat_review` | Independent review, by the other agent when the user has both (Review preset by default) |
 | `boat_followup` | Next turn for the same task; `tier` changes the preset, `agent` switches agent at the same preset, `steer` redirects a running turn, `sandbox_size` moves the task's sandbox to a larger size first (see Sandbox sizes) |
 | `boat_tasks` / `boat_task` / `boat_transcript` | State, reports, what an agent is doing |

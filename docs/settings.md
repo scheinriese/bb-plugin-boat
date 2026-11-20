@@ -618,6 +618,32 @@ then a new rental. Unavailable, full and refused Macs are skipped. When only a
 new rental remains, the task waits at a cost card with live prices in the
 provider's currency; nothing is rented until the owner chooses **Rent for …**.
 The quote is checked again before allocation and cannot silently increase.
+The card lists eligible provider/model choices on that same zero-turn task,
+including minimum total, minimum duration and ongoing hourly rate. A selection
+changes only that request. Refresh checks prices and availability again; an
+expired or changed quote needs a fresh review. Unavailable providers show the
+reason they could not offer this task a rental. Recommendations respect an
+explicit saved provider preference and compare costs only within the same
+currency and minimum duration; no exchange rate is assumed.
+
+The supported read/selection paths are `boat_rental_options` and
+`bb boat task rental-options <id> [--refresh | --quote <quote-id>] --json`.
+RPC clients use `refreshMacRentalOffers({taskId})` and
+`selectMacRentalOffer({taskId,quoteId})`; both return `{notice}`. Selecting an
+offer is not spending consent: only the native rental approval authorizes one
+rental at the displayed provider, model and cost. Paid Claude approval remains
+a separate decision. Do not dispatch a duplicate task or change project routing
+to choose a rental for an existing request.
+
+The notice keeps `offer` as the selected quote for older clients and adds
+`offers`, `recommendedQuoteId`, `recommendationReason` and `unavailable`
+(`provider`, `label`, `reason`). Quote IDs belong to the displayed set; refresh
+replaces them. Selection and refresh retain the pending task ID. Approval uses
+the existing linked execution-task lifecycle and records its `replacementId`;
+an uncertain start requires inspection before any retry. Task-specific paid
+Claude permission is not transferred to that execution task, whose ordinary
+usage checks can block the start.
+
 **Wait for your Mac** resumes only a task that never began executing. If Your
 Mac returns before an answer, that pending task starts there at $0 rent. Linux
 routing is unchanged. Monthly enrollment remains the existing adapter seam;
@@ -626,6 +652,9 @@ An explicit project Runs-on choice of Scaleway or Instabox takes precedence over
 Your Mac. Every new day rental still needs a cost confirmation.
 To wait for Your Mac instead, first change that explicit Runs-on choice. A
 returning owner Mac never restarts a task that is pinned to a rental route.
+A task-only rental selection also pauses automatic Your Mac placement. On a
+project without an explicit rental route, **Wait for your Mac** clears that
+task selection without changing Runs on.
 
 Repository tasks reuse **GitHub token for rented machines** from bb secrets:
 selected repositories; Contents, Pull requests and Workflows read and write;

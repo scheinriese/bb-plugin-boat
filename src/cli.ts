@@ -704,6 +704,27 @@ export function buildCli(runtime: Runtime) {
           });
         },
       }),
+      "task rental-options": cliCommand({
+        summary: "Read, refresh or select Mac rental quotes on the same pending task; never rents a machine",
+        description: "The owner approves the exact selected cost in the task's native rental card. This command does not change project routing or authorize payment.",
+        positionals: [{ name: "id", description: "Pending task id", required: true }],
+        options: {
+          refresh: { type: "boolean", description: "Recheck live eligible offers and prices without allocation" },
+          quote: { type: "string", description: "Select a current quote id on this request" },
+          json,
+        },
+        constraints: [{ kind: "at-most-one", options: ["refresh", "quote"] }],
+        async run({ positionals, options }) {
+          return guard(async () => {
+            const notice = options.quote
+              ? await service.selectMacRentalOffer(positionals.id, options.quote)
+              : options.refresh
+                ? await service.refreshMacRentalOffers(positionals.id)
+                : await service.ownMacNotice(service.mustGet(positionals.id));
+            return out({ notice }, options.json, () => JSON.stringify({ notice }, null, 2) + "\nNothing was rented. Approve the exact selected cost in the task's rental card.");
+          });
+        },
+      }),
       "task review": cliCommand({
         summary: "Start an independent review of an implementation task (the other model by default, when both agents are set up)",
         positionals: [{ name: "id", description: "Implementation task id", required: true }],
