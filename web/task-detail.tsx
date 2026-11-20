@@ -1,3 +1,4 @@
+import { TaskDesignControl } from "./design-task-control";
 import { LiveOwnMacNotices } from "./own-mac-live";
 import { TaskProviderFailure } from "./provider-failure";
 // One task: header, metadata, actions, Report / Transcript / Brief / History
@@ -114,6 +115,7 @@ function TaskView({ task }: { task: TaskDetailDto }) {
         <TaskHeader task={task} now={now} />
         <TaskActions task={task} link={link} />
         <TaskMeta task={task} link={link} />
+        <TaskDesignControl task={task} />
         <ShipApprovalPanel task={task} />
         <SandboxSizePanel task={task} />
         <SnapshotOffer task={task} />

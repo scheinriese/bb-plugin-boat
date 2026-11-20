@@ -194,12 +194,34 @@ don't keep or paste a separate one.
 The owner can opt into `paidClaudeFallback` in Usage limits or with
 `bb boat config set paidClaudeFallback true`. Use included allowances first;
 only then may eligible bb task chats and orchestrators use Claude extra usage
-when Account Pooler reports recent availability. Claude enforces billing; Harbormaster
+after all connected agents reach the cutoff and a usable Claude account route is known. Pooler extra-usage telemetry alone does not veto an authorized attempt. Actual provider refusals remain blockers. Claude enforces billing; Harbormaster
 cannot read a money cap or balance and never buys credits. Headless Harbormaster tasks
 need per-request paid approval unless `paidClaudeHeadless` is also enabled
 after the owner confirms the same Claude subscription and billing account. Do not name a provider/model to bypass a
 waiting receipt or dispatch replacement work. If billing is unavailable, keep
 waiting. This setting changes spending behavior: set it only when the owner asks.
+
+## Design preference and task consent
+
+Use `purpose: "design"` (`--purpose design` in the CLI) only for explicitly
+selected design work. **Prefer Claude for design** chooses the provider for
+that work; it never grants paid permission. Other task purposes, reviews and
+orchestration keep their routing policy. Check weekly pace advice in
+`bb boat relay status`: early fast consumption can justify Codex implementation
+while Claude orchestrates and reviews. This is an advisory decision, not an
+automatic switch at a fixed weekly percentage.
+
+A queued request can ask the owner for the native **Start and allow Claude
+continuation for this task** choice. Agents may request that form; never submit
+it on the owner's behalf. `user_approved`, prose and old start-only receipts
+are not ongoing payment consent. Preserve the original receipt and task ID.
+Task cards show provider preference separately from paid permission. **Return
+to normal routing** clears that task's design preference and revokes its scoped
+paid continuation; **Revoke paid continuation** only removes the payment
+permission and retains the Claude provider pin, even for older custom tasks.
+A revoked task stops on usage failure; only an explicit normal-routing release
+or manual provider choice permits substitution. Neither interrupts a running
+turn. Never change global/account policy to repair one designer request.
 
 ## Goals during handover
 

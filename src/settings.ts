@@ -222,21 +222,21 @@ export const PLUGIN_SETTINGS = {
     section: "usage-limits",
     type: "boolean",
     label: "Allow automatic paid Claude fallback",
-    description: "Use included allowances first. When all connected agents are near their limits, bb task chats and orchestrators may use Claude extra usage if Account Pooler reports it available. Claude enforces your billing limit; Harbormaster cannot read or set the money cap or buy credits.",
+    description: "Use included allowances first. When all connected agents are near their limits, bb task chats and orchestrators may attempt Claude extra usage through a ready, unrestricted account route, regardless of unreliable extra-usage telemetry. Claude enforces your billing limit; Harbormaster cannot read or set the money cap or buy credits.",
     default: false,
   },
   paidClaudeHeadless: {
     section: "usage-limits",
     type: "boolean",
     label: "Include headless Harbormaster tasks in paid fallback",
-    description: "Only with automatic paid Claude fallback enabled. Authorize headless tasks too after confirming Harbormaster uses the same Claude subscription account and billing controls as bb. The availability signal comes from bb; Harbormaster cannot verify every environment's login. Leave off for different accounts or API keys.",
+    description: "Only with automatic paid Claude fallback enabled. Authorize headless tasks too after confirming Harbormaster uses the same Claude subscription account and billing controls as bb. The account route signal comes from bb; Harbormaster cannot verify every environment's login. Leave off for different accounts or API keys.",
     default: false,
   },
   resumeStoppedChats: {
     section: "usage-limits",
     type: "boolean",
     label: "Resume chats stopped at a limit when paid Claude is available",
-    description: "Only with automatic paid Claude fallback enabled. Claude chats that stopped at a usage limit continue on their own once paid Claude is available, each stopped turn once. A project can opt out. Headless tasks follow the headless setting above.",
+    description: "Only with automatic paid Claude fallback enabled. Claude chats that stopped at a usage limit continue on their own when a paid attempt is authorized, each stopped turn once. A project can opt out. Headless tasks follow the headless setting above.",
     default: true,
   },
   relayEnabled: {
@@ -279,6 +279,13 @@ export const PLUGIN_SETTINGS = {
     default: 10,
   },
   // Models
+  preferClaudeForDesign: {
+    section: "models",
+    type: "boolean",
+    label: "Prefer Claude for design",
+    description: "Prefer Claude for explicitly marked Design tasks, preserving that choice through usage pressure. Paid usage requires separate consent. Other work keeps normal routing.",
+    default: false,
+  },
   implementModel: {
     section: "models",
     type: "string",

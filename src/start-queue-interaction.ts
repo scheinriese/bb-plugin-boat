@@ -3,7 +3,7 @@ import type { PluginInteractionRequest, PluginInteractionResult } from "@get-bb/
 import { PAID_START_RENDERER_ID, paidStartChoiceSchema } from "../contract-start-queue.ts";
 import { TaskError } from "./service.ts";
 import type { Provider } from "./store.ts";
-import type { StartQueue } from "./start-queue.ts";
+import type { PaidStartQuote, StartQueue } from "./start-queue.ts";
 
 export function createPaidStartInteractions(deps: {
   queue: StartQueue; waitMs: number;
@@ -23,25 +23,28 @@ export function createPaidStartInteractions(deps: {
       const requestId = randomUUID(), abort = new AbortController(), threadId = queued.threadId;
       const entry = { requestId, threadId, abort, done: Promise.resolve() };
       active.set(input.id, entry);
+      let quote: PaidStartQuote | undefined;
       entry.done = Promise.resolve().then(async () => {
-        const quote = await deps.queue.quotePaid(input.id, input.revision, input.provider);
+        quote = await deps.queue.quotePaid(input.id, input.revision, input.provider);
+        const claudeContinuationOffered = quote.provider === "claude" && quote.entry.input.role !== "review" && !quote.entry.input.parentTaskId;
         abort.signal.throwIfAborted();
         const answer = await deps.requestInput({ threadId, rendererId: PAID_START_RENDERER_ID, title: "Start on paid extra usage?",
-          payload: { requestId, queueId: input.id, title: queued.title, provider: quote.provider, quotas: quote.quotas, quotedAt: quote.quotedAt, expiresAt: quote.expiresAt }, timeoutMs: 5*60_000,
+          payload: { claudeContinuationOffered, requestId, queueId: input.id, title: queued.title, provider: quote.provider, quotas: quote.quotas, quotedAt: quote.quotedAt, expiresAt: quote.expiresAt }, timeoutMs: 5*60_000,
           presentation: { label: { pending: "Start on paid extra usage?", completed: "Paid-start choice received" }, icon: { glyph: "CircleDollarSign" } },
-          describeSubmission(value) { const choice = paidStartChoiceSchema.safeParse(value); return { title: choice.success && choice.data.requestId === requestId ? choice.data.choice === "start" ? "Confirmed this paid start" : "Keep waiting for reset" : "Paid-start choice rejected" }; },
+          describeSubmission(value) { const choice = paidStartChoiceSchema.safeParse(value); return { title: choice.success && choice.data.requestId === requestId ? choice.data.choice === "start-claude-continuation" && claudeContinuationOffered ? "Approved Claude continuation for this task only" : choice.data.choice === "start" ? "Confirmed this paid start" : "Keep waiting for reset" : "Paid-start choice rejected" }; },
         }, { signal: abort.signal });
         abort.signal.throwIfAborted();
         if (answer.outcome === "cancelled") return;
         const parsed = paidStartChoiceSchema.safeParse(answer.value);
         if (!parsed.success || parsed.data.requestId !== requestId) throw new TaskError("This paid-start choice is invalid. Request a fresh confirmation.", "paid_start_invalid");
         if (parsed.data.choice === "wait") return;
-        await deps.queue.confirmPaid(quote, deps.waitMs, abort.signal);
+        if (parsed.data.choice === "start-claude-continuation" && !claudeContinuationOffered) throw new TaskError("Claude continuation was not offered for this request. Request a fresh confirmation.", "paid_start_invalid");
+        await deps.queue.confirmPaid({ ...quote, claudePaidContinuation: parsed.data.choice === "start-claude-continuation" }, deps.waitMs, abort.signal);
       }).catch(async (error: unknown) => {
         if (abort.signal.aborted) return;
         // Persist feedback for the live receipt. Sending a chat message here
         // would wake an agent merely to report a failed confirmation.
-        try { deps.queue.paidFailure(input.id, input.revision, error); } catch { /* A corrupt/missing request stays non-dispatchable. */ }
+        try { deps.queue.paidFailure(input.id, input.revision, error, quote?.entry); } catch { /* A corrupt/missing request stays non-dispatchable. */ }
       }).finally(() => { active.delete(input.id); deps.changed(); });
       deps.changed(); return { pending: true as const, requestId, threadId, duplicate: false };
     },

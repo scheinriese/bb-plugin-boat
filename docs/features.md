@@ -906,12 +906,32 @@ checklist warns and offers **Use Auto-detect**.
   opens that chat and scrolls to the card.
 - **Start now on paid usage…** opens an in-thread confirmation for one
   queued request. It defaults to Wait and rechecks the request, project,
-  settings, provider and usage before insertion. It does not enable a
-  global billing setting or approve other queued requests.
+  meaningful start policy and provider before insertion. Reset timestamp
+  jitter and unrelated usage changes do not invalidate confirmation. It does
+  not enable a global billing setting or approve other queued requests.
+- For standalone Claude implementation/custom work, the same native form
+  offers **Start and allow Claude continuation** as a separate choice. The
+  owner permits future turns and bounded usage-limit recovery for that one
+  request/task, staying on Claude even when Pooler extra-usage telemetry is
+  missing, stale or rejected. Included allowance and billing remain under the
+  upstream provider’s controls; actual billing/auth refusals stop recovery.
+  Permission persists on the request/task and is visible in task detail/history.
+  **Revoke Claude paid continuation** prevents future automatic resumes; closed
+  tasks do not resume. Reviews and other work receive no permission. Existing
+  **Start with Claude** receipts remain start-only. A previously confirmed
+  waiting request can request a fresh native confirmation on its original
+  card, retaining its queue identity and reserved task ID (see
+  [recovering a confirmed request](settings.md#recovering-a-previously-confirmed-waiting-request)).
 - Native cold starts use bb's own waiting message queue. Its explicit
   **Send now** action bypasses dispatch hooks by core design and may use
   paid extra usage. This native override is separate from the delegated
   paid-start form.
+
+**Prefer Claude for design** is off by default. A task explicitly marked
+**Design** can stay on Claude through usage pressure while other work uses
+normal routing. This preference grants no paid permission; its chat shows the
+provider preference and payment scope separately, with **Return to normal
+routing** to clear that task’s preference and revoke its scoped approval.
 
 With both agents:
 
@@ -940,8 +960,8 @@ agent's usage.
 mobile settings page), says which agent can run now, and why:
 
 - One line on where new work goes, from the same checks a start makes:
-  "Codex is at 99% · Claude is at its weekly limit · paid Claude is
-  available, so new work goes to Claude", or "Both are at their limits ·
+  "Codex is at 99% · Claude is at its weekly limit · paid Claude attempts are
+  authorized, so new work goes to Claude", or "Both are at their limits ·
   work waits until Thu 01:00". When chats that stopped at a limit continued
   on paid Claude in the last day, it adds how many: "· 3 stopped chats
   resumed on paid Claude".

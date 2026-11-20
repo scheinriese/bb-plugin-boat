@@ -97,15 +97,12 @@ function paidClaudeHeld(view: UsageViewDto, now: number): string {
   const extra = view.claudeExtraUsage;
   if (extra.pool === "off") return "paid Claude is unknown (Account Pooler off)";
   if (extra.pool === "not-routing") return "paid Claude is unknown (Account Pooler isn’t routing Claude)";
-  if (extra.status === "rejected") return "paid Claude is blocked";
-  if (extra.status === "disabled") return "paid Claude is off";
-  if (extra.status === "allowed") return "paid Claude needs a newer check";
-  return "paid Claude is unknown";
+  return "paid Claude needs a ready, unrestricted account route";
 }
 
 /**
  * The one line on what Boat does next: "Codex is at 99% · Claude is at its
- * weekly limit · paid Claude is available, so new work goes to Claude", or
+ * weekly limit · paid Claude attempts are authorized, so new work goes to Claude", or
  * "Both are at their limits · work waits until Thu 01:00".
  */
 export function nextStepLine(view: UsageViewDto, now = Date.now()): string {
@@ -126,7 +123,7 @@ function nextStep(view: UsageViewDto, now: number): string {
       return `${fact(next.wanted)} · ${fact(next.agent!)}, so new work goes to ${NAME[next.agent!]}`;
     case "paid": {
       const facts = view.onlyAgent === null ? [fact("codex"), fact("claude")] : [fact("claude")];
-      return `${facts.join(" · ")} · paid Claude is available, so new work goes to Claude${view.paidClaudeHeadless ? "" : " (headless tasks wait)"}`;
+      return `${facts.join(" · ")} · paid Claude attempts are authorized, so new work goes to Claude${view.paidClaudeHeadless ? "" : " (headless tasks wait)"}`;
     }
     case "wait": {
       const when = next.until === null ? null : dayTime(next.until, now);

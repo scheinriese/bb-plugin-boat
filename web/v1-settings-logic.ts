@@ -10,7 +10,7 @@ export function setupNeedsWork(status: SetupStatusDto): boolean {
 }
 
 export const SETTINGS_GROUPS = [
-  { title: "Agents", keys: ["agents", "relayPreferred"] },
+  { title: "Agents", keys: ["agents", "relayPreferred", "preferClaudeForDesign"] },
   { title: "Sandboxes & cost", keys: ["machineType", "maxActiveSandboxes", "stopIdleAfterMinutes", "avoidExtraUsage", "paidClaudeFallback", "paidClaudeHeadless", "resumeStoppedChats"] },
   { title: "Orchestrators", keys: ["tasksBeforeAsking"] },
   { title: "Notifications", keys: ["notifyNeedsYou", "notifyReady", "notifyProgress"] },

@@ -25,13 +25,13 @@ export interface RelaySettings {
 
 export const PAID_USAGE_EVIDENCE_MS = 5 * 60_000;
 
-/** Never infer paid allowance from a full subscription, a reset time, or unknown usage. */
+/** Existing owner opt-in permits an attempt after included allowance; routing and real refusals still gate it. */
 export function automaticPaidClaude(quotas: Quotas, settings: RelaySettings, agents: AgentChoice = "both", now = Date.now()): boolean {
   if (settings.paidClaudeFallback !== true || agents === "codex") return false;
   const providers: Provider[] = agents === "claude" ? ["claude"] : ["claude", "codex"];
   if (!providers.every(p => { const q = quotas.get(p); return q !== undefined && Number.isFinite(q.usedPercent) && q.usedPercent >= settings.switchAtPercent; })) return false;
-  const q = quotas.get("claude")!, evidence = q.extraUsage;
-  return !(q.blockedUntil && q.blockedUntil > now) && evidence?.allowed === true && evidence.observedAt !== null && evidence.observedAt <= now && now - evidence.observedAt <= PAID_USAGE_EVIDENCE_MS;
+  const q = quotas.get("claude")!;
+  return !(q.blockedUntil && q.blockedUntil > now) && q.paidAttemptAllowed === true;
 }
 
 /** Included allowance always wins; the separately authorized paid fallback is last. */

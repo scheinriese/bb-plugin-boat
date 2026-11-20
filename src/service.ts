@@ -79,7 +79,7 @@ import {
   type Tier,
   type TierMap,
 } from "./tiers.ts";
-import { PERSONAL_PROJECT, type ChatRunner, type ChatSpawn, type ChatWhere, type ComposerRequest } from "./chat.ts";
+import { CHAT_PROVIDER, PERSONAL_PROJECT, type ChatRunner, type ChatSpawn, type ChatWhere, type ComposerRequest } from "./chat.ts";
 import { NO_PROJECT_SOURCE, type OwnProjectSource } from "./project-sources.ts";
 import type { WorkspaceInfo } from "./briefs.ts";
 import type { QuotaReader } from "./quota.ts";
@@ -109,6 +109,8 @@ import {
 } from "./steer-retry.ts";
 
 export interface BoatSettings {
+  /** An explicit design purpose prefers Claude; this grants no paid usage permission. */
+  preferClaudeForDesign?: boolean;
   boatPath: string;
   environment: string;
   machineType: MachineType;
@@ -290,6 +292,8 @@ export interface ServiceHooks {
 }
 
 export interface StartTaskInput {
+  /** Explicit owner/operator classification; never inferred from brief text. */
+  purpose?: "design" | null;
   macRentalApproval?: MacRentalQuote;
   sandboxSystem?: "linux" | "macos";
   title: string;
@@ -339,7 +343,7 @@ export interface StartTaskInput {
   /** Internal automatic native review binding; never accepted from RPC/tool input. */
   nativeReview?: { source: NativeReviewSource; signal?: AbortSignal; beforeDispatch(reviewTaskId: string): Promise<void> };
   /** Internal durable-queue insertion capability; never accepted from RPC/tool input. */
-  queuedStart?: { taskId: string; paidApproved?: boolean; beforeInsert(): Promise<void>; insert(task: Task, save: () => Task, preparedSettings: BoatSettings): Task };
+  queuedStart?: { taskId: string; paidApproved?: boolean; claudePaidContinuation?: boolean; beforeInsert(): Promise<void>; insert(task: Task, save: () => Task, preparedSettings: BoatSettings): Task };
   /** Internal public-new-work quota guard, resolved against the actual chosen agent. */
   subscriptionGuard?: { check(provider: Provider, settings: BoatSettings, runner: Runner): Promise<void>; assertCurrent(): void };
   signal?: AbortSignal;
@@ -1313,7 +1317,7 @@ export class BoatService {
   }
 
   /** Automatic/public work cannot turn an explicit agent/model into paid approval. */
-  async assertSubscriptionRoom(provider: Provider, options: { settings?: BoatSettings; signal?: AbortSignal; runner?: Runner } = {}): Promise<boolean> {
+  async assertSubscriptionRoom(provider: Provider, options: { settings?: BoatSettings; signal?: AbortSignal; runner?: Runner; projectId?: string | null; repo?: string | null } = {}): Promise<boolean> {
     const settings = options.settings ?? await this.settings();
     if (!checksSubscription(settings)) return false;
     if (!this.hooks.quotas) {
@@ -1332,6 +1336,9 @@ export class BoatService {
     const room = subscriptionRoom(provider, quotas, settings, { runner: options.runner, ...(current ? { current } : {}) });
     if (room === "unconfirmed") throw new TaskError("Current usage or the saved fallback policy could not be confirmed. This work will wait.", "agents_at_limit");
     if (room === "wait") throw new TaskError(`${AGENT_NAME[provider]} is near its usage limit. This work will wait for a reset.`, "agents_at_limit");
+    if (room === "paid" && governingProject(this.hooks.projects?.() ?? [], options.projectId ?? null, options.repo ?? null)?.neverPaidClaude) {
+      throw new TaskError("This project does not permit automatic paid Claude. Wait for included allowance to reset.", "agents_at_limit");
+    }
     return room === "paid";
   }
 
@@ -1364,6 +1371,10 @@ export class BoatService {
     // Where its sandbox runs: a named sandbox's provider, its parent's, else its project's (Runs on).
     const sandboxProvider = this.providerForNewTask(input, parent, boatProject, repo);
     const storedProject = governingProject(this.hooks.projects?.() ?? [], boatProject, repo);
+    const scopedClaude = input.queuedStart?.claudePaidContinuation === true;
+    if (scopedClaude && (!input.queuedStart?.paidApproved || input.role === "review" || parent !== null || input.provider !== "claude" || storedProject?.neverPaidClaude)) {
+      throw new TaskError("Claude continuation needs explicit confirmation for this task and a project that permits it.", "claude_continuation_unavailable");
+    }
     const sandboxSystem = parent !== null ? parent.sandboxSystem ?? "linux" : input.sandboxSystem ?? storedProject?.sandboxSystem ?? sandboxProvider.caps.os;
     if (sandboxSystem === "macos" && !canHostMac(sandboxProvider)) throw new TaskError(`${sandboxProvider.displayName} cannot host Mac tasks. Choose a Mac provider in Runs on.`, "provider_unavailable");
     const protect = protectedBranches(
@@ -1378,12 +1389,14 @@ export class BoatService {
     const askedEffort = input.reasoningEffort?.trim() || null;
     const choiceAgent = modelAgent(askedModel) ?? effortAgent(askedEffort);
     const flexible = input.provider == null || input.flexibleAgent === true;
-    const namesAgent = !flexible || askedModel !== null || effortAgent(askedEffort) !== null;
-    let provider = (flexible ? choiceAgent : null) ?? input.provider ?? roleProvider;
+    const designClaudePreference = input.role !== "review" && input.purpose === "design" && settings.preferClaudeForDesign === true && input.provider !== "codex" && choiceAgent !== "codex";
+    const namesAgent = designClaudePreference || !flexible || askedModel !== null || effortAgent(askedEffort) !== null;
+    let provider = designClaudePreference ? "claude" as Provider : (flexible ? choiceAgent : null) ?? input.provider ?? roleProvider;
     // With one agent (Coding agents), everything runs on it; a setting or
     // request for the other one falls back with a note instead of failing.
     const only = onlyAgent(settings.agents);
     let agentNote: string | null = null;
+    if (designClaudePreference && (only === "codex" || settings.notConnectedAgents.includes("claude"))) throw new TaskError("Design work prefers Claude, but Claude is unavailable. Connect Claude or explicitly choose another agent.", "agents_at_limit");
     if (only !== null && provider !== only) {
       agentNote = `Only ${AGENT_NAME[only]} is set up (Coding agents), so ${AGENT_NAME[only]} runs this ${input.role === "review" ? "review" : "task"} instead of ${AGENT_NAME[provider]}`;
       provider = only;
@@ -1561,6 +1574,10 @@ export class BoatService {
       id,
       title: clip(title, 200),
       compactTitle: input.compactTitle?.trim().slice(0, 120) || null,
+      claudePaidContinuation: scopedClaude && provider === "claude",
+      claudePaidContinuationRevoked: false,
+      purpose: input.purpose ?? null,
+      designClaudePreference,
       role: input.role,
       status: "starting",
       orchestratorThreadId: input.orchestratorThreadId ?? null,
@@ -1606,7 +1623,7 @@ export class BoatService {
       startOptions: {machineType:sizing.type,confirmUntrustedChat:input.confirmUntrustedChat ?? null},
     };
     if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings, runner);
-    const paidFallback = settings.relay.paidClaudeFallback === true && !input.queuedStart?.paidApproved && await this.assertSubscriptionRoom(provider, { settings, signal: input.signal, runner });
+    const paidFallback = (settings.relay.paidClaudeFallback === true || designClaudePreference) && !input.queuedStart?.paidApproved && await this.assertSubscriptionRoom(provider, { settings: designClaudePreference ? { ...settings, avoidExtraUsage: true } : settings, signal: input.signal, runner, projectId: boatProject, repo });
     if (input.nativeReview) {
       await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal, runner });
       this.assertNativeReviewSource(input.nativeReview.source);
@@ -1933,7 +1950,9 @@ export class BoatService {
     let createdHost: string | null = null;
     // Stop as soon as the task is closed (or the plugin unloads).
     const stillWanted = () => {
-      if (signal.aborted || this.store.get(id)?.status !== "starting") throw new DispatchCancelled();
+      const current = this.store.get(id);
+      if (signal.aborted || current?.status !== "starting") throw new DispatchCancelled();
+      if (initial.claudePaidContinuation === true && (current.claudePaidContinuation !== true || current.claudePaidContinuationRevoked === true)) throw new TaskError("This task's Claude continuation permission changed before dispatch.", "claude_continuation_revoked");
       if (input.nativeReview) { input.nativeReview.signal?.throwIfAborted(); this.assertNativeReviewSource(input.nativeReview.source); }
     };
     try {
@@ -2167,6 +2186,7 @@ export class BoatService {
         extraInstructions: [
           settings.workerInstructions,
           ...projectNotes,
+          this.claudeConsentInstructions(task),
           `Before your final report block, put this live card marker on its own line: ${taskMarker(task.role === "review" ? "review" : "task", task.id)}. Keep the report block intact.`,
           sharesParentCheckout
             ? "You share this sandbox and checkout with the task you review. Do not edit files, commit, push, or switch branches; only read, build, and test."
@@ -2192,6 +2212,7 @@ export class BoatService {
       }
       const conversationId = randomUUID();
       task = this.store.update(id, { conversationId }) ?? task;
+      await this.assertScopedClaudeCurrent(initial, signal);
       stillWanted();
       const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: sandbox.id,
@@ -2237,9 +2258,11 @@ export class BoatService {
       this.store.transition(id, ["starting"], { status: "failed", error: (failure as {code?:string}).code==="mac_rental_confirmation_required"?null:clip(message, 4000), finishedAt: new Date().toISOString() });
       this.store.addEvent(id, "failed", message, transient ? { source: "system", cause: "bootstrap_retryable", detail: `npm ${transient.code}; ${transient.attempts} installation attempts; no agent started` } : task.sandboxProvider && task.sandboxProvider!==DEFAULT_PROVIDER_ID ? {source:"system",cause:(failure as {code?:string}).code ?? "provider_failed"} : {});
       this.hooks.changed([id]);
-      // Do not leave a fresh sandbox behind when setup failed.
+      // A scoped Claude task keeps its workspace for owner recovery.
       release();
-      await this.discardNew(id, createdSandbox, createdHost);
+      if (initial.claudePaidContinuation === true && task.sandboxId !== null) {
+        this.store.addEvent(id, "claude-continuation-stopped", "Claude did not start. The task and workspace are preserved. Check the failure before continuing manually; no other provider will be started automatically.");
+      } else await this.discardNew(id, createdSandbox, createdHost);
       if (task.sandboxProvider && task.sandboxProvider !== DEFAULT_PROVIDER_ID && failure instanceof Error) {
         // Preserve the provider's error type/code while tools can return the live card.
         Object.defineProperty(failure,"taskId",{value:id,configurable:true});
@@ -2283,11 +2306,15 @@ export class BoatService {
    */
   private async spawnTaskChat(args: ChatSpawn, stillWanted: () => void = () => undefined, signal: AbortSignal = this.hooks.lifecycle): Promise<{ threadId: string; environmentId: string | null }> {
     const task = this.store.get(args.taskId);
+    const assertConsent = async () => {
+      if (task) await this.assertScopedClaudeCurrent(task, signal);
+      stillWanted();
+    };
     if (task?.sandboxId) await this.codexHealth(this.sandboxProvider(task), task.sandboxId, args.provider, line => this.store.addEvent(task.id, "machine", line), signal);
     stillWanted();
     const chat = this.hooks.chat!;
     const { where, projectId } = args;
-    if (where.kind !== "machine" || where.path === null || isPersonalProject(projectId)) return chat.spawn(args);
+    if (where.kind !== "machine" || where.path === null || isPersonalProject(projectId)) { await assertConsent(); return chat.spawn(args); }
     let why: string | null = null;
     try {
       await this.ensureProjectSource(args.taskId, projectId!, where.hostId, where.path);
@@ -2297,6 +2324,7 @@ export class BoatService {
     stillWanted();
     if (why === null) {
       try {
+        await assertConsent();
         const spawned = await chat.spawn(args);
         if (this.inPersonalFallback(args.taskId)) {
           this.store.addEvent(args.taskId, "project-chat", `Opened the chat in bb project ${projectId}; later chats in its workspace open there too.`);
@@ -2309,6 +2337,7 @@ export class BoatService {
     }
     this.hooks.log.warn(`task ${args.taskId}: ${why}`);
     this.store.addEvent(args.taskId, "project-fallback", `${why.replace(/\.?$/, ".")} Opened the chat in Personal instead, still under its orchestrator.`);
+    await assertConsent();
     return chat.spawn({ ...args, projectId: PERSONAL_PROJECT });
   }
 
@@ -3089,6 +3118,7 @@ export class BoatService {
           "Steer without those options, or wait for the turn to finish (or interrupt it) and send a follow-up with the new model preset or agent.",
         );
       }
+      await this.assertScopedClaudeCurrent(task, options.signal);
       if (isChat) await this.hooks.chat!.send(task.threadId!, message, { steer: true });
       else await this.sandboxProvider(task).steer(task.sandboxId!, task.conversationId!, message, options.signal);
       this.store.addEvent(task.id, "steered", clip(message, 2000));
@@ -3106,7 +3136,22 @@ export class BoatService {
     // or an effort level only it has).
     const namesAgent =
       options.provider != null || (options.model?.trim() ?? "") !== "" || effortAgent(options.effort?.trim() || null) !== null;
-    const roomy = namesAgent ? null : await this.agentWithRoomFor(task, settings);
+    const scopedClaude = task.claudePaidContinuation === true && task.claudePaidContinuationRevoked !== true && task.provider === "claude" && task.role !== "review";
+    if (scopedClaude && (options.provider === "codex" || modelAgent(options.model?.trim() || null) === "codex" || effortAgent(options.effort?.trim() || null) === "codex" || only === "codex" || settings.notConnectedAgents.includes("claude"))) {
+      throw new TaskError("This task has Claude-only continuation permission. Reconnect Claude, or revoke that permission before changing agents.", "claude_continuation_provider");
+    }
+    if (scopedClaude && governingProject(this.hooks.projects?.() ?? [], task.boatProject, task.repo)?.neverPaidClaude) {
+      throw new TaskError("This project does not permit paid Claude continuation. Revoke the task permission or change the project policy before continuing.", "claude_continuation_unavailable");
+    }
+    if (task.designClaudePreference && (options.provider === "codex" || modelAgent(options.model?.trim() || null) === "codex" || effortAgent(options.effort?.trim() || null) === "codex" || only === "codex" || settings.notConnectedAgents.includes("claude"))) {
+      throw new TaskError("This design task prefers Claude. Return it to normal routing before changing agents.", "design_claude_preference");
+    }
+    const revokedPinned = task.provider === "claude" && task.claudePaidContinuationRevoked === true && task.claudeNormalRouting !== true;
+    if (revokedPinned && options.provider !== "codex" && (only === "codex" || settings.notConnectedAgents.includes("claude"))) {
+      throw new TaskError("This task stays on Claude after payment revocation. Reconnect Claude, return to normal routing, or explicitly choose another agent.", "claude_continuation_provider");
+    }
+    const claudePinned = this.claudeRoutingPinned(task);
+    const roomy = namesAgent || claudePinned ? null : await this.agentWithRoomFor(task, settings);
     const wanted = options.provider ?? roomy?.provider ?? task.provider;
     const provider = only ?? wanted;
     const agentNote =
@@ -3144,7 +3189,13 @@ export class BoatService {
       this.store.latestEvent(task.id, "approval") !== null;
     assertFrontierAllowed(settings.modelTiers, tier, model, reasoningEffort, options.userApproved === true || keepsApproval);
     if (options.dryRun === true) return task;
-    if (settings.relay.paidClaudeFallback) await this.assertSubscriptionRoom(provider, { settings, signal: options.signal, runner: task.runner });
+    await this.assertScopedClaudeCurrent(task, options.signal);
+    if ((settings.relay.paidClaudeFallback || task.designClaudePreference || revokedPinned) && !scopedClaude) {
+      const admission = revokedPinned
+        ? { ...settings, avoidExtraUsage: true, relay: { ...settings.relay, paidClaudeFallback: false } }
+        : task.designClaudePreference ? { ...settings, avoidExtraUsage: true } : settings;
+      await this.assertSubscriptionRoom(provider, { settings: admission, signal: options.signal, runner: task.runner, projectId: task.boatProject, repo: task.repo });
+    }
     const newlyApproved =
       options.userApproved === true && !keepsApproval && needsFrontierApproval(settings.modelTiers, tier, model, reasoningEffort);
     const reason = options.reason?.trim()
@@ -3185,13 +3236,14 @@ export class BoatService {
       // Now that the sandbox is up, its login can be asked directly.
       if (needsGithub) await this.assertGithubLogin(task, { signal: options.signal });
       const note = await this.resumeNoteFor(task.id);
+      await this.assertScopedClaudeCurrent(task, options.signal);
       const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
         // A new agent on a Deep task gets the working mode for its own tools.
         prompt: this.withNote(
           note,
-          composeFollowupPrompt(task.role, message, {
+          composeFollowupPrompt(task.role, [message, this.claudeConsentInstructions(task)].filter(Boolean).join("\n\n"), {
             enteringDeep,
             provider,
             evidence: this.hasEvidence(task.id),
@@ -3305,6 +3357,7 @@ export class BoatService {
       if (task.hostId !== null) this.suspendedHosts.delete(task.hostId);
       try {
         const note = await this.resumeNoteFor(task.id);
+        await this.assertScopedClaudeCurrent(task, options.signal);
         await this.hooks.chat!.send(task.threadId!, this.withNote(note, composeEvidencePrompt(task.role, message, "chat")), { steer: false });
         this.noteSent(task.id, note);
       } catch (error) {
@@ -3325,6 +3378,7 @@ export class BoatService {
       this.sizes.assertCanFollowup(task); // sizes
       await this.ensureRunning(task.sandboxId!, options.signal);
       const note = await this.resumeNoteFor(task.id);
+      await this.assertScopedClaudeCurrent(task, options.signal);
       const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
@@ -3408,11 +3462,12 @@ export class BoatService {
         return this.store.update(task.id, { threadId }) ?? claimed;
       }
       const note = await this.resumeNoteFor(task.id);
+      await this.assertScopedClaudeCurrent(task);
       await chat.send(
         task.threadId!,
         this.withNote(
           note,
-          composeFollowupPrompt(task.role, message, {
+          composeFollowupPrompt(task.role, [message, this.claudeConsentInstructions(task)].filter(Boolean).join("\n\n"), {
             enteringDeep: next.enteringDeep,
             provider: next.provider,
             runner: "chat",
@@ -3499,7 +3554,7 @@ export class BoatService {
    */
   private async retryAfterSteer(task: Task, now: number): Promise<"retried" | "wait" | "tried" | "unsent" | "no"> {
     const chat = this.hooks.chat!;
-    if (task.status !== "running" || task.threadId === null) return "no";
+    if (task.status !== "running" || task.threadId === null || task.claudePaidContinuationRevoked === true) return "no";
     const turn = await this.failedChatTurn(task.threadId);
     if (turn === undefined || turn === null) return "no";
     const record = parseAutoRetryRecord(this.store.latestEvent(task.id, AUTO_RETRY_RECORD)?.text);
@@ -3516,9 +3571,16 @@ export class BoatService {
     if (task.hostId === null) return "no";
     const machine = await chat.machineState(task.hostId).catch(() => null);
     if (machine === null || machine.phase !== "active" || !machine.connected) return "no";
+    // Consent reads can overlap newer turns and failures. Finish them before
+    // the final chat/event validation; claim and send below have no other await.
+    try { await this.assertScopedClaudeCurrent(task); } catch { return "no"; }
     // Send now or never: look again right before the send, and skip for good if anything came in.
     const state = await chat.state(task.threadId).catch(() => null);
     if (state === null || state.archived) return "wait";
+    if (state.providerId != null && state.providerId !== CHAT_PROVIDER[task.provider]) {
+      this.skipRetry(task, turn.key, "the chat provider changed");
+      return "no";
+    }
     if ((state.status !== "idle" && state.status !== "error") || state.queued > 0 || state.backgroundAgents > 0 || (state.workflows ?? 0) > 0) {
       // Something else keeps the chat going (a turn, a queued message): the task follows that.
       this.skipRetry(task, turn.key, "the chat was busy");
@@ -3535,10 +3597,18 @@ export class BoatService {
       this.skipRetry(task, turn.key, "the chat moved on");
       return "no";
     }
-    // Claimed in one step with no await before the send: a sweep and an event at once, or a reload, retry at most once.
+    // Final local decision after every asynchronous read: consent, provider and
+    // project policy can change during the chat reads too. Keep this snapshot,
+    // the claim and the send invocation synchronous with the event validation.
     const current = this.store.get(task.id);
-    if (current === null || current.status !== "running" || current.promptId !== task.promptId || current.threadId !== task.threadId) return "wait";
-    if (this.interruptRequestedSince(current)) return "no";
+    if (current === null || current.status !== "running" || current.promptId !== task.promptId || current.threadId !== task.threadId ||
+      current.provider !== task.provider || current.role !== task.role || current.repo !== task.repo ||
+      current.boatProject !== task.boatProject || current.projectId !== task.projectId) return "wait";
+    if (this.interruptRequestedSince(current) || current.claudePaidContinuationRevoked === true ||
+      (current.claudePaidContinuation === true) !== (task.claudePaidContinuation === true)) return "no";
+    // Also governs global-policy retries. A retry cannot choose its upstream
+    // billing bucket, so the current project opt-out vetoes automatic Claude.
+    if (current.provider === "claude" && governingProject(this.hooks.projects?.() ?? [], current.boatProject, current.repo)?.neverPaidClaude) return "no";
     if (parseAutoRetryRecord(this.store.latestEvent(task.id, AUTO_RETRY_RECORD)?.text)?.failed === turn.key) return "tried";
     const marker = chatTurnMarker();
     const claimed = this.store.transition(task.id, ["running"], { promptId: marker, turns: task.turns + 1 }, { promptId: task.promptId });
@@ -3666,9 +3736,48 @@ export class BoatService {
     return spawned.threadId;
   }
 
+  /** Removing payment permission does not release the task's provider choice. */
+  private claudeRoutingPinned(task: Task): boolean {
+    return task.provider === "claude" && (task.designClaudePreference === true || task.claudePaidContinuation === true ||
+      task.claudePaidContinuationRevoked === true && task.claudeNormalRouting !== true);
+  }
+
+  /** The same running turn must still permit automatic provider substitution. */
+  private canAutomaticallyFailover(task: Task): boolean {
+    const current = this.store.get(task.id);
+    return current !== null && current.status === "running" && current.provider === task.provider &&
+      current.promptId === task.promptId && current.threadId === task.threadId && current.conversationId === task.conversationId &&
+      !this.claudeRoutingPinned(current);
+  }
+
+  /** Consent bypasses extra-usage observations, never a known route or login blocker. */
+  private async assertScopedClaudeCurrent(task: Task, signal?: AbortSignal): Promise<void> {
+    if (task.claudePaidContinuation !== true || task.claudePaidContinuationRevoked === true || task.provider !== "claude" || task.role === "review") return;
+    const quotas = await this.hooks.quotas?.read(signal, { fresh: true }).catch(() => null);
+    signal?.throwIfAborted(); this.hooks.lifecycle.throwIfAborted();
+    const settings = await this.settings();
+    signal?.throwIfAborted(); this.hooks.lifecycle.throwIfAborted();
+    const current = this.store.get(task.id);
+    if (!current || current.claudePaidContinuation !== true || current.claudePaidContinuationRevoked === true || current.provider !== "claude" || current.threadId !== task.threadId || current.status === "done" || current.status === "cancelled") {
+      throw new TaskError("This task's Claude continuation permission changed. Review its current state before continuing.", "claude_continuation_revoked");
+    }
+    if (onlyAgent(settings.agents) === "codex" || settings.notConnectedAgents.includes("claude") || quotas?.get("claude")?.paidAttemptAllowed !== true) {
+      throw new TaskError("Claude's account route or login is unavailable. Reconnect the permitted Claude account before continuing this task.", "claude_continuation_unavailable");
+    }
+    if (governingProject(this.hooks.projects?.() ?? [], current.boatProject, current.repo)?.neverPaidClaude) {
+      throw new TaskError("This project does not permit paid Claude continuation. Review the project policy before continuing.", "claude_continuation_unavailable");
+    }
+  }
+
+  private claudeConsentInstructions(task: Task): string {
+    return task.claudePaidContinuation === true && task.claudePaidContinuationRevoked !== true
+      ? `[boat owner consent for ${task.id}] This task alone may continue on Claude using remaining included allowance and permitted paid usage. This supersedes only an earlier no-paid-usage instruction for this task. Upstream decides billing and availability; no wallet balance is known. It authorizes no other task, review, provider, or purchase. All other task requirements still apply.`
+      : "";
+  }
+
   /** The settings' and the project's standing instructions for a task's agent. */
   private standingInstructions(task: Task, settings: BoatSettings): string {
-    return [settings.workerInstructions, ...(this.hooks.projectInstructions?.(task.boatProject, task.repo) ?? [])].filter((part) => part.trim() !== "").join("\n\n");
+    return [settings.workerInstructions, ...(this.hooks.projectInstructions?.(task.boatProject, task.repo) ?? []), this.claudeConsentInstructions(task)].filter((part) => part.trim() !== "").join("\n\n");
   }
 
   /** Where a task's code is, for a chat that takes it over (a handover, a move from boat). */
@@ -4435,6 +4544,8 @@ export class BoatService {
       const current = this.store.get(id);
       if (current === null || current.status === "done" || current.status === "cancelled") return new MoveCancelled("closed");
       if (current.status === "running" || current.status === "starting" || current.promptId !== initial.promptId || current.runner !== "boat") return new MoveCancelled("changed");
+      if (initial.claudePaidContinuation === true && (current.claudePaidContinuation !== true || current.claudePaidContinuationRevoked === true)) return new MoveCancelled("changed");
+      if (initial.designClaudePreference === true && current.designClaudePreference !== true) return new MoveCancelled("changed");
       return null;
     };
     const stillWanted = () => {
@@ -4554,6 +4665,9 @@ export class BoatService {
       });
 
       // 7. The chat, in the task's checkout on the machine.
+      await this.assertScopedClaudeCurrent(initial, signal);
+      if (initial.designClaudePreference && !initial.claudePaidContinuation) await this.assertSubscriptionRoom(initial.provider, { settings: { ...settings, avoidExtraUsage: true }, signal, runner: "chat", projectId: initial.boatProject, repo: initial.repo });
+      stillWanted();
       const spawned = await this.spawnTaskChat(
         {
           taskId: id,
@@ -5188,7 +5302,8 @@ export class BoatService {
     const shippedBeforeClose = leases.length > 0 && this.shippedSinceLastTurn(task);
     let permanentMacKeep = options.keepSandbox === true && leases.length > 0;
     if (permanentMacKeep) for (const lease of leases) await this.keepMacLease(lease,options.signal);
-    const updated = this.store.update(task.id, { status, finishedAt: new Date().toISOString(), shipApproval: null }) ?? task;
+    const updated = this.store.update(task.id, { status, finishedAt: new Date().toISOString(), shipApproval: null, ...(task.claudePaidContinuation ? { claudePaidContinuation: false, claudePaidContinuationRevoked: true } : {}) }) ?? task;
+    if (task.claudePaidContinuation) this.store.addEvent(task.id, "claude-continuation-revoked", "Claude continuation permission closed with this task. Reopening work does not restore payment permission.");
     // Stop an in-flight dispatch, then the running turn.
     this.dispatches.get(task.id)?.abort();
     if (task.status === "running" && task.runner === "chat" && task.threadId && this.hooks.chat) {
@@ -5627,7 +5742,7 @@ export class BoatService {
         const current = this.store.get(task.id);
         if (!current || !OPEN_STATUSES.includes(current.status)) return false;
         const outcome = await this.macCloseOutcome(current,this.hooks.lifecycle);
-        const closed = this.store.transition(task.id,["running","idle","failed"],{status:"cancelled",finishedAt:nowIso,shipApproval:null});
+        const closed = this.store.transition(task.id,["running","idle","failed"],{status:"cancelled",finishedAt:nowIso,shipApproval:null,...(current.claudePaidContinuation?{claudePaidContinuation:false,claudePaidContinuationRevoked:true}:{})});
         if (!closed) return false;
         for (const lease of macLeases) {
           this.store.macLeases.resolveTask(lease.id,task.id,outcome,current.turns);
@@ -5639,7 +5754,7 @@ export class BoatService {
         return true;
       });
       // Archived or deleted by hand: the work there is over, and so is its machine.
-      const closed = this.store.transition(task.id, ["running", "idle", "failed"], { status: "cancelled", finishedAt: nowIso, shipApproval: null });
+      const closed = this.store.transition(task.id, ["running", "idle", "failed"], { status: "cancelled", finishedAt: nowIso, shipApproval: null, ...(task.claudePaidContinuation ? { claudePaidContinuation: false, claudePaidContinuationRevoked: true } : {}) });
       if (closed === null) return false;
       this.store.addEvent(task.id, "cancelled", "The task chat was archived or deleted");
       const settings = await this.settings();
@@ -5770,13 +5885,14 @@ export class BoatService {
 
   /** A worker chat hit a usage limit: the other agent continues in a new chat in the same workspace. */
   private async chatFailover(task: Task, reason: string): Promise<boolean> {
+    if (!this.canAutomaticallyFailover(task)) return false;
     const settings = await this.settings();
     // With one agent there's nobody to hand over to.
     if (!settings.autoFailover || onlyAgent(settings.agents) !== null) return false;
     if (this.store.events(task.id, 1).at(-1)?.kind === "failover") return false;
     const next: Provider = task.provider === "claude" ? "codex" : "claude";
     if (settings.relay.paidClaudeFallback) {
-      try { await this.assertSubscriptionRoom(next, { settings, runner: "chat" }); } catch { return false; }
+      try { await this.assertSubscriptionRoom(next, { settings, runner: "chat", projectId: task.boatProject, repo: task.repo }); } catch { return false; }
     }
     const tier = isTier(task.tier) ? task.tier : null;
     const choice = tier === null ? null : choiceFor(settings.modelTiers, tier, next);
@@ -5788,6 +5904,7 @@ export class BoatService {
     const fromBoat = start?.kind === "moved-to-chat";
     const lastFollowup =
       start?.kind === "followup" ? start.text : start?.kind === "followup-switch" ? start.text.replace(/^\([a-z]+ → [a-z]+\) /, "") : null;
+    if (!this.canAutomaticallyFailover(task)) return false;
     const marker = chatTurnMarker();
     const claimed = this.store.transition(
       task.id,
@@ -5927,13 +6044,14 @@ export class BoatService {
    * with the other agent (boat hands over the transcript). One switch per turn.
    */
   private async failover(task: Task, reason: string): Promise<Task | null> {
+    if (!this.canAutomaticallyFailover(task)) return null;
     const settings = await this.settings();
     if (!settings.autoFailover || onlyAgent(settings.agents) !== null || task.sandboxId === null || task.conversationId === null) return null;
     const last = this.store.events(task.id, 1).at(-1);
     if (last?.kind === "failover") return null;
     const next: Provider = task.provider === "claude" ? "codex" : "claude";
     if (settings.relay.paidClaudeFallback) {
-      try { await this.assertSubscriptionRoom(next, { settings, runner: "boat" }); } catch { return null; }
+      try { await this.assertSubscriptionRoom(next, { settings, runner: "boat", projectId: task.boatProject, repo: task.repo }); } catch { return null; }
     }
     // Same tier on the other agent; without a tier, its configured default.
     const tier = isTier(task.tier) ? task.tier : null;
@@ -5944,6 +6062,7 @@ export class BoatService {
     const release = this.claim(task.sandboxId);
     try {
       await this.ensureRunning(task.sandboxId, this.hooks.lifecycle);
+      if (!this.canAutomaticallyFailover(task)) return null;
       const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: task.sandboxId,
         conversationId: task.conversationId,

@@ -56,7 +56,7 @@ test("everyday controls follow the handoff and preserve every other setting in A
   const all = [...grouped.groups.flatMap((group) => group.rows), ...grouped.advanced];
   assert.equal(new Set(all.map((row) => row.key)).size, rows.length);
   assert.equal(all.length, rows.length);
-  assert.deepEqual(grouped.groups.find((group) => group.title === "Agents")!.rows.map((row) => row.key), ["agents", "relayPreferred"]);
+  assert.deepEqual(grouped.groups.find((group) => group.title === "Agents")!.rows.map((row) => row.key), ["agents", "relayPreferred", "preferClaudeForDesign"]);
   assert.deepEqual(grouped.groups.find((group) => group.title === "Notifications")!.rows.map((row) => row.key), ["notifyNeedsYou", "notifyReady", "notifyProgress"]);
   assert.ok(grouped.advanced.some((row) => row.key === "implementProvider"));
 });

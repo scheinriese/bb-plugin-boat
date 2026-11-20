@@ -1,3 +1,4 @@
+import { DesignPurposeField } from "./claude-design";
 import { createBlockedStart } from "./blocked-start";
 import { ProviderFailureCard } from "./provider-failure";
 // Dialogs: new task / sandbox / orchestrator, review, close task, and a
@@ -250,6 +251,7 @@ export function NewTaskForm({
   const [branch, setBranch] = useState("");
   const [baseBranch, setBaseBranch] = useState("");
   const [role, setRole] = useState<Role>("implement");
+  const [purpose, setPurpose] = useState<"design" | null>(null);
   const [provider, setProvider] = useState<Provider | null>(null);
   const [model, setModel] = useState("");
   const [sandbox, setSandbox] = useState(NEW_SANDBOX);
@@ -276,7 +278,7 @@ export function NewTaskForm({
   const defaults = overview.data?.defaults;
   // With one agent (Coding agents), it's the only choice.
   const onlyAgent = defaults?.onlyAgent ?? null;
-  const roleDefault = role === "review" ? defaults?.reviewProvider : defaults?.implementProvider;
+  const roleDefault = role === "review" ? defaults?.reviewProvider : purpose === "design" && settingsState.values?.preferClaudeForDesign === true ? "claude" : defaults?.implementProvider;
   const effectiveProvider: Provider = provider ?? roleDefault ?? "claude";
   const activeSandboxes = (sandboxes.data?.sandboxes ?? []).filter(
     (entry) => isSandboxActive(entry.state) && !entry.uses.some((use) => use.open && use.kind !== "task"),
@@ -377,6 +379,7 @@ export function NewTaskForm({
         title: effectiveTitle,
         brief: brief.trim(),
         role,
+        purpose: role === "review" ? null : purpose,
         repo: repo.trim() || null,
         branch: branch.trim() || null,
         baseBranch: baseBranch.trim() || null,
@@ -458,6 +461,7 @@ export function NewTaskForm({
         </div>
       ) : (
         <>
+          {role !== "review" && <DesignPurposeField id={`${uid}-purpose`} value={purpose} onChange={setPurpose} preferClaude={settingsState.values?.preferClaudeForDesign === true}/>}
           <Field
             label="Repository"
             htmlFor={`${uid}-repo`}

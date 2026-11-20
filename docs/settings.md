@@ -233,6 +233,116 @@ If values were already lost by an older update before this migration was
 available, restore a backup or set them with `bb boat config set`; the
 migration cannot reconstruct values that are no longer stored.
 
+## Prefer Claude for design
+
+**Prefer Claude for design** is a saved Agents setting, off by default. Mark a
+new task’s **Task purpose** as **Design** to use it; the plugin never infers
+purpose from a title or brief. It pins that task to Claude through usage
+pressure, while an explicit Codex agent/model choice still wins at creation.
+Other implementation work keeps normal quota/pace routing. A design task
+waits at its usage limit unless a separate native task approval or the
+existing enabled global fallback permits a paid attempt. Turning the design
+preference on does not enable either payment policy.
+
+The task chat and task detail show design preference and paid permission
+separately. **Return to normal routing** clears that task’s preference and
+revokes its scoped paid continuation. Future manual turns follow ordinary
+routing and any separately enabled global payment policy. This explicit routing
+release is persisted separately from payment-only revocation. Revoked scoped
+permission keeps automatic paid resumes disabled for this task, including the
+global stopped-chat recovery. Already running turns are unchanged. Turning the
+global design setting off affects new tasks, while existing task preference
+stays visible until cleared.
+
+## Weekly Claude pace advice
+
+`bb boat relay status` adds advice when Account Pooler provides an explicit
+all-model weekly window and current average usage projects beyond the weekly
+allowance before reset. This can recommend conserving Claude even while its
+percentage is well below the normal cutoff: favor Codex for flexible
+implementation, retaining Claude for orchestration/reviews until that cutoff.
+A sustainable pace keeps the preferred agent. This is an advisory decision for
+the orchestrator, not a new automatic routing cutoff or permission for paid
+usage; explicitly pinned and task-scoped Claude work stays pinned.
+
+The projection uses the elapsed portion of the reported weekly window. It
+waits for at least one hour of that window, omits expired/unknown windows and
+clears its conservation advice only below 95% projected use to reduce reading
+jitter. A new weekly reset starts fresh. It is an average, not a forecast of
+future demand; no fixed 40–50% threshold is encoded. Previously the plugin had
+only the configured usage cutoff, so earlier conservation choices were
+orchestrator judgment rather than a persisted pace policy.
+
+## Claude paid continuation for one task
+
+A waiting delegated request can receive an explicit owner approval without
+changing the global fallback setting. In its original chat, open **Start now on
+paid usage…** and choose **Start and allow Claude continuation**. This additional
+choice is offered for standalone Claude implementation/custom work, not reviews
+or side work attached to another task. The default remains **Wait for the
+reset**. **Start with Claude** retains the prior start-only approval; neither
+that choice, an older resolved confirmation, `userApproved`, nor agent-written
+text grants ongoing permission. An agent may request the native confirmation
+but must never submit it for the owner.
+
+**Revoke Claude paid continuation** removes payment authority while retaining
+Claude as the task's provider, including older custom tasks without Design
+metadata. A usage failure then stops with its workspace intact; revocation
+never starts Codex automatically. Default follow-ups require included Claude
+room. To release provider routing as well, choose **Return to normal routing**;
+an explicit manual provider choice is also available. Neither action interrupts
+the running turn, and normal routing does not restore revoked paid recovery.
+
+The permission belongs to that logical queued request and its reserved task ID.
+The confirmed intent is persisted, and transfers to the task in the same
+transaction that inserts it. It survives reloads and is visible on the queue
+receipt, task detail and history. Future follow-ups and bounded recovery of
+usage-limit failures stay on Claude for that task. Its permission does not
+transfer to reviews, other tasks, providers, chats or orchestrators. Included
+allowance is used first by the upstream provider; Harbormaster cannot choose a
+billing bucket or verify remaining funds. Headless execution uses its own
+environment's Claude login and billing controls, which the confirmation names.
+
+For this task only, missing, stale or rejected Pooler extra-usage observations
+are not a paid-availability veto. They are not evidence of money or availability,
+either. Actual provider billing, authentication or spend refusals remain
+controlling; recovery is paced, deduplicated and bounded. A failed task keeps
+its workspace and error so the owner can resolve the provider/account problem
+before continuing. If the first dispatch failed before a conversation or task
+chat was created, ordinary follow-up cannot retry it in place. Inspect the
+existing failure and allocated sandbox; after fixing the account, make a new
+request that explicitly reuses that sandbox/workspace and obtain fresh native
+consent for the new task. Permission never transfers. If the native chat exists,
+continue in that original chat after resolving the refusal. There is no hidden
+in-place initial-dispatch retry or database-edit step. Harbormaster never buys
+credits or changes account/global
+limits. A project configured to never continue on paid Claude still prevents
+automatic recovery.
+
+Before insertion, cancel the queued request to withdraw its approval. Use
+**Revoke Claude paid continuation** on the task detail to prevent future
+automatic paid resumes. Closing the task also prevents them. Already running
+turns are governed by the provider's controls. Revocation does not enable
+another provider automatically, and a new agent-written follow-up cannot
+regrant the permission.
+
+### Recovering a previously confirmed waiting request
+
+Keep the existing queued request: do not cancel it, recreate its brief or edit
+the database. Open its original chat/card and request a fresh native paid-start
+confirmation for that same queue ID. Choose **Start and allow Claude
+continuation** only if ongoing attempts are intended; an older **Confirmed this
+paid start** receipt is start-only and is never upgraded. The fresh confirmation
+is the minimal additional per-task consent. After insertion, a consolidated
+steer can clarify the work without changing its original requirements.
+
+Reset timestamp jitter, display metadata revisions and unrelated quota changes
+do not invalidate a confirmation. Source/input/provider changes, meaningful
+start policy changes, expiry, cancellation and duplicate dispatch still guard
+it. A pre-insert failure stays visible on the original queue receipt; no faster
+clicking is needed. An expired or materially changed confirmation needs a fresh
+one; it never authorizes starting a different request.
+
 ## Automatic paid Claude fallback
 
 `bb boat config set paidClaudeFallback true` authorizes ongoing automatic
@@ -242,10 +352,12 @@ not permission for paid Codex or arbitrary provider changes.
 
 The order is included allowance on the requested/default agent, included allowance
 on the other connected agent, then authorized Claude extra usage when all
-connected agents have reached `relaySwitchAt`. A recent affirmative Account
-Pooler availability signal and active Claude routing are required. Unknown,
-stale, disabled or refused paid availability keeps work waiting. A reported
-usage/billing failure blocks further automatic paid admission during its tracked
+connected agents have reached `relaySwitchAt`. A ready, enabled, unrestricted
+Claude account route is required. Pooler extra-usage observations remain visible
+but missing, stale, disabled or rejected observations alone do not block an
+authorized attempt. They never prove available funds. Actual account routing,
+credential/spend restrictions and reported provider usage/billing failures keep
+work waiting; a real refusal blocks automatic paid admission during its tracked
 hold. Fresh included quota takes precedence again after reset. Running turns
 are not interrupted just to change providers; orchestrators use the existing
 handoff/successor path, retaining their workspace and task relationships.
@@ -258,7 +370,7 @@ policy. Auto-reload purchases and monthly consumption are separate billing
 controls. Do not present the usage percentage or an allowed header as euros
 remaining or proof that a particular request is being billed.
 
-The availability signal comes from Account Pooler. Headless Harbormaster tasks may
+The account routing/credential signal comes from Account Pooler. Headless Harbormaster tasks may
 use separately stored credentials. They require a separate paid confirmation
 unless `paidClaudeHeadless` is enabled too. Enable that only after confirming
 those environments use the same Claude subscription account and billing controls
@@ -283,10 +395,10 @@ backups. Tests use fake providers, never paid requests.
 With the fallback on, `resumeStoppedChats` (on by default) continues Claude
 Code chats whose latest turn stopped at a usage limit (a 429, such as the
 Account Pooler's "No Account Pooler account is currently eligible") once paid
-Claude is available. That uses the same check a start makes. It covers any
+Claude attempts are authorized. That uses the same check a start makes. It covers any
 Claude Code chat on this bb, not only Harbormaster tasks. It runs on its own
 one-minute timer, apart from the relay and the task checks, and once a few
-seconds after chats stop while paid Claude is already available. A burst of
+seconds after chats stop while paid Claude attempts are already authorized. A burst of
 stops makes one check.
 
 Which chats it finds: the ones bb reported stopped at a limit while this
@@ -311,8 +423,9 @@ the plugin was off, and has no retry waiting, isn't found; continue it by hand
   (authentication, credits, a spend limit).
 - Each stopped turn is continued once. A continued turn that stops again
   stays stopped, so a spend limit can't cause a loop.
-- Nothing is continued while the reading is stale, Claude is on hold after a
-  refused turn, or extra usage is rejected.
+- Nothing is continued without a ready, unrestricted Claude route or while
+  Claude is on hold after a refused turn. Extra-usage telemetry alone does
+  not veto the existing owner-approved fallback.
 - Headless Harbormaster tasks that stopped at a limit in the last week get a
   follow-up, only with `paidClaudeHeadless`, at most one a check.
 - A project can stay on included usage: **Never continue on paid Claude** in

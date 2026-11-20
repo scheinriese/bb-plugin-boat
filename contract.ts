@@ -304,6 +304,12 @@ export const taskSchema = z.object({
   sandboxId: z.string().nullable(),
   conversationId: z.string().nullable(),
   provider: providerSchema,
+  /** Native owner approval for this task only; absent on older tasks. */
+  claudePaidContinuation: z.boolean().optional(),
+  claudePaidContinuationRevoked: z.boolean().optional(),
+  claudeNormalRouting: z.boolean().optional(),
+  purpose: z.literal("design").nullable().optional(),
+  designClaudePreference: z.boolean().optional(),
   model: z.string().nullable(),
   reasoningEffort: z.string().nullable(),
   /** Model tier the orchestrator chose; null when a model was picked by hand. */
@@ -769,6 +775,7 @@ export const rpcContract = defineRpcContract({
   startTask: {
     input: z.object({
       title: z.string().trim().min(1).max(200),
+      purpose: z.literal("design").nullable().optional(),
       brief: z.string().trim().min(1).max(100_000),
       role: roleSchema,
       repo: z.string().trim().nullable(),

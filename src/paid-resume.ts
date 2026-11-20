@@ -103,6 +103,7 @@ export type FailureKind = { kind: "usage-limit" } | { kind: "other"; why: string
 /** Refusals that a wait or a paid turn doesn't fix: credits, a spend cap, extra usage off or used up, billing. */
 const REFUSED_TEXT =
   /out of credits|credit balance|out of extra usage|extra usage (?:is )?(?:not enabled|disabled|off|unavailable|rejected)|spend(?:ing)?[ -]?(?:limit|cap|control)|billing|budget/i;
+const AUTH_TEXT = /authentication|unauthorized|invalid (?:api[ -]?)?key|not authenticated/i;
 const REFUSED_CATEGORIES: Record<string, string> = {
   unauthorized: "an authentication failure",
   billing: "a billing refusal",
@@ -117,7 +118,10 @@ const REFUSED_CATEGORIES: Record<string, string> = {
 export function classifyFailure(facts: FailureFacts): FailureKind {
   const refused = facts.category === null ? undefined : REFUSED_CATEGORIES[facts.category];
   if (refused !== undefined) return { kind: "other", why: refused };
+  if (facts.httpStatusCode === 401 || facts.httpStatusCode === 403) return { kind: "other", why: "an authentication or authorization refusal" };
   const texts = facts.texts.filter((text): text is string => typeof text === "string" && text.trim() !== "");
+  if (texts.some((text) => AUTH_TEXT.test(text))) return { kind: "other", why: "an authentication failure" };
+  if (facts.httpStatusCode === 402) return { kind: "other", why: "a billing refusal" };
   if (texts.some((text) => REFUSED_TEXT.test(text))) return { kind: "other", why: "a credit or spend limit" };
   const limits = facts.rateLimits;
   if (limits?.status === "blocked" && (limits.kind === "credits" || limits.kind === "spend-control")) return { kind: "other", why: "a credit or spend limit" };
@@ -125,10 +129,21 @@ export function classifyFailure(facts: FailureFacts): FailureKind {
   return { kind: "usage-limit" };
 }
 
+/** Classify a rejected SDK/provider call without assuming that thrown values have a shape. */
+function callFailure(error: unknown): FailureKind {
+  const value = error !== null && typeof error === "object" ? error as Record<string, unknown> : {};
+  const status = value.status ?? value.statusCode;
+  return classifyFailure({ category: typeof value.category === "string" ? value.category : typeof value.code === "string" ? value.code : null,
+    httpStatusCode: typeof status === "number" ? status : null, rateLimits: null, texts: [message(error)] });
+}
+function refusal(failure: FailureKind): boolean {
+  return failure.kind === "other" && /refusal|authentication|credit|spend|billing/.test(failure.why);
+}
+
 /** A headless task's error text: a usage limit, not a refusal. */
 export function headlessUsageLimit(text: string | null | undefined): boolean {
   if (!text) return false;
-  return !REFUSED_TEXT.test(text) && (USAGE_LIMIT_TEXT.test(text) || /\b429\b|rate[ -]?limit/i.test(text));
+  return !REFUSED_TEXT.test(text) && !AUTH_TEXT.test(text) && (USAGE_LIMIT_TEXT.test(text) || /\b429\b|rate[ -]?limit/i.test(text));
 }
 
 /** bb's thread events the reading needs (bb.sdk.threads.events.list `types`). */
@@ -308,6 +323,11 @@ export class PaidResumeStore {
   resumedSince(since: Date): number {
     const row = this.db().prepare(`SELECT COUNT(*) AS count FROM paid_resumes WHERE state = 'resumed' AND at >= ?`).get(since.toISOString()) as { count: number };
     return Number(row.count);
+  }
+
+  /** Durable feedback deduplication; a notice never claims or consumes a resume attempt. */
+  noticeOnce(key: string): boolean {
+    return Number(this.db().prepare("INSERT OR IGNORE INTO paid_resume_state (key, value) VALUES (?, 'true')").run(`notice:${key}`).changes) === 1;
   }
 
   private read<T>(key: string): T | null {
@@ -520,6 +540,8 @@ export interface PaidResumeDeps {
   tasks: {
     /** The Boat task this chat belongs to (any chat it used), or null. */
     byThread(threadId: string): Task | null;
+    /** Current persisted task, re-read immediately before an automatic continuation. */
+    get(taskId: string): Task | null;
     /** Failed headless tasks (runner boat). */
     failedHeadless(): Task[];
     addEvent(taskId: string, kind: string, text: string): void;
@@ -549,6 +571,8 @@ export interface ResumedWork {
   taskId: string | null;
   title: string | null;
   how: ResumeHow;
+  /** An owner permitted an attempt; availability or actual billing is not asserted. */
+  scoped?: boolean;
   /** For the relay's notes. */
   reason: string;
 }
@@ -573,12 +597,13 @@ export function resumeEnabled(settings: Pick<BoatSettings, "relay">): boolean {
 }
 
 /** The orchestrator's one message for a pass. */
-export function parentNotice(work: readonly Pick<ResumedWork, "threadId" | "taskId" | "title">[]): string {
+export function parentNotice(work: readonly Pick<ResumedWork, "threadId" | "taskId" | "title" | "scoped">[]): string {
   const names = work.map((entry) => {
     const title = entry.title ? ` (${entry.title.replace(/\s+/g, " ").slice(0, 80)})` : "";
     return entry.threadId !== null ? `@thread:${entry.threadId}${title}` : `task ${entry.taskId}${title}`;
   });
   const count = work.length === 1 ? "1 worker" : `${work.length} workers`;
+  if (work.some((entry) => entry.scoped)) return `[boat] ${count} that stopped at a usage limit ${work.length === 1 ? "continues" : "continue"} on Claude: ${names.join(", ")}. Task owner permission covers only the named tasks; included usage and provider billing limits apply. Each stopped turn is continued once.`;
   return `[boat] Paid Claude is available, so ${count} that stopped at a usage limit ${work.length === 1 ? "continues" : "continue"} on it: ${names.join(", ")}. Claude's billing limits apply. Each stopped turn is continued once.`;
 }
 
@@ -641,6 +666,22 @@ export function createPaidResume(deps: PaidResumeDeps) {
     return hit?.name ?? null;
   }
 
+  function scoped(task: Task | null): boolean {
+    return task !== null && task.claudePaidContinuation === true && task.claudePaidContinuationRevoked !== true && task.provider === "claude" && task.role !== "review";
+  }
+
+  function closed(task: Task | null): boolean {
+    return task !== null && (task.status === "done" || task.status === "cancelled");
+  }
+
+  /** One durable, actionable task-history entry for a refused automatic continuation. */
+  function stoppedNotice(task: Task, id: string, key: string, reason: string): void {
+    const noticeKey = `${key}:stopped-notice`;
+    if (!deps.store.claim(id, noticeKey, "retry", new Date(now()))) return;
+    deps.store.exhaust(id, noticeKey);
+    deps.tasks.addEvent(task.id, "paid-resume-stopped", `Automatic Claude continuation stopped: ${reason}. The task and workspace are preserved. Check the provider's billing or authentication response, then continue manually when resolved.`);
+  }
+
   type Step = { plan: Plan; thread: ThreadFacts; task: Task | null } | { skip: string; drop: boolean };
 
   /** Whether this chat continues, and how. Cheap checks first: only a real candidate's events are read. */
@@ -651,6 +692,8 @@ export function createPaidResume(deps: PaidResumeDeps) {
     if (thread.providerId !== CLAUDE_CODE) return { skip: "not a Claude Code chat", drop: true };
     if (isBusy(thread.status) || thread.backgroundAgents > 0) return { skip: "a turn is running", drop: true };
     const task = deps.tasks.byThread(threadId);
+    if (closed(task)) return { skip: "the task is closed", drop: true };
+    if (task?.claudePaidContinuationRevoked === true) return { skip: "task Claude continuation permission was revoked", drop: true };
     // An older chat of a task (a hand-over left it): never two agents in one checkout.
     if (task !== null && task.threadId !== threadId) return { skip: `an earlier chat of task ${task.id}`, drop: true };
     const project = optOut(thread, task);
@@ -665,10 +708,14 @@ export function createPaidResume(deps: PaidResumeDeps) {
     if (thread.status !== "error" && pending === null) return { skip: "it isn't stopped", drop: true };
     const turn = readStoppedTurn(await deps.threads.stopEvents(threadId));
     if (turn === null) return { skip: "no failed turn", drop: true };
-    if (turn.failure.kind !== "usage-limit") return { skip: `it stopped on ${turn.failure.why}`, drop: true };
+    if (turn.failure.kind !== "usage-limit") {
+      if (scoped(task)) stoppedNotice(task!, threadId, turn.rootRequestId, `it stopped on ${turn.failure.why}`);
+      return { skip: `it stopped on ${turn.failure.why}`, drop: true };
+    }
     if (deps.store.settled(threadId, turn.rootRequestId, { claimedBefore: new Date(at - CLAIM_TTL_MS), requestId: turn.requestId })) {
       // A try still "claimed" for this request (a restart may have cut it off) keeps its stop: after CLAIM_TTL_MS it may go again.
       const inFlight = deps.store.inFlight(threadId, turn.rootRequestId, turn.requestId);
+      if (!inFlight && scoped(task)) stoppedNotice(task!, threadId, turn.rootRequestId, "this stopped turn already used its automatic continuation");
       return { skip: inFlight ? "a try of it is under way" : "this stopped turn was continued once already", drop: !inFlight };
     }
     if (pending !== null) {
@@ -688,14 +735,32 @@ export function createPaidResume(deps: PaidResumeDeps) {
     return { plan: { how: "retry", turn, detail: "no provider retry pending" }, thread, task };
   }
 
-  async function resumeChat(threadId: string, step: { plan: Plan; thread: ThreadFacts; task: Task | null }, wake: boolean): Promise<Attempt> {
+  async function resumeChat(threadId: string, step: { plan: Plan; thread: ThreadFacts; task: Task | null }, wake: boolean, globalAllowed: boolean): Promise<Attempt> {
     const { plan: chosen, thread, task } = step;
     const key = chosen.turn.rootRequestId;
+    // Re-check after machine reads, pacing and any other await. A scoped grant
+    // belongs to the current task chat, never its superseded chat or parent.
+    const latest = readStoppedTurn(await deps.threads.stopEvents(threadId));
+    const queued = await deps.threads.queued(threadId);
+    const held = (await deps.held?.(threadId)) ?? null;
+    const currentThread = await deps.threads.get(threadId);
+    // Keep this DB read after the async reads; revocation or chat replacement
+    // during a read must take effect before the claim and SDK submission.
+    const currentTask = deps.tasks.byThread(threadId);
+    if (currentThread === null || optOut(currentThread, currentTask) !== null || currentThread.archived || currentThread.providerId !== CLAUDE_CODE || isBusy(currentThread.status) || currentThread.backgroundAgents > 0 || closed(currentTask) || currentTask?.claudePaidContinuationRevoked === true || (task !== null && (currentTask?.id !== task.id || currentTask.threadId !== threadId)) || (!globalAllowed && !scoped(currentTask))) {
+      return { kind: "released", reason: "the chat or its continuation permission changed before sending" };
+    }
+    if (held !== null || latest === null || latest.requestId !== chosen.turn.requestId || latest.rootRequestId !== key) return { kind: "released", reason: "the stopped request changed before sending" };
+    if (latest.failure.kind !== "usage-limit") {
+      if (scoped(currentTask)) stoppedNotice(currentTask!, threadId, key, `it stopped on ${latest.failure.why}`);
+      return { kind: "released", reason: "the provider failure changed before sending" };
+    }
+    if (queued === UNKNOWN || (chosen.how === "pending-retry" ? queued.length !== 1 || !queued.some(row => row.id === chosen.queuedMessageId && row.retry) : queued.length !== 0)) return { kind: "released", reason: "the queued messages changed before sending" };
     // A chat's try left "claimed" by a restart may go again: bb refuses a retry that already went out (409, 404).
     if (!deps.store.claim(threadId, key, chosen.how, new Date(now()), { claimedBefore: new Date(now() - CLAIM_TTL_MS), requestId: chosen.turn.requestId })) return { kind: "released", reason: "this stopped turn was continued once already" };
     try {
       if (chosen.how === "pending-retry") await deps.threads.sendQueued(threadId, chosen.queuedMessageId);
-      else await deps.threads.retry(threadId, chosen.turn.requestId, RESUME_REASON);
+      else await deps.threads.retry(threadId, chosen.turn.requestId, scoped(currentTask) ? "Task owner permitted attempting paid Claude: continuing this task after a usage limit" : RESUME_REASON);
     } catch (error) {
       const reason = `couldn't continue it: ${message(error)}`;
       if (error instanceof ResumeUnsupported) {
@@ -710,22 +775,29 @@ export function createPaidResume(deps: PaidResumeDeps) {
       }
       // Tried again after the backoff, while tries are left (bb's state keeps a retry from running twice).
       deps.store.mark(threadId, key, "unsent");
+      if (scoped(currentTask) && (refusal(callFailure(error)) || deps.store.attempts(threadId, key) >= MAX_ATTEMPTS)) {
+        deps.store.exhaust(threadId, key);
+        stoppedNotice(currentTask!, threadId, key, reason);
+      }
       deps.log.warn(`paid resume ${threadId}: ${reason} (try ${deps.store.attempts(threadId, key)} of ${MAX_ATTEMPTS})`);
       return { kind: "failed", reason, wake };
     }
     deps.store.mark(threadId, key, "resumed");
     deps.store.dropStop(threadId);
     const reason = chosen.how === "pending-retry" ? "sent its pending provider retry now" : `retried the stopped turn (${chosen.detail})`;
-    if (task !== null) deps.tasks.addEvent(task.id, RESUME_EVENT, `Continued on paid Claude after a usage limit: ${reason}.`);
-    return { kind: "resumed", work: { threadId, taskId: task?.id ?? null, title: thread.title ?? task?.title ?? null, how: chosen.how, reason: `on paid Claude: ${reason}` } };
+    const ownerScoped = scoped(currentTask);
+    if (task !== null) deps.tasks.addEvent(task.id, RESUME_EVENT, `${ownerScoped ? "Attempted Claude continuation with task owner permission" : "Continued on paid Claude"} after a usage limit: ${reason}.`);
+    return { kind: "resumed", work: { threadId, taskId: task?.id ?? null, title: thread.title ?? task?.title ?? null, how: chosen.how, ...(ownerScoped ? { scoped: true } : {}), reason: `${ownerScoped ? "with task owner permission" : "on paid Claude"}: ${reason}` } };
   }
 
-  async function resumeHeadless(task: Task, wake: boolean): Promise<Attempt> {
+  async function resumeHeadless(task: Task, wake: boolean, globalAllowed: boolean): Promise<Attempt> {
     const key = `turn:${task.turns}`;
     const id = `task:${task.id}`;
+    const current = deps.tasks.get(task.id);
+    if (current === null || optOut(null, current) !== null || current.runner !== "boat" || current.provider !== "claude" || current.status !== "failed" || current.turns !== task.turns || current.conversationId !== task.conversationId || current.promptId !== task.promptId || !headlessUsageLimit(current.error) || current.claudePaidContinuationRevoked === true || (!globalAllowed && !scoped(current))) return { kind: "released", reason: "the task or its continuation permission changed before sending" };
     if (!deps.store.claim(id, key, "follow-up")) return { kind: "released", reason: "this stopped turn was continued once already" };
     try {
-      await deps.tasks.continueHeadless(task.id, HEADLESS_RESUME_TEXT);
+      await deps.tasks.continueHeadless(task.id, scoped(current) ? "[boat] Your last turn stopped at a Claude usage limit. The task owner permitted attempting paid Claude for this task only. Continue where you stopped; provider billing and authentication limits still apply." : HEADLESS_RESUME_TEXT);
     } catch (error) {
       const reason = `couldn't continue it: ${message(error)}`;
       // The service refused before sending anything (its own admission check): it may go later.
@@ -737,13 +809,16 @@ export function createPaidResume(deps: PaidResumeDeps) {
       // sandbox up, a second follow-up could be a second message to the agent: no more tries.
       const after = await readMachine(deps.machines, null, task);
       deps.store.mark(id, key, "unsent");
-      if (after.state === "up") deps.store.exhaust(id, key);
+      const refused = refusal(callFailure(error));
+      if (after.state === "up" || scoped(current) && refused) deps.store.exhaust(id, key);
+      if (scoped(current) && (refused || deps.store.attempts(id, key) >= MAX_ATTEMPTS)) stoppedNotice(current, id, key, reason);
       deps.log.warn(`paid resume ${task.id}: ${reason}${after.state === "up" ? " (not tried again: it may have reached the agent)" : ""}`);
       return { kind: "failed", reason, wake };
     }
     deps.store.mark(id, key, "resumed");
-    deps.tasks.addEvent(task.id, RESUME_EVENT, "Continued on paid Claude after a usage limit: sent a follow-up to the headless task.");
-    return { kind: "resumed", work: { threadId: null, taskId: task.id, title: task.title, how: "follow-up", reason: "on paid Claude: sent the headless task a follow-up" } };
+    const ownerScoped = scoped(current);
+    deps.tasks.addEvent(task.id, RESUME_EVENT, `${ownerScoped ? "Attempted Claude continuation with task owner permission" : "Continued on paid Claude"} after a usage limit: sent a follow-up to the headless task.`);
+    return { kind: "resumed", work: { threadId: null, taskId: task.id, title: task.title, how: "follow-up", ...(ownerScoped ? { scoped: true } : {}), reason: `${ownerScoped ? "with task owner permission" : "on paid Claude"}: sent the headless task a follow-up` } };
   }
 
   /** Headless tasks that stopped at a Claude usage limit in the last STOP_TTL_MS (like chats), oldest first. */
@@ -752,7 +827,7 @@ export function createPaidResume(deps: PaidResumeDeps) {
       .failedHeadless()
       .filter((task) => {
         const stoppedAt = Date.parse(task.finishedAt ?? "");
-        return task.runner === "boat" && task.provider === "claude" && task.status === "failed" && headlessUsageLimit(task.error) && Number.isFinite(stoppedAt) && at - stoppedAt <= STOP_TTL_MS;
+        return task.runner === "boat" && task.provider === "claude" && task.status === "failed" && task.turns > 0 && task.promptId !== null && task.conversationId !== null && headlessUsageLimit(task.error) && Number.isFinite(stoppedAt) && at - stoppedAt <= STOP_TTL_MS;
       })
       .sort((a, b) => (a.finishedAt ?? "").localeCompare(b.finishedAt ?? ""));
   }
@@ -819,10 +894,30 @@ export function createPaidResume(deps: PaidResumeDeps) {
     // The machines earlier passes woke, before any early return (paid Claude gone, a backoff) and before
     // anything is woken now: one that failed to start holds every wake.
     await checkWoken(at);
-    if (!resumeEnabled(settings)) return report;
     const chatRoom: SubscriptionRoom = subscriptionRoom("claude", quotas, settings, { runner: "chat", now: at });
     const headlessRoom: SubscriptionRoom = subscriptionRoom("claude", quotas, settings, { runner: "boat", now: at });
-    if (chatRoom !== "paid" && headlessRoom !== "paid") return report;
+    const globalChat = resumeEnabled(settings) && chatRoom === "paid";
+    const globalHeadless = resumeEnabled(settings) && headlessRoom === "paid";
+    const scopedAllowed = settings.agents !== "codex" && !settings.notConnectedAgents.includes("claude") && quotas.get("claude")?.paidAttemptAllowed === true;
+    const scopedStops = scopedAllowed && deps.store.stops().some((stop) => scoped(deps.tasks.byThread(stop.threadId)));
+    const scopedHeadless = scopedAllowed && deps.tasks.failedHeadless().some(scoped);
+    if (!scopedAllowed) {
+      const reason = "Claude's account route or login is unavailable or unconfirmed. Check Account Pooler routing and reconnect the permitted account; the task and workspace are preserved. No automatic attempt was made.";
+      const blocked = (task: Task, id: string, key: string) => {
+        report.skipped.push({ id, reason });
+        report.deferred.push(id);
+        if (deps.store.noticeOnce(`route:${task.id}:${key}`)) deps.tasks.addEvent(task.id, "paid-resume-blocked", `Claude continuation waits: ${reason}`);
+      };
+      for (const stop of deps.store.stops()) {
+        const task = deps.tasks.byThread(stop.threadId);
+        if (!scoped(task) || closed(task) || task!.threadId !== stop.threadId || !Number.isFinite(stop.at) || at - stop.at > STOP_TTL_MS) continue;
+        const thread = await deps.threads.get(stop.threadId).catch(() => null);
+        if (thread === null || thread.archived || thread.providerId !== CLAUDE_CODE || thread.status !== "error") continue;
+        blocked(task!, stop.threadId, stop.requestId ?? String(stop.at));
+      }
+      for (const task of headlessCandidates(at)) if (scoped(task)) blocked(task, `task:${task.id}`, `turn:${task.turns}`);
+    }
+    if (!globalChat && !globalHeadless && !scopedStops && !scopedHeadless) return report;
     // A failure ended an earlier pass: nothing until its backoff is over.
     const backoff = deps.store.backoff();
     if (backoff !== null && backoff.until > at) {
@@ -838,7 +933,7 @@ export function createPaidResume(deps: PaidResumeDeps) {
       if (!Number.isFinite(stop.at) || at - stop.at > STOP_TTL_MS) deps.store.dropStop(stop.threadId);
       else stops.set(stop.threadId, stop.at);
     }
-    const pendingRows = chatRoom === "paid" ? await deps.threads.queued().catch((error: unknown) => {
+    const pendingRows = globalChat ? await deps.threads.queued().catch((error: unknown) => {
       deps.log.warn(`paid resume: couldn't list queued retries: ${message(error)}`);
       return [] as QueuedFacts[];
     }) : [];
@@ -885,8 +980,10 @@ export function createPaidResume(deps: PaidResumeDeps) {
       }
     };
 
-    if (chatRoom === "paid") {
+    if (globalChat || scopedStops) {
       for (const threadId of ids) {
+        const task = deps.tasks.byThread(threadId);
+        if (!globalChat && !(scopedAllowed && scoped(task))) continue;
         if (stopped || report.attempts >= cap) {
           report.deferred.push(threadId);
           continue;
@@ -910,13 +1007,14 @@ export function createPaidResume(deps: PaidResumeDeps) {
           continue;
         }
         if (step.thread.parentThreadId !== null) parents.set(threadId, step.thread.parentThreadId);
-        await attempt(threadId, () => resumeChat(threadId, step, go.wake));
+        await attempt(threadId, () => resumeChat(threadId, step, go.wake, globalChat));
       }
     }
 
-    if (headlessRoom === "paid") {
+    if (globalHeadless || scopedHeadless) {
       let headless = 0;
       for (const task of headlessCandidates(at)) {
+        if (task.claudePaidContinuationRevoked === true || (!globalHeadless && !(scopedAllowed && scoped(task)))) continue;
         const id = `task:${task.id}`;
         // The resumed turn stopped again: never a second time.
         if (deps.store.settled(id, `turn:${task.turns}`) || deps.store.settled(id, `turn:${task.turns - 1}`)) continue;
@@ -937,7 +1035,7 @@ export function createPaidResume(deps: PaidResumeDeps) {
         }
         if (task.orchestratorThreadId !== null) headlessParents.set(task.id, task.orchestratorThreadId);
         headless += 1;
-        await attempt(id, () => resumeHeadless(task, go.wake));
+        await attempt(id, () => resumeHeadless(task, go.wake, globalHeadless));
       }
     }
 

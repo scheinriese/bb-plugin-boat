@@ -190,6 +190,7 @@ export default async function plugin(bb: BbPluginApi) {
       machineType: values.machineType as MachineType,
       orchestratorMachineType: values.orchestratorMachineType as MachineType,
       implementProvider: values.implementProvider as Provider,
+      preferClaudeForDesign: values.preferClaudeForDesign,
       implementModel: values.implementModel,
       reviewProvider: values.reviewProvider as Provider,
       reviewModel: values.reviewModel,
@@ -450,6 +451,7 @@ export default async function plugin(bb: BbPluginApi) {
     // Its wakes take a slot from the wake pacer, claimed for the machine; one that failed sets the hold.
     wakes: wakePacer,
     tasks: {
+      get: (taskId) => service.store.get(taskId),
       byThread: (threadId) => service.store.byThread(threadId),
       failedHeadless: () => service.store.list({ statuses: ["failed"], limit: 500 }).filter((task) => task.runner === "boat"),
       addEvent: (taskId, kind, text) => {

@@ -16,6 +16,11 @@ export interface AgentQuota {
   window: string;
   /** Recent public Account Pooler evidence, never a money balance or spending cap. */
   extraUsage?: ExtraUsageEvidence;
+  /** Current ready, enabled, unrestricted Pooler route; permits an attempt, never proves paid funds. */
+  paidAttemptAllowed?: boolean;
+  /** Explicit all-model weekly window from Pooler; separate from a binding 5-hour limit. */
+  weekly?: { usedPercent: number; resetsAt: string; windowMinutes: number };
+  weeklyAdvice?: WeeklyPace | null;
   /** A real failed turn blocks automatic paid admission until this time. */
   blockedUntil?: number;
   /** The usage source the numbers came from (one of USAGE_SOURCES). */
@@ -126,7 +131,11 @@ export function createQuotaReader(bb: BbPluginApi, options: QuotaReaderOptions =
     }
     // Read after the sources refreshed, so the Pooler's state is its newest.
     const claude = quotas.get("claude");
-    if (claude !== undefined && sources.includes("account-pool")) quotas.set("claude", { ...claude, extraUsage: await poolExtraUsage(bb, "claude", signal) });
+    if (claude !== undefined && sources.includes("account-pool")) {
+      const paid = await poolPaidState(bb, "claude", signal);
+      const current = { ...claude, extraUsage: paid.extraUsage, paidAttemptAllowed: paid.attemptAllowed, ...(paid.weekly ? { weekly: paid.weekly } : {}) };
+      quotas.set("claude", { ...current, weeklyAdvice: weeklyPace(current, Date.now(), cache?.quotas.get("claude")?.weeklyAdvice) });
+    }
     cache = { at: Date.now(), quotas };
     return quotas;
   }
@@ -243,6 +252,25 @@ export async function poolExtraUsage(bb: BbPluginApi, provider: Provider, signal
     return UNKNOWN_EXTRA_USAGE("off");
   }
   return extraUsageFrom(status, provider);
+}
+
+/** Routing/credential state is separate from unreliable paid-usage telemetry. */
+async function poolPaidState(bb: BbPluginApi, provider: Provider, signal?: AbortSignal): Promise<{ extraUsage: ExtraUsageEvidence; attemptAllowed: boolean; weekly?: AgentQuota["weekly"] }> {
+  let status: PoolStatus;
+  try { status = await readPoolStatus(bb, signal); }
+  catch { return { extraUsage: UNKNOWN_EXTRA_USAGE("off"), attemptAllowed: false }; }
+  const attemptAllowed = status.routing[provider] === true && status.accounts.some(account =>
+    account.provider === provider && account.enabled !== false && account.status === "ready" &&
+    account.usageRestriction == null && (account.heldUntil == null || account.heldUntil <= Date.now()) &&
+    account.error == null,
+  );
+  const weekly = status.accounts.filter(account => account.provider === provider && account.enabled !== false && account.status === "ready")
+    .flatMap(account => (account.limitWindows ?? []).flatMap(window => {
+      const resetsAt = instant(window?.resetAt);
+      return window?.windowMinutes === 7 * 24 * 60 && typeof window.utilization === "number" && window.utilization >= 0 && resetsAt
+        ? [{ usedPercent: window.utilization * 100, resetsAt, windowMinutes: window.windowMinutes }] : [];
+    })).sort((a,b) => a.usedPercent - b.usedPercent)[0];
+  return { extraUsage: extraUsageFrom(status, provider), attemptAllowed, ...(weekly ? { weekly } : {}) };
 }
 
 function extraUsageFrom(status: PoolStatus, provider: Provider): ExtraUsageEvidence {
@@ -423,12 +451,36 @@ async function readSource(bb: BbPluginApi, sourcePluginId: string, signal?: Abor
   return quotas;
 }
 
+export interface WeeklyPace {
+  conserve: boolean;
+  projectedPercent: number;
+  resetsAt: string;
+}
+
+/**
+ * Advisory average pace through an explicit weekly window, never an admission
+ * or billing decision. A prior conserve advice clears below 95% projected
+ * usage to avoid toggling on small reading/reset jitter around 100%.
+ */
+export function weeklyPace(quota: AgentQuota | undefined, now = Date.now(), previous?: WeeklyPace | null): WeeklyPace | null {
+  const weekly = quota?.weekly;
+  if (!weekly || weekly.windowMinutes !== 7 * 24 * 60 || !Number.isFinite(weekly.usedPercent) || weekly.usedPercent < 0) return null;
+  const duration = weekly.windowMinutes * 60_000, reset = Date.parse(weekly.resetsAt), elapsed = now - (reset - duration);
+  // A due reset or a window that has barely started is not enough evidence.
+  if (!Number.isFinite(reset) || elapsed < 60 * 60_000 || elapsed >= duration) return null;
+  const projectedPercent = weekly.usedPercent * duration / elapsed;
+  const sameWindow = previous && Math.abs(Date.parse(previous.resetsAt) - reset) < 5 * 60_000;
+  return { conserve: projectedPercent > (sameWindow && previous.conserve ? 95 : 100), projectedPercent, resetsAt: weekly.resetsAt };
+}
+
 /** "Claude: 21% of the weekly limit used, resets 2026-11-12 01:00 UTC" */
-export function quotaLine(quota: AgentQuota | undefined, provider: Provider): string {
+export function quotaLine(quota: AgentQuota | undefined, provider: Provider, now = Date.now()): string {
   const name = provider === "claude" ? "Claude" : "Codex";
   if (!quota) return `${name}: usage unknown`;
   const resets = quota.resetsAt ? `, resets ${new Date(quota.resetsAt).toISOString().slice(0, 16).replace("T", " ")} UTC` : "";
-  return `${name}: ${Math.round(quota.usedPercent)}% of the ${quota.window.toLowerCase()} used${resets}`;
+  const pace = provider === "claude" ? quota.weeklyAdvice ?? weeklyPace(quota, now) : null;
+  const advice = pace?.conserve ? `; weekly pace projects ${Math.round(pace.projectedPercent)}% by reset: consider Codex for flexible implementation, preserve Claude for orchestration/reviews until the normal cutoff` : "";
+  return `${name}: ${Math.round(quota.usedPercent)}% of the ${quota.window.toLowerCase()} used${resets}${advice}`;
 }
 
 /** What the relay RPC shows: the Pooler's verdict and when it was taken. */

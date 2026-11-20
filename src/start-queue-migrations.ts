@@ -3,3 +3,8 @@ export const START_QUEUE_MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS start_queue_state ON start_queue(state, created_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS start_queue_pending_digest ON start_queue(digest) WHERE state IN ('waiting','dispatching')`,
 ];
+
+// Appended after the existing migration list; never insert into that list.
+export const SCOPED_START_QUEUE_MIGRATIONS = [
+  `ALTER TABLE start_queue ADD COLUMN claude_paid_consent TEXT`,
+];
