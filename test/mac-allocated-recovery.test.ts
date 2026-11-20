@@ -183,3 +183,11 @@ test("legacy evidence cannot authorize a fresh physical lease begun after the fa
   await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true),{code:"mac_recovery_refused"});
   assert.equal(env.chat.spawns.length,0);assert.equal(env.calls.filter(call=>call==="create").length,1);
 });
+
+test("Mac maintenance preserves held accounting when an authoritative read fails",async()=>{
+  const env=await fixture(),lease=env.record();env.store.macLeases.schedule(lease.id,env.machine().scheduledReleaseAt!);
+  env.provider.findInfo=async()=>{throw Error("fake account temporarily unavailable");};
+  await assert.rejects(env.service.processMacLeases(),/fake account temporarily unavailable/);
+  assert.equal(env.store.macLeases.held()[0]!.id,lease.id);assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);
+  assert.equal(env.calls.filter(call=>call==="delete").length,0);
+});

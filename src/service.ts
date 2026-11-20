@@ -3076,7 +3076,10 @@ export class BoatService {
         const machines = await provider.list({ all: true, signal: this.hooks.lifecycle });
         if (provider.id !== "instabox") this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)), now);
         else for (const lease of this.store.macLeases.held().filter(l=>l.provider===provider.id)) {
-          await provider.info(lease.machineId,this.hooks.lifecycle);
+          // findInfo confirms absence without failing the whole maintenance
+          // pass. The provider records its authoritative end; other errors
+          // still propagate and never imply that a paid machine disappeared.
+          await provider.findInfo(lease.machineId,this.hooks.lifecycle);
         }
         for (const lease of this.store.macLeases.held().filter(lease => lease.provider === provider.id)) {
           try {
