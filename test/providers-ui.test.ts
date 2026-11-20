@@ -383,3 +383,30 @@ test("provider presentation is shared for 60 seconds; only Check again bypasses 
  now=60_001;await handlers.sandboxProviders();assert.deepEqual(reads,{plan:2,capacity:2,presentation:2});
  await handlers.checkSandboxProviders();await handlers.sandboxProviders();assert.deepEqual(reads,{plan:3,capacity:3,presentation:3});
 });
+
+test("external settings changes invalidate the warm provider presentation and connection checks",async()=>{
+ const {runtime}=fakeRuntime();const {memoryStore}=await import("./fakes.ts");Object.assign(runtime.service,{store:memoryStore()});
+ let enabled=false,reads=0,change!: (keys:string[])=>void;
+ runtime.settings={onChange:listener=>{change=listener;}} as Runtime["settings"];
+ const provider={...INSTABOX,capacity:async()=>{reads++;return {} as never;}};
+ Object.assign(runtime.service,{sandboxProviders:createProviderRegistry([BOAT,provider],{isEnabled:()=>enabled})});
+ const handlers=providerHandlers(runtime,()=>0);
+ assert.equal((await handlers.sandboxProviders()).providers.find(p=>p.id==="instabox")!.enabled,false);
+ enabled=true;change(["instaboxEnabled"]);
+ assert.equal((await handlers.sandboxProviders()).providers.find(p=>p.id==="instabox")!.enabled,true);
+ assert.equal(reads,1);
+ enabled=false;change(["instaboxEnabled"]);
+ assert.equal((await handlers.sandboxProviders()).providers.find(p=>p.id==="instabox")!.enabled,false);
+});
+
+test("an old provider read cannot repopulate the cache after a settings change",async()=>{
+ const gate=gatedInstabox();const {runtime}=fakeRuntime(createProviderRegistry([BOAT,gate.provider]));
+ const {memoryStore}=await import("./fakes.ts");Object.assign(runtime.service,{store:memoryStore()});
+ let change!: (keys:string[])=>void;
+ runtime.settings={onChange:listener=>{change=listener;}} as Runtime["settings"];
+ const handlers=providerHandlers(runtime,()=>0);
+ const first=handlers.sandboxProviders();await gate.checking;
+ change(["instaboxSecrets"]);gate.release();await first;
+ let checks=0;gate.provider.capacity=async()=>{checks++;return {} as never;};
+ await handlers.sandboxProviders();assert.equal(checks,1,"the obsolete connection facts were discarded");
+});

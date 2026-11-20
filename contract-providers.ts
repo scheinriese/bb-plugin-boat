@@ -1,3 +1,4 @@
+import { monthlyMacRpcMethods, monthlyMacSuggestionSchema } from "./contract-monthly-macs.ts";
 // Sandbox providers in the RPC contract (contract.ts spreads
 // providerRpcMethods into it and puts runsOn on tasks and sandboxes):
 // - sandboxProviders: the providers Boat knows, whether each is on and
@@ -139,6 +140,7 @@ export type SandboxProvidersResultDto = z.infer<typeof sandboxProvidersResultSch
 
 export const macUsageWindowSchema = z.object({ leaseDays: z.number(), costs: z.record(z.string(),z.number()) });
 export const macUsageSchema = z.object({
+  monthlySuggestions: z.array(monthlyMacSuggestionSchema).optional(),
   month: macUsageWindowSchema, rolling30: macUsageWindowSchema,
   byProvider: z.array(z.object({ id: z.string(), label: z.string(), month: macUsageWindowSchema, rolling30: macUsageWindowSchema })).optional(),
   today: z.record(z.string(),z.number()).optional(),
@@ -148,7 +150,8 @@ export const macUsageSchema = z.object({
 });
 export type MacUsageDto = z.infer<typeof macUsageSchema>;
 export const providerRpcMethods = {
-  macUsage: { input: z.object({timezoneOffsetMinutes:z.number().int().min(-840).max(840)}).nullable(), output: macUsageSchema, tags: () => ["boat:sandboxes", "boat:tasks"] },
+  ...monthlyMacRpcMethods,
+  macUsage: { input: z.object({timezoneOffsetMinutes:z.number().int().min(-840).max(840)}).nullable(), output: macUsageSchema, tags: () => ["boat:sandboxes", "boat:tasks", "boat:monthly-macs"] },
   /** Settings › Sandbox providers and Runs on. */
   sandboxProviders: {
     input: z.null(),

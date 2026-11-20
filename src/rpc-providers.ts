@@ -1,3 +1,5 @@
+import { monthlyMacPrices } from "./monthly-macs.ts";
+import { MONTHLY_MACS_TAG } from "../contract-monthly-macs.ts";
 import { usageWindows } from "./usage.ts";
 // RPC handlers for sandbox providers (contract-providers.ts): Settings ›
 // Sandbox providers and Runs on, and the runsOn words on tasks and
@@ -252,11 +254,13 @@ const CONNECTION_TTL_MS = 60_000;
 
 export function providerHandlers(runtime: Runtime, now = Date.now) {
   const { service, bb } = runtime;
+  let generation = 0;
   let checked: { at: number; connections: Connections; prices: Prices; macReady: ReadonlySet<string>; statuses: ReadonlyMap<string,string> } | null = null;
 
   /** Ask each enabled provider other than boat.dev for its plan (an answer means connected) and its prices. */
   async function others(): Promise<{ connections: Connections; prices: Prices; macReady: ReadonlySet<string>; statuses: ReadonlyMap<string,string> }> {
     if (checked !== null && now() - checked.at < CONNECTION_TTL_MS) return checked;
+    const readGeneration = generation;
     const providers = service.sandboxProviders.enabled.filter((provider) => provider.id !== "boat");
     const results = await Promise.all(
       providers.map(async (provider) => {
@@ -276,14 +280,15 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
         return { id: provider.id, connection, pricing, macReady, status };
       }),
     );
-    checked = {
+    const result = {
       at: now(),
       macReady: new Set(results.filter(entry=>entry.macReady).map(entry=>entry.id)),
       connections: new Map(results.map((entry) => [entry.id, entry.connection])),
       prices: new Map(results.flatMap((entry) => (entry.pricing ? [[entry.id, entry.pricing] as const] : []))),
       statuses: new Map(results.flatMap(entry=>entry.status ? [[entry.id,entry.status] as const] : [])),
     };
-    return checked;
+    if (generation === readGeneration) checked = result;
+    return result;
   }
 
   async function readPresentation(force = false): Promise<SandboxProvidersResultDto> {
@@ -315,7 +320,15 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
   // One shared promise includes plan, usage, lists and Secret metadata. Project
   // choices and waiting counts are cheap local reads and stay current.
   let presentation: { at: number; value: Promise<SandboxProvidersResultDto> } | null = null;
+  // Settings may change through bb or the CLI while this presentation is warm.
+  // Drop both promises and connection facts; an old in-flight read cannot win.
+  const clearPresentation = () => { generation++; presentation = null; checked = null; };
+  runtime.settings?.onChange?.(clearPresentation);
+  runtime.providers?.onChange?.(clearPresentation);
+  let configuration = "";
   async function view(force = false): Promise<SandboxProvidersResultDto> {
+    const current = JSON.stringify([service.sandboxProviders.enabled.map(p=>p.id),service.sandboxProviders.all.map(p=>[p.id,runtime.providers?.keyPresent(p.id)])]);
+    if (current !== configuration) { configuration=current; clearPresentation(); }
     if (force || !presentation || now() - presentation.at >= CONNECTION_TTL_MS) {
       const value = readPresentation(force);
       presentation = { at: now(), value };
@@ -334,6 +347,15 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
   }
 
   return {
+    monthlyMacSuggestions: async () => ({ suggestions: service.store.monthlyMacs.refresh(monthlyMacPrices((await runtime.settings.get()).monthlyMacPricesJson), now()) }),
+    monthlyMacSuggestion: ({id}: {id:string}) => ({ suggestion: service.store.monthlyMacs.get(id) }),
+    answerMonthlyMacSuggestion: ({id,answer}: {id:string;answer:"rent"|"keep"|"own"|"cancel"}) => {
+      try {
+        const suggestion = service.store.monthlyMacs.answer(id,answer,now());
+        bb.rpc.experimental_invalidate([MONTHLY_MACS_TAG]);
+        return {suggestion};
+      } catch (error) { throw new experimental_PluginRpcRefusal({code:"invalid",message:error instanceof Error ? error.message : "Could not save this choice."}); }
+    },
     sandboxProviders: () => view(),
     checkSandboxProviders: async () => {
       const result = await view(true);
@@ -346,6 +368,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const monthStart = Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1), monthEnd = Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1);
       const label = (id: string) => providerLabel(id, service.sandboxProviders.all.find(provider=>provider.id===id));
       return { ...summary,
+        monthlySuggestions: service.store.monthlyMacs.active(),
         byProvider: summary.providers.map(id => ({id,label:label(id),month:service.store.macLeases.between(monthStart,monthEnd,now,undefined,id),rolling30:service.store.macLeases.between(now-30*86400000,now,now,undefined,id)})),
         today: service.store.macLeases.between(Date.parse(usageWindows(date,input?.timezoneOffsetMinutes ?? 0).day.since),now,now).costs,
         providers: summary.providers.map(id=>({id,label:label(id)})),

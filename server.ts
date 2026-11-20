@@ -1,3 +1,5 @@
+import { MONTHLY_MACS_TAG } from "./contract-monthly-macs.ts";
+import { monthlyMacPrices } from "./src/monthly-macs.ts";
 import { createProviderRecovery } from "./src/provider-recovery.ts";
 import { ScalewayApi } from "./src/providers/scaleway/api.ts";
 import { ScalewayKeys } from "./src/providers/scaleway/ssh.ts";
@@ -233,7 +235,7 @@ export default async function plugin(bb: BbPluginApi) {
   let attentionNotifications: AttentionNotifications | null = null;
 
   function changed(): void {
-    bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings, PROVIDERS_TAG]);
+    bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings, PROVIDERS_TAG, MONTHLY_MACS_TAG]);
     bb.realtime.publish(REALTIME_CHANNEL, null);
     void attentionNotifications?.flush();
   }
@@ -471,6 +473,7 @@ export default async function plugin(bb: BbPluginApi) {
     notifyUser: async () => undefined,
     setup,
     providers: {
+      onChange: listener => providerSecrets.onChange(listener),
       states: (options) =>
         providerStates(
           {
@@ -656,7 +659,7 @@ export default async function plugin(bb: BbPluginApi) {
         tools: [...TOOL_NAMES],
         skills: ["boat", "boat-orchestrator"],
         // bb caps instructions at 4096 characters; the full protocol comes from boat_protocol.
-        instructions: `${orchestratorInstructions(tasksBeforeAsking)}${context.pluginMetadata.continuationGoal ? "\n- A goal was carried into this chat. Read boat_goal or boat_protocol after compaction; preserve its scope, state and original budget. This is not native goal scheduling." : ""}${projectInstructions(parseOrchestratorProject(context.pluginMetadata.project))}`.slice(0, 4096),
+        instructions: `${store.monthlyMacs.forThread(context.thread.id).filter(item => item.answer === null).map(item => `Mac cost guidance (blocks nothing): include ::boat-monthly-mac{id="${item.id}"} after your reply. Do not rent, sign up or cancel; the card opens the owner’s browser.\n`).join("")}${orchestratorInstructions(tasksBeforeAsking)}${context.pluginMetadata.continuationGoal ? "\n- A goal was carried into this chat. Read boat_goal or boat_protocol after compaction; preserve its scope, state and original budget. This is not native goal scheduling." : ""}${projectInstructions(parseOrchestratorProject(context.pluginMetadata.project))}`.slice(0, 4096),
       };
     }
     // Another chat in a worker's workspace learns where it is and who else works there.
@@ -986,6 +989,13 @@ export default async function plugin(bb: BbPluginApi) {
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
         }
+        // Persist one forecast per week even when no usage page is open.
+        try {
+          const before = store.monthlyMacs.active().map(item=>item.id).join(",");
+          const after = store.monthlyMacs.refresh(monthlyMacPrices((await settings.get()).monthlyMacPricesJson)).map(item=>item.id).join(",");
+          if (before !== after) changed();
+        }
+        catch (error) { bb.log.warn(`monthly Mac forecast failed: ${String(error)}`); }
         await recoverProviders();
         await maintainLeasesAndKeepAwake({
           hasMacLeases: () => store.macLeases.held().length > 0,

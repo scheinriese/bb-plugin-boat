@@ -1,3 +1,4 @@
+import { monthlyMacPricesSchema } from "../contract-monthly-macs.ts";
 // The plugin's settings live in two places:
 // - SETTINGS: bb's settings list (Settings → Plugins → Boat Cloud Agents,
 //   `bb plugin config boat`), the ten everyday choices in this order;
@@ -417,6 +418,12 @@ export const PLUGIN_SETTINGS = {
     default: "",
   },
   // Sandbox providers (boat.dev is always on; projects choose where they run)
+  monthlyMacPricesJson: {
+    section: "advanced", type: "string", label: "Monthly Mac prices (JSON)",
+    description: "Optional replacement price table. Each entry needs id, provider, model, chip, ramGB, monthlyPrice, currency (USD or EUR), signupUrl, sourceUrl, asOf (YYYY-MM-DD), available, and billing (monthly or hourly-estimate). Empty uses the dated catalog. Prices stay in their own currency.",
+    experimental_schema: z.string().max(30000).refine(value => { if (!value.trim()) return true; try { return monthlyMacPricesSchema.safeParse(JSON.parse(value)).success; } catch { return false; } }, "Use a valid monthly Mac price table; see docs/monthly-macs.md."),
+    default: "",
+  },
   macHandBackMarginMinutes: {
     section: "advanced", type: "number", label: "Mac hand-back margin (min)",
     description: "Schedule an empty Mac for release at its paid minimum end this many minutes ahead. After the minimum, release on the next pass.",

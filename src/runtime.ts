@@ -178,6 +178,8 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 /** What the CLI and the page read of the sandbox providers (src/provider-status.ts). */
 export interface ProviderStatusSource {
+  /** Invalidate presentation facts after secure key changes. */
+  onChange?(listener: () => void): void;
   /** Every provider with its state (force: check again now). */
   states(options?: { force?: boolean }): Promise<ProviderState[]>;
   /** Instabox's own checks (`bb boat doctor`). */
