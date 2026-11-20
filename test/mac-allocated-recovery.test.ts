@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { FakeBoat, FakeChat, fakeRepos, defaultSettings, memoryStore } from "./fakes.ts";
 import { createBoatProvider } from "../src/providers/boat/provider.ts";
 import type { BoatApi } from "../src/providers/boat/api.ts";
 import { createProviderRegistry } from "../src/providers/registry.ts";
-import { machineName, instaboxLeaseInput } from "../src/providers/instabox/provider.ts";
+import { createInstaboxProvider, machineName, instaboxLeaseInput } from "../src/providers/instabox/provider.ts";
 import { BoatService } from "../src/service.ts";
 import type { SandboxInfo, SandboxProvider } from "../src/providers/types.ts";
 
@@ -204,4 +204,153 @@ test("cancelling the source request during recovered chat spawn stops and archiv
   const thread=env.chat.spawns[0]!.threadId;assert.ok(env.chat.stopped.includes(thread));assert.ok(env.chat.archived.includes(thread));
   assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);assert.deepEqual(env.chat.removed,[]);
   assert.deepEqual(env.calls.filter(call=>["create","delete","resume","extend","cancel-release"].includes(call)),["create"]);
+});
+
+async function legacyDeletedFixture(t:TestContext) {
+  const env=await fixture(),lease=env.record();
+  const failure=env.store.history({taskId:env.failed.id,limit:100}).events.find(event=>event.kind==="stopped")!;
+  const failedAt=env.store.get(env.failed.id)!.finishedAt!;
+  const endedAt=new Date(Date.parse(failedAt)+1494).toISOString();
+  env.store.macLeases.end(lease.id,"deleted",Date.parse(endedAt));
+  const db=(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db();
+  // Provider-realistic precision and a fake numeric-string physical ID.
+  const startedAt=lease.startedAt.replace("Z","853Z"),paidUntil=lease.paidUntil.replace("Z","853Z");
+  db.prepare("UPDATE mac_leases SET id=?,started_at=?,paid_until=?,end_evidence='legacy' WHERE id=?").run("instabox:73",startedAt,paidUntil,lease.id);
+  lease.id="instabox:73";lease.startedAt=startedAt;lease.paidUntil=paidUntil;
+  env.setMachine({mac:{...env.machine().mac!,leaseId:"73",startedAt,chargeUntil:paidUntil},scheduledReleaseAt:paidUntil});
+  env.store.addOwnMacEvent(env.failed.id,"ownmac-allocation","legacy allocation evidence",null);
+  env.store.addOwnMacEvent(env.failed.id,"ownmac-rental-approved","legacy approval evidence",null);
+  env.store.update(env.failed.id,{sandboxId:null});
+  t.mock.timers.enable({apis:["Date"],now:Date.parse(endedAt)+5000});
+  return {...env,lease,endedAt,adoption:{ledgerId:lease.id,leaseId:env.machine().mac!.leaseId,sourceTaskId:env.source.id,startedAt:lease.startedAt,paidUntil:lease.paidUntil,endedAt,failedAt,noReleaseRequested:true as const}};
+}
+
+async function publicHarness(env:Awaited<ReturnType<typeof fixture>>,t:{after(fn:()=>Promise<void>):void}) {
+  const [{createFakePluginHost},{ProjectStore},{TaskStore},{createMigratingSettingsStore},{createRuntime},{registerRpc},{buildCli}]=await Promise.all([
+    import("@get-bb/plugin-sdk/testing"),import("../src/projects.ts"),import("../src/store.ts"),import("../src/settings-store.ts"),import("../src/runtime.ts"),import("../src/rpc.ts"),import("../src/cli.ts"),
+  ]);
+  const {bb,harness}=createFakePluginHost({pluginId:"boat"});bb.storage.migrate(bb.storage.database(),TaskStore.migrations());
+  const projects=new ProjectStore(()=>bb.storage.database()),settings=await createMigratingSettingsStore(bb);
+  const runtime=createRuntime({bb,service:env.service,projects,settings,protocol:{read:()=>({text:"",custom:false,path:"",updatedAt:null})} as unknown as import("../src/protocol.ts").ProtocolStore,readRepoFile:async()=>"",changed(){},wake(){}});
+  t.after(async()=>{runtime.startQueue.dispose();await harness.lifecycle.dispose();});registerRpc(runtime);bb.cli.register(buildCli(runtime));
+  return harness;
+}
+
+function authoritativeProviderReads(env:Awaited<ReturnType<typeof fixture>>) {
+  const cli={json:async(args:string[])=>{
+    env.calls.push(`adapter:${args.join(" ")}`);
+    assert.equal(args[0],"get","recovery adapter reads must never create or start a machine");
+    const current=env.machine(),mac=current.mac!;
+    return {machine:{id:current.id,name:current.name,state:"running",runtime:{ready:true},template:{id:"macos"},model:mac.model,
+      metadata:{"created-by":"bb-boat","boat-mac-model":mac.model},spec:{vcpus:mac.cpus,memMiB:mac.memoryMiB},
+      lease:{id:mac.leaseId,startedAt:mac.startedAt,chargeUntil:mac.chargeUntil,hourUSD:mac.hourPrice},deleteAt:current.scheduledReleaseAt}};
+  }} as unknown as import("../src/providers/instabox/cli.ts").InstaboxCli;
+  const provider=createInstaboxProvider(cli,{} as import("../src/providers/instabox/api.ts").InstaboxRest,{ledger:env.store.macLeases});
+  env.provider.info=provider.info.bind(provider);
+}
+
+test("public RPC explicitly adopts the same legacy deleted lease ended just after failed admission",async t=>{
+  const env=await legacyDeletedFixture(t),harness=await publicHarness(env,t);
+  authoritativeProviderReads(env);
+  const rawBefore=(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db().prepare("SELECT * FROM mac_leases WHERE id=?").get(env.lease.id);
+  assert.deepEqual(await harness.callRpc("recoverAllocatedMac",{taskId:env.failed.id,machineId:env.machine().id,userApproved:true,adoptLegacyLease:env.adoption}),{taskId:env.failed.id,machineId:env.machine().id});
+  assert.equal(env.store.get(env.failed.id)!.turns,1);assert.equal(env.store.list({limit:10}).length,2);
+  assert.equal(env.store.macLeases.held()[0]!.id,env.lease.id);assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);
+  assert.equal(env.store.macLeases.list().length,1);assert.equal(env.store.macLeases.summary().month.costs.USD,10.8);
+  const rawAfter=(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db().prepare("SELECT * FROM mac_leases WHERE id=?").get(env.lease.id);assert.deepEqual(rawAfter,rawBefore);
+  assert.deepEqual(env.calls.filter(call=>["create","delete","resume","extend","cancel-release"].includes(call)),["create"]);
+});
+
+test("public CLI requires explicit exact evidence to adopt a legacy deleted physical lease",async t=>{
+  const env=await legacyDeletedFixture(t),harness=await publicHarness(env,t);
+  const refused=await harness.runCli(["task","recover-mac",env.failed.id,env.machine().id,"--user-approved","--json"]);assert.notEqual(refused.exitCode,0);
+  assert.equal(env.store.macLeases.held().length,0);
+  const result=await harness.runCli(["task","recover-mac",env.failed.id,env.machine().id,"--user-approved","--adopt-legacy-lease",JSON.stringify(env.adoption),"--json"]);
+  assert.equal(result.exitCode,0,result.stderr);assert.equal(JSON.parse(result.stdout).id,env.failed.id);
+  assert.deepEqual((env.store.ownMacEventData(env.failed.id,"ownmac-legacy-adoption") as {proof:unknown}).proof,env.adoption);
+  assert.deepEqual(env.calls.filter(call=>["create","delete","resume","extend","cancel-release"].includes(call)),["create"]);
+});
+
+for (const [name,mutate] of [
+  ["wrong original approval",(env:Awaited<ReturnType<typeof legacyDeletedFixture>>)=>{env.adoption.sourceTaskId="t_wrong_source";}],
+  ["wrong physical lease",(env:Awaited<ReturnType<typeof legacyDeletedFixture>>)=>{env.adoption.leaseId="another-physical-lease";}],
+  ["wrong historical row",(env:Awaited<ReturnType<typeof legacyDeletedFixture>>)=>{env.adoption.ledgerId="instabox:wrong-row";}],
+  ["wrong recorded failure time",(env:Awaited<ReturnType<typeof legacyDeletedFixture>>)=>{env.adoption.failedAt=new Date(Date.parse(env.adoption.failedAt)+1).toISOString();}],
+  ["confirmed termination",(env:Awaited<ReturnType<typeof legacyDeletedFixture>>)=>{(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db().prepare("UPDATE mac_leases SET end_evidence='confirmed' WHERE id=?").run(env.lease.id);}],
+  ["handed-back termination",(env:Awaited<ReturnType<typeof legacyDeletedFixture>>)=>{(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db().prepare("UPDATE mac_leases SET end_reason='handed back' WHERE id=?").run(env.lease.id);}],
+  ["delayed termination",(env:Awaited<ReturnType<typeof legacyDeletedFixture>>)=>{env.adoption.endedAt=new Date(Date.parse(env.adoption.failedAt)+10_001).toISOString();(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db().prepare("UPDATE mac_leases SET ended_at=? WHERE id=?").run(env.adoption.endedAt,env.lease.id);}],
+] as const) test(`explicit legacy adoption refuses ${name} without changing effective billing`,async t=>{
+  const env=await legacyDeletedFixture(t);mutate(env);
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,env.adoption),{code:"mac_recovery_refused"});
+  assert.equal(env.store.macLeases.held().length,0);assert.equal(env.store.macLeases.adoptions().length,0);assert.equal(env.chat.spawns.length,0);
+  assert.equal(env.store.macLeases.summary().month.costs.USD,10.8);
+});
+
+test("explicit adoption does not silently ignore evidence on an ordinary held lease",async t=>{
+  const env=await fixture(),lease=env.record();env.store.macLeases.schedule(lease.id,env.machine().scheduledReleaseAt!);
+  const proof={ledgerId:lease.id,leaseId:"wrong-physical",sourceTaskId:env.source.id,startedAt:lease.startedAt,paidUntil:lease.paidUntil,endedAt:new Date(Date.now()).toISOString(),failedAt:env.failed.finishedAt!,noReleaseRequested:true as const};
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,proof),{code:"mac_recovery_refused"});assert.equal(env.chat.spawns.length,0);
+});
+
+test("adoption binds task failure time while accepting a failure event persisted a millisecond later",async t=>{
+  const env=await legacyDeletedFixture(t),db=(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db();
+  db.prepare("UPDATE task_events SET at=? WHERE task_id=? AND kind='failed'").run(new Date(Date.parse(env.adoption.failedAt)+1).toISOString(),env.failed.id);
+  assert.equal((await env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,env.adoption)).id,env.failed.id);
+});
+
+for(const failure of ["credentials","quota","project trust"] as const)test(`legacy adoption remains absent when final ${failure} validation refuses`,async t=>{
+  const env=await legacyDeletedFixture(t);
+  if(failure==="credentials")env.provider.assertTaskReady=async()=>{throw Error("fake credential check refused");};
+  if(failure==="quota")env.service.assertSubscriptionRoom=async()=>{throw Error("fake quota check refused");};
+  if(failure==="project trust") {const hooks=(env.service as unknown as {hooks:import("../src/service.ts").ServiceHooks}).hooks;hooks.settings=async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"boat"});}
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,env.adoption));
+  assert.equal(env.store.macLeases.adoptions().length,0);assert.equal(env.store.macLeases.held().length,0);assert.equal(env.chat.spawns.length,0);
+});
+
+for(const change of ["physical microseconds","paid-until microseconds","owner keep intent"] as const)test(`explicit adoption refuses changed ${change}`,async t=>{
+  const env=await legacyDeletedFixture(t);
+  if(change==="physical microseconds")env.setMachine({mac:{...env.machine().mac!,startedAt:env.machine().mac!.startedAt.replace("853Z","001Z")}});
+  if(change==="paid-until microseconds")env.setMachine({mac:{...env.machine().mac!,chargeUntil:env.machine().mac!.chargeUntil.replace("853Z","001Z")}});
+  if(change==="owner keep intent")(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db().prepare("UPDATE mac_leases SET kept=1 WHERE id=?").run(env.lease.id);
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,env.adoption),{code:"mac_recovery_refused"});assert.equal(env.store.macLeases.adoptions().length,0);
+});
+
+for(const action of ["stop","delete"] as const)test(`a failed owner ${action} request vetoes explicit legacy adoption`,async t=>{
+  const env=await legacyDeletedFixture(t);
+  env.provider.stop=async()=>{throw Error("fake provider refused stop");};env.provider.delete=async()=>{throw Error("fake provider refused delete");};
+  await assert.rejects(env.service.sandboxAction(env.machine().id,action,0));
+  assert.equal(env.store.macLeases.releaseIntent(env.machine().id)?.action,action);
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,env.adoption),{code:"mac_recovery_refused"});assert.equal(env.store.macLeases.adoptions().length,0);
+});
+
+test("owner deletion intent arriving during a stale provider read prevents legacy adoption",async t=>{
+  const env=await legacyDeletedFixture(t),info=env.provider.info;let enter!:()=>void,finish!:()=>void;
+  const entered=new Promise<void>(resolve=>{enter=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});
+  env.provider.info=async(...args)=>{const current=await info(...args);enter();await gate;return current;};
+  env.provider.delete=async()=>{throw Error("fake failed delete");};
+  const recovery=env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,env.adoption);
+  await entered;await assert.rejects(env.service.sandboxAction(env.machine().id,"delete",0));finish();
+  await assert.rejects(recovery,{code:"mac_recovery_refused"});assert.equal(env.store.macLeases.adoptions().length,0);assert.equal(env.chat.spawns.length,0);
+});
+
+test("a previously recorded local release plan is outside explicit failed-start adoption",async t=>{
+  const env=await legacyDeletedFixture(t);
+  (env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db().prepare("UPDATE mac_leases SET release_at=? WHERE id=?").run(env.lease.paidUntil,env.lease.id);
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,env.adoption),{code:"mac_recovery_refused"});assert.equal(env.store.macLeases.adoptions().length,0);
+});
+
+test("source cancellation during the final adoption read leaves the raw end and overlay unchanged",async t=>{
+  const env=await legacyDeletedFixture(t),info=env.provider.info;let count=0,enter!:()=>void,finish!:()=>void;
+  const entered=new Promise<void>(resolve=>{enter=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});
+  env.provider.info=async(...args)=>{const current=await info(...args);if(++count===2){enter();await gate;}return current;};
+  const recovery=env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,env.adoption);
+  await entered;await env.service.closeTask(env.source.id,{status:"cancelled"});finish();
+  await assert.rejects(recovery,{code:"mac_recovery_refused"});assert.equal(env.store.macLeases.adoptions().length,0);assert.equal(env.store.macLeases.held().length,0);
+  assert.equal(env.store.macLeases.rawList()[0]!.endedAt,env.endedAt);assert.equal(env.chat.spawns.length,0);
+});
+
+test("failed task admission atomically rolls back the explicit legacy overlay",async t=>{
+  const env=await legacyDeletedFixture(t);env.store.transition=()=>null;
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,env.adoption),{code:"mac_recovery_refused"});
+  assert.equal(env.store.macLeases.adoptions().length,0);assert.equal(env.store.macLeases.held().length,0);assert.equal(env.store.get(env.failed.id)!.status,"failed");assert.equal(env.store.macLeases.rawList()[0]!.endedAt,env.endedAt);
 });

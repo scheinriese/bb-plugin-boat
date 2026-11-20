@@ -1,3 +1,4 @@
+import { legacyMacAdoptionSchema } from "../contract-ownmac.ts";
 import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidelity.ts";
 // `bb boat …` — the agent- and human-facing command line.
 import { PluginCliError, cliCommand, defineCli, type PluginCliContext } from "@get-bb/plugin-sdk";
@@ -808,8 +809,13 @@ export function buildCli(runtime: Runtime) {
       "task recover-mac": cliCommand({
         summary:"Start a failed zero-turn task on its same allocated, current paid Instabox Mac; never rents or wakes a machine",
         positionals:[{name:"id",description:"Failed allocated task id",required:true},{name:"machine",description:"Existing allocated Instabox machine id",required:true}],
-        options:{"user-approved":{type:"boolean",description:"The user explicitly requested starting this task on its existing paid Mac"},json},
-        async run({positionals,options}) {return guard(async()=>{const task=await service.recoverAllocatedMac(positionals.id,positionals.machine,options["user-approved"]===true);return out(task,options.json,()=>`Started ${task.id} on existing Mac ${task.sandboxId}; its rental and release schedule are unchanged.`);});},
+        options:{"user-approved":{type:"boolean",description:"The user explicitly requested starting this task on its existing paid Mac"},"adopt-legacy-lease":{type:"string",description:"Explicit JSON evidence for the same legacy deleted lease; includes noReleaseRequested:true and exact source/failure/lease timestamps"},json},
+        async run({positionals,options}) {return guard(async()=>{let adoption:import("../contract-ownmac.ts").LegacyMacAdoptionEvidence|undefined;
+          if (options["adopt-legacy-lease"]!==undefined) {
+            try {adoption=legacyMacAdoptionSchema.parse(JSON.parse(options["adopt-legacy-lease"]));}
+            catch {throw new TaskError("Supply exact legacy adoption evidence as JSON, including noReleaseRequested:true.","invalid_value");}
+          }
+          const task=await service.recoverAllocatedMac(positionals.id,positionals.machine,options["user-approved"]===true,adoption);return out(task,options.json,()=>`Started ${task.id} on existing Mac ${task.sandboxId}; its rental and release schedule are unchanged.`);});},
       }),
       "task reopen": cliCommand({
         summary:"Restore a cancelled task chat on its original existing workspace, only at the user's request; starts no turn",

@@ -368,7 +368,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const notices=await Promise.all(tasks.map(task=>service.ownMacNotice(task)));
       return {notices:notices.filter((notice):notice is NonNullable<typeof notice>=>notice!==null)};
     },
-    recoverAllocatedMac:async({taskId,machineId,userApproved}:{taskId:string;machineId:string;userApproved:boolean})=>{try{const task=await service.recoverAllocatedMac(taskId,machineId,userApproved);return {taskId:task.id,machineId:task.sandboxId!};}finally{ownChanged();}},
+    recoverAllocatedMac:async({taskId,machineId,userApproved,adoptLegacyLease}:{taskId:string;machineId:string;userApproved:boolean;adoptLegacyLease?:import("../contract-ownmac.ts").LegacyMacAdoptionEvidence})=>{try{const task=await service.recoverAllocatedMac(taskId,machineId,userApproved,adoptLegacyLease);return {taskId:task.id,machineId:task.sandboxId!};}finally{ownChanged();}},
     answerOwnMacRental:async({taskId,answer,quoteId}:{taskId:string;answer:"rent"|"wait"|"queue";quoteId?:string})=>{try{return {replacementId:await service.answerOwnMacRental(taskId,answer,quoteId)};}finally{ownChanged();}},
     refreshMacRentalOffers:async({taskId}:{taskId:string})=>{try{return {notice:await service.refreshMacRentalOffers(taskId)};}finally{ownChanged();}},
     selectMacRentalOffer:async({taskId,quoteId}:{taskId:string;quoteId:string})=>{try{return {notice:await service.selectMacRentalOffer(taskId,quoteId)};}finally{ownChanged();}},
@@ -398,6 +398,15 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const notices: NonNullable<MacUsageDto["notices"]> = [...service.store.macLeases.list().flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []), ...service.store.macLeases.credentialNotices().map(notice=>({...notice,label:label(notice.provider),tokenRevocation:true}))];
       const ownMac = await service.sandboxProviders.all.find(p=>p.id==="ownmac")?.ownMacStatus?.();
       return { ...summary,
+        adoptions: service.store.macLeases.adoptions().map(({leaseId,original,current,evidence,adoptedAt,endedAt})=>({
+          leaseId,provider:original.provider,machineId:original.machineId,taskId:evidence.taskId,sourceTaskId:evidence.sourceTaskId,adoptedAt,endedAt,
+          operatorProof:evidence.operatorProof,
+          original:{endedAt:original.endedAt,endReason:original.endReason,endEvidence:original.endEvidence ?? "legacy",releaseAt:original.releaseAt},
+          observed:{leaseId:current.physicalLeaseId,startedAt:current.startedAt,paidUntil:current.paidUntil,model:current.size,minimumCost:current.minimumCost,hourPrice:current.hourPrice,currency:current.currency,scheduledReleaseAt:current.scheduledReleaseAt},
+        })),
+        legacyEnded: service.store.macLeases.rawList().filter(lease=>lease.provider==="instabox" && lease.endEvidence==="legacy" && lease.endReason==="deleted" && lease.endedAt!==null).slice(-100).map(lease=>({
+          id:lease.id,provider:lease.provider,machineId:lease.machineId,model:lease.size,startedAt:lease.startedAt,paidUntil:lease.paidUntil,endedAt:lease.endedAt!,endReason:"deleted" as const,endEvidence:"legacy" as const,releaseAt:lease.releaseAt,kept:lease.kept,minimumCost:lease.minimumCost,hourPrice:lease.hourPrice,currency:lease.currency,
+        })),
         ...(ownMac ? {ownMac:{...ownMac,rent:0 as const,tasksThisMonth:service.store.countOwnMacTasksSince(new Date(monthStart).toISOString())}} : {}),
         monthlySuggestions: service.store.monthlyMacs.active(),
         monthlyComparisons: service.store.monthlyMacs.comparisons(prices, now),
