@@ -151,7 +151,7 @@ export function TaskProviderFailure({ task }: { task: TaskDto }) {
               );
               if (
                 task.providerFailure!.canRetry &&
-                row?.steps?.filter((s) => s.possible).every((s) => s.done)
+                row?.steps?.filter((s) => s.possible && (s.required !== false || (s.id === "rented-github" && task.repo !== null))).every((s) => s.done)
               )
                 return retry.mutate({ id: task.id }).then((result) => {
                   if ("task" in result) openTask(result.task.id);

@@ -115,7 +115,8 @@ export const scaleway: SandboxProviderDto = {
   id: "scaleway",
   label: "Scaleway",
   summary: "Whole Mac minis. 24 h minimum, then hourly. Prices in EUR.",
-  status: "Setting up · 3 of 6",
+  status: "Connected",
+  waitingTasks: 1,
   systems: [{ os: "macos", label: "Mac", ready: true, note: null }],
   apiKey: { setting: "Scaleway secret key" },
   steps: [
@@ -134,8 +135,8 @@ export const scaleway: SandboxProviderDto = {
       detail: "Paris Apple silicon",
     },
     {
-      id: "rented-github", label: "GitHub token stored", done: false, possible: true,
-      detail: "Add GitHub token for rented machines in bb secret settings: selected repos; Contents, Pull requests and Workflows read and write; 90-day expiry",
+      id: "rented-github", required: false, label: "GitHub token stored", done: false, possible: true,
+      detail: "Only repository tasks need GitHub token for rented machines in bb secret settings: selected repos; Contents, Pull requests and Workflows read and write; 90-day expiry",
     },
     {
       id: "agent-route", label: "Agent route available", done: true, possible: true,
@@ -144,11 +145,11 @@ export const scaleway: SandboxProviderDto = {
     {
       id: "logins",
       label: "Logins on fresh Macs",
-      done: false,
+      done: true,
       possible: true,
-      detail: "Complete the GitHub and agent checks above",
+      detail: "Agent route ready; repository tasks also need GitHub",
     },
-    { id: "enabled", label: "On", done: false, possible: true, detail: "Credentials are checked for the chosen agent and repositories before rental" },
+    { id: "enabled", label: "On", done: true, possible: true, detail: "Credentials are checked for the chosen agent and repositories before rental" },
   ],
 };
 export function scene(name: string) {

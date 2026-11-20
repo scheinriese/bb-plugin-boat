@@ -32,7 +32,8 @@ export function ProviderSetup({
   busy?: boolean;
 }) {
   const steps = provider.steps ?? [],
-    next = steps.findIndex((s) => s.possible && !s.done),
+    nextRequired = steps.findIndex((s) => s.possible && s.required !== false && !s.done),
+    next = nextRequired >= 0 ? nextRequired : steps.findIndex((s) => s.possible && !s.done),
     waiting = (provider.waitingTasks ?? 0) > 0;
   return (
     <ol
@@ -75,7 +76,7 @@ export function ProviderSetup({
                 >
                   {needs
                     ? `${provider.waitingTasks} task${provider.waitingTasks === 1 ? "" : "s"} waiting`
-                    : "Next"}
+                    : s.required === false ? "Optional" : "Next"}
                 </span>
               )}
             </div>
