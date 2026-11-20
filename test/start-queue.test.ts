@@ -5,12 +5,12 @@ import type Database from "better-sqlite3";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { TaskStore } from "../src/store.ts";
 import { BoatService, TaskError, type StartTaskInput } from "../src/service.ts";
-import type { BoatApi } from "../src/boat-api.ts";
+import type { BoatApi } from "../src/providers/boat/api.ts";
 import { createStartQueue } from "../src/start-queue.ts";
 import { StartQueueStore, durableStartInput } from "../src/start-queue-store.ts";
 import { createPaidStartInteractions } from "../src/start-queue-interaction.ts";
 import { createQuotaReader, type Quotas, type QuotaReader } from "../src/quota.ts";
-import { defaultSettings, FakeBoat } from "./fakes.ts";
+import { defaultSettings, fakeRepos, FakeBoat, FakeChat } from "./fakes.ts";
 import { createTestHost } from "./fakes.ts";
 import { registerStartQueueRpc } from "../src/start-queue-rpc.ts";
 import type { Runtime } from "../src/runtime.ts";
@@ -24,16 +24,17 @@ const input: StartTaskInput = { title: "Cart drawer", role: "implement", brief: 
 const quotas = (claude = 95, codex = 97): Quotas => new Map(([ ["claude",claude], ["codex",codex] ] as const).map(([provider,usedPercent]) => [provider,{provider,usedPercent,resetsAt:"2026-11-08T00:00:00Z",window:"Weekly limit"}]));
 function gate() { let release!: () => void; const promise = new Promise<void>(r=>{release=r;}); return {promise,release}; }
 async function until(check: () => boolean) { const end=Date.now()+3000;while(!check()){if(Date.now()>end)throw Error("Timed out");await new Promise(r=>setTimeout(r,2));} }
-function setup() {
+function setup(asChat = false) {
   const db = new DatabaseSync(":memory:"); for(const sql of TaskStore.migrations())db.exec(sql);
   const database = () => db as unknown as Database.Database;
   const registry = new TaskStore(database), store = new StartQueueStore(database), boat = new FakeBoat();
-  const { bb, harness } = createFakePluginHost({pluginId:"boat"}); let closed=false, projectValid=true, settings=defaultSettings(), clock=Date.now(), usage=quotas(), readCount=0;
+  const chat = asChat ? new FakeChat() : undefined;
+  const { bb, harness } = createFakePluginHost({pluginId:"boat"}); let closed=false, projectValid=true, settings=defaultSettings(asChat ? {workerMode:"chat"} : {}), clock=Date.now(), usage=quotas(), readCount=0;
   let preflight: (()=>Promise<void>) | null=null, onFresh: ((n:number)=>void|Promise<void>)|null=null, afterInsertFailure=false;
   harness.sdk.stub("threads.get", async ({threadId}:{threadId:string})=>({id:threadId,archivedAt:closed?1:null,deletedAt:null}));
   const reader:QuotaReader={async read(_signal,options){if(options?.fresh){await onFresh?.(++readCount);}return new Map([...usage].map(([k,v])=>[k,{...v}]));}};
   const lifecycle = new AbortController();
-  const service=new BoatService(boat as unknown as BoatApi,registry,{settings:async()=>settings,lifecycle:lifecycle.signal,changed(){if(afterInsertFailure){afterInsertFailure=false;throw Error("Simulated reload after registry insertion");}},notify:async()=>{},log:{info(){},warn(){}},quotas:reader,preflight:async()=>{await preflight?.();},checkPreview:async()=>"up"});
+  const service=new BoatService(boat as unknown as BoatApi,registry,{repos:fakeRepos(boat),settings:async()=>settings,lifecycle:lifecycle.signal,changed(){if(afterInsertFailure){afterInsertFailure=false;throw Error("Simulated reload after registry insertion");}},notify:async()=>{},log:{info(){},warn(){}},...(chat?{chat}:{}),quotas:reader,usageRefused:async provider=>{const q=usage.get(provider);if(q)q.blockedUntil=Date.now()+3600000;},preflight:async()=>{await preflight?.();},checkPreview:async()=>"up"});
   const controllers:ReturnType<typeof createStartQueue>[]=[];
   const start=()=>{const q=createStartQueue({bb,service,store,quotas:reader,changed(){},wake(){},now:()=>clock,projectCurrent:()=>projectValid});controllers.push(q);return q;};
   const queue=start();
@@ -188,7 +189,7 @@ test("a post-insertion provider failure keeps a terminal receipt and never autom
 });
 test("actual dispatch tool, task-start CLI and New Task RPC all return durable queued receipts without allocating",async t=>{
  const dir=mkdtempSync(join(tmpdir(),"boat-queue-plugin-"));process.env.FAKE_BOAT_STATE=join(dir,"state.json");
- const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:fileURLToPath(new URL("./fixtures/fake-boat.mjs",import.meta.url)),evidenceUploader:"",agents:"both",relayEnabled:true,avoidExtraUsage:true}});t.after(()=>harness.lifecycle.dispose());
+ const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs",import.meta.url)),evidenceUploader:"",agents:"both",relayEnabled:true,avoidExtraUsage:true}});t.after(()=>harness.lifecycle.dispose());
  harness.sdk.stub("threads.get",async()=>({id:"thr_orch",environmentId:null,archivedAt:null,deletedAt:null}));harness.sdk.stub("threads.getPluginMetadata",async()=>({role:"orchestrator"}));harness.sdk.stub("threads.send",async()=>({ok:true,delivery:"sent"}));harness.sdk.stub("system.config",async()=>({primaryHostId:"host_1"}));
  harness.sdk.stub("plugins.callRpc",async({pluginId,method,input}:{pluginId:string;method:string;input:{resourceId?:string}})=>{
   if(pluginId!=="account-pool")throw Error("Fake source unavailable");
@@ -203,4 +204,36 @@ test("actual dispatch tool, task-start CLI and New Task RPC all return durable q
  const rpc=await harness.callRpc("startTask",{title:"Page work",brief:input.brief,role:"implement",repo:input.repo!,branch:null,baseBranch:null,provider:null,model:null,sandbox:null,machineType:null,notifyThreadId:"thr_orch"}) as {queued:{id:string};pending:boolean};assert.ok(rpc.queued.id);assert.equal(rpc.pending,true);
  assert.equal((bb.storage.database().prepare("SELECT count(*) AS n FROM start_queue WHERE state='waiting'").get() as {n:number}).n,3);assert.equal((bb.storage.database().prepare("SELECT count(*) AS n FROM tasks").get() as {n:number}).n,0);
  assert.equal(harness.sdk.calls.filter(c=>/spawn|machine.*create|accounts.*(update|remove)/i.test(c.path)).length,0);
+});
+
+function paidUsage(claude=100,codex=100,allowed=true):Quotas {
+ const value=quotas(claude,codex);value.get("claude")!.extraUsage={allowed,observedAt:Date.now()};return value;
+}
+test("automatic paid policy starts one eligible bb chat only after included allowances are exhausted, with its own receipt",async t=>{
+ const e=setup(true);t.after(()=>e.dispose());e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true}});e.setUsage(paidUsage());
+ const result=await e.queue.launch({...input,repo:null,baseBranch:null},5000);assert.equal(result.kind,"started");if(result.kind!=="started")throw Error("Expected started");
+ assert.equal(result.task.provider,"claude");assert.equal(result.task.runner,"chat");assert.ok(e.registry.latestEvent(result.task.id,"paid-fallback-authorized"));assert.equal(e.registry.latestEvent(result.task.id,"paid-start-approved"),null);
+ assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);
+});
+test("included Codex beats authorized paid Claude and does not record a paid approval",async t=>{
+ const e=setup(true);t.after(()=>e.dispose());e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true}});e.setUsage(paidUsage(100,20));
+ const result=await e.queue.launch({...input,repo:null,baseBranch:null},5000);assert.equal(result.kind,"started");if(result.kind!=="started")throw Error("Expected started");assert.equal(result.task.provider,"codex");assert.equal(e.registry.latestEvent(result.task.id,"paid-fallback-authorized"),null);
+});
+test("automatic policy never spends on headless Harbormaster credentials or a named exhausted Codex agent",async t=>{
+ for(const asChat of [false,true]){const e=setup(asChat);t.after(()=>e.dispose());e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true}});e.setUsage(paidUsage());await e.queued(asChat?{provider:"codex",repo:null,baseBranch:null}:{});assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);}
+});
+test("a saved waiting receipt starts exactly once after the automatic policy is enabled",async t=>{
+ const e=setup(true);t.after(()=>e.dispose());const q=await e.queued({repo:null,baseBranch:null});e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true}});e.setUsage(paidUsage());await Promise.all([e.queue.tick(),e.queue.tick()]);await e.settle();assert.equal(e.queue.get(q.id)!.state,"started");assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);await e.start().tick();assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);
+});
+test("lost billing availability, source closure or policy revocation during paid preflight allocates nothing",async t=>{
+ for(const change of ["billing","source","policy"]){const e=setup(true);t.after(()=>e.dispose());const q=await e.queued({repo:null,baseBranch:null});e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true}});e.setUsage(paidUsage());const hold=gate();let entered=false;e.setPreflight(async()=>{entered=true;await hold.promise;});const work=e.queue.tick();await until(()=>entered);
+ if(change==="billing")e.setUsage(paidUsage(100,100,false));else if(change==="source")e.setClosed();else e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:false}});hold.release();await work;assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);assert.equal(e.queue.get(q.id)!.state,change==="source"?"cancelled":"waiting");}
+});
+
+test("headless automatic paid start requires the separately saved same-account authorization",async t=>{
+ const e=setup();t.after(()=>e.dispose());const q=await e.queued();e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true,paidClaudeHeadless:true}});e.setUsage(paidUsage());await e.queue.tick();await e.settle();const receipt=e.queue.get(q.id)!;assert.equal(receipt.state,"started");assert.equal(e.registry.get(receipt.taskId!)!.runner,"boat");assert.ok(e.registry.latestEvent(receipt.taskId!,"paid-fallback-authorized"));assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);
+});
+
+test("a same-account headless credit refusal prevents the next automatic request from allocating another sandbox",async t=>{
+ const e=setup();t.after(()=>e.dispose());e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true,paidClaudeHeadless:true}});e.setUsage(paidUsage());e.boat.prompt=async()=>{throw Error("Out of credits");};await assert.rejects(e.queue.launch(input,5000),/Out of credits/);const created=e.boat.calls.filter(c=>c.startsWith("create ")).length;assert.equal(created,1);await e.queued({title:"Another task"});assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,created);
 });

@@ -23,10 +23,10 @@ import {
 import { ORCHESTRATOR_EFFORT_VALUES } from "../contract.ts";
 import { EFFORTS } from "../src/tiers.ts";
 import { PLUGIN_SETTINGS_KEY, SettingsError, createSettingsStore, pluginValues } from "../src/settings-store.ts";
-import { autoStopHours } from "../src/boat-api.ts";
+import { autoStopHours } from "../src/providers/boat/api.ts";
 import { createTestHost } from "./fakes.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 
 async function setup(t: { after(fn: () => unknown): void }, settings: Record<string, unknown> = {}) {
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-settings-test-")), "state.json");
@@ -60,7 +60,7 @@ test("bb's list has the ten everyday settings, in order, with short option label
     {
       agents: "Coding agents",
       workers: "How tasks run",
-      environment: "Boat environment",
+      environment: "boat.dev environment",
       machineType: "Default sandbox size",
       maxActiveSandboxes: "Sandboxes at once",
       implementProvider: "Agent for tasks",
@@ -96,7 +96,7 @@ test("every other setting is the plugin's own, in a section; no setting is in bo
   assert.ok(!Object.hasOwn(ALL_SETTINGS, "workerMode") && !Object.hasOwn(ALL_SETTINGS, "adhocWorkerMode"), "workers replaced them");
   assert.equal(PLUGIN_SETTINGS.cloudOrchestratorFullAccess.section, "orchestrators");
   assert.equal(PLUGIN_SETTINGS.cloudOrchestratorFullAccess.default, true);
-  assert.equal(PLUGIN_SETTINGS.orchestratorMachineType.label, "Size for chats on a Boat sandbox");
+  assert.equal(PLUGIN_SETTINGS.orchestratorMachineType.label, "Size for chats on a boat.dev sandbox");
   // The orchestrator section: what they run as (agent, effort) first, then the sidebar, size, and full access right after size.
   const orchestrators = Object.entries(PLUGIN_SETTINGS).filter(([, spec]) => spec.section === "orchestrators").map(([key]) => key);
   assert.deepEqual(orchestrators, ["relayPreferred", "orchestratorEffort", "tasksBeforeAsking", "sidebarLayout", "orchestratorMachineType", "cloudOrchestratorFullAccess"]);
@@ -244,7 +244,7 @@ test("bb boat config get|set|reset: one command for both places, with the same c
   const { bb, harness, cli } = await setup(t);
   const all = await cli("config", "get");
   assert.equal(all.exitCode, 0, all.stderr);
-  assert.match(all.stdout, /^bb's settings list \(Settings → Plugins → Boat Cloud Agents\):\n {2}agents = "auto"\n {2}workers = "boat"/);
+  assert.match(all.stdout, /^bb's settings list \(Settings → Plugins → Harbormaster\):\n {2}agents = "auto"\n {2}workers = "boat"/);
   assert.match(all.stdout, /\n\nUsage limits:\n {2}notifyNeedsYou = true\n {2}notifyReady = true\n {2}notifyProgress = false\n {2}autoFailover = true\n/);
   assert.match(
     all.stdout,
@@ -421,4 +421,12 @@ test("Stop idle sandboxes after: an hour by default, a plain description, and th
   for (const file of ["../README.md", "../docs/orchestrators.md", "../docs/marketplace/SUBMISSION.md", "../skills/boat/SKILL.md", "../skills/boat-orchestrator/SKILL.md"]) {
     assert.doesNotMatch(readFileSync(new URL(file, import.meta.url), "utf8"), /more than 3 tasks/, file);
   }
+});
+
+test("Instabox Secrets defaults to all and validates selection names", () => {
+  const field = PLUGIN_SETTINGS.instaboxSecrets;
+  assert.equal(field.default, "all");
+  assert.equal(field.section, "advanced");
+  for (const value of ["all", "none", "GH_TOKEN", "GH_TOKEN,MODEL_KEY", " GH_TOKEN ", " all "]) assert.equal(settingProblem("instaboxSecrets", field, value), null);
+  for (const value of ["", "GH_TOKEN,", "all,GH_TOKEN", "GH_TOKEN,all", "GH_TOKEN, MODEL_KEY", "--all", "1TOKEN", "GH_TOKEN;echo bad"]) assert.notEqual(settingProblem("instaboxSecrets", field, value), null);
 });

@@ -2,7 +2,7 @@
 // room left. Near a usage limit it hands over to the other agent (after
 // asking for a handoff note while there's budget for one); once the preferred
 // agent has room again, it hands back at a quiet moment. Paid extra usage is
-// avoided: with both agents near their limits, it waits and tells the user.
+// avoided by default. An explicit paid Claude policy is the final fallback.
 import type { AgentQuota, Quotas } from "./quota.ts";
 import type { Provider } from "./store.ts";
 
@@ -15,6 +15,33 @@ export interface RelaySettings {
   switchBackBelowPercent: number;
   /** Hand back only after the orchestrator has been quiet this long. */
   quietMinutes: number;
+  /** Explicit owner policy; provider billing controls remain authoritative. */
+  paidClaudeFallback?: boolean;
+  /** Owner confirms headless environments use the same Claude subscription/billing account. */
+  paidClaudeHeadless?: boolean;
+  /** Chats stopped at a usage limit continue once paid Claude is available (src/paid-resume.ts); unset: on. */
+  resumeStoppedChats?: boolean;
+}
+
+export const PAID_USAGE_EVIDENCE_MS = 5 * 60_000;
+
+/** Never infer paid allowance from a full subscription, a reset time, or unknown usage. */
+export function automaticPaidClaude(quotas: Quotas, settings: RelaySettings, agents: AgentChoice = "both", now = Date.now()): boolean {
+  if (settings.paidClaudeFallback !== true || agents === "codex") return false;
+  const providers: Provider[] = agents === "claude" ? ["claude"] : ["claude", "codex"];
+  if (!providers.every(p => { const q = quotas.get(p); return q !== undefined && Number.isFinite(q.usedPercent) && q.usedPercent >= settings.switchAtPercent; })) return false;
+  const q = quotas.get("claude")!, evidence = q.extraUsage;
+  return !(q.blockedUntil && q.blockedUntil > now) && evidence?.allowed === true && evidence.observedAt !== null && evidence.observedAt <= now && now - evidence.observedAt <= PAID_USAGE_EVIDENCE_MS;
+}
+
+/** Included allowance always wins; the separately authorized paid fallback is last. */
+export function agentForWork(wanted: Provider, quotas: Quotas, settings: RelaySettings, agents: AgentChoice = "both"): Provider | null {
+  return agentWithRoom(wanted, quotas, settings.switchAtPercent, agents) ?? (automaticPaidClaude(quotas, settings, agents) ? "claude" : null);
+}
+
+export function automaticRoom(provider: Provider, quotas: Quotas, settings: RelaySettings, agents: AgentChoice = "both"): boolean {
+  const q = quotas.get(provider);
+  return !!q && (q.usedPercent < settings.switchAtPercent || provider === "claude" && automaticPaidClaude(quotas, settings, agents));
 }
 
 export interface OrchestratorView {
@@ -38,6 +65,9 @@ export type RelayState =
       /** The note, once the chat finished the turn that writes it. */
       note?: string | null;
       noteAt?: number | null;
+      automaticUsage?: boolean;
+      /** Automatic request was queued behind a turn; never interrupt it on a timer. */
+      waitForTurn?: boolean;
     }
   | { phase: "cooldown"; until: number }
   | { phase: "both-out"; since: number }
@@ -115,7 +145,8 @@ export function decideRelay(
   // with the relay switched off since. Once that turn is over (or it takes
   // too long), take over, unless the target filled up in the meantime.
   if (state?.phase === "handoff-requested") {
-    if (!hasRoom(quotas.get(state.to), settings)) return decideRelay(orchestrator, quotas, null, settings, now);
+    if (!hasRoom(quotas.get(state.to), settings) && !(state.to === "claude" && automaticPaidClaude(quotas, settings, "both", now))) return decideRelay(orchestrator, quotas, null, settings, now);
+    if (state.waitForTurn && !state.noteAt && (busy || now - state.since < HANDOFF_WAIT_MS && (quotas.get(orchestrator.provider!)?.usedPercent ?? 0) < 100)) return {kind:"none"};
     const answered =
       (state.noteAt ?? 0) > state.since ||
       (orchestrator.updatedAt !== null && orchestrator.updatedAt > state.since) ||
@@ -127,7 +158,9 @@ export function decideRelay(
   }
 
   if (!settings.enabled || orchestrator.provider === null) return { kind: "none" };
-  if (state?.phase === "cooldown" && now < state.until) return { kind: "none" };
+  // A fresh included allowance takes precedence over paid continuation, even during cooldown.
+  const returnToIncluded = settings.paidClaudeFallback && orchestrator.provider === "claude" && (quotas.get("claude")?.usedPercent ?? 0) >= settings.switchAtPercent && (quotas.get("codex")?.usedPercent ?? Infinity) < settings.switchAtPercent;
+  if (state?.phase === "cooldown" && now < state.until && !returnToIncluded) return { kind: "none" };
   if (state?.phase === "failed" && now < state.retryAt) return { kind: "none" };
   const decision = decideMove(orchestrator, quotas, state, settings, now, busy);
   if ((decision.kind === "request-handoff" || decision.kind === "take-over") && !orchestrator.hasProject) {
@@ -152,10 +185,15 @@ function decideMove(
   // Away from an agent at (or near) its limit.
   if (!hasRoom(ownQuota, settings)) {
     if (hasRoom(otherQuota, settings)) {
-      if (busy) return { kind: "none" };
+      if (busy && orchestrator.status !== "active") return { kind: "none" };
       const reason = describe(ownQuota!);
       // No budget left for a note: take over from what the plugin and bb already know.
-      return ownQuota!.usedPercent >= 100 ? { kind: "take-over", to: other, reason } : { kind: "request-handoff", to: other, reason };
+      return ownQuota!.usedPercent >= 100 && !busy ? { kind: "take-over", to: other, reason } : { kind: "request-handoff", to: other, reason };
+    }
+    if (automaticPaidClaude(quotas, settings, "both", now)) {
+      if (current === "claude" || busy && orchestrator.status !== "active") return { kind: "none" };
+      const reason = "Included allowances are near their limits; automatic Claude extra usage is authorized. Claude's billing limits apply";
+      return ownQuota!.usedPercent >= 100 && !busy ? { kind: "take-over", to: "claude", reason } : { kind: "request-handoff", to: "claude", reason };
     }
     // Both near their limits: wait for a reset rather than pay for extra usage.
     if (state?.phase === "both-out") return { kind: "none" };
@@ -186,7 +224,7 @@ export function retryDelay(attempts: number): number {
 export function handoffRequest(to: Provider, reason: string): string {
   return `[boat relay] ${reason}. A ${AGENT_NAME[to]} orchestrator takes over from this chat after this turn, with your open tasks and decisions.
 
-Write a short handoff as your final message now: decisions in force, open questions waiting on the user, what's running, and what's next. Don't dispatch, follow up or close anything else.`;
+At the end of your current turn, write a handoff: the exact goal and its status, completed and remaining work, constraints, decisions, open questions, running tasks and next steps. Don't dispatch, follow up or close anything else. Do not mark the goal complete just to hand over. End with [boat handoff ready].`;
 }
 
 /**
@@ -204,6 +242,107 @@ export function agentWithRoom(wanted: Provider, quotas: Quotas, switchAtPercent:
   if (room(wanted)) return wanted;
   if (room(otherAgent(wanted))) return otherAgent(wanted);
   return null;
+}
+
+/** The settings a start checks (BoatSettings' fields of the same names). */
+export interface NewWorkSettings {
+  relay: RelaySettings;
+  agents: AgentChoice;
+  avoidExtraUsage: boolean;
+  /** Agent for tasks. */
+  implementProvider: Provider;
+  notConnectedAgents: readonly Provider[];
+}
+
+/**
+ * Where new work goes now: room on the default agent, a switch to the other
+ * one, paid Claude, a wait for a reset (`until`: the earliest reset that
+ * frees an agent), or over a limit (nothing holds it back).
+ */
+export type NextStep =
+  | { kind: "room" | "switch" | "paid" | "over"; agent: Provider; wanted: Provider; until: null }
+  | { kind: "wait"; agent: null; wanted: Provider; until: string | null };
+
+/**
+ * The agent a start picks (BoatService.prepareTask): with switching, the one
+ * agentForWork finds room on; without, the default unless no agent has room.
+ * null: no agent has room, nor authorized paid Claude.
+ */
+export function startAgent(wanted: Provider, quotas: Quotas, relay: RelaySettings, agents: AgentChoice, canSwitch: boolean): Provider | null {
+  const pick = agentForWork(wanted, quotas, relay, agents);
+  return pick === null ? null : canSwitch ? pick : wanted;
+}
+
+/** A start checks subscription room at all: to avoid paid extra usage, or for the paid Claude fallback. */
+export function checksSubscription(settings: Pick<NewWorkSettings, "avoidExtraUsage" | "relay">): boolean {
+  return settings.avoidExtraUsage || settings.relay.paidClaudeFallback === true;
+}
+
+/**
+ * room: included allowance (or nothing to check); paid: an authorized
+ * automatic paid Claude start; wait: near its limit; unconfirmed: the paid
+ * fallback is on, but there's no reading, the agent isn't connected, or the
+ * saved policy changed since.
+ */
+export type SubscriptionRoom = "room" | "paid" | "wait" | "unconfirmed";
+
+/**
+ * The subscription check a start makes on its agent. BoatService.
+ * assertSubscriptionRoom reads fresh usage and the saved settings, then asks
+ * this; the usage view's next step asks it too, so they can't disagree.
+ * `current`: the saved settings now (default: `settings`). `runner` "boat"
+ * (headless) needs the same-account opt-in for paid Claude.
+ */
+export function subscriptionRoom(
+  provider: Provider,
+  quotas: Quotas,
+  settings: Omit<NewWorkSettings, "implementProvider">,
+  options: { runner?: string | null; current?: Omit<NewWorkSettings, "implementProvider" | "avoidExtraUsage">; now?: number } = {},
+): SubscriptionRoom {
+  if (!checksSubscription(settings)) return "room";
+  const reading = quotas.get(provider);
+  if (settings.relay.paidClaudeFallback) {
+    const current = options.current ?? settings;
+    if (!reading || current.relay.paidClaudeFallback !== true || current.relay.paidClaudeHeadless !== settings.relay.paidClaudeHeadless || current.relay.switchAtPercent !== settings.relay.switchAtPercent || current.agents !== settings.agents || current.notConnectedAgents.includes(provider)) return "unconfirmed";
+  }
+  if (provider === "claude" && (options.runner !== "boat" || settings.relay.paidClaudeHeadless === true) && automaticPaidClaude(quotas, settings.relay, settings.agents, options.now) && !settings.notConnectedAgents.includes(provider)) return "paid";
+  if (reading && reading.usedPercent >= settings.relay.switchAtPercent) return "wait";
+  return "room";
+}
+
+/**
+ * What a task started now with no agent named would do, from a bb chat:
+ * the pick a start makes (startAgent), then its subscription check
+ * (subscriptionRoom). Nothing here decides on its own.
+ */
+export function nextForNewWork(quotas: Quotas, settings: NewWorkSettings, now = Date.now()): NextStep {
+  const relay = effectiveRelay(settings.relay, settings.agents);
+  const only = onlyAgent(settings.agents);
+  const wanted = only ?? settings.implementProvider;
+  // With switching on (and both agents), either agent's reset frees work.
+  const blocking: Provider[] = only !== null ? [only] : relay.enabled ? [wanted, otherAgent(wanted)] : [wanted];
+  const wait: NextStep = { kind: "wait", agent: null, wanted, until: earliestReset(quotas, blocking) };
+  let agent = wanted;
+  if (relay.enabled || settings.avoidExtraUsage) {
+    const pick = startAgent(wanted, quotas, relay, settings.agents, relay.enabled);
+    if (pick === null && settings.avoidExtraUsage) return wait;
+    if (pick !== null) agent = pick;
+  }
+  const room = subscriptionRoom(agent, quotas, settings, { now });
+  if (room === "paid") return { kind: "paid", agent, wanted, until: null };
+  if (room !== "room") return wait;
+  // Nothing checks the subscription: it starts even past the limit.
+  const reading = quotas.get(agent);
+  if (reading !== undefined && reading.usedPercent >= relay.switchAtPercent) return { kind: "over", agent, wanted, until: null };
+  return { kind: agent === wanted ? "room" : "switch", agent, wanted, until: null };
+}
+
+/** The earliest known reset of these agents' binding windows (ISO), or null. */
+function earliestReset(quotas: Quotas, providers: readonly Provider[]): string | null {
+  const times = providers
+    .map((provider) => Date.parse(quotas.get(provider)?.resetsAt ?? ""))
+    .filter((at) => Number.isFinite(at));
+  return times.length > 0 ? new Date(Math.min(...times)).toISOString() : null;
 }
 
 /** What the relay is doing for an orchestrator, in a few words (null: nothing). */

@@ -23,6 +23,7 @@
   },
   "include": [
     "server.ts",
+    "harbor",
     "app.tsx",
     "contract.ts",
     "src",

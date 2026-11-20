@@ -43,7 +43,7 @@ test("the UI state: defaults, what was saved, and nothing it doesn't accept", as
 });
 
 test("Hide and Show again go through the RPC, refresh open pages, and stay out of settings and backups", async (t) => {
-  const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+  const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-ui-state-test-")), "state.json");
   const { bb, harness } = await createTestHost({ pluginId: "boat", settings: { boatPath: fakeBoat, evidenceUploader: "" }, agentSkillIds: ["boat", "boat-orchestrator"] });
   t.after(async () => {
@@ -79,7 +79,7 @@ test("the card's toasts name the card and the Settings button, and promise it on
   // After ×: what was hidden, and the Settings button in its own words.
   const hidden = cardHiddenToast();
   assert.match(hidden.title, /^Orchestrator card hidden\./);
-  assert.equal(hidden.description, "Show the orchestrator card again in Settings → Plugins → Boat Cloud Agents → Orchestrators.");
+  assert.equal(hidden.description, "Show the orchestrator card again in Settings → Plugins → Harbormaster → Orchestrators.");
   // After Show again: back on the page only with no orchestrator (the page shows it only then).
   assert.deepEqual(cardShownToast(false), { title: "The orchestrator card is back on the Cloud agents page", description: null });
   const withOne = cardShownToast(true);

@@ -7,11 +7,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { rpcErrorInfo } from "../contract.ts";
-import { MACHINE_PROVIDER_ID } from "../src/machine.ts";
+import { MACHINE_PROVIDER_ID } from "../src/providers/boat/provider.ts";
 import plugin from "../server.ts";
 import { createTestHost } from "./fakes.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 const REPORT = "Done.\n=== REPORT ===\nSTATUS: done\nPR: https://github.com/acme/web/pull/4\n=== END REPORT ===";
 
 async function setup(t: { after(fn: () => unknown): void }, options: { settings?: Record<string, unknown>; boat?: Record<string, unknown>; boatPath?: string } = {}) {
@@ -224,7 +224,7 @@ test("without the CLI, the plugin says how to install it and to reload", async (
   assert.equal((JSON.parse(doctor.stdout) as { checks: { id: string; state: string }[] }).checks[0]!.state, "missing");
 });
 
-test("the Boat sandbox machine needs a signed-in boat, an agent login and bb Connect", async (t) => {
+test("the boat.dev sandbox machine needs a signed-in boat, an agent login and bb Connect", async (t) => {
   const { harness, patch } = await setup(t);
   harness.sdk.stub("plugins.callRpc", async () => ({ paired: true, enabled: true }));
   const machine = harness.inspection.registrations.machineProviders.get("boat-sandbox")!;

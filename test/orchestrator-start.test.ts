@@ -23,7 +23,7 @@ import {
 import { DEFAULT_TIERS } from "../src/tiers.ts";
 import { createTestHost, defaultSettings } from "./fakes.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 
 // ------------------------------------------------------------------ the rules
 

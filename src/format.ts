@@ -1,7 +1,8 @@
 // Human/agent-readable text for CLI output, tool results and notifications.
 import { evidenceStatus, uploaderWorks } from "./evidence.ts";
 import type { PreviewView } from "./previews.ts";
-import { dashboardUrl, type Limits, type Sandbox } from "./boat-api.ts";
+import { sandboxDashboardUrl } from "./providers/dashboard.ts";
+import type { CapacityReport as Limits, SandboxInfo as Sandbox } from "./providers/types.ts";
 import type { Decision, Task, TaskEvent } from "./store.ts";
 import { tierSummary } from "./tiers.ts";
 import { HIDDEN_EVENT_KINDS, memoryNoticeLines } from "./memory.ts";
@@ -134,7 +135,10 @@ export function taskDetail(
     lines.push(`Preview ${view.preview.id}: ${view.link} (${view.state}${view.reason ? `: ${view.reason}` : ""})`);
   }
   if (task.runner === "chat" && task.threadId) lines.push(`Chat: @thread:${task.threadId} (a regular bb chat; you or the user can write in it)`);
-  if (task.sandboxId) lines.push(`Sandbox: ${task.sandboxId}${task.ownsSandbox ? "" : " (shared)"}   ${dashboardUrl(task.sandboxId)}`);
+  if (task.sandboxId) {
+    const url = sandboxDashboardUrl(task.sandboxId, task.sandboxProvider);
+    lines.push(`Sandbox: ${task.sandboxId}${task.ownsSandbox ? "" : " (shared)"}${url ? `   ${url}` : ""}`);
+  }
   for (const line of options.memory ?? []) lines.push(line);
   if (task.conversationId) lines.push(`Conversation: ${task.conversationId}`);
   if (task.parentTaskId) lines.push(`Parent task: ${task.parentTaskId}`);

@@ -1,6 +1,6 @@
 ---
 name: boat-orchestrator
-description: "Quick reference for orchestrator chats that coordinate coding work through boat.dev cloud agents instead of writing code themselves: loading the protocol, the boat tools, checking tasks on every wake, model presets, starting tasks, cross-model reviews, follow-ups, and reporting. Use in any chat marked as a boat orchestrator, or when the user asks you to coordinate, delegate, or fan out work to cloud agents."
+description: "Quick reference for orchestrator chats that coordinate coding work through boat.dev cloud agents instead of writing code themselves: loading the protocol, the Harbormaster tools, checking tasks on every wake, model presets, starting tasks, cross-model reviews, follow-ups, and reporting. Use in any chat marked as a boat / Harbormaster orchestrator, or when the user asks you to coordinate, delegate, or fan out work to cloud agents."
 ---
 
 # Orchestrating cloud agents
@@ -133,6 +133,7 @@ open task's sandbox that has evidence-upload.
 | `boat_needs_you` / `boat_resolve` | Put a decision (with your recommendation) on the user's Cloud agents page; close it once answered |
 | `boat_ready` | Mark work ready for the user to review (after the review approved) |
 | `boat_preview` | Previews (list) and wake, extend or stop one |
+| `boat_wake` | A chat or task stuck on a paused or resuming machine: bring its sandbox and chat back (don't repair it by hand) |
 | `boat_ship` | Projects that ship after approval: push the work to the base branch, only on the user's OK in this chat |
 
 For task dispatch, optionally provide `compact_title` (CLI `--compact-title`):
@@ -187,3 +188,25 @@ Markdown link target like `[chat](@thread:thr_…)`, which opens as a missing
 file; Markdown links are for URLs and files only. A table only if
 the user asks, at most three columns. The Cloud agents page is the ledger;
 don't keep or paste a separate one.
+
+## Automatic paid Claude fallback
+
+The owner can opt into `paidClaudeFallback` in Usage limits or with
+`bb boat config set paidClaudeFallback true`. Use included allowances first;
+only then may eligible bb task chats and orchestrators use Claude extra usage
+when Account Pooler reports recent availability. Claude enforces billing; Harbormaster
+cannot read a money cap or balance and never buys credits. Headless Harbormaster tasks
+need per-request paid approval unless `paidClaudeHeadless` is also enabled
+after the owner confirms the same Claude subscription and billing account. Do not name a provider/model to bypass a
+waiting receipt or dispatch replacement work. If billing is unavailable, keep
+waiting. This setting changes spending behavior: set it only when the owner asks.
+
+## Goals during handover
+
+A carried goal is available through `boat_goal` and `boat_protocol`. Preserve its
+exact scope, status and original budget. On Claude this is an explicit objective
+and plan when native goal controls are absent; do not claim native scheduling.
+Record completion, pause or a blocker with `boat_goal`; use provider controls for
+any actual native goal. A `[boat relay]` request goes behind the current turn:
+finish safely, include the goal and remaining work in the handoff, and end with
+`[boat handoff ready]`. Do not mark the goal complete merely to hand over.

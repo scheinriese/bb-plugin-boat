@@ -28,7 +28,7 @@ test("snapshot check is fresh/headless, deduplicates concurrent and reloaded cal
  await env.service.saveSnapshot(task.sandboxId!, "storefront-ready"); assert.equal(reload.projectSnapshotCheck({ projectId: "storefront" })?.stage, "saved"); assert.equal(store.get("storefront")!.snapshot, "storefront-ready", "saving a disk never changes project settings");
  env.service.store.update(task.id, { status: "running" }); assert.equal(snapshotCheckView(runtime, env.service.store.get(task.id)!).stage, "checking", "old saved event cannot hide a new running turn");
 });
-test("catalog returns only configured Boat repos, bounds optional metadata and excludes secrets/paths", async () => {
+test("catalog returns only configured Harbormaster repos, bounds optional metadata and excludes secrets/paths", async () => {
  const bb = { sdk: { projects: { list: async () => [{ id: "proj_demo", name: "Local", gitRemoteUrl: "https://github.com/acme/storefront" }] }, system: { config: async () => ({ primaryHostId: "host_demo" }) } } } as unknown as Pick<BbPluginApi, "sdk">;
  const boat = { defaultEnvironment: async () => "default", environments: async () => ["default"], environmentInfo: async () => ({ repos: [{ repo: "acme/storefront", baseBranch: "main", permission: "write" }], secretNames: ["PRIVATE"], envContents: "TOKEN=hidden" }) };
  const facts = await readProjectCatalog(bb, boat as never, async () => ({ language: "TypeScript", updatedAt: "2026-11-07T12:00:00Z", baseBranch: "main" })); assert.equal(facts.repos[0]!.language, "TypeScript"); assert.equal(facts.local[0]!.repo, "acme/storefront"); assert.doesNotMatch(JSON.stringify(facts), /TOKEN|PRIVATE|hidden|path/); assert.equal(facts.scope, "configured-boat-repos");

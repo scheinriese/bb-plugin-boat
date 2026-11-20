@@ -1,3 +1,4 @@
+import { OwnMacChatNotices } from "./web/own-mac-live";
 // bb-plugin-boat — frontend entry ("Cloud agents", via boat.dev).
 //
 // Compiled by `bb plugin build` into dist/app.js + dist/app.css. React and
@@ -49,7 +50,7 @@ export default definePluginApp((app) => {
   // The Cloud agents page: overview at "", task detail at "task/<id>".
   app.slots.navPanel({
     id: "cloud-agents",
-    title: "Cloud agents",
+    title: "Harbormaster",
     icon: "ComputerCloud",
     path: PANEL_PATH,
     component: CloudAgentsPage,
@@ -80,6 +81,7 @@ export default definePluginApp((app) => {
     summary: WorkspaceStrip,
     useVisible: useWorkspaceStripVisible,
   });
+  app.slots.experimental_threadContextCardSection({id:"your-mac-notices",title:"Your Mac",group:SECTION_GROUPS.related,order:0,component:OwnMacChatNotices});
   app.slots.experimental_threadContextCardSection({
     id: "cloud-agents",
     title: "Cloud agents",

@@ -1,0 +1,12 @@
+{
+  "name": "bb-plugin-a-harbor-collision",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bb": {
+    "name": "Harbor collision fixture",
+    "description": "Test fixture owning the harbor command before the companion.",
+    "branding": { "icon": "Ship" },
+    "server": "./server.ts"
+  }
+}

@@ -1,3 +1,7 @@
+import { TodayStartHereActions } from "./today-start-here";
+import { LiveMonthlyMacCard, MonthlyMacSuggestions } from "./monthly-mac";
+import { hours as providerHours } from "./provider-format";
+import { MacLeaseNotices } from "./mac-lease-notices";
 // Live events and measured usage; the demo seeds only the backend data.
 import { useMemo, useState } from "react";
 import {
@@ -55,8 +59,10 @@ const HEADING =
 const SURFACE =
   "overflow-hidden rounded-xl border sm:rounded-[10px] border-border bg-card";
 const countNumber = (n: number) =>
-  n.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  n.toLocaleString("en-US", { maximumFractionDigits: 1 });
 export function Today() {
+  const monthly = experimental_useRpcQuery({contract:rpcContract,method:"monthlyMacSuggestions",input:null});
+  const macUsage = experimental_useRpcQuery({contract:rpcContract,method:"macUsage",input:null});
   const board = useBoard(null);
   const overview = useOverview();
   const setup = useSetup();
@@ -170,7 +176,7 @@ export function Today() {
   const hasWork = recent.length > 0 || open.length > 0 || native.length > 0;
   if (!data)
     return (
-      <div className="py-6">
+      <div className="py-6"><MonthlyMacSuggestions/><MacLeaseNotices notices={macUsage.data?.notices}/>
         {board.error ? (
           <InlineAlert>{board.error.message}</InlineAlert>
         ) : (
@@ -180,12 +186,12 @@ export function Today() {
     );
   if (setup.data?.ok === false && !hasWork)
     return (
-      <div className="py-6">
+      <div className="py-6"><MonthlyMacSuggestions/><MacLeaseNotices notices={macUsage.data?.notices}/>
         <SetupCard />
       </div>
     );
   return (
-    <div className="pb-10 pt-[14px]">
+    <div className="pb-10 pt-[14px]"><MacLeaseNotices notices={macUsage.data?.notices}/>
       <div
         className="mb-[18px] flex flex-wrap items-center gap-x-[14px] gap-y-1.5 text-[14px] leading-5 sm:mb-[30px] sm:gap-x-4 sm:gap-y-2 sm:leading-[18px] text-muted-foreground sm:text-[13px]"
         aria-label="Work counts"
@@ -204,6 +210,7 @@ export function Today() {
       {!hasWork ? (
         <section className="space-y-3">
           <h2 className={HEADING}>Start here</h2>
+          {monthly.data?.suggestions.map(s=><LiveMonthlyMacCard key={s.id} suggestion={s} project={[...new Set(recent.filter(task=>task.runsOn?.provider===s.dayProvider && task.runsOn.os==="macos").map(projectName).filter(Boolean))].join(", ") || "All projects"}/>)}
           <p className="text-sm text-muted-foreground">
             Give a cloud agent one task, or let an orchestrator coordinate a
             project.
@@ -234,10 +241,11 @@ export function Today() {
       ) : (
         <div className="grid items-start gap-10 min-[1100px]:grid-cols-[minmax(0,1fr)_330px]">
           <div className="min-w-0 space-y-5 sm:space-y-[30px]">
-            {needsCount > 0 && (
+            {(needsCount > 0 || Boolean(monthly.data?.suggestions.length)) && (
               <section className="space-y-2 sm:space-y-[10px]">
                 <h2 className={HEADING}>Start here</h2>
-                <div className={cn(SURFACE, "divide-y divide-border/60")}>
+                {monthly.data?.suggestions.map(s=><LiveMonthlyMacCard key={s.id} suggestion={s} project={[...new Set(recent.filter(task=>task.runsOn?.provider===s.dayProvider && task.runsOn.os==="macos").map(projectName).filter(Boolean))].join(", ") || "All projects"}/>)}
+                <TodayStartHereActions>
                   {data.needsYou.map((decision) => (
                     <StartDecision
                       key={decision.id}
@@ -260,7 +268,7 @@ export function Today() {
                         onOpen={() => openChat(task)}
                       />
                     ))}
-                </div>
+                </TodayStartHereActions>
               </section>
             )}
             <section className="space-y-2 sm:space-y-[10px]">
@@ -487,7 +495,7 @@ export function Today() {
                         {new Date(event.at)
                           .toLocaleTimeString("en-US", {
                             hour: "numeric",
-                            minute: "2-digit",
+                            minute: "2-digit", hourCycle:"h23",
                           })
                           .toLowerCase()}
                       </time>
@@ -602,7 +610,7 @@ export function Today() {
                     >
                       <dt>Sandbox time</dt>
                       <dd className="text-foreground/80">
-                        {countNumber(usage.data.week.hours)} h · about $
+                        {providerHours(usage.data.week.hours)} h · about $
                         {usage.data.week.dollars.toFixed(2)}
                       </dd>
                     </div>

@@ -1,3 +1,13 @@
+import { createOwnMacProvider } from "./src/providers/ownmac/provider.ts";
+import { MONTHLY_MACS_TAG } from "./contract-monthly-macs.ts";
+import { monthlyMacPrices } from "./src/monthly-macs.ts";
+import { createCredentialSource, createAgentRouteCheck } from "./src/credentials.ts";
+import { createRentedMachineScope } from "./src/rented-machine-scope.ts";
+import { createProviderRecovery } from "./src/provider-recovery.ts";
+import { ScalewayApi } from "./src/providers/scaleway/api.ts";
+import { ScalewayKeys } from "./src/providers/scaleway/ssh.ts";
+import { createScalewayProvider } from "./src/providers/scaleway/provider.ts";
+import { registerSandboxMachine } from "./src/providers/machine.ts";
 // bb-plugin-boat — run coding agents in boat.dev cloud sandboxes and
 // orchestrate them from bb threads.
 //
@@ -5,14 +15,26 @@
 // server (where the user is logged in to boat), keeps a task registry in its
 // own SQLite database, watches running tasks in a background service, and
 // posts a message into the dispatching thread when a worker finishes a turn.
+import { maintainLeasesAndKeepAwake } from "./src/lease-maintenance.ts";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { TAGS } from "./contract.ts";
-import { BoatApi, parseBranchList, type MachineType } from "./src/boat-api.ts";
-import { BoatCli, resolveBoatBinary } from "./src/boat.ts";
+import { PROVIDERS_TAG, TAGS } from "./contract.ts";
+import { BoatApi, parseBranchList } from "./src/providers/boat/api.ts";
+import { BoatCli, resolveBoatBinary } from "./src/providers/boat/cli.ts";
 import { buildCli } from "./src/cli.ts";
-import { registerBoatMachine } from "./src/machine.ts";
-import { createSandboxKeeper } from "./src/keeper.ts";
+import { registerBoatMachine } from "./src/providers/boat/machine.ts";
+import { createBoatProvider } from "./src/providers/boat/provider.ts";
+import { createSandboxKeeper } from "./src/providers/boat/keeper.ts";
+import { createProviderRegistry } from "./src/providers/registry.ts";
+import { InstaboxCli, resolveInstaboxBinary } from "./src/providers/instabox/cli.ts";
+import { InstaboxRest } from "./src/providers/instabox/api.ts";
+import { INSTABOX_PROVIDER_ID, createInstaboxProvider } from "./src/providers/instabox/provider.ts";
+import { createInstaboxSetup, instaboxPreflight } from "./src/providers/instabox/setup.ts";
+import { registerInstaboxMachine } from "./src/providers/instabox/machine.ts";
+import { createInstaboxKeeper } from "./src/providers/instabox/keeper.ts";
+import { defineProviderSecrets } from "./src/provider-settings.ts";
+import { providerStates } from "./src/provider-status.ts";
+import type { MachineType } from "./src/providers/types.ts";
 import { createWatchdog, type QueuedRow, type Watchdog } from "./src/watchdog.ts";
 import { notificationText } from "./src/format.ts";
 import { DEFAULT_TASKS_BEFORE_ASKING, isOrchestratorMetadata, orchestratorInstructions, projectInstructions } from "./src/orchestrator.ts";
@@ -26,9 +48,9 @@ import { createRepoFileReader, ghStatus } from "./src/github.ts";
 import { ProjectStore, parseOrchestratorProject } from "./src/projects.ts";
 import { ProtocolStore } from "./src/protocol.ts";
 import { createQuotaReader } from "./src/quota.ts";
-import { PROVIDER_OF_ID, createLimitTracker, limitFromErrorText, limitFromTurnFailure, type TurnFailure } from "./src/limits.ts";
+import { DEFAULT_LIMIT_MS, PROVIDER_OF_ID, createLimitTracker, limitFromErrorText, limitFromTurnFailure, type TurnFailure } from "./src/limits.ts";
 import { createEvidenceSource, parseEvidenceSource } from "./src/evidence.ts";
-import { CLI_MISSING_STATUS, createSetup, effectiveAgents, parseAgentsSetting, type SetupSettings } from "./src/setup.ts";
+import { CLI_MISSING_STATUS, createBoatSetup, effectiveAgents, parseAgentsSetting, type SetupSettings } from "./src/providers/boat/setup.ts";
 import { runnersFor } from "./src/settings.ts";
 import { createMigratingSettingsStore } from "./src/settings-store.ts";
 import { createAttentionNotifications, type AttentionNotifications } from "./src/attention-notifications.ts";
@@ -40,9 +62,18 @@ import { registerStartQueueRpc } from "./src/start-queue-rpc.ts";
 import { registerNativeReviews } from "./src/native-review.ts";
 import { nativeStart, adoptNativeChat } from "./src/native-start.ts";
 import { createRuntime, type Runtime } from "./src/runtime.ts";
+import { PaidResumeStore, bbMachineReader, bbResumeThreads, createPaidResume, createPaidResumeTimer, mayBeLimitStop, type TurnFailedPayload } from "./src/paid-resume.ts";
 import { BoatService, DeliveryDeferred, type BoatSettings, type Notification } from "./src/service.ts";
 import { TaskStore, type Provider } from "./src/store.ts";
 import { TOOL_NAMES, registerTools } from "./src/tools.ts";
+import { WakePacer, kvWakeStorage } from "./src/wake-pacer.ts";
+import { WAKE_EVENT, createWakeGuard } from "./src/wake-retry.ts";
+import { threadsOnMachine } from "./src/activity.ts";
+import { createBbUpdater } from "./src/bb-update.ts";
+import { prefetchBbFiles } from "./src/bb-prefetch.ts";
+import { createLoginQuieter } from "./src/login-scripts.ts";
+import { createSandboxWaker, type SandboxWaker } from "./src/sandbox-wake.ts";
+import { RETRY_CONSENT_METHOD, createResetPacing, retryConsentContract, type LimitFailure } from "./src/reset-pacing.ts";
 
 const REALTIME_CHANNEL = "boat-changed";
 /** bb thread states with a turn under way. */
@@ -56,6 +87,10 @@ const RELEASE_RETRY_MS = 30_000;
 const GROUP_HOLD_MS = 2 * 60_000;
 /** How often running turns are checked (waiting tasks: once a minute; task chats also react to bb's events). */
 const POLL_INTERVAL_MS = 15_000;
+/** After a chat stops at a limit, give provider-retry and the limit tracker a moment before a paid resume check. */
+const STOP_CHECK_DELAY_MS = 5_000;
+/** How often the paid Claude resume looks for chats stopped at a limit (its own timer, apart from the monitor's loop). */
+const PAID_RESUME_INTERVAL_MS = 60_000;
 
 /** Abortable sleep that cleans up its listener either way. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -85,6 +120,32 @@ export default async function plugin(bb: BbPluginApi) {
   // boat CLI
   const cli = new BoatCli(async () => resolveBoatBinary((await settings.get()).boatPath));
   const boat = new BoatApi(cli);
+  // Instabox: its CLI and API get the key from bb's secret settings (src/provider-settings.ts).
+  const providerSecrets = await defineProviderSecrets(bb);
+  const instaboxCli = new InstaboxCli(async () => resolveInstaboxBinary((await settings.get()).instaboxPath), () => providerSecrets.instaboxKey());
+  const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
+  const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases, enabled: () => instaboxOn, keyPresent: () => providerSecrets.instaboxKeyPresent(), secrets: async () => (await settings.get()).instaboxSecrets });
+  const githubScope = createRentedMachineScope({ kv: bb.storage.kv, read: async () => ({ enabled: Boolean(await providerSecrets.rentedMachineGithubToken()), key: await providerSecrets.scalewayKey(), project: (await settings.get()).scalewayProjectId }) });
+  const scopeNotice = () => bb.log.warn("Rented-machine GitHub delivery is blocked; check the Scaleway key/project fingerprint and re-enable the GitHub-token setting if intended.");
+  providerSecrets.onGithubTokenPresenceChange(enabled => { void githubScope.tokenPresenceChanged(enabled).catch(scopeNotice); });
+  providerSecrets.onScalewayKeyChange(() => { void githubScope.configurationChanged("key").catch(scopeNotice); });
+  settings.onChange(keys => { if (keys.includes("scalewayProjectId")) void githubScope.configurationChanged("project").catch(scopeNotice); });
+  await githubScope.assertAllowed().catch(scopeNotice);
+  const machineCredentials = createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), assertDeliveryAllowed: githubScope.assertAllowed, agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) });
+  let ownMacTargetChanged:(()=>Promise<void>)|undefined;
+  const ownmac = await createOwnMacProvider({ config: () => settings.get(), kv: bb.storage.kv, onTargetChanged:async()=>{await ownMacTargetChanged?.();}, taskState:id=>{const tasks=store.liveSandboxTasks(id);if(tasks.some(task=>["starting","running"].includes(task.status)))return "running";if(tasks.length)return "idle";return store.sandboxTasks(id).length?"closed":null;}, credentials: createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) }) });
+  let ownMacOn = (await settings.get()).ownMacEnabled;
+  settings.onChange(keys => { void settings.get().then(async values => { ownMacOn = values.ownMacEnabled; if(keys.includes("ownMacAlias"))await ownmac.ownMacStatus!(true); }).catch(()=>bb.log.warn("Your Mac settings need a connection test.")); });
+  const scaleway = createScalewayProvider({ credentials: machineCredentials, api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(dirname(bb.storage.database().name), "scaleway-keys")), ledger: store.macLeases });
+  scaleway.configured = async () => Boolean((await settings.get()).scalewayProjectId) || providerSecrets.scalewayKeyPresent();
+  let scalewayOn = Boolean((await settings.get()).scalewayProjectId);
+  settings.onChange(() => { void settings.get().then(values => { scalewayOn = Boolean(values.scalewayProjectId); }); });
+  let instaboxOn = (await settings.get()).instaboxEnabled;
+  // Sandbox providers: boat.dev, the default; Instabox while it's turned on and its key stored (src/providers/registry.ts).
+  const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli }), instabox, scaleway, ownmac], {
+    isEnabled: (provider) => provider.id === "ownmac" ? ownMacOn : provider.id === "scaleway" ? scalewayOn && providerSecrets.scalewayKeyPresent() : provider.id !== INSTABOX_PROVIDER_ID || (instaboxOn && providerSecrets.instaboxKeyPresent()),
+  });
+  const instaboxSetup = createInstaboxSetup({ cli: instaboxCli, turnedOn: async () => (await settings.get()).instaboxEnabled, keyPresent: () => providerSecrets.instaboxKeyPresent() });
   // Worker chats and cloud orchestrators need bb Connect.
   const connect = createConnectCheck(bb);
 
@@ -110,9 +171,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   // Setup checks: read-only boat commands, cached about a minute.
-  const setup = createSetup({
-    binary: async () => resolveBoatBinary((await settings.get()).boatPath),
-    run: (args, options) => cli.run(args, options),
+  const setup = createBoatSetup(cli, async () => (await settings.get()).boatPath, {
     settings: setupSettings,
     connect,
     repoAccess: () => store.latestRepoAccess(),
@@ -138,6 +197,8 @@ export default async function plugin(bb: BbPluginApi) {
       sandboxTtlHours: values.sandboxTtlHours,
       maxActiveSandboxes: values.maxActiveSandboxes,
       stopIdleAfterMinutes: values.stopIdleAfterMinutes,
+      macHandBackMarginMinutes: values.macHandBackMarginMinutes,
+      macIdleNoticeMinutes: values.macIdleNoticeMinutes,
       freeSlotsWhenFull: values.freeSlotsWhenFull,
       deleteSandboxOnClose: values.deleteSandboxOnClose,
       reviewSandbox: values.reviewSandbox as BoatSettings["reviewSandbox"],
@@ -160,6 +221,9 @@ export default async function plugin(bb: BbPluginApi) {
         switchAtPercent: values.relaySwitchAt,
         switchBackBelowPercent: Math.min(values.relaySwitchBackBelow, values.relaySwitchAt - 5),
         quietMinutes: values.relayQuietMinutes,
+        paidClaudeFallback: values.paidClaudeFallback,
+        paidClaudeHeadless: values.paidClaudeHeadless,
+        resumeStoppedChats: values.resumeStoppedChats,
       },
       avoidExtraUsage: values.avoidExtraUsage,
       pushNotifications: values.pushNotifications,
@@ -178,17 +242,31 @@ export default async function plugin(bb: BbPluginApi) {
 
   const lifecycle = new AbortController();
   bb.onDispose(() => lifecycle.abort());
+  /** The bb machine providers registered at this load. */
+  const registeredMachines = new Set<string>();
 
   let wakeMonitor: () => void = () => undefined;
   let attentionNotifications: AttentionNotifications | null = null;
 
   function changed(): void {
-    bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings]);
+    bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings, PROVIDERS_TAG, MONTHLY_MACS_TAG]);
     bb.realtime.publish(REALTIME_CHANNEL, null);
     void attentionNotifications?.flush();
   }
   // A settings change (here, from bb's settings page or the CLI) refreshes open UIs.
   settings.onChange(() => changed());
+  settings.onChange((keys) => {
+    if (!keys.includes("instaboxEnabled") && !keys.includes("instaboxPath")) return;
+    void settings.get().then((values) => {
+      instaboxOn = values.instaboxEnabled;
+      void instaboxSetup.status({ force: true }).catch(() => undefined);
+      changed();
+    });
+  });
+  providerSecrets.onChange(() => {
+    void instaboxSetup.status({ force: true }).catch(() => undefined);
+    changed();
+  });
 
   /**
    * A phone/desktop notice through bb's push-notifications plugin. Turn
@@ -259,19 +337,45 @@ export default async function plugin(bb: BbPluginApi) {
     await attentionNotifications?.flush();
   }
 
+  // Sandbox wakes: one limiter for every wake (at most 2 a minute account-wide, a pause after a failure,
+  // and the hold on the plugin's own wakes after one of them failed), and Boat's own later retry while
+  // boat.dev is still restoring a disk.
+  const wakePacer = new WakePacer({ storage: kvWakeStorage(bb.storage.kv), log: (line) => bb.log.warn(line) });
+  const wakes = createWakeGuard({
+    pacer: wakePacer,
+    kv: bb.storage.kv,
+    boat: sandboxProviders.default,
+    store,
+    orchestratorOn: async (hostId) => {
+      const current = store.orchestratorThreadIds().current;
+      return (await threadsOnMachine(bb, hostId)).map((row) => row.id).find((id): id is string => id !== undefined && current.has(id)) ?? null;
+    },
+    // A move checks that no chat there is mid-turn.
+    threadsOn: (hostId) => threadsOnMachine(bb, hostId),
+    resumeHost: (hostId) => bb.sdk.hosts.experimental_resume({ hostId } as never),
+    changed: () => changed(),
+    log: (line) => bb.log.warn(line),
+    // A node that keeps failing a disk: move the sandbox (test fork first), or ask.
+    moves: { forkCheck: true },
+  });
+
   const chatRunner = createChatRunner(bb);
-  const service = new BoatService(boat, store, {
+  const service = new BoatService(sandboxProviders, store, {
+    wakes,
     settings: readSettings,
     lifecycle: lifecycle.signal,
     changed,
     notify,
-    log: { info: (message) => bb.log.info(message), warn: (message) => bb.log.warn(message) },
+    log: { info: (message) => bb.log.info(message), warn: (message) => bb.log.warn(message), debug: (message) => bb.log.debug(message) },
     chat: chatRunner,
     // Tests answer preview checks without the network.
     ...(process.env.BOAT_PLUGIN_PREVIEW_CHECK ? { checkPreview: async () => process.env.BOAT_PLUGIN_PREVIEW_CHECK as "up" | "down" | "unknown" } : {}),
     quotas,
+    usageRefused: provider => limits.record(provider, Date.now() + DEFAULT_LIMIT_MS),
     connect,
-    preflight: (input) => setup.preflight(input),
+    // Each provider's own checks: Instabox's for work there, boat's otherwise.
+    preflight: (input) => ["scaleway", "ownmac"].includes(input.provider ?? "") ? Promise.resolve() : (input.provider === INSTABOX_PROVIDER_ID ? instaboxPreflight(instaboxSetup) : setup.preflight(input)),
+    machineProviders: () => registeredMachines,
     // Sandbox sizes: the projects' sizes, the plan's sizes (never waiting unless fresh), and plain messages to chats.
     projects: () => projects.list(),
     sizePlan: async (options) => (await setup.reading({ force: options?.fresh === true }).catch(() => null))?.plan?.machineTypes ?? null,
@@ -331,6 +435,43 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  // A chat's queue, failed turn and retries, and the machine it runs on (the paid resume and `bb boat sandbox wake`).
+  const resumeThreads = bbResumeThreads(bb, (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(), { error: (line) => bb.log.error(line) });
+  const machineReader = {
+    ...bbMachineReader(bb, (hostId) => chatRunner.machineState(hostId), async (sandboxId) => (await service.sandboxProvider(sandboxId).findInfo(sandboxId))?.state ?? null),
+    // Only boat.dev's sandboxes take a slot of its wake pacer.
+    sandboxPaced: (sandboxId: string) => service.sandboxProvider(sandboxId).caps.pacedWakes === true,
+  };
+  // Chats stopped at a usage limit continue once paid Claude is available (its own timer, below).
+  const paidResume = createPaidResume({
+    threads: resumeThreads,
+    store: new PaidResumeStore(() => bb.storage.database()),
+    machines: machineReader,
+    // Its wakes take a slot from the wake pacer, claimed for the machine; one that failed sets the hold.
+    wakes: wakePacer,
+    tasks: {
+      byThread: (threadId) => service.store.byThread(threadId),
+      failedHeadless: () => service.store.list({ statuses: ["failed"], limit: 500 }).filter((task) => task.runner === "boat"),
+      addEvent: (taskId, kind, text) => {
+        service.store.addEvent(taskId, kind, text);
+        changed();
+      },
+      continueHeadless: async (taskId, text) => {
+        await service.followup(taskId, text);
+      },
+    },
+    projects: () => projects.list(),
+    orchestrators: () => service.store.orchestrators().map((row) => ({ threadId: row.threadId, projectId: row.projectId })),
+    held: async (threadId) => {
+      if (service.store.orchestratorThreadIds().former.has(threadId)) return "a former orchestrator (another chat took over)";
+      return (await runtimeRef?.isHandingOver(threadId)) ? "being handed over to another agent" : null;
+    },
+    log: { info: (line) => bb.log.info(line), warn: (line) => bb.log.warn(line), error: (line) => bb.log.error(line) },
+    sleep: (ms) => sleep(ms, lifecycle.signal),
+  });
+
+  // `bb boat sandbox wake` (made below, once bb's safe update exists).
+  let sandboxWaker: SandboxWaker | null = null;
   const runtime = createRuntime({
     bb,
     service,
@@ -340,13 +481,40 @@ export default async function plugin(bb: BbPluginApi) {
     quotas,
     connect,
     settings,
+    paidResume,
+    sandboxWaker: () => sandboxWaker,
     // Relay progress and reset waits stay in-chat; only task needs-you/ready pushes are sent.
     notifyUser: async () => undefined,
     setup,
+    providers: {
+      onChange: listener => providerSecrets.onChange(listener),
+      states: (options) =>
+        providerStates(
+          {
+            registry: sandboxProviders,
+            projects: () => projects.list(),
+            machines: () => registeredMachines,
+            boatSetup: setup,
+            instabox: { setup: instaboxSetup, keyPresent: () => providerSecrets.instaboxKeyPresent() },
+          },
+          options,
+        ),
+      instabox: (options) => instaboxSetup.status(options),
+      keyPresent: (providerId) => (providerId === "scaleway" ? providerSecrets.scalewayKeyPresent() : providerId === INSTABOX_PROVIDER_ID ? providerSecrets.instaboxKeyPresent() : null),
+    },
     changed,
     wake: () => wakeMonitor(),
   });
   runtimeRef = runtime;
+  ownMacTargetChanged=()=>service.deliverOwnMacTargetNotice();
+  void service.deliverOwnMacTargetNotice().catch(()=>bb.log.warn("Your Mac target-change notice is waiting for chat delivery."));
+  // The paid Claude resume: its own timer, one pass at a time, so it never holds up the monitor's loop or the relay.
+  const paidTimer = createPaidResumeTimer(
+    async () => {
+      for (const action of await runtime.paidResumeCheck()) bb.log.info(`relay ${action.threadId}: ${action.kind} (${action.reason})`);
+    },
+    { intervalMs: PAID_RESUME_INTERVAL_MS, delayMs: STOP_CHECK_DELAY_MS, signal: lifecycle.signal, onError: (error) => bb.log.warn(`paid resume failed: ${error instanceof Error ? error.message : String(error)}`) },
+  );
   const nativeReviews = registerNativeReviews(runtime);
   attentionNotifications = createAttentionNotifications({
     kv: bb.storage.kv,
@@ -371,7 +539,119 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.cli.register(buildCli(runtime));
-  registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect });
+  // Before bb's setup on a resumed sandbox: read bb's files first, and update bb there in a fresh prefix.
+  const prepareHost = createBbUpdater({
+    boat: sandboxProviders.default,
+    kv: bb.storage.kv,
+    // The server's own bb-app version: what its machines run (bb's setup installs the server's build).
+    serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
+    prefetch: (sandboxId, request, signal) => prefetchBbFiles(service.sandboxProvider(sandboxId), sandboxId, request, { signal, log: (line) => bb.log.info(line) }),
+    tell: (sandboxId, text) => {
+      const tasks = store.liveSandboxTasks(sandboxId);
+      for (const task of tasks) store.addEvent(task.id, WAKE_EVENT, text);
+      if (tasks.length > 0) changed();
+    },
+    log: (line) => bb.log.warn(line),
+    info: (line) => bb.log.info(line),
+  });
+  registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect, wakes, prepareHost });
+  registeredMachines.add("boat-sandbox");
+  registerSandboxMachine(bb, scaleway, { service, settings: readSettings, availability: async () => {
+    if (!sandboxProviders.get("scaleway")) return { status: "setup-required", message: "Add the Scaleway secret key in bb secrets and set its project ID in Harbormaster settings." };
+    const state = await connect().catch(() => null);
+    return state?.state === "off" ? { status: "setup-required", message: "Turn on bb Connect for Scaleway task chats." } : { status: "available" };
+  } });
+  registeredMachines.add(scaleway.machine!.id);
+  registerSandboxMachine(bb, ownmac, {service,settings:readSettings,availability:async()=>{
+    const state=await ownmac.ownMacStatus!();
+    return state.status === "Available" ? {status:"available"} : {status:"setup-required",message:state.status};
+  }});
+  registeredMachines.add(ownmac.machine!.id);
+  // Instabox machines for task chats, when it's on at load (turning it on later needs a reload for these).
+  let keepInstaboxAwake: (() => Promise<void>) | null = null;
+  if (instaboxOn) {
+    registerInstaboxMachine(bb, { provider: instabox, service, settings: readSettings, setup: instaboxSetup, connect });
+    registeredMachines.add(instabox.machine!.id);
+    keepInstaboxAwake = createInstaboxKeeper(bb, { rest: instaboxRest, signal: lifecycle.signal, log: (line) => bb.log.warn(line) });
+  }
+  // A stuck sandbox and its chat back in one go, composed from the wake pacer and guard, the login
+  // scripts, bb's safe update and the chat retries above (src/sandbox-wake.ts).
+  sandboxWaker = createSandboxWaker({
+    boat: sandboxProviders.default,
+    kv: bb.storage.kv,
+    // A wake runs under the plugin's lifetime, not the CLI's request: the call waits 90 s, then it goes on.
+    lifecycle: lifecycle.signal,
+    notify: (threadId, text) => runtime.tellOrchestrator(threadId, text),
+    tell: (sandboxId, text, options) => {
+      const tasks = options?.closedToo === true ? store.sandboxTasks(sandboxId) : store.liveSandboxTasks(sandboxId);
+      for (const task of tasks) store.addEvent(task.id, WAKE_EVENT, text);
+      if (tasks.length > 0) changed();
+    },
+    bringUp: (sandboxId, signal, wake) => service.bringUp(sandboxId, signal, wake),
+    providerOf: (sandboxId) => service.sandboxProvider(sandboxId),
+    pacer: wakePacer,
+    guard: wakes,
+    quietLogins: createLoginQuieter(sandboxProviders.default, (line) => bb.log.warn(line)),
+    updateBb: prepareHost,
+    serverVersion: async () => (await bb.sdk.system.version({ signal: AbortSignal.timeout(5_000) })).currentVersion,
+    tasks: {
+      resolve: (id) => store.resolve(id),
+      liveSandboxTasks: (id) => store.liveSandboxTasks(id),
+      sandboxTasks: (id) => store.sandboxTasks(id),
+      // The plugin's records first, else the chat's own metadata (a worker chat carries its task id).
+      forThread: async (threadId) => {
+        const known = store.byThread(threadId);
+        if (known !== null) return known;
+        const raw = (await bb.sdk.threads.getPluginMetadata({ threadId, pluginId: bb.pluginId } as never).catch(() => null)) as { metadata?: unknown; taskId?: unknown } | null;
+        const metadata = (raw !== null && typeof raw === "object" && "metadata" in raw ? raw.metadata : raw) as { taskId?: unknown } | null;
+        return typeof metadata?.taskId === "string" ? store.get(metadata.taskId) : null;
+      },
+      hostForSandbox: (id) => store.hostForSandbox(id),
+    },
+    // A pending provider retry is cancelled by withdrawing its queued row, confirmed by bb's queue.
+    threads: { ...resumeThreads, cancelRetry: (threadId, queuedMessageId) => chatRunner.withdraw(threadId, queuedMessageId) },
+    machines: {
+      hostOf: (environmentId) => machineReader.hostOf(environmentId),
+      sandboxOf: async (hostId) => {
+        const resource = (await bb.experimental_machines.getResource(hostId).catch(() => null)) as { sandboxId?: unknown } | null;
+        return typeof resource?.sandboxId === "string" ? resource.sandboxId : null;
+      },
+      // A machine bb couldn't read makes the lookup fail, not read as "none".
+      hostFor: (sandboxId) => chatRunner.findMachine(sandboxId, { strict: true }),
+      host: (hostId) => chatRunner.machineState(hostId),
+      resume: (hostId) => chatRunner.resumeMachine(hostId),
+      threadsOn: (hostId) => threadsOnMachine(bb, hostId),
+    },
+    log: (line) => bb.log.info(line),
+  });
+  // A wake cut off between its stop and its start (a reload): the sandbox is started again.
+  void sandboxWaker.recover().catch((error: unknown) => bb.log.warn(`sandbox wake recovery failed: ${error instanceof Error ? error.message : String(error)}`));
+
+  // A usage limit's reset: Boat's chats go on without waking every sandbox at once.
+  const resets = createResetPacing({
+    isBoatChat: (threadId) => store.byThread(threadId) !== null || store.orchestratorThreadIds().current.has(threadId),
+    decision: (threadId) =>
+      bb.sdk.plugins.callRpc({ pluginId: "provider-retry", method: "decision.get", input: { threadId }, outputSchema: z.unknown(), signal: AbortSignal.timeout(5_000) } as never),
+    retry: (args) => bb.sdk.threads.retry(args),
+    queuedRetry: async (threadId) => {
+      const rows = (await bb.sdk.threads.queuedMessages.list({ threadId } as never)) as unknown;
+      return Array.isArray(rows) ? rows.some((row) => (row as { payload?: { kind?: unknown } } | null)?.payload?.kind === "retry") : null;
+    },
+    kv: bb.storage.kv,
+    // The shared wake pacing: the pacer's next slot, and the hold after a wake the plugin made failed.
+    nextWakeAt: () => wakePacer.nextWakeAt({ held: true }),
+    log: (line) => bb.log.info(line),
+  });
+  void resets.load();
+  // bb 0.49 asks the sender before retrying a failed turn (0.50 doesn't ask: the dispatch hook paces it there).
+  bb.rpc.register(
+    retryConsentContract,
+    { [RETRY_CONSENT_METHOD]: (input) => resets.consent(input) },
+    { experimental_discoverable: true, experimental_description: "Harbormaster declines a usage-limit retry of a chat it runs and resumes it itself after the reset, paced. Everything else is allowed." },
+  );
+  bb.events.on("turn.failed", (payload: unknown) => {
+    void resets.failed(payload as LimitFailure).catch((error: unknown) => bb.log.warn(`reset resume: ${error instanceof Error ? error.message : String(error)}`));
+  });
   registerTools(runtime);
   registerRpc(runtime);
   registerMergeRpc(runtime);
@@ -392,7 +672,7 @@ export default async function plugin(bb: BbPluginApi) {
       .catch(() => undefined);
   });
 
-  // Orchestrator threads get the boat tools, the playbook skill, and standing
+  // Orchestrator threads get the Harbormaster tools, the playbook skill, and standing
   // instructions; every thread can use the general `boat` skill and CLI.
   bb.agents.configure((context) => {
     if (isOrchestratorMetadata(context.pluginMetadata)) {
@@ -400,7 +680,7 @@ export default async function plugin(bb: BbPluginApi) {
         tools: [...TOOL_NAMES],
         skills: ["boat", "boat-orchestrator"],
         // bb caps instructions at 4096 characters; the full protocol comes from boat_protocol.
-        instructions: `${orchestratorInstructions(tasksBeforeAsking)}${projectInstructions(parseOrchestratorProject(context.pluginMetadata.project))}`.slice(0, 4096),
+        instructions: `${orchestratorInstructions(tasksBeforeAsking)}${context.pluginMetadata.continuationGoal ? "\n- A goal was carried into this chat. Read boat_goal or boat_protocol after compaction; preserve its scope, state and original budget. This is not native goal scheduling." : ""}${projectInstructions(parseOrchestratorProject(context.pluginMetadata.project))}`.slice(0, 4096),
       };
     }
     // Another chat in a worker's workspace learns where it is and who else works there.
@@ -469,6 +749,17 @@ export default async function plugin(bb: BbPluginApi) {
       if (provider !== undefined) await limits.record(provider, until);
     })().catch(() => undefined);
   });
+  // A Claude chat stopped at a limit: remember it, and continue it at once if paid Claude is available already.
+  bb.events.on("turn.failed", (payload: unknown) => {
+    const event = payload as TurnFailedPayload;
+    if (!mayBeLimitStop(event) || typeof event.threadId !== "string") return;
+    const threadId = event.threadId;
+    // A burst of stops makes one check a few seconds later, not one pass each.
+    void paidResume
+      .stopped(threadId, typeof event.requestId === "string" ? event.requestId : null)
+      .then((recorded) => (recorded ? paidTimer.soon() : undefined))
+      .catch((error: unknown) => bb.log.warn(`paid resume ${threadId}: ${error instanceof Error ? error.message : String(error)}`));
+  });
   bb.events.on("thread.failed", (payload: unknown) => {
     const event = payload as { thread?: { providerId?: string | null }; error?: string | null };
     const provider = PROVIDER_OF_ID[event.thread?.providerId ?? ""];
@@ -533,9 +824,11 @@ export default async function plugin(bb: BbPluginApi) {
   // The watchdog: bb's record of Boat sandbox machines true to boat, chats
   // waiting on a stopped machine resumed, and a [boat] notice per incident.
   const watchdog = createWatchdog(bb, {
-    boat,
+    boat: sandboxProviders.default,
     store: service.store,
     kv: bb.storage.kv,
+    // Its resumes take slots from the same wake pacer (it waits out the hold, never sets it).
+    wakes: wakePacer,
     // The same boat ps readings the idle stop and the keeper go by.
     computing: (sandboxId) => service.processesBusy(sandboxId),
     tell: (threadId, text) => runtime.tellOrchestrator(threadId, text),
@@ -613,7 +906,7 @@ export default async function plugin(bb: BbPluginApi) {
         return;
       }
       if (!lifecycle.signal.aborted) {
-        bb.log.warn(`couldn't remove withdrawn queued message ${queuedMessageId} from ${threadId}; the messages grouped with it stay queued, waiting on Boat, until it's deleted`);
+        bb.log.warn(`couldn't remove withdrawn queued message ${queuedMessageId} from ${threadId}; the messages grouped with it stay queued, waiting on Harbormaster, until it's deleted`);
       }
     } finally {
       releasing.delete(queuedMessageId);
@@ -626,7 +919,7 @@ export default async function plugin(bb: BbPluginApi) {
     const guarded = guard?.queuedMessageId ?? null;
     if (guarded !== null && queuedIds.length <= 1) {
       bb.log.warn(`refused queued message ${guarded} in ${context.thread.id}: the plugin withdrew it, the chat moved on before it could run`);
-      return { action: "reject", message: "Boat withdrew this automatic message: the chat moved on before it could run." };
+      return { action: "reject", message: "Harbormaster withdrew this automatic message: the chat moved on before it could run." };
     }
     if (guard !== null && Date.now() - guard.createdAt < GROUP_HOLD_MS) {
       // Grouped with newer input: refusing would refuse that too, and a hook can't take one row out of a group.
@@ -636,7 +929,7 @@ export default async function plugin(bb: BbPluginApi) {
       bb.log.warn(`held a queued group in ${context.thread.id}: it carries withdrawn message ${guarded}, which the plugin removes before the rest goes out`);
       armDeadline(guard.queuedMessageId, guard.createdAt);
       void releaseGroup(context.thread.id, guard.queuedMessageId);
-      return { action: "wait", reason: "Boat is removing an automatic message it withdrew; your messages go out right after.", sendAt: guard.createdAt + GROUP_HOLD_MS };
+      return { action: "wait", reason: "Harbormaster is removing an automatic message it withdrew; your messages go out right after.", sendAt: guard.createdAt + GROUP_HOLD_MS };
     }
     if (guard !== null) {
       // Fail open: real input is never held longer. The accepted exception: the withdrawn row goes out with it,
@@ -645,6 +938,9 @@ export default async function plugin(bb: BbPluginApi) {
       service.store.dropQueuedGuard(guard.queuedMessageId);
       clearDeadline(guard.queuedMessageId);
     }
+    // A retry at a usage limit's reset that would wake a Boat sandbox: one every 30 s.
+    const paced = await resets.dispatch(context).catch(() => null);
+    if (paced !== null) return paced;
     const start = await nativeStart(context, runtime, quotas);
     if (start?.action === "wait" || start?.action === "reject") return start;
     return watchdog.dispatch({
@@ -672,6 +968,7 @@ export default async function plugin(bb: BbPluginApi) {
   })().catch((error: unknown) => bb.log.warn(`queue guards on start: ${error instanceof Error ? error.message : String(error)}`));
 
   // Monitor: check running tasks, collect results, notify, stop idle sandboxes.
+  const recoverProviders=createProviderRecovery({providers:()=>sandboxProviders.enabled,keyPresent:id=>id!=="scaleway" || providerSecrets.scalewayKeyPresent(),signal:lifecycle.signal,warn:message=>bb.log.warn(message)});
   bb.background.service("monitor", {
     async start(signal) {
       // bb stops services (with a short grace) before dispose hooks run, so
@@ -681,12 +978,15 @@ export default async function plugin(bb: BbPluginApi) {
       if (signal.aborted) { abortMonitor(); return; }
       await watchdog.load().catch((error: unknown) => bb.log.warn(`watchdog notes: ${error instanceof Error ? error.message : String(error)}`));
       if (signal.aborted) return;
+      paidTimer.start();
       let lastRelayAt = 0;
       while (!signal.aborted) {
         try {
           // Also delivers notices a restart or a failed send left pending.
           if (service.hasOpenWork()) await service.sweep();
           else await service.deliverPending();
+          // Project sources the plugin added that nothing needs (after a start, then every ten minutes), even with no open task.
+          await service.sweepProjectSourcesIfDue();
           await nativeReviews.tick();
           await runtime.startQueue.tick();
           await attentionNotifications?.flush();
@@ -710,10 +1010,40 @@ export default async function plugin(bb: BbPluginApi) {
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
         }
+        // Persist one forecast per week even when no usage page is open.
+        try {
+          const before = store.monthlyMacs.active().map(item=>item.id).join(",");
+          const after = store.monthlyMacs.refresh(monthlyMacPrices((await settings.get()).monthlyMacPricesJson)).map(item=>item.id).join(",");
+          if (before !== after) changed();
+        }
+        catch (error) { bb.log.warn(`monthly Mac forecast failed: ${String(error)}`); }
+        await service.maintainOwnMac().catch(error=>bb.log.warn(`Your Mac check failed: ${String(error)}`));
+        await recoverProviders();
+        await maintainLeasesAndKeepAwake({
+          hasMacLeases: () => store.macLeases.held().length > 0,
+          mac: () => service.processMacLeases(),
+          keepAwake: () => sandboxProviders.get(INSTABOX_PROVIDER_ID) !== null ? keepInstaboxAwake?.() ?? Promise.resolve() : Promise.resolve(),
+          warn: (line) => bb.log.warn(line),
+        });
+        // Expiry can clear a reminder after the last lease has ended; refresh
+        // open page/provider reads even when there is no compute to maintain.
+        service.refreshCredentialNotices();
         try {
           await watchdog.tick();
         } catch (error) {
           bb.log.warn(`watchdog failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        // Boat's own later wake of a sandbox boat.dev couldn't restore (one a pass, paced).
+        try {
+          await wakes.tick();
+        } catch (error) {
+          bb.log.warn(`wake retries failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        // A sandbox a cut-off `bb boat sandbox wake` left stopped: started again (paced).
+        try {
+          await sandboxWaker?.recover();
+        } catch (error) {
+          bb.log.warn(`sandbox wake recovery failed: ${error instanceof Error ? error.message : String(error)}`);
         }
         // Running turns are checked often; waiting tasks (idle-stop, notices) slowly.
         const intervalMs = service.hasActiveWork() ? POLL_INTERVAL_MS : 60_000;

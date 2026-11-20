@@ -1,3 +1,10 @@
+import { ownMacEvent, ownMacTaskNotice } from "./ownmac-notices.ts";
+import { macRentalQuoteSchema, type MacRentalQuote, type OwnMacNotice } from "../contract-ownmac.ts";
+import { CLEANUP_NOTICE_PREFIX, tokenExposureNotice } from "../credential-warnings.ts";
+import { createCodexHealthCheck } from "./codex-health.ts";
+import { providerFailureCard } from "../provider-failure.ts";
+import { canHostMac, macTaskResources } from "./providers/types.ts";
+import type { MacLease, MacWorkOutcome } from "./mac-leases.ts";
 import { reviewerSchema, type Reviewer } from "../contract-review.ts";
 import { resolveReviewer, reviewGeneration, nativeReviewSourceSchema, type NativeReviewSource } from "./review-policy.ts";
 import { getPullRequest, pullRequestNumber } from "./github.ts";
@@ -6,31 +13,33 @@ import { getPullRequest, pullRequestNumber } from "./github.ts";
 // layers over this class.
 import { BUILTIN_CONFIG_NAMES, evidenceInstallScript, evidenceLinks, installSummary, parseEvidenceSource, parseInstallResult, type EvidenceSource } from "./evidence.ts";
 import { randomUUID } from "node:crypto";
+import { assertBranch, busyProcesses, finalResponse, normalizeRepo, programName, promptStatus } from "./providers/boat/api.ts";
 import {
   ACTIVE_STATES,
-  BoatApi,
-  assertBranch,
-  finalResponse,
-  normalizeRepo,
-  promptStatus,
+  DEFAULT_PROVIDER_ID,
+  ProviderError,
+  autoStopHours,
+  isNotFound,
+  type CapacityReport as Limits,
   type CheckoutMode,
-  type Limits,
   type MachineType,
+  type PrepareOptions,
   type PreparedRepo,
-  type Sandbox,
+  type SandboxInfo as Sandbox,
+  type SandboxProvider,
+  type SavedSnapshot,
   type ShipConflict,
   type ShipResult,
   type EnvironmentInfo,
-  busyProcesses,
-  programName,
-  shellQuote,
-} from "./boat-api.ts";
+} from "./providers/types.ts";
+import { providerRegistry, type ProviderRegistry, type ProviderSource } from "./providers/registry.ts";
+import { shellQuote } from "./providers/shell.ts";
+import { SANDBOX_REPOS, type RepoSteps } from "./sandbox-repos.ts";
 import { checkPreview, previewLink, previewView, type PreviewView } from "./previews.ts";
 import { KEEP_LIMIT_MS, describeWork, hasWork } from "./activity.ts";
-import { BOAT_GIT_ENV, aiProxyPrice, autoStopHours, withinAutoStopCap, type AiProxyState } from "./boat-api.ts";
-import { BoatError } from "./boat.ts";
+import { aiProxyPrice, type AiProxyState } from "./providers/boat/api.ts";
 import { bootstrapFailureMessage, retryableBootstrap } from "./bootstrap.ts";
-import { alwaysProtectedBranches, protectedBranches, type OrchestratorProject, type ProjectRepo } from "./projects.ts";
+import { alwaysProtectedBranches, protectedBranches, normalizeProject, toOrchestratorProject, type OrchestratorProject, type ProjectRepo } from "./projects.ts";
 import {
   composeEvidencePrompt,
   composeFollowupPrompt,
@@ -70,15 +79,18 @@ import {
   type Tier,
   type TierMap,
 } from "./tiers.ts";
-import type { ChatRunner, ChatWhere, ComposerRequest } from "./chat.ts";
+import { PERSONAL_PROJECT, type ChatRunner, type ChatSpawn, type ChatWhere, type ComposerRequest } from "./chat.ts";
+import { NO_PROJECT_SOURCE, type OwnProjectSource } from "./project-sources.ts";
 import type { WorkspaceInfo } from "./briefs.ts";
 import type { QuotaReader } from "./quota.ts";
-import { AGENT_NAME, agentWithRoom, effectiveRelay, onlyAgent, otherAgent, type AgentChoice, type RelaySettings } from "./relay.ts";
+import { AGENT_NAME, agentForWork, checksSubscription, effectiveRelay, onlyAgent, otherAgent, startAgent, subscriptionRoom, type AgentChoice, type RelaySettings } from "./relay.ts";
 import type { ConnectCheck } from "./connect.ts";
 import { renderBoatTranscript, transcriptDir, transcriptPath } from "./transcript.ts";
-import type { PreflightInput } from "./setup.ts";
-import type { PlanSize, SizedProject } from "./memory.ts";
+import type { PreflightInput } from "./providers/boat/setup.ts";
+import { governingProject, type PlanSize, type SizedProject } from "./memory.ts";
+import { wakeIds, type WakePacer, type WakePermit } from "./wake-pacer.ts";
 import { SandboxSizes } from "./sandbox-size.ts";
+import { markResize } from "./disk-trim.ts";
 import { completedReview, isReady, resolveTaskStatus, reviewState, type StatusContext, type TaskPublicStatus } from "./board.ts";
 import { taskMarker } from "./format.ts";
 import {
@@ -110,6 +122,8 @@ export interface BoatSettings {
   sandboxTtlHours: number;
   maxActiveSandboxes: number;
   stopIdleAfterMinutes: number;
+  macHandBackMarginMinutes?: number;
+  macIdleNoticeMinutes?: number;
   freeSlotsWhenFull: boolean;
   deleteSandboxOnClose: boolean;
   reviewSandbox: "auto" | "new" | "same";
@@ -195,7 +209,8 @@ export interface ServiceHooks {
   changed(taskIds: string[]): void;
   /** Deliver finished-turn notices to the threads that dispatched the tasks. */
   notify(notification: Notification): Promise<void>;
-  log: { info(message: string): void; warn(message: string): void };
+  /** debug: the trim before a stop (src/disk-trim.ts); absent, it isn't logged. */
+  log: { info(message: string): void; warn(message: string): void; debug?(message: string): void };
   /** Runs workers as bb chats; without it every task is a boat conversation. */
   chat?: ChatRunner;
   /** How the project that has this repo runs its workers (null: not in any project). */
@@ -216,6 +231,8 @@ export interface ServiceHooks {
   projectInstructions?(projectId: string | null, repo: string | null): string[];
   /** Each agent's subscription usage (the relay's signal); absent: unknown. */
   quotas?: QuotaReader;
+  /** Same-account headless refusal: prevent repeated automatic paid starts. */
+  usageRefused?(provider: Provider): Promise<void>;
   /** The evidence uploader's source (the bundled one, or fetched from GitHub on this machine). */
   evidence?: EvidenceSource;
   /** Does a preview link answer? (Tests replace the HTTP check.) */
@@ -229,6 +246,10 @@ export interface ServiceHooks {
   preflight?(input: PreflightInput): Promise<void>;
   /** Stored projects (a project's sandbox size); absent: none. */
   projects?(): SizedProject[];
+  /** The plugin's repo steps in a sandbox (src/sandbox-repos.ts; tests swap in fakes). */
+  repos?: RepoSteps;
+  /** The bb machine providers this load registered (task chats need their sandbox's); absent: not checked. */
+  machineProviders?(): ReadonlySet<string>;
   /** The plan's sandbox sizes from `boat limits` (fresh: read boat now); null: unknown, boat decides. */
   sizePlan?(options?: { fresh?: boolean }): Promise<PlanSize[] | null>;
   /** The same from the newest reading, never waiting (null: none yet). */
@@ -255,9 +276,22 @@ export interface ServiceHooks {
   sizeTiming?: { checkMs?: number; pollMs?: number; stopMs?: number; startMs?: number; reconnectMs?: number };
   /** Tests: how often and how far apart a failed chat turn's event log is read again (ms). */
   steerRetryTiming?: { rereads?: number; rereadMs?: number };
+  /**
+   * Sandbox wakes (src/wake-pacer.ts, src/wake-retry.ts): every boat resume
+   * takes a slot from the account's pacer; an explicit resume starts the
+   * sandbox's retry plan over. Absent: resumes go out at once.
+   */
+  wakes?: {
+    pacer: WakePacer;
+    forget(sandboxId: string): Promise<void>;
+    /** Boat is moving the sandbox to a new node (src/wake-retry.ts): nothing is sent there meanwhile. */
+    moving?(sandboxId: string): Promise<boolean>;
+  };
 }
 
 export interface StartTaskInput {
+  macRentalApproval?: MacRentalQuote;
+  sandboxSystem?: "linux" | "macos";
   title: string;
   compactTitle?: string | null;
   role: TaskRole;
@@ -305,9 +339,9 @@ export interface StartTaskInput {
   /** Internal automatic native review binding; never accepted from RPC/tool input. */
   nativeReview?: { source: NativeReviewSource; signal?: AbortSignal; beforeDispatch(reviewTaskId: string): Promise<void> };
   /** Internal durable-queue insertion capability; never accepted from RPC/tool input. */
-  queuedStart?: { taskId: string; beforeInsert(): Promise<void>; insert(task: Task, save: () => Task, preparedSettings: BoatSettings): Task };
+  queuedStart?: { taskId: string; paidApproved?: boolean; beforeInsert(): Promise<void>; insert(task: Task, save: () => Task, preparedSettings: BoatSettings): Task };
   /** Internal public-new-work quota guard, resolved against the actual chosen agent. */
-  subscriptionGuard?: { check(provider: Provider, settings: BoatSettings): Promise<void>; assertCurrent(): void };
+  subscriptionGuard?: { check(provider: Provider, settings: BoatSettings, runner: Runner): Promise<void>; assertCurrent(): void };
   signal?: AbortSignal;
 }
 
@@ -361,13 +395,13 @@ function clip(text: string, max: number): string {
  * snapshots (the trial). null: not a snapshot problem.
  */
 export function snapshotError(error: unknown, name: string | null): TaskError | null {
-  if (!(error instanceof BoatError)) return null;
+  if (!(error instanceof ProviderError)) return null;
   const text = `${error.code ?? ""} ${error.message}`;
   if (error.code === "snapshot_not_found" || (name !== null && /snapshot/i.test(text) && /not found|no saved snapshot/i.test(text))) {
     return new TaskError(
       `There's no saved snapshot "${name ?? "?"}".`,
       "snapshot_not_found",
-      "`bb boat sandbox snapshots` lists yours. Fix the project's snapshot in Settings → Plugins → Boat Cloud Agents → Projects, or pass another one.",
+      "`bb boat sandbox snapshots` lists yours. Fix the project's snapshot in Settings → Plugins → Harbormaster → Projects, or pass another one.",
     );
   }
   if (/snapshot/i.test(text) && (/trial|plan|upgrade|not available|not allowed|requires|payment/i.test(text) || error.status === 402 || error.status === 403)) {
@@ -548,12 +582,24 @@ export function defaultModelFor(provider: Provider, settings: BoatSettings): str
 }
 
 /** States a sandbox passes through on its way up or down. */
-const TRANSITIONAL_STATES = new Set(["provisioning", "starting", "stopping", "archiving", "resuming", "pending"]);
+export const TRANSITIONAL_STATES = new Set(["provisioning", "starting", "stopping", "archiving", "resuming", "pending"]);
 const TRANSITION_WAIT_MS = 120_000;
+/** The trim before the stop that makes room for new work, inside the slot lock (src/disk-trim.ts). */
+export const SLOT_TRIM_TIMEOUT_MS = 20_000;
+
+/**
+ * boat resumes it: stopped or archived, or a resume that failed (boat's state
+ * "error" with "Resume failed: …", its snapshot still there).
+ */
+export function resumable(sandbox: Pick<Sandbox, "state" | "error">): boolean {
+  return sandbox.state === "stopped" || sandbox.state === "archived" || (sandbox.state === "error" && /resume failed|restore/i.test(sandbox.error ?? ""));
+}
 /** How long a turn may look finished in one endpoint but not the other. */
 const SETTLE_MS = 30_000;
 /** How long a `boat ps` reading of a sandbox is reused. */
 const PROCESS_CHECK_MS = 5 * 60_000;
+/** How often the sweep looks for project sources Boat added that nothing needs (the first sweep after a start always does). */
+const SOURCE_SWEEP_MS = 10 * 60_000;
 
 /** What `boat ps` says of a headless sandbox whose agent has finished. */
 export type Computing = "busy" | "maybe" | "no";
@@ -631,16 +677,32 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** Personal chats get a personal workspace and need no project source. */
+function isPersonalProject(projectId: string | null): boolean {
+  return projectId === null || projectId === PERSONAL_PROJECT;
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 export class BoatService {
+  private readonly codexHealth = createCodexHealthCheck();
   /** Last observed sandbox state; views never start or resume a sandbox. */
   private readonly observedSandboxStates = new Map<string, string>();
+  private credentialNoticeSnapshot = "";
   private readonly settlingReviews = new Set<string>();
 
   publicStatus(task: Task, context: StatusContext = {}): TaskPublicStatus {
+    const notice=ownMacTaskNotice(this.store,task);
+    const cleanup=this.sandboxProviders.all.find(p=>p.id==="ownmac")?.ownMacCleanup?.();
+    if(task.sandboxId && cleanup?.taskIds.includes(task.sandboxId))return {status:"needs-you",label:"Logins left behind",tone:"danger",reason:"Your Mac is automatically paused for new tasks until Check again passes.",needsYou:true,moving:false};
+    if(task.status==="failed" && notice?.offer && !notice.replacementId && notice.answer!=="failed")return {status:notice.answer==="wait"?"stopped":"needs-you",label:notice.answer==="wait"?"Waiting for your Mac":"Rent a Mac?",tone:notice.answer==="wait"?"neutral":"attention",reason:"Nothing was rented. Choose a route for this Mac task.",needsYou:notice.answer!=="wait",moving:false};
+    if (task.status==="failed" && task.turns===0 && ["instabox","scaleway","ownmac"].includes(task.sandboxProvider ?? "")) {
+      const code=this.store.history({taskId:task.id,limit:30}).events.find(e=>e.kind==="stopped" && e.cause)?.cause ?? "provider_failed";
+      const card=providerFailureCard({code,provider:task.sandboxProvider!,mac:task.sandboxSystem==="macos",released:false,canRetry:false},task.error ?? "");
+      if(card) return {status:card.tone==="owner" ? "needs-you" : card.tone==="neutral" ? "stopped" : "broken",label:card.title,tone:card.tone==="owner" ? "attention" : card.tone==="neutral" ? "neutral" : "danger",reason:card.body,needsYou:card.tone!=="neutral",moving:false};
+    }
     if (task.status === "done" && this.isNativeChat(task) && this.store.latestEvent(task.id, "shipped") === null && this.store.latestEvent(task.id, "merged") === null) return {
       status: "stopped", label: "Closed", tone: "neutral", reason: "Closed without shipping.", needsYou: false, moving: false,
     };
@@ -735,18 +797,23 @@ export class BoatService {
   /** Follow-ups being sent, per task: a move refuses while one runs, and the other way round. */
   private readonly sending = new Map<string, number>();
 
-  readonly boat: BoatApi;
+  /** Which sandbox provider each project's new work and each task's sandbox use (src/providers/registry.ts). */
+  readonly sandboxProviders: ProviderRegistry;
   readonly store: TaskStore;
   private readonly hooks: ServiceHooks;
   /** Sandbox sizes and memory (src/sandbox-size.ts). */
   readonly sizes: SandboxSizes;
+  /** Checkout, GitHub login and ship in a sandbox, over its provider's exec (src/sandbox-repos.ts). */
+  readonly repos: RepoSteps;
 
-  constructor(boat: BoatApi, store: TaskStore, hooks: ServiceHooks) {
-    this.boat = boat;
+  /** `providers`: the registry, or the boat client alone (boat.dev, the only provider so far). */
+  constructor(providers: ProviderSource, store: TaskStore, hooks: ServiceHooks) {
+    this.sandboxProviders = providerRegistry(providers);
     this.store = store;
     this.hooks = hooks;
+    this.repos = hooks.repos ?? SANDBOX_REPOS;
     this.sizes = new SandboxSizes({
-      boat,
+      sandboxProvider: (sandboxId) => this.sandboxProvider(sandboxId),
       store,
       hooks,
       settings: () => this.settings(),
@@ -764,6 +831,110 @@ export class BoatService {
 
   settings(): Promise<BoatSettings> {
     return this.hooks.settings();
+  }
+
+  /**
+   * The default provider, under the name it had before there were providers
+   * (tests stub its members). Ask `sandboxProviders` for a task's or a project's.
+   */
+  get boat(): SandboxProvider {
+    return this.sandboxProviders.default;
+  }
+
+  /**
+   * The provider a task's sandbox is on, or a sandbox id's: the one its tasks
+   * recorded, else (a sandbox no task has, typed by the user) by the id's
+   * shape. Today always boat.dev; a provider that isn't enabled refuses.
+   */
+  sandboxProvider(of: Pick<Task, "sandboxProvider"> | string): SandboxProvider {
+    if (typeof of !== "string") return this.sandboxProviders.forTask(of);
+    const recorded = this.store.sandboxProviderOf(of);
+    return recorded === null ? this.sandboxProviders.forSandbox(of) : this.sandboxProviders.forTask({ sandboxProvider: recorded });
+  }
+
+  /**
+   * Ask every enabled provider (the default first), for account-wide reads:
+   * one that fails leaves the others' answers in, and is named in `failed`.
+   * With one provider (boat.dev alone) its error is thrown as it always was;
+   * so is the first one when every provider fails.
+   */
+  async eachProvider<T>(read: (provider: SandboxProvider) => Promise<T>): Promise<{ results: { provider: SandboxProvider; value: T }[]; failed: { provider: SandboxProvider; error: unknown }[] }> {
+    const providers = this.sandboxProviders.enabled;
+    if (providers.length === 1) return { results: [{ provider: providers[0]!, value: await read(providers[0]!) }], failed: [] };
+    const settled = await Promise.allSettled(providers.map((provider) => read(provider)));
+    const results: { provider: SandboxProvider; value: T }[] = [];
+    const failed: { provider: SandboxProvider; error: unknown }[] = [];
+    settled.forEach((outcome, index) => {
+      const provider = providers[index]!;
+      if (outcome.status === "fulfilled") results.push({ provider, value: outcome.value });
+      else failed.push({ provider, error: outcome.reason });
+    });
+    if (results.length === 0) throw failed[0]!.error;
+    return { results, failed };
+  }
+
+  /**
+   * Every enabled provider's sandboxes (all: stopped ones too), each with its
+   * provider's id. A provider that can't be read is left out (`failed`): its
+   * sandboxes are unknown this time, never gone.
+   */
+  async listSandboxes(options: { all?: boolean; signal?: AbortSignal } = {}): Promise<{ sandboxes: (Sandbox & { provider: string })[]; failed: { provider: string; error: string }[] }> {
+    const { results, failed } = await this.eachProvider((provider) => provider.list(options.all === undefined ? { signal: options.signal } : { all: options.all, signal: options.signal }));
+    return {
+      sandboxes: results.flatMap(({ provider, value }) => value.map((sandbox) => ({ ...sandbox, provider: provider.id }))),
+      failed: failed.map(({ provider, error }) => ({ provider: provider.id, error: errorText(error) })),
+    };
+  }
+
+  /**
+   * Where a new task's sandbox runs: the named sandbox's provider, its
+   * parent's, else its project's Runs on (the stored project, by id or main
+   * repo, never what an orchestrator's metadata says; none: boat.dev). A
+   * project on a provider that isn't on can't start work anywhere else.
+   */
+  private providerForNewTask(input: Pick<StartTaskInput, "sandbox" | "sandboxSystem">, parent: Task | null, projectId: string | null, repo: string | null): SandboxProvider {
+    const named = namedSandbox(input.sandbox);
+    if (named !== null) return this.sandboxProvider(named);
+    if (parent !== null) return this.sandboxProvider(parent);
+    const project = governingProject(this.hooks.projects?.() ?? [], projectId, repo);
+    let provider = this.sandboxProviders.forProject(project);
+    const known = this.sandboxProviders.all.find(candidate => candidate.id === provider.id);
+    const macIntent = input.sandboxSystem === "macos" || (input.sandboxSystem == null && (project?.sandboxSystem === "macos" || known?.caps.os === "macos"));
+    if (macIntent && known && canHostMac(known)) provider = known;
+    if (this.sandboxProviders.get(provider.id) === null && !macIntent) {
+      throw new TaskError(
+        `${project?.name ?? "This project"} runs on ${provider.displayName}, which isn't turned on, so its task can't start.`,
+        "provider_unavailable",
+        `Turn ${provider.displayName} on (\`bb boat config set ${provider.id}Enabled true\`) and add its API key in bb's settings for this plugin, or run the project on boat.dev (\`bb boat config runs-on ${project?.id ?? "<project>"} boat\`).`,
+      );
+    }
+    if (input.sandboxSystem === "macos" && project?.sandboxProvider == null && !canHostMac(provider)) {
+      const enabled = this.sandboxProviders.enabled;
+      const candidate = enabled.find(p=>p.id === "ownmac") ?? enabled.find(p => (p.caps.systems ?? [p.caps.os]).includes("macos")) ?? enabled.find(canHostMac);
+      if (!candidate) throw new TaskError("No enabled provider can host Mac tasks. Choose a Mac provider in Runs on.", "provider_unavailable");
+      provider = candidate;
+    }
+    return provider;
+  }
+
+  /**
+   * The bb machine provider for a task chat on this task's sandbox: boat.dev's
+   * by default (nothing to say), else its provider's. A provider whose
+   * machines bb doesn't offer (no enrollment, or not registered at this load)
+   * refuses with what to do.
+   */
+  private machineProviderFor(task: Pick<Task, "sandboxProvider">): { machineProviderId?: string } {
+    const provider = this.sandboxProvider(task);
+    if (provider.id === DEFAULT_PROVIDER_ID) return {};
+    const id = provider.machine?.id;
+    if (id === undefined || this.hooks.machineProviders?.().has(id) === false) {
+      throw new TaskError(
+        `Task chats on ${provider.displayName} aren't available yet: bb offers its machines once the plugin reloads with it turned on.`,
+        "provider_unavailable",
+        "Reload the plugin (`bb plugin reload boat`), or start the task headless (--headless).",
+      );
+    }
+    return { machineProviderId: id };
   }
 
   private withSlotLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -787,25 +958,42 @@ export class BoatService {
   // -------------------------------------------------------------------------
   // Capacity
 
-  async capacity(signal?: AbortSignal, forSandbox?: string): Promise<{
+  /**
+   * Room for one more sandbox on a provider: `free` for a new one. `resume`:
+   * room to start one the provider already keeps, where that differs (a
+   * provider whose plan limit counts stopped machines too: only Sandboxes at
+   * once applies, to the ones running).
+   */
+  async capacity(signal?: AbortSignal, forSandbox?: string, given?: SandboxProvider): Promise<{
     limits: Limits | null;
     active: Sandbox[];
     cap: number | null;
     free: number | null;
+    resume?: { cap: number | null; free: number | null };
   }> {
     const settings = await this.settings();
+    const sandboxProvider = given ?? (forSandbox === undefined ? this.sandboxProviders.default : this.sandboxProvider(forSandbox));
     const [limits, sandboxes] = await Promise.all([
-      this.boat.limits(signal).catch(() => null),
-      this.boat.list({ signal }),
+      sandboxProvider.capacity(signal).catch(() => null),
+      sandboxProvider.list({ signal }),
     ]);
     const active = sandboxes.filter((sandbox) => ACTIVE_STATES.has(sandbox.state));
     const planCap = limits?.maxActiveSandboxes ?? null;
     const userCap = settings.maxActiveSandboxes > 0 ? settings.maxActiveSandboxes : null;
     const cap =
       planCap === null ? userCap : userCap === null ? planCap : Math.min(planCap, userCap);
+    if (sandboxProvider.caps.concurrencyUnit === "kept-sandboxes") {
+      // The plan counts every machine the provider keeps (a create adds one, a resume none);
+      // Sandboxes at once counts the ones running, as it says.
+      const running = active.length + this.sizes.reservedSlots(active, forSandbox, sandboxProvider.id);
+      const planFree = planCap === null ? null : Math.max(0, planCap - Math.max(limits?.activeSandboxes ?? 0, active.length));
+      const userFree = userCap === null ? null : Math.max(0, userCap - running);
+      const free = planFree === null ? userFree : userFree === null ? planFree : Math.min(planFree, userFree);
+      return { limits, active, cap, free, resume: { cap: userCap, free: userFree } };
+    }
     // boat's own count also covers sandboxes the list can miss while they provision.
     // A sandbox stopped for a move to another size keeps its slot (sizes).
-    const used = Math.max(active.length, limits?.activeSandboxes ?? 0) + this.sizes.reservedSlots(active, forSandbox);
+    const used = Math.max(active.length, limits?.activeSandboxes ?? 0) + this.sizes.reservedSlots(active, forSandbox, sandboxProvider.id);
     return { limits, active, cap, free: cap === null ? null : Math.max(0, cap - used) };
   }
 
@@ -814,9 +1002,17 @@ export class BoatService {
    * least recently used plugin-created sandbox whose tasks are all waiting
    * (their conversations survive the stop and resume on follow-up).
    */
-  private async ensureSlot(signal?: AbortSignal, forSandbox?: string): Promise<{ limits: Limits | null; stopped: string | null }> {
+  /**
+   * paidStart: the user allowed a paid extra start (`bb boat sandbox wake --allow-paid-start`), so used-up included starts don't refuse it.
+   * sandboxProvider: where the sandbox goes (default: the sandbox's own, else the default provider).
+   */
+  private async ensureSlot(signal?: AbortSignal, forSandbox?: string, options: { paidStart?: boolean; sandboxProvider?: SandboxProvider } = {}): Promise<{ limits: Limits | null; stopped: string | null }> {
     const settings = await this.settings();
-    const { limits, active, cap, free } = await this.capacity(signal, forSandbox);
+    const room = await this.capacity(signal, forSandbox, options.sandboxProvider);
+    const { limits, active } = room;
+    // A resume (forSandbox) of a machine the provider already counts adds none to its plan's limit.
+    const resumingKept = forSandbox !== undefined && room.resume !== undefined;
+    const { cap, free } = resumingKept ? room.resume! : room;
     if (limits?.checkoutRequired) {
       throw new TaskError(
         "Your boat.dev account has no plan yet, so it can't start sandboxes.",
@@ -824,14 +1020,19 @@ export class BoatService {
         "Start a boat plan (7-day trial, card required): run `boat billing plan 20` or open https://boat.dev/dashboard.",
       );
     }
-    if (limits !== null && !limits.canStart) {
+    const onBoat = (options.sandboxProvider ?? (forSandbox === undefined ? this.sandboxProviders.default : this.sandboxProvider(forSandbox))).id === DEFAULT_PROVIDER_ID;
+    if (limits !== null && !limits.canStart && !resumingKept) {
+      if (!onBoat) {
+        const name = (options.sandboxProvider ?? this.sandboxProvider(forSandbox ?? "")).displayName;
+        throw new TaskError(`${name} will not start a machine right now${limits.blockedReason ? `: ${limits.blockedReason}` : ""}.`, "provider_start_blocked");
+      }
       throw new TaskError(
         `boat will not start a sandbox right now${limits.blockedReason ? `: ${limits.blockedReason}` : ""}.`,
         "boat_start_blocked",
         "Run `boat limits --all` for details, or start a bigger plan (`boat billing plan`).",
       );
     }
-    if (limits?.startsLeftToday === 0 || limits?.startsLeftThisHour === 0) {
+    if (options.paidStart !== true && (limits?.startsLeftToday === 0 || limits?.startsLeftThisHour === 0)) {
       throw new TaskError(
         "The boat start limit is used up for now.",
         "boat_start_limit",
@@ -839,7 +1040,9 @@ export class BoatService {
       );
     }
     if (free === null || free > 0) return { limits, stopped: null };
-    if (settings.freeSlotsWhenFull) {
+    // Where a stopped sandbox still counts (Instabox), stopping one makes no room.
+    const stopFreesSlot = (options.sandboxProvider ?? (forSandbox === undefined ? this.sandboxProviders.default : this.sandboxProvider(forSandbox))).caps.concurrencyUnit === "sandboxes";
+    if (settings.freeSlotsWhenFull && stopFreesSlot) {
       const candidates = active
         .filter((sandbox) => !this.claims.has(sandbox.id) && this.store.pluginOwnsSandbox(sandbox.id))
         .map((sandbox) => {
@@ -874,7 +1077,9 @@ export class BoatService {
           this.suspendedHosts.add(hostId);
           this.hooks.machineSuspended?.(hostId, false);
         } else {
-          await this.boat.stop(victim.sandbox.id, signal);
+          // Inside the slot lock: a shorter trim, so creates and resumes wait at most 20 s for it.
+          await this.trimBeforeStop(victim.sandbox.id, signal, victim.sandbox.state, SLOT_TRIM_TIMEOUT_MS);
+          await this.sandboxProvider(victim.sandbox.id).stop(victim.sandbox.id, signal);
           this.hooks.sandboxStopped?.(victim.sandbox.id);
         }
         for (const task of victim.tasks) {
@@ -886,9 +1091,11 @@ export class BoatService {
     }
     const names = active.map((sandbox) => `${sandbox.id}${sandbox.name ? ` (${sandbox.name})` : ""}`).join(", ");
     throw new TaskError(
-      `All ${cap} sandboxes your limit allows are in use: ${names}.`,
+      resumingKept ? `All ${cap} sandboxes Sandboxes at once allows are running: ${names}.` : `All ${cap} sandboxes your limit allows are in use: ${names}.`,
       "boat_at_capacity",
-      "Close finished tasks (`bb boat task close <id>`), stop a sandbox (`bb boat sandbox stop <id>`), reuse one with --sandbox <id>, or raise the limit by upgrading (`boat billing plan`).",
+      onBoat
+        ? "Close finished tasks (`bb boat task close <id>`), stop a sandbox (`bb boat sandbox stop <id>`), reuse one with --sandbox <id>, or raise the limit by upgrading (`boat billing plan`)."
+        : "Close finished tasks (`bb boat task close <id>`) so their sandboxes are deleted, reuse one with --sandbox <id>, or raise Sandboxes at once.",
     );
   }
 
@@ -904,43 +1111,55 @@ export class BoatService {
     snapshot?: string | null;
     /** Route git through the base-branch push guard (worker sandboxes). */
     gitGuard?: boolean;
+    /** Where it goes (default: the default provider). */
+    sandboxProvider?: SandboxProvider;
+    system?: "linux" | "macos";
+    macCostLimit?: MacRentalQuote;
+    allocateOnly?: boolean;
     signal?: AbortSignal;
   }): Promise<Sandbox> {
     const settings = await this.settings();
-    const environment = options.environment || settings.environment || null;
+    const sandboxProvider = options.sandboxProvider ?? this.sandboxProviders.default;
+    // Named environments are boat.dev's: another provider's sandboxes start without one.
+    const environment = sandboxProvider.caps.environments ? options.environment || settings.environment || null : null;
     // Signed in, with a plan that can start one: a broken setup costs no start.
-    await this.hooks.preflight?.({ newSandbox: true, environment });
-    if (environment !== null) await this.assertEnvironment(environment, options.signal);
+    await this.hooks.preflight?.({ newSandbox: true, environment, ...(sandboxProvider.id === DEFAULT_PROVIDER_ID ? {} : { provider: sandboxProvider.id }) });
+    if (environment !== null) await this.assertEnvironment(sandboxProvider, environment, options.signal);
     return this.withSlotLock(async () => {
-      const { limits } = await this.ensureSlot(options.signal);
-      const create = (ttl: number) =>
-        this.boat.create({
-          name: options.name,
-          type: options.type ?? settings.machineType,
-          environment,
-          from: options.snapshot ?? null,
-          // git uses the plugin's hooks (base-branch guard) whatever the repo configures.
-          env: options.gitGuard === false ? {} : BOAT_GIT_ENV,
-          ttlSeconds: ttl,
-          signal: options.signal,
-        });
+      const { limits } = await this.ensureSlot(options.signal, undefined, { sandboxProvider });
       // Snapshot errors in plain words, only when a snapshot was asked for.
       const plain = (error: unknown) => (options.snapshot ? snapshotError(error, options.snapshot) : null) ?? error;
       try {
-        return await withinAutoStopCap(ttlSeconds(settings, limits), create);
+        const create = options.allocateOnly && sandboxProvider.allocate ? sandboxProvider.allocate.bind(sandboxProvider) : sandboxProvider.create.bind(sandboxProvider);
+        return await create({
+          name: options.name,
+          macCostLimit:options.macCostLimit,
+          ...(options.system ? { system: options.system } : {}),
+          type: options.type ?? settings.machineType,
+          environment,
+          snapshot: options.snapshot ?? null,
+          // git uses the plugin's hooks (base-branch guard) whatever the repo configures.
+          gitGuard: options.gitGuard !== false,
+          // Over the plan's auto-stop cap, the provider tries once more at the cap.
+          ttlSeconds: ttlSeconds(settings, limits),
+          signal: options.signal,
+        });
       } catch (error) {
+        const code = (error as {code?:string}).code;
+        const rejected = ["creation_rejected","no_capacity","at_capacity","quota_exceeded","key_missing","unauthorized","unauthenticated","template_not_allowed","spec_not_allowed","unsupported","size_unavailable","instabox_not_found","instabox_spawn_failed"].includes(code ?? "");
+        if (options.system === "macos" && !sandboxProvider.classifiesCreateErrors && !rejected && code !== "creation_unknown" && code !== "creation_allocated") throw new ProviderError(`${sandboxProvider.displayName} create outcome is unknown. Check its machines before retrying; Harbormaster will not rent another Mac.`,{code:"creation_unknown"});
         throw plain(error);
       }
     });
   }
 
-  private environmentCache: { at: number; names: string[] } | null = null;
+  private environmentCache: { at: number; provider: string; names: string[] } | null = null;
 
   /** Fail early, with a fix, when a project's boat environment doesn't exist. */
-  private async assertEnvironment(name: string, signal?: AbortSignal): Promise<void> {
-    if (this.environmentCache === null || Date.now() - this.environmentCache.at > 60_000) {
+  private async assertEnvironment(sandboxProvider: SandboxProvider, name: string, signal?: AbortSignal): Promise<void> {
+    if (this.environmentCache === null || this.environmentCache.provider !== sandboxProvider.id || Date.now() - this.environmentCache.at > 60_000) {
       try {
-        this.environmentCache = { at: Date.now(), names: await this.boat.environments(signal) };
+        this.environmentCache = { at: Date.now(), provider: sandboxProvider.id, names: await sandboxProvider.environments(signal) };
       } catch {
         return; // Let `boat new` report it.
       }
@@ -954,39 +1173,72 @@ export class BoatService {
     );
   }
 
-  /** Make sure a sandbox is up (resuming it within the slot limit). */
-  bringUp(sandboxId: string, signal?: AbortSignal): Promise<Sandbox> {
-    return this.ensureRunning(sandboxId, signal);
+  /**
+   * Before a stop Boat makes on purpose: give boat.dev back the blocks deleted
+   * files freed (src/disk-trim.ts). At most a minute; it never fails the stop.
+   */
+  /** The provider's step before a planned stop (boat.dev: trim the disk, src/disk-trim.ts); never fails the stop. */
+  private async trimBeforeStop(sandboxId: string, signal?: AbortSignal, state?: string, timeoutMs?: number): Promise<void> {
+    const hooks = this.sandboxProvider(sandboxId).machineHooks?.({
+      warn: (line) => this.hooks.log.warn(line),
+      debug: (line) => this.hooks.log.debug?.(line),
+      ...(timeoutMs === undefined ? {} : { stopStepTimeoutMs: timeoutMs }),
+    });
+    await hooks?.beforeStop?.(sandboxId, { signal, ...(state === undefined ? {} : { state }) });
+  }
+
+  /**
+   * Make sure a sandbox is up (resuming it within the slot limit). `wake.permit`:
+   * the caller already took the wake slot and reports the outcome itself.
+   * `wake.paidStart`: the user allowed a paid extra start for it.
+   */
+  bringUp(sandboxId: string, signal?: AbortSignal, wake?: { permit?: WakePermit; paidStart?: boolean }): Promise<Sandbox> {
+    return this.ensureRunning(sandboxId, signal, wake?.permit, wake?.paidStart === true);
   }
 
   /**
    * Bring a sandbox up before sending it work: wait out stop/start
-   * transitions, and resume a stopped one (one resume at a time).
+   * transitions, and resume a stopped one (one resume at a time, each
+   * within the account's wake pacing).
    */
-  private async ensureRunning(sandboxId: string, signal?: AbortSignal): Promise<Sandbox> {
+  private async ensureRunning(sandboxId: string, signal?: AbortSignal, given?: WakePermit, paidStart = false): Promise<Sandbox> {
+    // A move to a new node stops it, maybe dropping what's written meanwhile: no work goes there now.
+    if (await this.hooks.wakes?.moving?.(sandboxId)) {
+      throw new TaskError(`Harbormaster is moving sandbox ${sandboxId} to a new boat.dev node: its node keeps failing its disk.`, "sandbox_moving", "Try again once it's back, in a few minutes (or see Needs you).");
+    }
     const deadline = Date.now() + TRANSITION_WAIT_MS;
+    const sandboxProvider = this.sandboxProvider(sandboxId);
+    // The wake slot, taken once before the slot lock (a wait there would hold up creates).
+    let permit: WakePermit | null = given ?? null;
     for (;;) {
-      const sandbox = await this.boat.findInfo(sandboxId, signal);
+      const sandbox = await sandboxProvider.findInfo(sandboxId, signal);
       if (sandbox === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
       this.observedSandboxStates.set(sandboxId, sandbox.state);
       if (ACTIVE_STATES.has(sandbox.state)) return sandbox;
-      if (sandbox.state === "stopped" || sandbox.state === "archived") {
+      if (resumable(sandbox)) {
+        // A slot the paid resume claimed for this sandbox is this wake's (it counts once).
+        // Paced only where the provider's wakes are (boat.dev's): another provider's never take or hold one of boat's.
+        if (permit === null && this.hooks.wakes !== undefined && sandboxProvider.caps.pacedWakes === true) permit = await this.hooks.wakes.pacer.acquire({ signal, ids: wakeIds({ sandboxId }) });
+        const owned = given === undefined ? permit : null;
         const resumed = await this.withSlotLock(async () => {
-          const current = await this.boat.findInfo(sandboxId, signal);
+          const current = await sandboxProvider.findInfo(sandboxId, signal);
           if (current === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
           if (ACTIVE_STATES.has(current.state)) return current;
-          if (current.state !== "stopped" && current.state !== "archived") return null;
-          const { limits } = await this.ensureSlot(signal, sandboxId);
+          if (!resumable(current)) return null;
+          const { limits } = await this.ensureSlot(signal, sandboxId, { paidStart });
           // A move to another size resumes onto it, whoever resumes (sizes).
           const type = this.sizes.pendingType(sandboxId);
           try {
-            await withinAutoStopCap(ttlSeconds(await this.settings(), limits), (ttl) => this.boat.resume(sandboxId, ttl, signal, type));
+            await sandboxProvider.resume(sandboxId, { ttlSeconds: ttlSeconds(await this.settings(), limits), type, signal });
           } catch (error) {
             if (type !== null) this.sizes.resumeFailed(sandboxId, error);
-            throw error;
+            if (signal?.aborted !== true) await owned?.failed();
+            // A resize reports its own refusal and rolls back: the wake guard asks nothing for it.
+            throw type === null ? error : markResize(error, type);
           }
+          await owned?.succeeded();
           this.store.resetPreviewHealthForSandbox(sandboxId);
-          return (await this.boat.findInfo(sandboxId, signal)) ?? current;
+          return (await sandboxProvider.findInfo(sandboxId, signal)) ?? current;
         });
         if (resumed !== null) return resumed;
         continue;
@@ -1007,14 +1259,15 @@ export class BoatService {
    * it. Sandboxes the user made (and lent to a task) are never deleted.
    */
   async releaseSandbox(sandboxId: string, exceptTaskId: string, signal?: AbortSignal): Promise<"deleted" | "kept" | "gone"> {
+    if (this.store.macLeases.held(sandboxId).length) return "kept";
     if (!this.store.pluginOwnsSandbox(sandboxId) || this.claims.has(sandboxId)) return "kept";
     const others = this.store.liveSandboxTasks(sandboxId).filter((task) => task.id !== exceptTaskId);
     if (others.length > 0) return "kept";
     try {
-      await this.boat.delete(sandboxId, signal);
+      await this.sandboxProvider(sandboxId).delete(sandboxId, signal);
       return "deleted";
     } catch (error) {
-      if (error instanceof BoatError && (error.code === "not_found" || error.status === 404)) return "gone";
+      if (isNotFound(error)) return "gone";
       throw error;
     }
   }
@@ -1060,13 +1313,26 @@ export class BoatService {
   }
 
   /** Automatic/public work cannot turn an explicit agent/model into paid approval. */
-  async assertSubscriptionRoom(provider: Provider, options: { settings?: BoatSettings; signal?: AbortSignal } = {}): Promise<void> {
+  async assertSubscriptionRoom(provider: Provider, options: { settings?: BoatSettings; signal?: AbortSignal; runner?: Runner } = {}): Promise<boolean> {
     const settings = options.settings ?? await this.settings();
-    if (!settings.avoidExtraUsage || !this.hooks.quotas) return;
+    if (!checksSubscription(settings)) return false;
+    if (!this.hooks.quotas) {
+      if (settings.relay.paidClaudeFallback) throw new TaskError("Current agent usage is unavailable. Automatic paid work will wait.", "agents_at_limit");
+      return false;
+    }
     const quotas = await this.hooks.quotas.read(options.signal, { fresh: true }).catch(() => new Map());
     options.signal?.throwIfAborted(); this.hooks.lifecycle.throwIfAborted();
-    const reading = quotas.get(provider);
-    if (reading && reading.usedPercent >= settings.relay.switchAtPercent) throw new TaskError(`${AGENT_NAME[provider]} is near its usage limit. This work will wait for a reset.`, "agents_at_limit");
+    // With the paid fallback, the saved policy must still be the one this start was checked with.
+    let current: BoatSettings | undefined;
+    if (settings.relay.paidClaudeFallback) {
+      current = await this.settings();
+      options.signal?.throwIfAborted(); this.hooks.lifecycle.throwIfAborted();
+    }
+    // The decision itself is shared with the usage view's next step (relay.ts).
+    const room = subscriptionRoom(provider, quotas, settings, { runner: options.runner, ...(current ? { current } : {}) });
+    if (room === "unconfirmed") throw new TaskError("Current usage or the saved fallback policy could not be confirmed. This work will wait.", "agents_at_limit");
+    if (room === "wait") throw new TaskError(`${AGENT_NAME[provider]} is near its usage limit. This work will wait for a reset.`, "agents_at_limit");
+    return room === "paid";
   }
 
   private async prepareTask(input: StartTaskInput): Promise<{ task: Task; run: () => Promise<Task> }> {
@@ -1095,6 +1361,11 @@ export class BoatService {
     const snapshot =
       input.snapshot?.trim() === "none" ? null : input.snapshot?.trim() || parent?.snapshot || (projectEntry !== null ? (project?.snapshot ?? null) : null);
     const boatProject = project?.id ?? parent?.boatProject ?? null;
+    // Where its sandbox runs: a named sandbox's provider, its parent's, else its project's (Runs on).
+    const sandboxProvider = this.providerForNewTask(input, parent, boatProject, repo);
+    const storedProject = governingProject(this.hooks.projects?.() ?? [], boatProject, repo);
+    const sandboxSystem = parent !== null ? parent.sandboxSystem ?? "linux" : input.sandboxSystem ?? storedProject?.sandboxSystem ?? sandboxProvider.caps.os;
+    if (sandboxSystem === "macos" && !canHostMac(sandboxProvider)) throw new TaskError(`${sandboxProvider.displayName} cannot host Mac tasks. Choose a Mac provider in Runs on.`, "provider_unavailable");
     const protect = protectedBranches(
       project,
       [baseBranch, ...extraRepos.map((entry) => entry.baseBranch), ...this.projectBaseBranches([repo, ...extraRepos.map((entry) => entry.repo)])],
@@ -1133,12 +1404,7 @@ export class BoatService {
     if ((!namesAgent || agentNote !== null) && this.hooks.quotas && (relay.enabled || reviewWithRoom || settings.avoidExtraUsage)) {
       const quotas = await this.hooks.quotas.read().catch(() => new Map());
       // With the relay off, the default agent stays; only "both out" still stops new work.
-      const pick =
-        relay.enabled || reviewWithRoom
-          ? agentWithRoom(provider, quotas, relay.switchAtPercent, settings.agents)
-          : agentWithRoom(provider, quotas, relay.switchAtPercent, settings.agents) === null
-            ? null
-            : provider;
+      const pick = startAgent(provider, quotas, relay, settings.agents, relay.enabled || reviewWithRoom);
       if (pick === null && settings.avoidExtraUsage) {
         throw only !== null
           ? new TaskError(
@@ -1161,8 +1427,6 @@ export class BoatService {
         provider = pick;
       }
     }
-    if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings);
-    if (input.nativeReview) await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal });
     const roleModel = (input.role === "review" ? settings.reviewModel : settings.implementModel).trim() || null;
     const configuredModel = provider === roleProvider ? roleModel : defaultModelFor(provider, settings);
     // A model for the agent the user doesn't have can't run on the other one:
@@ -1184,6 +1448,8 @@ export class BoatService {
     // One rule for every repo the task clones: the runner's, --chat's and New task's.
     const trust = chatTrust(repos, settings, repoMode);
     const runner = this.chooseRunner(input, parent, settings, trust);
+    if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings, runner);
+    if (input.nativeReview) await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal, runner });
     // A sandbox that runs bb (or did) holds this bb's login: never for repos you
     // don't trust, whatever the runner. Its own task's sandbox is no news to a review.
     const named = namedSandbox(input.sandbox);
@@ -1206,7 +1472,7 @@ export class BoatService {
           "connect_required",
           input.runner === "chat"
             ? `${connect.fix ?? CONNECT_FIX} Or start it headless (--headless, or Run as a chat off in New task).`
-            : `${connect.fix ? `${connect.fix} ` : ""}Or run tasks in boat: \`bb boat config set workers boat\` (Settings → Plugins → Boat Cloud Agents → How tasks run).`,
+            : `${connect.fix ? `${connect.fix} ` : ""}Or run tasks in boat: \`bb boat config set workers boat\` (Settings → Plugins → Harbormaster → How tasks run).`,
         );
       }
     }
@@ -1214,8 +1480,8 @@ export class BoatService {
     // anything is created (a sandbox the setup can't use would cost a start).
     // A review that reuses its task's sandbox needs no start; when it may
     // still get a new one, createSandbox checks the plan right before.
-    if (this.hooks.preflight) {
-      await this.hooks.preflight({ agent: provider, runner, environment, newSandbox: surelyNewSandbox(input, parent, settings) });
+    if (this.hooks.preflight && sandboxSystem !== "macos" && sandboxProvider.id !== "instabox") {
+      await this.hooks.preflight({ agent: provider, runner, environment, newSandbox: surelyNewSandbox(input, parent, settings), ...(sandboxProvider.id === DEFAULT_PROVIDER_ID ? {} : { provider: sandboxProvider.id }) });
     }
     // Headless because the rules don't trust the repo (asked for or not): the Untrusted repo badge.
     const ruled = runner === "boat" && ruleRunner === "boat" && this.hooks.chat !== undefined && settings.workerMode === "chat";
@@ -1232,13 +1498,15 @@ export class BoatService {
     const sandboxChoice = (input.sandbox ?? "").trim();
     const sizing = await this.sizes.resolveNewType({
       requested: input.machineType ?? null,
-      checkPlan: sandboxChoice === "" || sandboxChoice === "new" || sandboxChoice === "auto",
+      checkPlan: sandboxSystem !== "macos" && (sandboxChoice === "" || sandboxChoice === "new" || sandboxChoice === "auto"),
       projectId: boatProject,
       repo,
       parent,
       role: input.role,
       settings,
       userApproved: input.userApproved === true,
+      // A new sandbox goes on the task's provider: its plan's sizes apply.
+      provider: sandboxProvider,
     });
     if (input.nativeReview) {
       input.nativeReview.signal?.throwIfAborted();
@@ -1320,6 +1588,8 @@ export class BoatService {
       environment,
       snapshot,
       extraRepos,
+      ...(sandboxProvider.id === DEFAULT_PROVIDER_ID ? {} : { sandboxProvider: sandboxProvider.id }),
+      ...(sandboxSystem === "macos" ? { sandboxSystem } : {}),
       brief: input.brief.trim(),
       parentTaskId: parent?.id ?? null,
       prUrl: input.pr && /^https:\/\//.test(input.pr) ? input.pr : (parent?.prUrl ?? null),
@@ -1333,15 +1603,18 @@ export class BoatService {
       notifiedAt: null,
       unshipped: null,
       shipApproval: null,
+      startOptions: {machineType:sizing.type,confirmUntrustedChat:input.confirmUntrustedChat ?? null},
     };
-    if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings);
+    if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings, runner);
+    const paidFallback = settings.relay.paidClaudeFallback === true && !input.queuedStart?.paidApproved && await this.assertSubscriptionRoom(provider, { settings, signal: input.signal, runner });
     if (input.nativeReview) {
-      await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal });
+      await this.assertSubscriptionRoom(provider, { settings, signal: input.nativeReview.signal, runner });
       this.assertNativeReviewSource(input.nativeReview.source);
     }
     if (input.queuedStart) await input.queuedStart.beforeInsert();
     input.subscriptionGuard?.assertCurrent();
     const task = input.queuedStart ? input.queuedStart.insert(record, () => this.store.insert(record), settings) : this.store.insert(record);
+    if (paidFallback) this.store.addEvent(task.id, "paid-fallback-authorized", "Automatic Claude extra usage authorized by the saved fallback policy after included allowances reached the cutoff. Claude's billing controls apply; no euro balance is available to Harbormaster.");
     if (input.nativeReview) this.store.addEvent(id, "native-review-source", JSON.stringify(input.nativeReview.source));
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
     if (input.measureMemory) this.sizes.watch(id); // sizes
@@ -1450,8 +1723,8 @@ export class BoatService {
     const hint = confirmedOther
       ? "Check the warning again, then try again."
       : via === "start"
-        ? "A task chat's sandbox can reach this bb, so the user decides: Run as a chat in New task on the Cloud agents page asks them, or they add the repo to a project with Run tasks as chats on (Settings → Plugins → Boat Cloud Agents → Projects). Or run it headless: drop --chat."
-        : "A task chat's sandbox can reach this bb, so the user decides: Continue as a chat on the task's page asks them, or they add the repo to a project with Run tasks as chats on (Settings → Plugins → Boat Cloud Agents → Projects).";
+        ? "A task chat's sandbox can reach this bb, so the user decides: Run as a chat in New task on the Cloud agents page asks them, or they add the repo to a project with Run tasks as chats on (Settings → Plugins → Harbormaster → Projects). Or run it headless: drop --chat."
+        : "A task chat's sandbox can reach this bb, so the user decides: Continue as a chat on the task's page asks them, or they add the repo to a project with Run tasks as chats on (Settings → Plugins → Harbormaster → Projects).";
     return new TaskError(message, "untrusted_repo", hint);
   }
 
@@ -1508,6 +1781,11 @@ export class BoatService {
     return links;
   }
 
+  /** Check a repo out in a sandbox with the push guard, on the sandbox's provider (src/sandbox-repos.ts). */
+  prepareRepo(sandboxId: string, repo: string, checkout: CheckoutMode, options: PrepareOptions = {}): Promise<PreparedRepo> {
+    return this.repos.prepareRepo(this.sandboxProvider(sandboxId), sandboxId, repo, checkout, options);
+  }
+
   /**
    * Check out a repo, recording what boat's GitHub login may do there and
    * when it expires; no access or an expired login fails with what to fix.
@@ -1517,10 +1795,10 @@ export class BoatService {
     sandboxId: string,
     repo: string,
     checkout: CheckoutMode,
-    options: Parameters<BoatApi["prepareRepo"]>[3],
+    options: PrepareOptions,
   ): Promise<PreparedRepo> {
     try {
-      const prepared = await this.boat.prepareRepo(sandboxId, repo, checkout, options);
+      const prepared = await this.prepareRepo(sandboxId, repo, checkout, options);
       if (prepared.canPush !== undefined && prepared.canPush !== null) {
         this.store.setRepoAccess(repo, prepared.canPush ? "write" : "read", null);
         this.store.addEvent(taskId, "access", `GitHub access to ${repo}: ${prepared.canPush ? "can push" : "read only"}`);
@@ -1528,7 +1806,7 @@ export class BoatService {
       if (prepared.githubExpiresAt) this.store.addEvent(taskId, "github-token", prepared.githubExpiresAt);
       return prepared;
     } catch (error) {
-      if (error instanceof BoatError && (error.code === "repo_access" || error.code === "github_token_expired")) {
+      if (error instanceof ProviderError && (error.code === "repo_access" || error.code === "github_token_expired")) {
         this.store.setRepoAccess(repo, error.code === "repo_access" ? "none" : "expired", error.message);
         throw new TaskError(error.message, error.code);
       }
@@ -1549,19 +1827,24 @@ export class BoatService {
    * token is caught here, with what to do, instead of failing mid-turn.
    */
   private async assertGithubLogin(task: Task, options: { signal?: AbortSignal; resume?: boolean; forShip?: boolean } = {}): Promise<void> {
-    const recorded = this.githubExpiry(task);
+    let recorded = this.githubExpiry(task);
+    const provider = this.sandboxProvider(task);
+    if (task.sandboxId !== null && provider.refreshGithubLogin) {
+      const expiry = await provider.refreshGithubLogin(task.sandboxId, options.signal);
+      if (expiry) { if (expiry !== recorded) this.store.addEvent(task.id, "github-token", expiry); recorded = expiry; }
+    }
     if (recorded === null || task.sandboxId === null) return;
     // A turn can run a while: a token running out within it is checked too.
     if (Date.parse(recorded) - Date.now() > 45 * 60_000) return;
     // Ask the sandbox (boat may have given it a fresh login). A stopped one is
     // woken first when the work is about to run there anyway.
-    let sandbox = await this.boat.findInfo(task.sandboxId, options.signal).catch(() => null);
+    let sandbox = await this.sandboxProvider(task).findInfo(task.sandboxId, options.signal).catch(() => null);
     if (sandbox === null) return;
     if (!ACTIVE_STATES.has(sandbox.state)) {
       if (!options.resume) return;
       sandbox = await this.resumeSandbox(task.sandboxId, options.signal);
     }
-    const login = await this.boat.githubLogin(task.sandboxId, options.signal).catch(() => ({ valid: null, expiresAt: null }));
+    const login = await this.repos.githubLogin(this.sandboxProvider(task), task.sandboxId, options.signal).catch(() => ({ valid: null, expiresAt: null }));
     if (login.expiresAt) this.store.addEvent(task.id, "github-token", login.expiresAt);
     const expiresAt = login.expiresAt ?? recorded;
     const expired = login.valid === false || (login.valid !== true && Date.parse(expiresAt) <= Date.now()) || Date.parse(expiresAt) - Date.now() < 10 * 60_000;
@@ -1569,15 +1852,17 @@ export class BoatService {
     const settings = await this.settings();
     const environment = task.environment ?? sandbox.environment ?? (settings.environment || null);
     const upgrade = environment ? `\`boat env upgrade ${environment}\`` : "`boat env upgrade <its environment>`";
+    const remedy = provider.id === "boat" ? `Run ${upgrade} to give sandboxes fresh credentials` : "Refresh this machine’s GitHub credential source in bb settings";
+    const duration = provider.id === "boat" ? "boat's GitHub tokens last about 8 hours; " : "";
     const when = new Date(expiresAt).toUTCString().slice(17, 22);
     throw new TaskError(
       options.forShip
-        ? `Task ${task.id}'s sandbox has an expired GitHub login (boat's GitHub tokens last about 8 hours; this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so it can't push the approved work.`
-        : `Task ${task.id}'s sandbox has an expired GitHub login (boat's GitHub tokens last about 8 hours; this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so the agent can't push or open pull requests from it.`,
+        ? `Task ${task.id}'s sandbox has an expired GitHub login (${duration}this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so it can't push the approved work.`
+        : `Task ${task.id}'s sandbox has an expired GitHub login (${duration}this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so the agent can't push or open pull requests from it.`,
       "github_token_expired",
       options.forShip
-        ? `Run ${upgrade} to give sandboxes fresh credentials, then ship again. Don't close this task or delete its sandbox: the approved commits exist only there.`
-        : `Run ${upgrade} to give sandboxes fresh credentials and try again; if that doesn't help, start the work again in a new sandbox (boat_dispatch with context_from ${task.id}).`,
+        ? `${remedy}, then ship again. Don't close this task or delete its sandbox: the approved commits exist only there.`
+        : `${remedy} and try again; if that doesn't help, start the work again in a new sandbox (boat_dispatch with context_from ${task.id}).`,
     );
   }
 
@@ -1603,7 +1888,7 @@ export class BoatService {
       const script = await this.hooks.evidence!.script(source, signal);
       // The bundled uploader's variables are known; a custom script's are its own.
       const checkNames = source.kind === "builtin" ? BUILTIN_CONFIG_NAMES : [];
-      const result = await this.boat.exec(sandboxId, evidenceInstallScript(script, checkNames), { timeoutMs: 120_000, signal });
+      const result = await this.sandboxProvider(sandboxId).exec(sandboxId, evidenceInstallScript(script, checkNames), { timeoutMs: 120_000, signal });
       const parsed = parseInstallResult(result.stdout, checkNames);
       if (result.exitCode !== 0 || parsed === null) {
         const detail = `${result.stderr}\n${result.stdout}`.trim().split("\n").slice(-3).join(" ");
@@ -1653,32 +1938,106 @@ export class BoatService {
     };
     try {
       stillWanted();
-      // 1. Sandbox: reuse or create.
-      const reuse = await this.pickSandbox(input, parent, settings, signal);
-      stillWanted();
-      this.sizes.assertSandboxNotResizing(reuse, "Start the task once the move is done, or in a new sandbox."); // sizes
-      let sandbox: Sandbox;
-      if (reuse !== null) {
-        release = this.claim(reuse);
-        sandbox = await this.ensureRunning(reuse, signal);
-        task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: false }) ?? task;
-        this.store.addEvent(id, "sandbox", `Reusing sandbox ${sandbox.id}`);
-      } else {
-        sandbox = await this.createSandbox({
-          name: `bb ${id} ${slug(task.title)}`,
-          type: sizing.type,
-          environment: task.environment,
-          snapshot: task.snapshot,
-          signal,
-        });
-        createdSandbox = sandbox.id;
-        release = this.claim(sandbox.id);
-        task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: true }) ?? task;
-        this.store.addEvent(id, "sandbox", `Created sandbox ${sandbox.id}${task.snapshot ? ` from snapshot ${task.snapshot}` : ""}`);
-        if (sizing.note !== null) this.store.addEvent(id, "sandbox-size", sizing.note); // sizes
+      if (task.sandboxProvider === "instabox" && task.sandboxSystem !== "macos") {
+        await this.hooks.preflight?.({agent:provider,runner:task.runner,environment:task.environment,newSandbox:surelyNewSandbox(input,parent,settings),provider:"instabox"});
+        await this.sandboxProvider(task).assertTaskReady?.({agent:provider,repos:[task.repo,...task.extraRepos.map(r=>r.repo)].filter((r):r is string=>r!==null),signal,onWarning:message=>this.store.addEvent(id,"preflight-warning",message)});
       }
+      // 1. Sandbox: reuse or create.
+      let reuse: string | null = null;
+      let sandbox!: Sandbox;
+      const unlistedMacProviders = new Set<string>();
+      const place = async () => {
+        reuse = await this.pickSandbox(input, parent, settings, signal);
+        // Persistent Mac accounts still use one credential home per task.
+        if (reuse?.startsWith("ownmac_")) reuse = null;
+        if (task.sandboxSystem === "macos" && reuse === null) {
+          const explicitRental=this.explicitMacRental(task)!==null;
+          const own = explicitRental ? null : this.sandboxProviders.get("ownmac");
+          const ownKnown=this.sandboxProviders.all.find(p=>p.id==="ownmac");
+          if(!explicitRental && !own && ownKnown?.ownMacStatus)ownMacEvent(this.store,id,"ownmac-skipped",await ownKnown.ownMacStatus(),"Your Mac is off or not set up; checking the next Mac.");
+          if (own && task.runner === "chat") {
+            try {
+              await own.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(r=>r.repo)].filter((r):r is string=>r!==null),signal});
+              const owned = await (own.allocate ?? own.create)({name:`bb ${id}`,type:sizing.type,system:"macos",ttlSeconds:0,gitGuard:true,signal});
+              this.store.update(id,{sandboxProvider:own.id});
+              reuse = owned.id;
+              createdSandbox = owned.id;
+              if (own.waitReady) this.macPreparing.add(owned.id);
+            } catch (error) { if(signal.aborted || ["creation_unknown","creation_allocated"].includes((error as {code?:string}).code ?? ""))throw error; ownMacEvent(this.store,id,"ownmac-skipped",{...(await own.ownMacStatus?.()),status:errorText(error)},"Your Mac skipped for this start."); this.store.addEvent(id,"sandbox-provider",`Your Mac unavailable: ${errorText(error)}. Checking approved rental routes.`); }
+          }
+          if (!reuse) reuse = await this.heldMacFor(task, sizing.type, parent, signal, unlistedMacProviders);
+          task = this.store.get(id) ?? task;
+        }
+        stillWanted();
+        if (reuse && this.macCleaning.has(reuse)) throw new TaskError("This Mac is cleaning up a failed start. Try again once cleanup finishes.", "sandbox_busy");
+        this.sizes.assertSandboxNotResizing(reuse, "Start the task once the move is done, or in a new sandbox."); // sizes
+        if (reuse !== null) {
+          const leased = this.store.macLeases.held(reuse).length > 0;
+          if ((leased || task.sandboxProvider === "ownmac") !== (task.sandboxSystem === "macos")) throw new TaskError("The sandbox system does not match this task.", "invalid_task");
+          if (leased) {
+            const lease = this.store.macLeases.held(reuse)[0]!;
+            const open = new Set(this.store.liveSandboxTasks(reuse).filter(t => t.id !== id).map(t => t.id));
+            const used = this.store.macLeases.tasks(lease.id).filter(t => open.has(t.taskId));
+            const need = macTaskResources(this.sandboxProvider(task), sizing.type);
+            if (open.size > used.length || used.reduce((n,t) => n+t.cpus,0)+need.vcpus > lease.cpus || used.reduce((n,t) => n+t.memoryMiB,0)+need.memMiB > lease.memoryMiB) throw new TaskError("This Mac lease has no room for another task.", "sandbox_full");
+          }
+          if (canHostMac(this.sandboxProvider(task))) {
+            const current = await this.sandboxProvider(task).info(reuse, signal);
+            if (current.system === "macos" && task.sandboxSystem !== "macos") throw new TaskError("Linux tasks cannot use a Mac sandbox.", "invalid_task");
+          }
+          if (task.sandboxSystem === "macos" && task.sandboxProvider !== "ownmac") {
+            const lease = this.store.macLeases.held(reuse)[0]!;
+            const info = await this.sandboxProvider(task).info(reuse, signal);
+            if (lease.releaseAt || info.scheduledReleaseAt) {
+              const provider = this.sandboxProvider(task);
+              if (!provider.cancelLeaseRelease) throw new TaskError("This Mac is scheduled for release and cannot accept more work.", "sandbox_unavailable");
+              await provider.cancelLeaseRelease(reuse, signal);
+              this.store.macLeases.schedule(lease.id, null);
+            }
+          }
+          await this.sandboxProvider(task).assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:reuse,signal,onWarning:message=>{this.store.addEvent(task.id,"preflight-warning",message);}});
+          release = this.claim(reuse);
+          sandbox = await this.ensureRunning(reuse, signal);
+          task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: false }) ?? task;
+          this.store.addEvent(id, "sandbox", `Reusing sandbox ${sandbox.id}`);
+        } else {
+          if (task.sandboxSystem !== "macos" && this.sandboxProvider(task).id === "instabox") {
+            await this.sandboxProvider(task).assertTaskReady?.({ agent: task.provider, repos: [task.repo, ...task.extraRepos.map(repo => repo.repo)].filter((repo): repo is string => repo !== null), signal, onWarning: message => { if (this.store.latestEvent(task.id, "preflight-warning")?.text !== message) this.store.addEvent(task.id, "preflight-warning", message); } });
+          }
+          sandbox = task.sandboxSystem === "macos" ? await this.createMacFor(task, sizing.type, signal, unlistedMacProviders,input.macRentalApproval) : await this.createSandbox({
+            name: `bb ${id} ${slug(task.title)}`,
+            type: sizing.type,
+            environment: task.environment,
+            snapshot: task.snapshot,
+            sandboxProvider: this.sandboxProvider(task),
+            signal,
+          });
+          task = this.store.get(id) ?? task;
+          if ((sandbox.system === "macos") !== (task.sandboxSystem === "macos")) throw new TaskError("The created sandbox system does not match this task.", "invalid_task");
+          createdSandbox = sandbox.id;
+          if (task.sandboxSystem === "macos" && this.sandboxProvider(task).allocate && this.sandboxProvider(task).waitReady) this.macPreparing.add(sandbox.id);
+          release = this.claim(sandbox.id);
+          task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: true }) ?? task;
+          this.store.addEvent(id, "sandbox", `Created sandbox ${sandbox.id}${task.snapshot ? ` from snapshot ${task.snapshot}` : ""}`);
+          if (sizing.note !== null) this.store.addEvent(id, "sandbox-size", sizing.note); // sizes
+        }
+        if (task.sandboxSystem === "macos" && task.sandboxProvider !== "ownmac") {
+          const lease = this.store.macLeases.held(sandbox.id)[0];
+          if (!lease) throw new TaskError(`${this.sandboxProvider(task).displayName} did not report the Mac lease; work cannot safely start.`, "lease_unknown");
+          const spec = macTaskResources(this.sandboxProvider(task), sizing.type);
+          this.store.macLeases.attach(lease.id, id, spec.vcpus, spec.memMiB);
+        }
+      };
+      if (task.sandboxSystem === "macos") await this.withMacLock(place); else await place();
       this.hooks.changed([id]);
       stillWanted();
+      // Allocation, ledger recording and task reservation were serialized.
+      // SSH readiness and tooling installation must not block other placements
+      // or the monitor's idle hand-back pass.
+      if (createdSandbox && this.macPreparing.has(createdSandbox)) {
+        try { sandbox = await this.sandboxProvider(task).waitReady!(createdSandbox,signal); stillWanted(); }
+        finally { this.macPreparing.delete(createdSandbox); }
+      }
 
       // 2. Repository checkout. A reviewer sharing the implementer's sandbox
       // reads the implementer's checkout as is; checking out again could
@@ -1686,6 +2045,7 @@ export class BoatService {
       let prepared: PreparedRepo | null = null;
       const sharesParentCheckout =
         parent !== null && reuse === parent.sandboxId && repo !== null && repo === parent.repo;
+      if (sharesParentCheckout && task.sandboxSystem === "macos" && await this.sandboxWorkRuns(sandbox.id)) throw new TaskError("The implementer is working in this Mac workspace. Start the review once its turn ends.", "task_busy");
       if (sharesParentCheckout) {
         prepared = {
           path: parent.repoPath ?? `/home/user/work/${repo.split("/")[1] ?? "repo"}`,
@@ -1762,7 +2122,7 @@ export class BoatService {
       const briefProtect = [...new Set([...protect, ...(task.baseBranch ? [task.baseBranch] : [])])];
 
       // A sandbox with no bb machine (a boat conversation's) can't host a chat.
-      if (task.runner === "chat" && reuse !== null && !(sharesParentCheckout && parent?.environmentId) && this.store.hostForSandbox(reuse) === null) {
+      if (task.runner === "chat" && task.sandboxSystem !== "macos" && reuse !== null && !(sharesParentCheckout && parent?.environmentId) && this.store.hostForSandbox(reuse) === null) {
         if (input.runner === "chat") {
           throw new TaskError(`Sandbox ${reuse} doesn't run bb, so a task chat can't start there.`, "sandbox_not_chat", "Use a new sandbox, or start it headless.");
         }
@@ -1777,7 +2137,7 @@ export class BoatService {
       if (input.nativeReview) {
         await input.nativeReview.beforeDispatch(id); stillWanted();
         // Verify only the new review sandbox; never probe or reprepare core's checkout.
-        const head = await this.boat.exec(sandbox.id, `GIT_OPTIONAL_LOCKS=0 git -C ${shellQuote(task.repoPath!)} rev-parse --verify HEAD | sed 's/^/BOAT_NATIVE_REVIEW_HEAD /'`, { timeoutMs: 10_000, signal });
+        const head = await this.sandboxProvider(task).exec(sandbox.id, `GIT_OPTIONAL_LOCKS=0 git -C ${shellQuote(task.repoPath!)} rev-parse --verify HEAD | sed 's/^/BOAT_NATIVE_REVIEW_HEAD /'`, { timeoutMs: 10_000, signal });
         if (head.exitCode !== 0 || head.stdout.trim() !== `BOAT_NATIVE_REVIEW_HEAD ${input.nativeReview.source.head}`) throw new TaskError("The review checkout does not match the recorded pull request HEAD.", "review_source_changed");
         stillWanted();
       }
@@ -1833,7 +2193,7 @@ export class BoatService {
       const conversationId = randomUUID();
       task = this.store.update(id, { conversationId }) ?? task;
       stillWanted();
-      const dispatch = await this.boat.prompt({
+      const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: sandbox.id,
         conversationId,
         prompt,
@@ -1852,7 +2212,7 @@ export class BoatService {
       });
       if (running === null) {
         // Closed while the prompt was in flight: stop the agent we just started.
-        await this.boat.interrupt(sandbox.id, dispatch.conversationId).catch(() => undefined);
+        await this.sandboxProvider(task).interrupt(sandbox.id, dispatch.conversationId).catch(() => undefined);
         throw new DispatchCancelled();
       }
       this.store.addEvent(
@@ -1873,14 +2233,20 @@ export class BoatService {
       const transient = task.runner === "chat" && this.store.get(id)?.threadId === null ? retryableBootstrap(error) : null;
       const failure = transient ? new TaskError(bootstrapFailureMessage(transient), "bootstrap_retryable", "Retry starting this task after npm's registry recovers; no agent turn ran.") : error;
       const message = errorText(failure);
-      this.store.transition(id, ["starting"], { status: "failed", error: clip(message, 4000), finishedAt: new Date().toISOString() });
-      this.store.addEvent(id, "failed", message, transient ? { source: "system", cause: "bootstrap_retryable", detail: `npm ${transient.code}; ${transient.attempts} installation attempts; no agent started` } : {});
+      if (task.runner === "boat" && settings.relay.paidClaudeFallback && settings.relay.paidClaudeHeadless && USAGE_LIMIT_PATTERN.test(message)) await this.hooks.usageRefused?.(provider);
+      this.store.transition(id, ["starting"], { status: "failed", error: (failure as {code?:string}).code==="mac_rental_confirmation_required"?null:clip(message, 4000), finishedAt: new Date().toISOString() });
+      this.store.addEvent(id, "failed", message, transient ? { source: "system", cause: "bootstrap_retryable", detail: `npm ${transient.code}; ${transient.attempts} installation attempts; no agent started` } : task.sandboxProvider && task.sandboxProvider!==DEFAULT_PROVIDER_ID ? {source:"system",cause:(failure as {code?:string}).code ?? "provider_failed"} : {});
       this.hooks.changed([id]);
       // Do not leave a fresh sandbox behind when setup failed.
       release();
       await this.discardNew(id, createdSandbox, createdHost);
+      if (task.sandboxProvider && task.sandboxProvider !== DEFAULT_PROVIDER_ID && failure instanceof Error) {
+        // Preserve the provider's error type/code while tools can return the live card.
+        Object.defineProperty(failure,"taskId",{value:id,configurable:true});
+      }
       throw failure;
     } finally {
+      if (createdSandbox) this.macPreparing.delete(createdSandbox);
       release();
       input.signal?.removeEventListener("abort", onOuterAbort);
       if (this.dispatches.get(id) === controller) this.dispatches.delete(id);
@@ -1894,10 +2260,169 @@ export class BoatService {
       hostId = await this.hooks.chat.findMachine(sandboxId).catch(() => null);
     }
     if (hostId !== null && this.hooks.chat) {
-      await this.hooks.chat.removeMachine(hostId).catch((error) => this.hooks.log.warn(`remove machine ${hostId}: ${errorText(error)}`));
+      const removed = await this.hooks.chat.removeMachine(hostId).then(
+        () => true,
+        (error) => {
+          this.hooks.log.warn(`remove machine ${hostId}: ${errorText(error)}`);
+          return false;
+        },
+      );
+      if (removed) await this.dropMachineSources(hostId);
+      await this.releaseTaskSources({ id: taskId, hostId });
       return;
     }
     if (sandboxId !== null) await this.releaseSandbox(sandboxId, taskId).catch(() => undefined);
+  }
+
+  /**
+   * Open a task chat. In its checkout on a machine outside Personal, bb wants
+   * a project source for that machine first: reuse the project's one there,
+   * or add one. When that fails, the chat opens in Personal instead, still
+   * under its orchestrator and in its section: the task never fails over a
+   * source.
+   */
+  private async spawnTaskChat(args: ChatSpawn, stillWanted: () => void = () => undefined, signal: AbortSignal = this.hooks.lifecycle): Promise<{ threadId: string; environmentId: string | null }> {
+    const task = this.store.get(args.taskId);
+    if (task?.sandboxId) await this.codexHealth(this.sandboxProvider(task), task.sandboxId, args.provider, line => this.store.addEvent(task.id, "machine", line), signal);
+    stillWanted();
+    const chat = this.hooks.chat!;
+    const { where, projectId } = args;
+    if (where.kind !== "machine" || where.path === null || isPersonalProject(projectId)) return chat.spawn(args);
+    let why: string | null = null;
+    try {
+      await this.ensureProjectSource(args.taskId, projectId!, where.hostId, where.path);
+    } catch (error) {
+      why = `Couldn't add the sandbox's checkout to bb project ${projectId}: ${clip(errorText(error), 300)}`;
+    }
+    stillWanted();
+    if (why === null) {
+      try {
+        const spawned = await chat.spawn(args);
+        if (this.inPersonalFallback(args.taskId)) {
+          this.store.addEvent(args.taskId, "project-chat", `Opened the chat in bb project ${projectId}; later chats in its workspace open there too.`);
+        }
+        return spawned;
+      } catch (error) {
+        if (!NO_PROJECT_SOURCE.test(errorText(error))) throw error;
+        why = `bb refused the chat in project ${projectId}: ${clip(errorText(error), 300)}`;
+      }
+    }
+    this.hooks.log.warn(`task ${args.taskId}: ${why}`);
+    this.store.addEvent(args.taskId, "project-fallback", `${why.replace(/\.?$/, ".")} Opened the chat in Personal instead, still under its orchestrator.`);
+    return chat.spawn({ ...args, projectId: PERSONAL_PROJECT });
+  }
+
+  /** Reuse or add the project's source on the machine, and record it on the task. Throws when bb refuses. */
+  private async ensureProjectSource(taskId: string, projectId: string, hostId: string, path: string): Promise<void> {
+    const source = await this.hooks.chat!.ensureProjectSource({ taskId, projectId, hostId, path });
+    const what = source.created
+      ? `Added the sandbox's checkout to bb project ${projectId} (source ${source.sourceId})`
+      : `bb project ${projectId} already has a source on the sandbox (${source.sourceId}${source.own ? "" : ", not added by Harbormaster: it stays"})`;
+    // bb makes a project's first source its default; Boat never asks for that.
+    const madeDefault = source.created && source.isDefault ? "; bb made it the project's default, since the project had no other source" : "";
+    if (madeDefault) this.hooks.log.warn(`task ${taskId}: bb made source ${source.sourceId} the default of project ${projectId}`);
+    this.store.addEvent(taskId, "project-source", `${what}${madeDefault}`);
+  }
+
+  /** The task's chat opened in Personal instead of its project (or shares a workspace there), and no later chat of it opened in the project. */
+  private inPersonalFallback(taskId: string): boolean {
+    // The whole history: a fallback stays in force however many events follow it.
+    return this.store.latestEventOf(taskId, ["project-fallback", "project-chat"])?.kind === "project-fallback";
+  }
+
+  /** The bb project a task's next chat in its workspace opens in: the one its workspace is in. */
+  private chatProject(task: Task): string | null {
+    return this.inPersonalFallback(task.id) ? PERSONAL_PROJECT : task.projectId;
+  }
+
+  private isOpenTask(taskId: string): boolean {
+    const task = this.store.get(taskId);
+    return task !== null && OPEN_STATUSES.includes(task.status);
+  }
+
+  /**
+   * A project source Boat added is in use while an open task (other than
+   * `except`) is on its machine, whatever its chat (a review in the shared
+   * workspace too), or opened with it and isn't on a machine yet (a move).
+   */
+  private sourceInUse(row: OwnProjectSource, except: string | null): boolean {
+    if (row.taskIds.some((taskId) => taskId !== except && this.isOpenTask(taskId))) return true;
+    return this.store.list({ statuses: OPEN_STATUSES, limit: 1000 }).some((task) => task.id !== except && task.hostId === row.hostId);
+  }
+
+  /**
+   * A task is done with its machine's project sources (closed, or its chat
+   * never opened): remove the ones Boat added there once no other open task
+   * uses them. Never fatal: the sweep tries again.
+   */
+  private async releaseTaskSources(task: { id: string; hostId: string | null }): Promise<void> {
+    await this.removeOwnSources((row) => row.taskIds.includes(task.id) || (task.hostId !== null && row.hostId === task.hostId), (row) => this.sourceInUse(row, task.id));
+  }
+
+  /** The machine is gone: every source Boat added for it goes too. */
+  private async dropMachineSources(hostId: string): Promise<void> {
+    await this.removeOwnSources((row) => row.hostId === hostId, () => false);
+  }
+
+  private async removeOwnSources(which: (row: OwnProjectSource) => boolean, inUse: (row: OwnProjectSource) => boolean): Promise<number> {
+    const chat = this.hooks.chat;
+    if (chat === undefined) return 0;
+    let own: OwnProjectSource[];
+    try {
+      own = await chat.ownProjectSources();
+    } catch (error) {
+      this.hooks.log.warn(`project sources: ${errorText(error)}`);
+      return 0;
+    }
+    let removed = 0;
+    for (const row of own.filter(which)) if (await this.removeOwnSource(row, inUse)) removed += 1;
+    return removed;
+  }
+
+  private async removeOwnSource(row: OwnProjectSource, inUse: (row: OwnProjectSource) => boolean): Promise<boolean> {
+    let result;
+    try {
+      // Asked again inside the registry's lock, with its latest row.
+      result = await this.hooks.chat!.removeProjectSource(row.sourceId, inUse);
+    } catch (error) {
+      this.hooks.log.warn(`remove project source ${row.sourceId}: ${errorText(error)}`);
+      return false;
+    }
+    if (result === "last-source") this.hooks.log.info(`project source ${row.sourceId} is the last source of bb project ${row.projectId}; bb keeps it until the project has another`);
+    if (result !== "removed") return false;
+    for (const taskId of row.taskIds) {
+      if (this.store.get(taskId) !== null) this.store.addEvent(taskId, "project-source", `Removed the sandbox's source from bb project ${row.projectId} (${row.sourceId})`);
+    }
+    return true;
+  }
+
+  /** The project-source sweep when it's due: the first call after a start, then every ten minutes (with or without open tasks). Never throws. */
+  async sweepProjectSourcesIfDue(now = Date.now()): Promise<void> {
+    if (this.hooks.chat === undefined || now - this.lastSourceSweep < SOURCE_SWEEP_MS) return;
+    await this.sweepProjectSources(now).catch((error) => this.hooks.log.warn(`project source sweep: ${errorText(error)}`));
+  }
+
+  /**
+   * Project sources Boat added that nothing needs any more: their machine is
+   * gone, or no open task is on it (a close cut short, a restart). Returns
+   * how many it removed.
+   */
+  async sweepProjectSources(now = Date.now()): Promise<number> {
+    const chat = this.hooks.chat;
+    if (chat === undefined) return 0;
+    this.lastSourceSweep = now;
+    let removed = 0;
+    for (const row of await chat.ownProjectSources()) {
+      let gone = false;
+      if (this.sourceInUse(row, null)) {
+        // Only bb's "no such machine" counts; an error leaves it for the next sweep.
+        const machine = await chat.machineState(row.hostId).catch(() => undefined);
+        gone = machine === null || machine?.phase === "destroyed";
+        if (!gone) continue;
+      }
+      if (await this.removeOwnSource(row, (latest) => !gone && this.sourceInUse(latest, null))) removed += 1;
+    }
+    return removed;
   }
 
   /**
@@ -1936,11 +2461,11 @@ export class BoatService {
       hostId = ctx.parent.hostId;
       where = { kind: "environment", environmentId };
     } else {
-      hostId = ctx.reuse !== null ? this.store.hostForSandbox(ctx.reuse) : null;
+      hostId = ctx.reuse !== null ? (this.store.hostForSandbox(ctx.reuse) ?? (task.sandboxSystem === "macos" ? this.store.machineForSandbox(ctx.reuse) : null)) : null;
       if (hostId === null) {
         this.store.addEvent(id, "machine", "Installing bb on the sandbox (about a minute)");
         this.hooks.changed([id]);
-        hostId = (await chat.attachMachine({ taskId: id, sandboxId: ctx.sandbox.id, signal: ctx.signal })).hostId;
+        hostId = (await chat.attachMachine({ taskId: id, sandboxId: ctx.sandbox.id, signal: ctx.signal, ...this.machineProviderFor(task) })).hostId;
         ctx.onHost(hostId);
         this.store.addEvent(id, "machine", `The sandbox is bb machine ${hostId}`);
       }
@@ -1948,16 +2473,34 @@ export class BoatService {
     }
     task = this.store.update(id, { hostId }) ?? task;
     ctx.stillWanted();
-    const spawned = await chat.spawn({
-      taskId: id,
-      title: this.chatTitle(task),
-      prompt: ctx.prompt,
-      provider: task.provider,
-      model: task.model,
-      effort: task.reasoningEffort,
-      parentThreadId: this.parentChat(task),
-      projectId: input.projectId ?? null,
-      where,
+    let projectId = input.projectId ?? null;
+    if (where.kind === "environment" && ctx.parent !== null && !isPersonalProject(projectId) && this.inPersonalFallback(ctx.parent.id)) {
+      // The shared workspace is in Personal, where the parent's chat fell back to.
+      projectId = PERSONAL_PROJECT;
+      this.store.addEvent(id, "project-fallback", `Opened the chat in Personal, like task ${ctx.parent.id}'s chat whose workspace it shares.`);
+    }
+    const spawned = await this.spawnTaskChat(
+      {
+        taskId: id,
+        title: this.chatTitle(task),
+        prompt: ctx.prompt,
+        provider: task.provider,
+        model: task.model,
+        effort: task.reasoningEffort,
+        parentThreadId: this.parentChat(task),
+        projectId,
+        where,
+      },
+      ctx.stillWanted,
+      ctx.signal,
+    ).catch((error: unknown) => {
+      // Joining another task's workspace: bb's refusal can be a bare "Something went wrong". Say whose and what to do.
+      if (where.kind !== "environment" || ctx.parent === null || error instanceof DispatchCancelled || ctx.signal.aborted) throw error;
+      throw new TaskError(
+        `Couldn't open this task's chat in task ${ctx.parent.id}'s workspace on sandbox ${ctx.sandbox.id}: ${clip(errorText(error), 300) || "bb gave no reason"}.`,
+        "workspace_unavailable",
+        `Start it in a new sandbox instead (sandbox "new"), or once task ${ctx.parent.id}'s turn is over.`,
+      );
     });
     this.store.addEvent(id, "chat", spawned.threadId);
     this.recordChat(id, spawned.threadId, task.provider, task.model, task.reasoningEffort);
@@ -1978,6 +2521,417 @@ export class BoatService {
     this.store.addEvent(id, "dispatched", `Opened a ${task.provider} chat · ${modelLine(task.tier, task.model, task.reasoningEffort, task.reason)}`);
     this.hooks.changed([id]);
     return running;
+  }
+
+  /**
+   * Work runs in this sandbox: a task's turn (running or starting), or what
+   * bb reports on its machine (a chat's turn, waiting messages, background
+   * work; a machine bb can't read counts as busy), which the task's own
+   * status can miss (a message typed into its chat).
+   */
+  private async sandboxWorkRuns(sandboxId: string): Promise<boolean> {
+    const tasks = this.store.liveSandboxTasks(sandboxId);
+    return tasks.some((task) => task.status === "running" || task.status === "starting") || (await this.machineBusy(tasks));
+  }
+
+  // Your Mac is checked before this lease placement path. Monthly providers
+  // can expose already held capacity here; only day providers allocate.
+  private readonly macPreparing = new Set<string>();
+  private readonly macCleaning = new Set<string>();
+  private macLock: Promise<unknown> = Promise.resolve();
+  private withMacLock<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.macLock.then(run, run);
+    this.macLock = next.catch(() => undefined);
+    return next;
+  }
+
+  private async heldMacFor(task: Task, type: MachineType, parent: Task | null, signal?: AbortSignal, unlisted = new Set<string>()): Promise<string | null> {
+    for (const provider of this.macProviders(task.sandboxProvider ?? DEFAULT_PROVIDER_ID)) {
+      if (!this.sandboxProviders.get(provider.id) || (provider.caps.headlessAgentRunner === false && task.runner !== "chat")) continue;
+      let machines: Sandbox[];
+      try { machines = await provider.list({ all: true, signal }); }
+      catch (error) {
+        // An unconfirmed held lease prevents a second rental. An unavailable
+        // empty provider may give way to the other provider.
+        if (this.store.macLeases.held().some(l => l.provider === provider.id)) throw error;
+        unlisted.add(provider.id);
+        continue;
+      }
+      this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
+      const need = macTaskResources(provider, type);
+      for (const lease of this.store.macLeases.held()) {
+        if (lease.provider !== provider.id || this.macPreparing.has(lease.machineId) || this.macCleaning.has(lease.machineId) || this.isMovingSandbox(lease.machineId) || this.sizes.isResizing(lease.machineId)) continue;
+        if (!machines.some(m => m.id === lease.machineId && (ACTIVE_STATES.has(m.state) || m.state === "stopped"))) continue;
+        if (parent?.sandboxId === lease.machineId && await this.sandboxWorkRuns(lease.machineId)) continue;
+        const open = new Set(this.store.liveSandboxTasks(lease.machineId).map(t => t.id));
+        const reservations = this.store.macLeases.tasks(lease.id).filter(t => open.has(t.taskId));
+        // Unknown attached tasks consume the whole machine until reconciled.
+        if (open.size > reservations.length) continue;
+        if (reservations.reduce((n,t) => n+t.cpus,0)+need.vcpus > lease.cpus || reservations.reduce((n,t) => n+t.memoryMiB,0)+need.memMiB > lease.memoryMiB) continue;
+        try { await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:lease.machineId,signal,onWarning:message=>{this.store.addEvent(task.id,"preflight-warning",message);}}); }
+        catch (error) { this.store.addEvent(task.id,"sandbox-provider",`${provider.displayName} held Mac cannot run this task: ${errorText(error)}`); continue; }
+        if(this.store.latestEvent(task.id,"ownmac-skipped") || task.sandboxProvider==="ownmac") ownMacEvent(this.store,task.id,"ownmac-fallback",{provider:provider.id,label:provider.displayName,monthly:provider.macLeaseKind==="monthly",paidUntil:lease.paidUntil},"Using existing Mac capacity; no new rental.");
+        if (provider.id !== task.sandboxProvider) {
+          this.store.update(task.id, { sandboxProvider: provider.id });
+          this.store.addEvent(task.id, "sandbox-provider", `Using a held ${provider.displayName} Mac lease before renting another.`);
+        }
+        return lease.machineId;
+      }
+    }
+    return null;
+  }
+
+  private explicitMacRental(task:Task):string|null {
+    const choice=governingProject(this.hooks.projects?.() ?? [],task.boatProject,task.repo)?.sandboxProvider;
+    return choice && ["scaleway","instabox"].includes(choice)?choice:null;
+  }
+  private macProviders(preferred: string): SandboxProvider[] {
+    const first = this.sandboxProviders.all.find(provider => provider.id === preferred) ?? this.sandboxProviders.forTask({ sandboxProvider: preferred });
+    return [first, ...this.sandboxProviders.enabled.filter(provider => provider.id !== preferred && canHostMac(provider))].filter(provider=>provider.id !== "ownmac").sort((a,b)=>Number(b.macLeaseKind === "monthly")-Number(a.macLeaseKind === "monthly"));
+  }
+
+  private async createMacFor(task: Task, type: MachineType, signal: AbortSignal, unlisted = new Set<string>(), approval?:MacRentalQuote): Promise<Sandbox> {
+    const failures: string[] = [];
+    let primaryCode: string | undefined;
+    let accepted=approval;
+    for (const provider of this.macProviders(task.sandboxProvider ?? DEFAULT_PROVIDER_ID)) {
+      signal.throwIfAborted();
+      if (provider.macLeaseKind === "monthly") continue;
+      try {
+        if(accepted && provider.id!==accepted.provider)continue;
+        if (!this.sandboxProviders.get(provider.id)) throw new TaskError(`${provider.displayName} is not configured.`, "provider_unavailable");
+        if (!canHostMac(provider)) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
+        if (provider.caps.headlessAgentRunner === false && task.runner !== "chat") throw new TaskError(`${provider.displayName} needs task chats and bb Connect. Enable Run tasks as chats for this project.`, "chat_required");
+        await this.hooks.preflight?.({ agent: task.provider, runner: task.runner, environment: provider.caps.environments ? task.environment : null, newSandbox: true, ...(provider.id === DEFAULT_PROVIDER_ID ? {} : { provider: provider.id }) });
+        if (unlisted.has(provider.id)) throw new TaskError(`${provider.displayName} machine list could not be confirmed.`, "provider_unavailable");
+        await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),signal,onWarning:message=>{this.store.addEvent(task.id,"preflight-warning",message);}});
+        // This path allocates a new day lease. All such rentals require consent,
+        // regardless of which other routes are registered or enabled.
+        const need=macTaskResources(provider,type);
+        const models=await provider.macModels?.(signal) ?? [];
+        const model=accepted ? models.find(m=>m.id===accepted!.model) : models.filter(m=>m.cpus>=need.vcpus && m.memoryMiB>=need.memMiB).sort((a,b)=>a.minimumCost-b.minimumCost)[0];
+        if(!model)throw new TaskError(`${provider.displayName} has no usable Mac model with confirmed pricing.`,"at_capacity");
+        const quote:MacRentalQuote={id:randomUUID(),provider:provider.id,label:provider.displayName,model:model.id,modelLabel:model.label,minimumCost:model.minimumCost,hourPrice:model.hourPrice,minimumHours:model.minimumHours,currency:model.currency,expiresAt:new Date(Date.now()+10*60000).toISOString()};
+        if(!accepted || Date.parse(accepted.expiresAt)<Date.now() || accepted.minimumCost<model.minimumCost || accepted.hourPrice<model.hourPrice || accepted.minimumHours<model.minimumHours || accepted.currency!==model.currency) {
+          ownMacEvent(this.store,task.id,"ownmac-rental-offer",quote,"A new rental needs approval; nothing was rented.");
+          if(task.orchestratorThreadId)await this.hooks.tell?.(task.orchestratorThreadId,taskMarker("task",task.id));
+          throw new TaskError(`Rent a Mac for “${task.title}”? ${provider.displayName}: ${model.currency} ${model.minimumCost.toFixed(2)} minimum, then ${model.hourPrice.toFixed(2)} / h. Nothing was rented.`,"mac_rental_confirmation_required");
+        }
+        const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", environment: task.environment, snapshot: task.snapshot, sandboxProvider: provider, macCostLimit:accepted, allocateOnly: Boolean(provider.allocate && provider.waitReady), signal });
+        this.store.update(task.id, { sandboxProvider: provider.id });
+        if (failures.length) this.store.addEvent(task.id, "sandbox-provider", `Mac provider fallback: ${failures.join("; ")} Using ${provider.displayName}.`);
+        return sandbox;
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (signal.aborted || code === "creation_unknown" || code === "creation_allocated" || code === "mac_rental_confirmation_required") throw error;
+        if(accepted?.provider===provider.id)accepted=undefined; // The next rental needs its own quote/consent.
+        if (!primaryCode || primaryCode==="provider_unavailable") primaryCode=code;
+        failures.push(`${provider.displayName}: ${errorText(error)}`);
+        this.store.addEvent(task.id, "sandbox-provider", `Mac provider fallback: ${provider.displayName} is unavailable; checking another day-lease provider. ${errorText(error)}`);
+      }
+    }
+    throw new TaskError(`No Mac day-lease provider is available. ${failures.join(" ")}`, primaryCode ?? "provider_unavailable");
+  }
+
+  private async tellOwnMacDisconnect(task:Task) {
+    const previous=this.store.ownMacEventData(task.id,"ownmac-disconnect") as {promptId?:string}|null;
+    if(previous && previous.promptId===task.promptId)return;
+    ownMacEvent(this.store,task.id,"ownmac-disconnect",{promptId:task.promptId},"Your Mac stopped answering during this task. The work was not moved or replayed.");
+    // A send to the worker would enqueue another agent turn. Publish a live
+    // chat notice instead; only the orchestrator receives a normal task card.
+    this.hooks.changed([task.id]);
+    if(task.orchestratorThreadId && task.orchestratorThreadId!==task.threadId)await this.hooks.tell?.(task.orchestratorThreadId,taskMarker("task",task.id)).catch(()=>undefined);
+  }
+  async ownMacNotice(task:Task):Promise<OwnMacNotice|null> {
+    const own=this.sandboxProviders.all.find(p=>p.id==="ownmac");
+    const cleanup=own?.ownMacCleanup?.();
+    const notice=ownMacTaskNotice(this.store,task);
+    if(notice)notice.canWaitForOwnMac=this.explicitMacRental(task)===null;
+    if(notice?.refusal) {const state=await own?.ownMacStatus?.();if(state?.code!==notice.refusal)delete notice.refusal;}
+    if(task.sandboxId && cleanup?.taskIds.includes(task.sandboxId)) {
+      const state=await own?.ownMacStatus?.();
+      return {...(notice ?? {taskId:task.id,title:task.title,alias:state?.alias ?? "",reason:"cleanup"}),cleanup};
+    }
+    const disconnected=this.store.latestEvent(task.id,"ownmac-disconnect");
+    if(disconnected)return {...(notice ?? {taskId:task.id,title:task.title,alias:(await own?.ownMacStatus?.())?.alias ?? "",reason:"disconnected"}),disconnect:"Your Mac stopped answering during this task. Harbormaster has not moved or replayed the work. Restore access and inspect this task before retrying."};
+    if(task.sandboxId && cleanup && !cleanup.failed && this.store.latestEvent(task.id,"credential-cleanup-failed"))return {...(notice ?? {taskId:task.id,title:task.title,alias:"",reason:"cleanup"}),cleanup};
+    return notice;
+  }
+  private readonly ownMacRestarts=new Set<string>();
+  private readonly ownMacAnswers=new Set<string>();
+  async answerOwnMacRental(id:string,answer:"rent"|"wait",quoteId?:string):Promise<string|null> {
+    const task=this.mustGet(id),notice=ownMacTaskNotice(this.store,task);
+    if(task.status!=="failed" || task.turns!==0 || task.sandboxId || task.hostId || !notice?.offer || notice.replacementId || this.ownMacRestarts.has(task.id) || this.ownMacAnswers.has(task.id))throw new TaskError("This task cannot be replayed. Inspect its existing work before starting another task.","task_busy");
+    this.ownMacAnswers.add(task.id);
+    try {
+    if(answer==="wait") {
+      if(this.explicitMacRental(task))throw new TaskError("This project's Runs on selects a rented Mac. Choose Your Mac in Runs on before waiting for it.","invalid_task");
+      ownMacEvent(this.store,id,"ownmac-rental-answer",{answer},"Waiting for your Mac.");this.hooks.changed([id]);return null;
+    }
+    if(quoteId!==notice.offer.id)throw new TaskError("The rental quote changed. Review its current cost first.","mac_price_changed");
+    const provider=this.sandboxProviders.get(notice.offer.provider);
+    const models=await provider?.macModels?.(this.hooks.lifecycle) ?? [];
+    const model=models.find(model=>model.id===notice.offer!.model);
+    if(!model)throw new TaskError("That Mac is unavailable. Wait for your Mac or review current rental options.","at_capacity");
+    if(Date.parse(notice.offer.expiresAt)<Date.now() || model.minimumCost>notice.offer.minimumCost || model.hourPrice>notice.offer.hourPrice || model.minimumHours>notice.offer.minimumHours || model.currency!==notice.offer.currency) {
+      ownMacEvent(this.store,task.id,"ownmac-rental-offer",{...notice.offer,id:randomUUID(),minimumCost:model.minimumCost,hourPrice:model.hourPrice,minimumHours:model.minimumHours,currency:model.currency,expiresAt:new Date(Date.now()+600000).toISOString()},"The rental quote changed. Nothing was rented.");
+      this.hooks.changed([task.id]);throw new TaskError("The rental price or quote changed. Review its current cost first. Nothing was rented.","mac_price_changed");
+    }
+    return await this.restartOwnMacTask(task,notice.offer,"rent");
+    } finally {this.ownMacAnswers.delete(task.id);}
+  }
+  private async restartOwnMacTask(task:Task,approval:MacRentalQuote|undefined,answer:"rent"|"auto"):Promise<string|null> {
+    if(this.ownMacRestarts.has(task.id) || this.store.get(task.id)?.status!=="failed")throw new TaskError("This task start is already being handled.","task_busy");
+    this.ownMacRestarts.add(task.id);
+    try {
+      const project=governingProject(this.hooks.projects?.() ?? [],task.boatProject,task.repo);
+      const replacement=await this.startTask({title:task.title,brief:task.brief,role:task.role,parentTaskId:task.parentTaskId,repo:task.repo,branch:task.branch,baseBranch:task.baseBranch,provider:task.provider,model:task.model,tier:task.tier as Tier|null,reasoningEffort:task.reasoningEffort,userApproved:true,runner:task.runner,project:project ? {...toOrchestratorProject(normalizeProject({...project,repos:project.repos.map(r=>({...r,baseBranch:(r as ProjectRepo).baseBranch ?? task.baseBranch ?? "main"}))})),...(!task.repo?{repos:[]}: {})} : undefined,orchestratorThreadId:task.orchestratorThreadId,sandboxSystem:"macos",machineType:task.startOptions?.machineType,confirmUntrustedChat:task.startOptions?.confirmUntrustedChat,macRentalApproval:approval});
+      const actualAnswer=replacement.sandboxProvider==="ownmac"?"auto":answer;
+      ownMacEvent(this.store,task.id,"ownmac-rental-answer",{answer:actualAnswer,replacementId:replacement.id},actualAnswer==="auto"?"Your Mac is back; the task starts there.":"Rental choice accepted.");
+      this.store.transition(task.id,["failed"],{status:"cancelled"});this.hooks.changed([task.id,replacement.id]);return replacement.id;
+    } catch(error) {
+      const replacementId=typeof (error as {taskId?:unknown}).taskId==="string"?(error as {taskId:string}).taskId:undefined;
+      ownMacEvent(this.store,task.id,"ownmac-rental-answer",{answer:"failed",replacementId},"The start failed; inspect the replacement before retrying.");
+      if(replacementId)this.store.transition(task.id,["failed"],{status:"cancelled"});
+      this.hooks.changed([task.id]);throw error;
+    } finally {this.ownMacRestarts.delete(task.id);}
+  }
+  private lastOwnMacCleanupCheck=0;
+  private ownMacNoticeDelivery:Promise<void>=Promise.resolve();
+  deliverOwnMacTargetNotice():Promise<void> {
+    const deliver=async()=>{
+      const own=this.sandboxProviders.all.find(p=>p.id==="ownmac"),notice=own?.ownMacTargetNotice?.();
+      if(!notice || !this.hooks.tell)return;
+      for(const threadId of this.store.orchestratorThreadIds().current) {
+        const current=own?.ownMacTargetNotice?.();
+        if(!current || current.id!==notice.id)return;
+        if(current.deliveredTo.includes(threadId))continue;
+        await this.hooks.tell(threadId,current.text);
+        await own?.acknowledgeOwnMacTargetNotice?.(notice.id,threadId);
+      }
+    };
+    const next=this.ownMacNoticeDelivery.then(deliver,deliver);
+    this.ownMacNoticeDelivery=next.catch(()=>undefined);return next;
+  }
+  async maintainOwnMac() {
+    const own=this.sandboxProviders.all.find(p=>p.id==="ownmac");if(!own)return;
+    if(own.ownMacCleanup?.()?.failed && Date.now()-this.lastOwnMacCleanupCheck>=3600000){this.lastOwnMacCleanupCheck=Date.now();await this.checkOwnMacCleanup();}
+    const state=await own.ownMacStatus?.();await this.deliverOwnMacTargetNotice();if(state?.code!=="available")return;
+    for(const task of this.store.list({statuses:["failed"],limit:500})) {
+      if(this.explicitMacRental(task))continue;
+      const notice=ownMacTaskNotice(this.store,task);
+      if(notice?.offer && !notice.replacementId && notice.answer!=="failed" && task.turns===0 && !task.sandboxId && !this.ownMacRestarts.has(task.id) && !this.ownMacAnswers.has(task.id)) {
+        await this.restartOwnMacTask(task,undefined,"auto").catch(()=>undefined);
+        break;
+      }
+    }
+  }
+  async checkOwnMacCleanup() {
+    const own=this.sandboxProviders.all.find(p=>p.id==="ownmac");
+    const result=await own?.checkOwnMacCleanup?.(async id=>{
+      const task=this.store.sandboxTasks(id).find(task=>task.hostId!==null);
+      if(!task?.hostId)return false;
+      if(!this.hooks.chat)return false;
+      const state=await this.hooks.chat.machineState(task.hostId).catch(()=>undefined);
+      return state===null || state?.phase==="destroyed";
+    });
+    this.hooks.changed([]);return result;
+  }
+
+  private async keepMacLease(lease: MacLease, signal?: AbortSignal): Promise<void> {
+    this.store.macLeases.keep(lease.id);
+    if (lease.releaseAt) {
+      const provider = this.sandboxProviders.get(lease.provider);
+      if (!provider?.cancelLeaseRelease) throw new TaskError("Cannot keep a Mac scheduled for release.", "sandbox_unavailable");
+      await provider.cancelLeaseRelease(lease.machineId, signal);
+      this.store.macLeases.schedule(lease.id, null);
+    }
+  }
+
+  /** Closing records a conclusive result before finishedAt changes can hide a
+   * ship. An unavailable probe is temporary uncertainty, never a sticky keep. */
+  private async macCloseOutcome(task: Task, signal?: AbortSignal, discarded = false, shipped = this.shippedSinceLastTurn(task)): Promise<MacWorkOutcome> {
+    if (discarded) return "discarded";
+    if (shipped) return "shipped";
+    if (task.delivery !== "push" || task.role === "review" || task.turns === 0) return "clean";
+    const count = await this.unshippedCommits(task, signal);
+    return count === null ? "unknown" : count > 0 ? "unshipped" : "clean";
+  }
+
+  private async macLeaseWorkState(lease: MacLease): Promise<"resolved" | "unshipped" | "unknown"> {
+    let unknown = false;
+    for (const attached of this.store.macLeases.tasks(lease.id)) {
+      const task = this.store.get(attached.taskId);
+      if (!task) { unknown = true; continue; }
+      const closed = task.status === "done" || task.status === "cancelled";
+      let outcome = closed && attached.workTurns === task.turns ? attached.workOutcome : null;
+      if (!outcome || outcome === "unknown") {
+        outcome = await this.macCloseOutcome(task,this.hooks.lifecycle);
+        if (closed) this.store.macLeases.resolveTask(lease.id,task.id,outcome,task.turns);
+      }
+      if (outcome === "unshipped") return "unshipped";
+      if (outcome === "unknown") unknown = true;
+    }
+    return unknown ? "unknown" : "resolved";
+  }
+
+  private async macLeaseNotice(lease: MacLease, tasks: readonly Task[], now: number, kept: boolean | "unknown"): Promise<void> {
+    if (lease.noticeText?.startsWith(CLEANUP_NOTICE_PREFIX)) return;
+    const threads = [...new Set(tasks.map(t => t.orchestratorThreadId).filter((id): id is string => id !== null))];
+    const pastMinimum = now >= Date.parse(lease.paidUntil);
+    const pageNotice = !this.hooks.tell || tasks.length === 0 || tasks.some(task => task.orchestratorThreadId === null);
+    const money = (amount: number) => new Intl.NumberFormat("en-US",{style:"currency",currency:lease.currency}).format(amount);
+    const cost = money(this.store.macLeases.cost(lease,now));
+    const rate = money(lease.hourPrice);
+    const time = new Intl.DateTimeFormat("en-US",{hour:"2-digit",minute:"2-digit",hourCycle:"h23",timeZoneName:"short"}).format(new Date(lease.paidUntil));
+    const billing = lease.billingIncrementSeconds === 3600 ? "hourly" : "per second";
+    const text = kept === "unknown"
+      ? `[boat] Mac unshipped work could not be checked; compute cost ${cost} so far; ${rate} / h after the minimum. Run \`bb boat sandbox resume ${lease.machineId}\` to check its work before hand-back.`
+      : kept
+      ? `[boat] Mac lease is kept; compute cost ${cost} so far; ${rate} / h billed ${billing} after the minimum. Automatic hand-back is off; delete it manually when its work is safe.`
+      : `[boat] Mac lease's paid time ${pastMinimum ? "ended" : "ends"} at ${time}; after that it bills ${billing} while tasks ${tasks.map(t=>t.id).join(", ")} sit idle; compute cost ${cost} so far; close them to hand it back`;
+    if (!this.store.macLeases.warn(lease.id,now,pastMinimum,pageNotice ? text : null)) { if(pageNotice && text!==lease.noticeText)this.hooks.changed([]); return; }
+    this.hooks.changed([]);
+    if (this.hooks.tell) for (const thread of threads) await this.hooks.tell(thread,text);
+  }
+
+  /** A failed enrollment must not log out a shared Mac's other tasks. */
+  async cleanupFailedMachineBootstrap(sandboxId: string, cleanup: () => Promise<void>, taskId?: string): Promise<void> {
+    const release = await this.withMacLock(async () => {
+      const attachments = this.store.macLeases.held(sandboxId).flatMap(lease => this.store.macLeases.tasks(lease.id));
+      const owner = taskId ? this.store.get(taskId) : null;
+      // Only the failing start can be excluded. A running owner or an unknown
+      // resume still needs its login, even if it is the machine's only task.
+      const excluded = owner?.status === "starting" && (owner.sandboxId === sandboxId || attachments.some(attachment => attachment.taskId === owner.id)) ? owner.id : null;
+      if (this.store.liveSandboxTasks(sandboxId).some(task => task.id !== excluded)) return null;
+      // Missing task metadata is uncertain ownership, so leave cleanup to hand-back.
+      if (attachments.some(attachment => {
+        if (attachment.taskId === excluded) return false;
+        const task = this.store.get(attachment.taskId);
+        return !task || OPEN_STATUSES.includes(task.status);
+      })) return null;
+      if (this.macCleaning.has(sandboxId)) return null;
+      this.macCleaning.add(sandboxId);
+      const unclaim = this.claim(sandboxId);
+      return () => { this.macCleaning.delete(sandboxId); unclaim(); };
+    });
+    if (!release) return;
+    try { await cleanup(); } finally { release(); }
+  }
+
+  private async credentialCleanupNotice(lease: MacLease, now: number): Promise<void> {
+    const delivered = this.store.macLeases.hasGithubDeliveryRecord(lease.id);
+    if (delivered) this.store.macLeases.recordCredentialNotice(lease.id, tokenExposureNotice(lease.machineId), now);
+    const rate = new Intl.NumberFormat("en-US", { style: "currency", currency: lease.currency }).format(lease.hourPrice);
+    const parts = lease.machineId.split("_");
+    const text = `${CLEANUP_NOTICE_PREFIX} Scaleway Mac ${lease.machineId} keeps billing at ${rate}/hour (the 24 h minimum still applies). Restore SSH access; the plugin will retry cleanup once SSH works. To delete manually: open https://console.scaleway.com → Apple silicon → ${parts[1] ?? "the recorded zone"} → server ${parts[2] ?? lease.machineId} → Delete after the minimum. ${delivered ? "Revoke or rotate the GitHub token in GitHub because it may still be on this Mac." : "Local logins need checking: inspect local GitHub and agent logins, including macOS Keychain. This warning clears after verified cleanup."} Ask the owner to review the Cloud agents page and decide how to recover this Mac.`;
+    const changed = lease.noticeText !== text;
+    const notify = this.store.macLeases.warn(lease.id, now, true, text, changed);
+    if (changed || notify) this.hooks.changed([]);
+    if (!notify) return;
+    const tasks = new Map([...this.store.sandboxTasks(lease.machineId), ...this.store.macLeases.tasks(lease.id).flatMap(item => { const task = this.store.get(item.taskId); return task ? [task] : []; })].map(task => [task.id, task]));
+    for (const task of tasks.values()) this.store.addEvent(task.id, "credential-cleanup", text);
+    const threads = [...new Set([...tasks.values()].map(task => task.orchestratorThreadId).filter((id): id is string => id !== null))];
+    if (this.hooks.tell) for (const thread of threads) await this.hooks.tell(thread, text).catch(() => undefined);
+  }
+
+  /** Clock-dependent reminders must refresh even with no remaining leases. */
+  refreshCredentialNotices(now = Date.now()): void {
+    const snapshot = JSON.stringify(this.store.macLeases.credentialNotices(now));
+    if (snapshot !== this.credentialNoticeSnapshot) {
+      this.credentialNoticeSnapshot = snapshot;
+      this.hooks.changed([]);
+    }
+  }
+
+  /** Provider-neutral minimum/rate policy. No local extension of paid time. */
+  async processMacLeases(now = Date.now()): Promise<void> {
+    if (!this.store.macLeases.held().length) return;
+    const settings = await this.settings();
+    await this.withMacLock(async () => {
+      const providers = new Set(this.store.macLeases.held().map(lease => lease.provider));
+      for (const providerId of providers) {
+        const provider = this.sandboxProviders.get(providerId);
+        if (!provider) continue;
+        const machines = await provider.list({ all: true, signal: this.hooks.lifecycle });
+        this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)), now);
+        for (const lease of this.store.macLeases.held().filter(lease => lease.provider === provider.id)) {
+          try {
+            // Refresh active held leases too, before a long-running chat hits expiry.
+            if (provider.refreshGithubLogin) {
+              for (const task of this.store.liveSandboxTasks(lease.machineId).filter(task => task.repo !== null || task.extraRepos.length > 0)) {
+                try { await this.assertGithubLogin(task, { signal: this.hooks.lifecycle }); }
+                catch (error) {
+                  const warning = errorText(error);
+                  if (this.store.latestEvent(task.id, "github-refresh-failed")?.text !== warning) {
+                    this.store.addEvent(task.id, "github-refresh-failed", warning);
+                    this.hooks.log.warn(`GitHub credentials for task ${task.id}: ${warning}`);
+                  }
+                }
+              }
+            }
+            const minimumEnd = Date.parse(lease.paidUntil);
+            if (now < minimumEnd-(settings.macHandBackMarginMinutes ?? 30)*60_000) continue;
+            const open = this.store.liveSandboxTasks(lease.machineId);
+            const attached = () => this.store.macLeases.tasks(lease.id).flatMap(t => { const task=this.store.get(t.taskId); return task ? [task] : []; });
+            const work = !lease.kept && !open.length ? await this.macLeaseWorkState(lease) : "resolved";
+            if (work === "unknown") {
+              if (lease.releaseAt) {
+                if (!provider.cancelLeaseRelease) continue;
+                await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
+                this.store.macLeases.schedule(lease.id,null);
+              }
+              if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,"unknown");
+              continue;
+            }
+            if (work === "unshipped" || lease.kept) {
+              await this.keepMacLease(lease, this.hooks.lifecycle);
+              if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,true);
+              continue;
+            }
+            if (open.length) {
+              const threshold = (settings.macIdleNoticeMinutes ?? 60)*60_000;
+              if (open.every(t => t.status !== "running" && t.status !== "starting" && now-Date.parse(t.updatedAt) >= threshold) && !(await this.sandboxWorkRuns(lease.machineId))) {
+                await this.macLeaseNotice(lease,open,now,false);
+              } else { if(!lease.noticeText?.startsWith(CLEANUP_NOTICE_PREFIX) && this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
+              continue; // All open tasks, including failed/unpushed work, are protected.
+            }
+            { if(!lease.noticeText?.startsWith(CLEANUP_NOTICE_PREFIX) && this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
+            if (this.holdsSandbox(lease.machineId) || await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
+            const current = await provider.findInfo(lease.machineId, this.hooks.lifecycle);
+            if (await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
+            const checked = await this.macLeaseWorkState(lease);
+            if (checked === "unshipped") { await this.keepMacLease(lease,this.hooks.lifecycle); continue; }
+            if (checked === "unknown") {
+              if (lease.releaseAt && provider.cancelLeaseRelease) {
+                await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
+                this.store.macLeases.schedule(lease.id,null);
+              }
+              continue;
+            }
+            const latest = this.store.macLeases.held(lease.machineId).find(l => l.id === lease.id);
+            // Re-read after I/O. Nothing awaits between this guard and release.
+            if (this.store.liveSandboxTasks(lease.machineId).length || this.holdsSandbox(lease.machineId) || !latest || latest.kept) continue;
+            if (now < minimumEnd) {
+              // Keep the paid Mac available until the boundary. A provider without
+              // scheduling is released on the first pass after its minimum.
+              if (latest.releaseAt || !provider.scheduleLeaseRelease || !provider.cancelLeaseRelease) continue;
+              await provider.scheduleLeaseRelease(lease.machineId, lease.paidUntil, this.hooks.lifecycle);
+              this.store.macLeases.schedule(lease.id, current?.scheduledReleaseAt ?? lease.paidUntil);
+            } else {
+              await provider.delete(lease.machineId, this.hooks.lifecycle, { leaseEndReason: "handed back", leaseEndAt: now });
+              this.store.macLeases.end(lease.id, "handed back", now);
+              this.store.expirePreviewsForSandbox(lease.machineId);
+            }
+            this.store.macLeases.clearNotice(lease.id);
+            this.hooks.changed([]);
+          } catch (error) {
+            if (lease.provider === "scaleway" && ["credential_cleanup_failed", "key_missing"].includes((error as { code?: string }).code ?? "")) await this.credentialCleanupNotice(lease, now);
+            this.hooks.log.warn(`Mac lease ${lease.machineId} maintenance failed: ${errorText(error)}`);
+          }
+        }
+      }
+    });
   }
 
   private async pickSandbox(
@@ -2001,8 +2955,10 @@ export class BoatService {
     if (input.role === "review" && parent?.sandboxId) {
       const mode = choice === "auto" ? "auto" : settings.reviewSandbox;
       if (mode === "same") return parent.sandboxId;
-      if (mode === "auto") {
-        const { free, active } = await this.capacity(signal);
+      // Not into a sandbox whose own work still runs (the implementer mid-turn): a new one, made room for or refused in plain words.
+      if (mode === "auto" && !(await this.sandboxWorkRuns(parent.sandboxId))) {
+        // The room on the parent's provider, where a new sandbox for the review would go.
+        const { free, active } = await this.capacity(signal, undefined, this.sandboxProvider(parent));
         if (free !== null && free <= 0 && active.some((sandbox) => sandbox.id === parent.sandboxId)) {
           return parent.sandboxId;
         }
@@ -2134,7 +3090,7 @@ export class BoatService {
         );
       }
       if (isChat) await this.hooks.chat!.send(task.threadId!, message, { steer: true });
-      else await this.boat.steer(task.sandboxId!, task.conversationId!, message, options.signal);
+      else await this.sandboxProvider(task).steer(task.sandboxId!, task.conversationId!, message, options.signal);
       this.store.addEvent(task.id, "steered", clip(message, 2000));
       this.hooks.changed([task.id]);
       return this.store.get(task.id) ?? task;
@@ -2188,6 +3144,7 @@ export class BoatService {
       this.store.latestEvent(task.id, "approval") !== null;
     assertFrontierAllowed(settings.modelTiers, tier, model, reasoningEffort, options.userApproved === true || keepsApproval);
     if (options.dryRun === true) return task;
+    if (settings.relay.paidClaudeFallback) await this.assertSubscriptionRoom(provider, { settings, signal: options.signal, runner: task.runner });
     const newlyApproved =
       options.userApproved === true && !keepsApproval && needsFrontierApproval(settings.modelTiers, tier, model, reasoningEffort);
     const reason = options.reason?.trim()
@@ -2228,7 +3185,7 @@ export class BoatService {
       // Now that the sandbox is up, its login can be asked directly.
       if (needsGithub) await this.assertGithubLogin(task, { signal: options.signal });
       const note = await this.resumeNoteFor(task.id);
-      const dispatch = await this.boat.prompt({
+      const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
         // A new agent on a Deep task gets the working mode for its own tools.
@@ -2269,7 +3226,7 @@ export class BoatService {
         { promptId: task.promptId },
       );
       if (updated === null) {
-        await this.boat.interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
+        await this.sandboxProvider(task).interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       }
       this.sizes.noteSent(task.id); // sizes
@@ -2305,7 +3262,7 @@ export class BoatService {
     const quotas = await this.hooks.quotas.read().catch(() => null);
     const own = quotas?.get(task.provider);
     if (quotas == null || own === undefined || own.usedPercent < settings.relay.switchAtPercent) return null;
-    if (agentWithRoom(task.provider, quotas, settings.relay.switchAtPercent, settings.agents) !== other) return null;
+    if (agentForWork(task.provider, quotas, settings.relay, settings.agents) !== other) return null;
     return {
       provider: other,
       note: `${AGENT_NAME[task.provider]} is at ${Math.round(own.usedPercent)}% of its limit; continued with ${AGENT_NAME[other]}`,
@@ -2332,7 +3289,7 @@ export class BoatService {
       throw new TaskError(
         `Task ${task.id}'s sandbox has no evidence-upload.`,
         "evidence_unavailable",
-        "It started before uploads were set up, or uploads are off (Settings → Plugins → Boat Cloud Agents → Setup → Screenshots and recordings).",
+        "It started before uploads were set up, or uploads are off (Settings → Plugins → Harbormaster → Setup → Screenshots and recordings).",
       );
     }
     const isChat = task.runner === "chat";
@@ -2368,7 +3325,7 @@ export class BoatService {
       this.sizes.assertCanFollowup(task); // sizes
       await this.ensureRunning(task.sandboxId!, options.signal);
       const note = await this.resumeNoteFor(task.id);
-      const dispatch = await this.boat.prompt({
+      const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: task.sandboxId!,
         conversationId: task.conversationId!,
         prompt: this.withNote(note, composeEvidencePrompt(task.role, message, "boat")),
@@ -2379,7 +3336,7 @@ export class BoatService {
       });
       const updated = this.store.transition(task.id, ["idle", "failed"], { ...running, promptId: dispatch.promptId });
       if (updated === null) {
-        await this.boat.interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
+        await this.sandboxProvider(task).interrupt(task.sandboxId!, task.conversationId!).catch(() => undefined);
         throw new TaskError(`Task ${task.id} changed while the follow-up was being sent.`, "task_changed");
       }
       this.noteSent(task.id, note);
@@ -2654,11 +3611,11 @@ export class BoatService {
       message: string | null;
     },
   ): Promise<string> {
-    let environmentId = task.environmentId;
-    if (environmentId === null && task.threadId !== null) {
-      environmentId = (await this.hooks.chat!.state(task.threadId).catch(() => null))?.environmentId ?? null;
-      if (environmentId !== null) this.store.update(task.id, { environmentId });
-    }
+    // Core can replace a task chat's environment without changing its thread.
+    // The current chat attachment wins over the registry's old non-null id.
+    const current = task.threadId ? await this.hooks.chat!.state(task.threadId) : null;
+    const environmentId = current?.environmentId ?? task.environmentId;
+    if (environmentId !== null && environmentId !== task.environmentId) this.store.update(task.id, { environmentId });
     if (environmentId === null) {
       throw new TaskError(`Task ${task.id}'s workspace is unknown, so another agent can't join it.`, "task_not_dispatched", "Start a new task.");
     }
@@ -2673,6 +3630,7 @@ export class BoatService {
         : {};
     // A new agent in the same sandbox: a stop that cut off background work concerns it too.
     const note = await this.resumeNoteFor(task.id);
+    if (task.sandboxId) await this.codexHealth(this.sandboxProvider(task), task.sandboxId, next.provider, line => this.store.addEvent(task.id, "machine", line), this.hooks.lifecycle);
     const spawned = await this.hooks.chat!.spawn({
       taskId: task.id,
       title: this.chatTitle(task, next.provider),
@@ -2699,7 +3657,7 @@ export class BoatService {
       model: next.model,
       effort: next.reasoningEffort,
       parentThreadId: this.parentChat(task),
-      projectId: task.projectId,
+      projectId: this.chatProject(task),
       where: { kind: "environment", environmentId },
     });
     this.noteSent(task.id, note);
@@ -2746,6 +3704,7 @@ export class BoatService {
 
   /** Remove a task's machine (and so its sandbox) when no other open task uses it. */
   private async removeMachineIfUnused(task: Task): Promise<"deleted" | "kept" | "none"> {
+    if (task.sandboxId && this.store.macLeases.held(task.sandboxId).length) return "kept";
     if (task.hostId === null || this.hooks.chat === undefined) return "none";
     if (this.isNativeChat(task)) return "kept";
     const shared =
@@ -2761,7 +3720,8 @@ export class BoatService {
         if (key !== null) await this.hooks.chat.settleMachine(key);
       }
       await this.hooks.chat.removeMachine(task.hostId);
-      this.store.addEvent(task.id, "sandbox", `Removed bb machine ${task.hostId} and its sandbox ${task.sandboxId ?? ""}`.trim());
+      this.store.addEvent(task.id, "sandbox", task.sandboxProvider === "ownmac" ? "Removed the task’s bb machine; Your Mac and checkout stay." : `Removed bb machine ${task.hostId} and its sandbox ${task.sandboxId ?? ""}`.trim());
+      await this.dropMachineSources(task.hostId);
       return "deleted";
     } catch (error) {
       this.store.addEvent(task.id, "sandbox", `Couldn't remove bb machine ${task.hostId}: ${errorText(error)}`);
@@ -2804,7 +3764,7 @@ export class BoatService {
   environmentInfo(name: string, signal?: AbortSignal): Promise<EnvironmentInfo> {
     const hit = this.environmentCacheByName.get(name);
     if (hit && Date.now() - hit.at < (hit.ok ? 5 * 60_000 : 60_000)) return hit.info;
-    const entry = { at: Date.now(), info: this.boat.environmentInfo(name, signal), ok: true };
+    const entry = { at: Date.now(), info: this.sandboxProviders.default.environmentInfo(name, signal), ok: true };
     entry.info.catch(() => {
       entry.ok = false;
     });
@@ -2818,7 +3778,7 @@ export class BoatService {
   private aiProxy(signal?: AbortSignal): Promise<AiProxyState | null> {
     const hit = this.aiProxyCache;
     if (hit && Date.now() - hit.at < (hit.known ? 5 * 60_000 : 60_000)) return hit.value;
-    const entry = { at: Date.now(), value: this.boat.aiProxy(signal).catch(() => null), known: true };
+    const entry = { at: Date.now(), value: this.sandboxProviders.default.aiProxy(signal).catch(() => null), known: true };
     void entry.value.then((value) => {
       entry.known = value !== null && value.enabled !== null;
     });
@@ -2832,15 +3792,33 @@ export class BoatService {
    * environment's secret names, and what else it passes in (boat
    * credentials, real AI keys or placeholders).
    */
-  async projectAccess(project: Pick<OrchestratorProject, "repos" | "environment">, signal?: AbortSignal): Promise<ProjectAccess> {
+  async projectAccess(project: Pick<OrchestratorProject, "repos" | "environment"> & { id?: string }, signal?: AbortSignal): Promise<ProjectAccess> {
     const settings = await this.settings();
+    // A project on a provider without named environments (Instabox): no environment, nothing of boat's to report.
+    const runsOn = this.sandboxProviders.forProject(governingProject(this.hooks.projects?.() ?? [], project.id ?? null, project.repos[0]?.repo ?? null));
+    if (!runsOn.caps.environments) {
+      return {
+        environment: null,
+        error: null,
+        secretNames: [],
+        secretFiles: [],
+        passGithub: null,
+        passSecrets: null,
+        passAgentsCredentials: null,
+        passSandboxCredentials: null,
+        proxyAiCredentials: null,
+        aiProxy: null,
+        aiProxyPrice: null,
+        repos: project.repos.map((entry) => ({ repo: entry.repo, baseBranch: entry.baseBranch, environmentPermission: null, lastCheck: this.store.repoAccess(entry.repo) })),
+      };
+    }
     let environment = project.environment || settings.environment || null;
     let info: EnvironmentInfo | null = null;
     let error: string | null = null;
     const accountProxy = this.aiProxy(signal);
     try {
       // No environment named: boat uses its default one.
-      if (environment === null) environment = await this.boat.defaultEnvironment(signal);
+      if (environment === null) environment = await this.sandboxProviders.default.defaultEnvironment(signal);
       if (environment !== null) info = await this.environmentInfo(environment, signal);
       else error = "boat has no default environment";
     } catch (failure) {
@@ -2889,7 +3867,7 @@ export class BoatService {
       );
     }
     try {
-      const saved = await this.boat.snapshot(sandboxId, name, signal);
+      const saved = await this.sandboxProvider(sandboxId).snapshot(sandboxId, name, signal);
       const checks = this.store.sandboxTasks(sandboxId).filter(task => task.runner === "boat" && task.role === "custom" && task.reason === `Project snapshot check: ${task.boatProject}`);
       for (const task of checks) this.store.addEvent(task.id, "snapshot-saved", `Saved snapshot ${saved.name}`);
       if (checks.length) this.hooks.changed(checks.map(task => task.id));
@@ -2899,24 +3877,53 @@ export class BoatService {
     }
   }
 
-  async snapshots(signal?: AbortSignal) {
+  /** Every enabled provider's saved snapshots, each with its provider's id; the allowance is the default provider's. */
+  async snapshots(signal?: AbortSignal): Promise<{ snapshots: (SavedSnapshot & { provider: string })[]; included: number | null; used: number | null; failed: { provider: string; error: string }[] }> {
     try {
-      return await this.boat.snapshots(signal);
+      const { results, failed } = await this.eachProvider((provider) => provider.snapshots(signal));
+      const first = results.find((entry) => entry.provider === this.sandboxProviders.default) ?? null;
+      return {
+        snapshots: results.flatMap(({ provider, value }) => value.snapshots.map((snapshot) => ({ ...snapshot, provider: provider.id }))),
+        included: first?.value.included ?? null,
+        used: first?.value.used ?? null,
+        failed: failed.map(({ provider, error }) => ({ provider: provider.id, error: errorText(error) })),
+      };
     } catch (error) {
       throw snapshotError(error, null) ?? error;
     }
   }
 
-  async sandboxAction(sandboxId: string, action: "stop" | "resume" | "delete", ttlSeconds: number, signal?: AbortSignal): Promise<void> {
+  /** A boat resume within the account's wake pacing (src/wake-pacer.ts). */
+  private async pacedResume<T>(sandboxId: string, resume: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    // Only a provider whose wakes are paced (boat.dev): another's resume takes no slot and sets no hold.
+    const permit = this.sandboxProvider(sandboxId).caps.pacedWakes === true ? await this.hooks.wakes?.pacer.acquire({ signal, ids: wakeIds({ sandboxId }) }) : undefined;
+    try {
+      const result = await resume();
+      await permit?.succeeded();
+      return result;
+    } catch (error) {
+      if (signal?.aborted !== true) await permit?.failed();
+      throw error;
+    }
+  }
+
+  /** keepPlan: a resume the plugin makes itself (a ship), not someone asking: the sandbox's retry plan stays. */
+  async sandboxAction(sandboxId: string, action: "stop" | "resume" | "delete", ttlSeconds: number, signal?: AbortSignal, options: { keepPlan?: boolean } = {}): Promise<void> {
+    if (this.macCleaning.has(sandboxId)) throw new TaskError("This Mac is cleaning up a failed start. Try again once cleanup finishes.", "sandbox_busy");
     if (this.isMovingSandbox(sandboxId)) {
       throw new TaskError(`A task is moving to a task chat in sandbox ${sandboxId}.`, "task_busy", "Try again once the chat is open (in about a minute).");
     }
     this.sizes.assertSandboxNotResizing(sandboxId); // sizes
     const hostId = this.hooks.chat === undefined ? null : this.store.hostForSandbox(sandboxId);
+    // Asked for explicitly: the sandbox's retry plan starts over (src/wake-retry.ts).
+    if (action === "resume" && options.keepPlan !== true) await this.hooks.wakes?.forget(sandboxId);
     if (hostId === null) {
-      if (action === "stop") await this.boat.stop(sandboxId, signal);
-      else if (action === "resume") await withinAutoStopCap(ttlSeconds, (ttl) => this.boat.resume(sandboxId, ttl, signal));
-      else await this.boat.delete(sandboxId, signal);
+      const sandboxProvider = this.sandboxProvider(sandboxId);
+      if (action === "stop") {
+        await this.trimBeforeStop(sandboxId, signal);
+        await sandboxProvider.stop(sandboxId, signal);
+      } else if (action === "resume") await this.pacedResume(sandboxId, () => sandboxProvider.resume(sandboxId, { ttlSeconds, signal }), signal);
+      else await sandboxProvider.delete(sandboxId, signal);
       this.observedSandboxStates.set(sandboxId, action === "stop" ? "stopped" : action === "resume" ? "running" : "deleted");
       return;
     }
@@ -2934,6 +3941,7 @@ export class BoatService {
         for (const threadId of this.store.chatThreads(task.id)) await chat.archive(threadId).catch(() => undefined);
       }
       await chat.removeMachine(hostId);
+      await this.dropMachineSources(hostId);
     }
     this.observedSandboxStates.set(sandboxId, action === "stop" ? "stopped" : action === "resume" ? "running" : "deleted");
   }
@@ -2951,17 +3959,16 @@ export class BoatService {
     if (task.status === "done" || task.status === "cancelled") {
       throw new TaskError(`Task ${task.id} is ${task.status}; its workspace may be gone.`, "task_closed", "Start a new task instead.");
     }
-    let environmentId = task.environmentId;
-    if (environmentId === null) {
-      environmentId = (await chat.state(task.threadId).catch(() => null))?.environmentId ?? null;
-      if (environmentId !== null) this.store.update(task.id, { environmentId });
-    }
+    const current = await chat.state(task.threadId);
+    const environmentId = current?.environmentId ?? task.environmentId;
+    if (environmentId !== null && environmentId !== task.environmentId) this.store.update(task.id, { environmentId });
     if (environmentId === null) throw new TaskError(`Task ${task.id}'s workspace isn't ready yet.`, "task_not_dispatched", "Try again in a moment.");
+    if (task.sandboxId) await this.codexHealth(this.sandboxProvider(task), task.sandboxId, request.providerId, line => this.store.addEvent(task.id, "machine", line), this.hooks.lifecycle);
     const { threadId } = await chat.spawnComposed({
       taskId: task.id,
       request,
       parentThreadId: task.orchestratorThreadId,
-      projectId: task.projectId,
+      projectId: this.chatProject(task),
       environmentId,
     });
     this.recordWorkspaceChat(task, threadId, request.providerId, request.model, request.reasoningLevel);
@@ -3001,7 +4008,7 @@ export class BoatService {
     if (task === null || task.threadId === threadId) return null;
     const safe = (text: string | null) => (text ?? "").replace(/[`\n\r]/g, " ").slice(0, 200);
     const lines = [
-      `You're in the workspace of the boat task ${task.id} "${safe(task.title)}", in a boat.dev cloud sandbox.`,
+      `You're in the workspace of the Harbormaster task ${task.id} "${safe(task.title)}", in a boat.dev cloud sandbox.`,
       task.repoPath ? `- The checkout is at ${safe(task.repoPath)}${task.branch ? `, on the branch ${safe(task.branch)}` : ""}${task.baseBranch ? ` (base ${safe(task.baseBranch)})` : ""}. Work there.` : null,
       task.threadId ? `- Another agent works here too (the task chat, @thread:${task.threadId}). Don't switch its branch or push to it unless asked; push your own branch if you change code.` : null,
       "- Never push to a base branch or merge pull requests; a git hook refuses such pushes.",
@@ -3069,7 +4076,7 @@ export class BoatService {
       if (task.sandboxId === null || task.conversationId === null) {
         throw new TaskError(`Task ${task.id} has no running conversation.`, "task_not_dispatched");
       }
-      await this.boat.interrupt(task.sandboxId, task.conversationId, signal);
+      await this.sandboxProvider(task).interrupt(task.sandboxId, task.conversationId, signal);
     }
     return task;
   }
@@ -3319,7 +4326,7 @@ export class BoatService {
     if (hidden !== null) return { ...base, offered: false, blocked: plain(hidden) };
     let blocked = this.moveBlockerNow(task) ?? (await this.connectBlocker());
     if (blocked !== null) return { ...base, offered: !MOVE_NEVER.has(blocked.code), blocked: plain(blocked) };
-    const sandbox = await this.boat.findInfo(task.sandboxId!, signal).catch(() => undefined);
+    const sandbox = await this.sandboxProvider(task).findInfo(task.sandboxId!, signal).catch(() => undefined);
     blocked = this.sandboxBlocker(task, sandbox);
     let hasMachine = false;
     if (blocked === null) {
@@ -3436,10 +4443,10 @@ export class BoatService {
     };
     try {
       // 1. Checks that ask boat and bb.
-      const sandbox = await this.boat.findInfo(sandboxId, signal);
+      const sandbox = await this.sandboxProvider(initial).findInfo(sandboxId, signal);
       const gone = this.sandboxBlocker(initial, sandbox);
       if (gone !== null) throw gone;
-      await this.hooks.preflight?.({ agent: initial.provider, runner: "chat", environment: initial.environment, newSandbox: false });
+      await this.hooks.preflight?.({ agent: initial.provider, runner: "chat", environment: initial.environment, newSandbox: false, ...(this.sandboxProvider(initial).id === DEFAULT_PROVIDER_ID ? {} : { provider: this.sandboxProvider(initial).id }) });
       const machine = await this.moveMachine(initial);
       let hostId = machine?.hostId ?? null;
       if (machine?.own) {
@@ -3462,8 +4469,8 @@ export class BoatService {
         this.store.resetPreviewHealthForSandbox(sandboxId);
       }
       await this.extendSandbox(sandboxId, signal);
-      const conversation = (await this.boat.conversations(sandboxId, signal)).find((entry) => entry.id === conversationId);
-      const events = await this.boat.events(sandboxId, conversationId, signal);
+      const conversation = (await this.sandboxProvider(initial).conversations(sandboxId, signal)).find((entry) => entry.id === conversationId);
+      const events = await this.sandboxProvider(initial).events(sandboxId, conversationId, signal);
       const turn = promptStatus(events, initial.promptId);
       // A turn cut off by a stopped sandbox stays unfinished in boat's log: it's over once boat doesn't run it.
       const cutOff = initial.status === "idle" && (initial.error ?? "").startsWith(CUT_OFF_ERROR);
@@ -3494,7 +4501,7 @@ export class BoatService {
         // From here on its files may be on the sandbox, whatever happens next.
         this.store.addEvent(id, "bb-installed", sandboxId);
         try {
-          attached = await chat.attachMachine({ taskId: id, sandboxId, keepSandbox: true, signal });
+          attached = await chat.attachMachine({ taskId: id, sandboxId, keepSandbox: true, signal, ...this.machineProviderFor(initial) });
         } catch (error) {
           // An attach cut short may still have made the machine.
           const left = await chat.findMachine(sandboxId).catch(() => null);
@@ -3547,17 +4554,21 @@ export class BoatService {
       });
 
       // 7. The chat, in the task's checkout on the machine.
-      const spawned = await chat.spawn({
-        taskId: id,
-        title: this.chatTitle(initial),
-        prompt,
-        provider: initial.provider,
-        model: choice.model,
-        effort,
-        parentThreadId: this.parentChat(initial),
-        projectId: initial.projectId,
-        where: { kind: "machine", hostId, path: initial.repoPath },
-      });
+      const spawned = await this.spawnTaskChat(
+        {
+          taskId: id,
+          title: this.chatTitle(initial),
+          prompt,
+          provider: initial.provider,
+          model: choice.model,
+          effort,
+          parentThreadId: this.parentChat(initial),
+          projectId: initial.projectId,
+          where: { kind: "machine", hostId, path: initial.repoPath },
+        },
+        stillWanted,
+        signal,
+      );
       spawnedThread = spawned.threadId;
 
       // 8. Switch the task, only if nothing else happened to it meanwhile.
@@ -3598,8 +4609,8 @@ export class BoatService {
       this.settling.delete(id);
       this.chatTurnSeen.delete(id);
       // Two agents never share the checkout: stop the headless one if anything restarted it.
-      const still = (await this.boat.conversations(sandboxId).catch(() => [])).find((entry) => entry.id === conversationId);
-      if (still?.running) await this.boat.interrupt(sandboxId, conversationId).catch(() => undefined);
+      const still = (await this.sandboxProvider(initial).conversations(sandboxId).catch(() => [])).find((entry) => entry.id === conversationId);
+      if (still?.running) await this.sandboxProvider(initial).interrupt(sandboxId, conversationId).catch(() => undefined);
       // From now on, removing the machine deletes the sandbox like any task chat's.
       const settle = attached?.key ?? (reusedOwn !== null ? machine?.key : null) ?? protectedKey;
       if (settle) await chat.settleMachine(settle).catch((error) => this.hooks.log.warn(`settle ${settle}: ${errorText(error)}`));
@@ -3612,9 +4623,11 @@ export class BoatService {
         await chat.archive(spawnedThread).catch(() => undefined);
       }
       let undo = "";
+      let detached: string | null = null;
       if (attached !== null) {
         try {
           await chat.detachMachine(attached.hostId, attached.key);
+          detached = attached.hostId;
           undo = " The bb machine was removed again; the sandbox and its work stay.";
         } catch (detachError) {
           this.hooks.log.warn(`detach ${attached.hostId}: ${errorText(detachError)}`);
@@ -3624,6 +4637,9 @@ export class BoatService {
         undo = ` bb is still on the sandbox (machine ${reusedOwn}); the next try reuses it.`;
       }
       if (protectedKey !== null) await chat.settleMachine(protectedKey).catch(() => undefined);
+      // The task stays headless: it needs no project source for its checkout.
+      if (detached !== null) await this.dropMachineSources(detached);
+      await this.releaseTaskSources({ id, hostId: null });
       // An abort (a close, an unload) can surface as any error from the step it cut short.
       const cancelled = error instanceof MoveCancelled ? error : signal.aborted ? unwanted() : null;
       const reason = cancelled !== null ? cancelled.message : clip(errorText(error), 300);
@@ -3639,8 +4655,9 @@ export class BoatService {
   /** Keep a sandbox from stopping during a move (boat's auto-stop); never fatal. */
   private async extendSandbox(sandboxId: string, signal: AbortSignal): Promise<void> {
     try {
-      const limits = await this.boat.limits(signal).catch(() => null);
-      await withinAutoStopCap(ttlSeconds(await this.settings(), limits), (ttl) => this.boat.extend(sandboxId, ["--ttl", String(ttl)], signal));
+      const sandboxProvider = this.sandboxProvider(sandboxId);
+      const limits = await sandboxProvider.capacity(signal).catch(() => null);
+      await sandboxProvider.extend(sandboxId, ttlSeconds(await this.settings(), limits), signal);
     } catch (error) {
       this.hooks.log.warn(`extend ${sandboxId}: ${errorText(error)}`);
     }
@@ -3655,6 +4672,7 @@ export class BoatService {
     if (!key?.startsWith(`task-${task.id}-m`)) return null;
     try {
       await this.hooks.chat.detachMachine(hostId, key);
+      await this.dropMachineSources(hostId);
       return hostId;
     } catch (error) {
       this.hooks.log.warn(`detach ${hostId}: ${errorText(error)}`);
@@ -3687,24 +4705,29 @@ export class BoatService {
   // Previews
 
   private lastRetentionCheck = 0;
+  /** When the sweep last looked for project sources nothing needs (0: not since the start). */
+  private lastSourceSweep = 0;
 
   /**
-   * boat deletes a stopped sandbox's data after 14 days. Unshipped work exists
-   * only there: after 10 days stopped, ask the user (once) on the overview.
+   * boat deletes a stopped sandbox's data after 14 days (a provider's
+   * retentionAfterStopSeconds; none: nothing to warn of). Unshipped work
+   * exists only there: 4 days before, ask the user (once) on the overview.
    */
   private async warnBeforeRetention(open: Task[], now: number): Promise<void> {
     const candidates = open.filter(
       (task) =>
-        task.delivery === "push" && task.role !== "review" && task.sandboxId !== null && task.turns > 0 && task.unshipped !== 0 && !this.shippedSinceLastTurn(task),
+        task.delivery === "push" && task.role !== "review" && task.sandboxId !== null && task.turns > 0 && task.unshipped !== 0 && !this.shippedSinceLastTurn(task) &&
+        this.sandboxProvider(task).caps.retentionAfterStopSeconds !== null,
     );
     if (candidates.length === 0) return;
-    const sandboxes = new Map((await this.boat.list({ all: true, signal: this.hooks.lifecycle })).map((sandbox) => [sandbox.id, sandbox]));
+    const sandboxes = new Map((await this.listSandboxes({ all: true, signal: this.hooks.lifecycle })).sandboxes.map((sandbox) => [sandbox.id, sandbox]));
     for (const task of candidates) {
       const sandbox = sandboxes.get(task.sandboxId!);
       const stoppedAt = sandbox?.stoppedAt ? Date.parse(sandbox.stoppedAt) : NaN;
-      if (sandbox === undefined || sandbox.state !== "stopped" || !Number.isFinite(stoppedAt) || now - stoppedAt < 10 * 24 * 3_600_000) continue;
+      const retentionMs = (this.sandboxProvider(task).caps.retentionAfterStopSeconds ?? 0) * 1000;
+      if (sandbox === undefined || sandbox.state !== "stopped" || !Number.isFinite(stoppedAt) || now - stoppedAt < retentionMs - 4 * 24 * 3_600_000) continue;
       if (this.store.latestEvent(task.id, "retention-warning") !== null) continue;
-      const left = Math.max(0, Math.ceil((stoppedAt + 14 * 24 * 3_600_000 - now) / (24 * 3_600_000)));
+      const left = Math.max(0, Math.ceil((stoppedAt + retentionMs - now) / (24 * 3_600_000)));
       this.store.addEvent(task.id, "retention-warning", `Its sandbox has been stopped since ${sandbox.stoppedAt}; boat deletes it in about ${left} days`);
       this.store.addDecision({
         orchestratorThreadId: task.orchestratorThreadId,
@@ -3728,7 +4751,7 @@ export class BoatService {
     // Synchronously, before the first await: no notice can go out without the link.
     this.hostingPreviews.add(task.id);
     try {
-      const hosted = await this.boat.host(task.sandboxId, spec.port, task.title, this.hooks.lifecycle);
+      const hosted = await this.sandboxProvider(task).host(task.sandboxId, spec.port, task.title, this.hooks.lifecycle);
       let health = await this.checkPreviewLink(previewLink(hosted.url, spec.path), true);
       // The worker's server didn't survive its turn, or blocks boat's host name: start it again once.
       if ((health === "down" || health === "blocked") && spec.command !== null && task.repoPath !== null) {
@@ -3789,7 +4812,7 @@ export class BoatService {
    * run the worker's command from the checkout, detached.
    */
   private async startPreviewServer(sandboxId: string, repoPath: string, port: number, command: string): Promise<void> {
-    await this.boat.execDetached(sandboxId, previewStartScript(repoPath, port, command), this.hooks.lifecycle);
+    await this.sandboxProvider(sandboxId).execDetached(sandboxId, previewStartScript(repoPath, port, command), this.hooks.lifecycle);
   }
 
   /** Previews with their state; refreshes stale checks of live ones. */
@@ -3798,9 +4821,14 @@ export class BoatService {
     if (rows.length === 0) return [];
     const sandboxes = new Map<string, Sandbox>();
     let known = false;
+    let unlisted = new Set<string>();
     try {
-      // --all: stopped sandboxes too (their previews are sleeping, not gone).
-      for (const sandbox of await this.boat.list({ all: true, signal: this.hooks.lifecycle })) sandboxes.set(sandbox.id, sandbox);
+      // --all: stopped sandboxes too (their previews are sleeping, not gone). A provider
+      // that can't be read leaves its sandboxes unknown, never gone.
+      const listed = await this.listSandboxes({ all: true, signal: this.hooks.lifecycle });
+      for (const sandbox of listed.sandboxes) sandboxes.set(sandbox.id, sandbox);
+      for (const { provider, error } of listed.failed) this.hooks.log.warn(`previews: ${provider}: ${error}`);
+      unlisted = new Set(listed.failed.map((entry) => entry.provider));
       known = true;
     } catch (error) {
       this.hooks.log.warn(`previews: ${errorText(error)}`);
@@ -3809,10 +4837,10 @@ export class BoatService {
     const lookup = new Map<string, Sandbox | null | undefined>();
     for (const preview of rows) {
       if (lookup.has(preview.sandboxId)) continue;
-      if (!known) lookup.set(preview.sandboxId, undefined);
+      if (!known || unlisted.has(this.sandboxProvider(preview.sandboxId).id)) lookup.set(preview.sandboxId, undefined);
       else if (sandboxes.has(preview.sandboxId)) lookup.set(preview.sandboxId, sandboxes.get(preview.sandboxId));
       else if (preview.expiredAt !== null) lookup.set(preview.sandboxId, null);
-      else lookup.set(preview.sandboxId, await this.boat.findInfo(preview.sandboxId, this.hooks.lifecycle).catch(() => undefined));
+      else lookup.set(preview.sandboxId, await this.sandboxProvider(preview.sandboxId).findInfo(preview.sandboxId, this.hooks.lifecycle).catch(() => undefined));
     }
     const view = (preview: Preview) => previewView(preview, this.store.get(preview.taskId), lookup.get(preview.sandboxId));
     const views = rows.map(view);
@@ -3855,7 +4883,8 @@ export class BoatService {
       await this.hooks.chat!.suspendMachine(hostId);
       this.suspendedHosts.add(hostId);
     } else {
-      await this.boat.stop(sandboxId, signal);
+      await this.trimBeforeStop(sandboxId, signal);
+      await this.sandboxProvider(sandboxId).stop(sandboxId, signal);
     }
     this.observedSandboxStates.set(sandboxId, "stopped");
   }
@@ -3879,7 +4908,7 @@ export class BoatService {
     // Held for the whole wake: no idle stop or room-making stop in between.
     const release = this.claim(preview.sandboxId);
     try {
-      const sandbox = await this.boat.findInfo(preview.sandboxId, signal);
+      const sandbox = await this.sandboxProvider(preview.sandboxId).findInfo(preview.sandboxId, signal);
       if (sandbox === null) {
         this.store.expirePreviewsForSandbox(preview.sandboxId);
         throw new TaskError(`Preview ${preview.id}'s sandbox is gone.`, "preview_expired");
@@ -3890,14 +4919,14 @@ export class BoatService {
       if (health !== "up" && preview.command !== null && task.repoPath !== null) {
         await this.startPreviewServer(preview.sandboxId, task.repoPath, preview.port, preview.command);
       }
-      const hosted = await this.boat.host(preview.sandboxId, preview.port, preview.title, signal);
+      const hosted = await this.sandboxProvider(preview.sandboxId).host(preview.sandboxId, preview.port, preview.title, signal);
       if (health !== "up") health = await this.waitForPreview(previewLink(hosted.url, preview.path), 45_000);
       this.store.setPreviewHealth(preview.id, health, hosted.url);
       this.store.addEvent(task.id, "preview", `Woke preview ${preview.id}${health === "up" ? "" : " (the server isn't answering yet)"}`);
       // The idle timer starts again from the wake.
       this.store.update(task.id, {});
       this.hooks.changed([task.id]);
-      return previewView(this.store.preview(preview.id)!, task, await this.boat.findInfo(preview.sandboxId, signal));
+      return previewView(this.store.preview(preview.id)!, task, await this.sandboxProvider(preview.sandboxId).findInfo(preview.sandboxId, signal));
     } finally {
       release();
     }
@@ -3906,7 +4935,7 @@ export class BoatService {
   private async waitForSandbox(sandboxId: string, signal?: AbortSignal): Promise<Sandbox> {
     const deadline = Date.now() + TRANSITION_WAIT_MS;
     for (;;) {
-      const sandbox = await this.boat.findInfo(sandboxId, signal);
+      const sandbox = await this.sandboxProvider(sandboxId).findInfo(sandboxId, signal);
       if (sandbox === null) throw new TaskError(`Sandbox ${sandboxId} no longer exists.`, "sandbox_gone");
       if (ACTIVE_STATES.has(sandbox.state)) return sandbox;
       if (Date.now() >= deadline || signal?.aborted) throw new TaskError(`Sandbox ${sandboxId} is still ${sandbox.state}.`, "sandbox_unavailable");
@@ -3922,17 +4951,16 @@ export class BoatService {
     const { preview, task } = this.mustGetPreview(id);
     if (!Number.isFinite(hours) || hours <= 0 || hours > 24) throw new TaskError("Extend by 1 to 24 hours.", "invalid_value");
     this.sizes.assertSandboxNotResizing(preview.sandboxId); // sizes
-    const limits = await this.boat.limits(signal).catch(() => null);
+    const sandboxProvider = this.sandboxProvider(preview.sandboxId);
+    const limits = await sandboxProvider.capacity(signal).catch(() => null);
     const wanted = Math.round(Math.min(hours, limits?.autoStopCapHours ?? hours) * 3600);
-    const ttl = await withinAutoStopCap(wanted, async (seconds) => {
-      await this.boat.extend(preview.sandboxId, ["--ttl", String(seconds)], signal);
-      return seconds;
-    });
+    // Over the plan's cap, the provider sets the cap it names instead.
+    const { ttlSeconds: ttl } = await sandboxProvider.extend(preview.sandboxId, wanted, signal);
     const set = Math.round((ttl / 3600) * 100) / 100;
     const capped = set < hours ? ` (your plan's auto-stop cap)` : "";
     this.store.addEvent(task.id, "preview", `Extended preview ${preview.id}'s sandbox to ${set} more ${set === 1 ? "hour" : "hours"}${capped}`);
     this.hooks.changed([task.id]);
-    return { ...previewView(preview, task, await this.boat.findInfo(preview.sandboxId, signal)), hours: set };
+    return { ...previewView(preview, task, await sandboxProvider.findInfo(preview.sandboxId, signal)), hours: set };
   }
 
   /** Stop a preview's sandbox (Wake brings it back; the link stays the same). */
@@ -3950,7 +4978,7 @@ export class BoatService {
     this.store.setPreviewHealth(preview.id, "unknown");
     this.store.addEvent(task.id, "preview", `Stopped preview ${preview.id}'s sandbox`);
     this.hooks.changed([task.id]);
-    return previewView(this.store.preview(preview.id)!, task, await this.boat.findInfo(preview.sandboxId, signal));
+    return previewView(this.store.preview(preview.id)!, task, await this.sandboxProvider(preview.sandboxId).findInfo(preview.sandboxId, signal));
   }
 
   /** The task's newest preview link that isn't expired (for cards and notices). */
@@ -4049,11 +5077,11 @@ export class BoatService {
     let result: ShipResult;
     try {
       const hostId = this.hooks.chat === undefined ? null : this.store.hostForSandbox(task.sandboxId);
-      const sandbox = await this.boat.findInfo(task.sandboxId, options.signal);
+      const sandbox = await this.sandboxProvider(task).findInfo(task.sandboxId, options.signal);
       if (sandbox === null) throw new TaskError(`Task ${task.id}'s sandbox is gone, and its unshipped commits with it.`, "sandbox_gone");
       if (!ACTIVE_STATES.has(sandbox.state)) {
         if (hostId !== null) {
-          await this.sandboxAction(task.sandboxId, "resume", 0, options.signal);
+          await this.sandboxAction(task.sandboxId, "resume", 0, options.signal, { keepPlan: true });
           await this.waitForSandbox(task.sandboxId, options.signal);
         } else {
           await this.ensureRunning(task.sandboxId, options.signal);
@@ -4065,7 +5093,7 @@ export class BoatService {
       await options.beforeShip?.(this.store.get(task.id) ?? task, this.shipTargets(task));
       try {
         // Base commits another task of this plugin shipped are named with it.
-        result = await this.boat.ship(task.sandboxId, this.shipTargets(task), options.signal, (sha) => this.store.shippedBy(sha, task.id));
+        result = await this.repos.ship(this.sandboxProvider(task), task.sandboxId, this.shipTargets(task), options.signal, (sha) => this.store.shippedBy(sha, task.id));
       } catch (error) {
         // Repos that landed before a later one failed are recorded as shipped.
         const partial = (error as { shipped?: ShipResult["shipped"] }).shipped ?? [];
@@ -4076,7 +5104,7 @@ export class BoatService {
             `Shipped ${partial.map((entry) => `${entry.commits} commit${entry.commits === 1 ? "" : "s"} to ${entry.baseBranch} (${entry.sha.slice(0, 7)})`).join(", ")} before it stopped; the rest is still unshipped`,
           );
         }
-        if (error instanceof BoatError) {
+        if (error instanceof ProviderError) {
           const conflict = (error as { conflict?: (ShipConflict & { path: string; baseBranch: string }) | null }).conflict ?? null;
           if (error.code === "ship_conflict") this.noteShipConflict(task, error.message, conflict);
           throw new TaskError(error.message, error.code ?? "ship_failed");
@@ -4103,10 +5131,38 @@ export class BoatService {
     return { task: closed.task, shipped: result.shipped, sandbox: closed.sandbox };
   }
 
+  /** Explicit owner recovery of a cancelled chat whose original workspace still exists. No turn or VM is started. */
+  async reopenTask(idOrPrefix: string, userApproved: boolean): Promise<Task> {
+    if (!userApproved) throw new TaskError("Reopening cancelled work needs the user's explicit request.","approval_required");
+    const task = this.mustGet(idOrPrefix);
+    if (task.status !== "cancelled" || task.runner !== "chat" || !task.threadId || !task.sandboxId || !this.hooks.chat) throw new TaskError("Only a cancelled task chat with its original sandbox can be reopened.","task_not_reopenable");
+    const state = await this.hooks.chat.state(task.threadId);
+    if (!state || state.archived || state.status !== "idle" || !state.environmentId || state.queued > 0 || state.backgroundAgents > 0 || (state.workflows ?? 0) > 0) throw new TaskError("The original task chat must have an idle, available workspace before it can be reopened.","task_not_reopenable");
+    await this.sandboxProvider(task).info(task.sandboxId);
+    const reopened = this.store.transition(task.id,["cancelled"],{status:"idle",environmentId:state.environmentId,readyAt:null,readyNote:null,error:null,shipApproval:null});
+    if (!reopened) throw new TaskError("The task changed while its workspace was checked.","task_changed");
+    this.store.addEvent(task.id,"reopened","Reopened the existing task and checkout at the user's explicit request. No agent turn or sandbox was started.");
+    // Closing removed the project source Boat added for its machine: add it back, as before the close (never fatal).
+    if (reopened.hostId !== null && reopened.repoPath !== null && !isPersonalProject(reopened.projectId) && !this.inPersonalFallback(reopened.id)) {
+      await this.ensureProjectSource(reopened.id, reopened.projectId!, reopened.hostId, reopened.repoPath).catch((error) => {
+        this.hooks.log.warn(`task ${reopened.id}: project source: ${errorText(error)}`);
+        this.store.addEvent(reopened.id, "project-source", `Couldn't add the sandbox back to bb project ${reopened.projectId}: ${clip(errorText(error), 300)}`);
+      });
+    }
+    this.hooks.changed([task.id]);
+    return reopened;
+  }
+
   async closeTask(
     idOrPrefix: string,
     options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal } = {},
   ): Promise<{ task: Task; sandbox: "deleted" | "kept" | "gone" | "none" }> {
+    const task = this.mustGet(idOrPrefix);
+    const mac = task.sandboxId !== null && (task.sandboxProvider === "ownmac" || this.store.macLeases.held(task.sandboxId).length > 0);
+    return mac ? this.withMacLock(() => this.closeTaskInner(idOrPrefix,options)) : this.closeTaskInner(idOrPrefix,options);
+  }
+
+  private async closeTaskInner(idOrPrefix: string, options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal }): Promise<{ task: Task; sandbox: "deleted" | "kept" | "gone" | "none" }> {
     const settings = await this.settings();
     let task = this.mustGet(idOrPrefix);
     this.sizes.assertNotResizing(task, "close"); // sizes
@@ -4128,19 +5184,47 @@ export class BoatService {
         "Ship it once the user approves (Ship on the overview, or boat_ship after their OK in chat), or ask the user whether to throw the work away.",
       );
     }
+    const leases = task.sandboxId ? this.store.macLeases.held(task.sandboxId) : [];
+    const shippedBeforeClose = leases.length > 0 && this.shippedSinceLastTurn(task);
+    let permanentMacKeep = options.keepSandbox === true && leases.length > 0;
+    if (permanentMacKeep) for (const lease of leases) await this.keepMacLease(lease,options.signal);
     const updated = this.store.update(task.id, { status, finishedAt: new Date().toISOString(), shipApproval: null }) ?? task;
     // Stop an in-flight dispatch, then the running turn.
     this.dispatches.get(task.id)?.abort();
     if (task.status === "running" && task.runner === "chat" && task.threadId && this.hooks.chat) {
       await this.hooks.chat.stop(task.threadId).catch(() => undefined);
     } else if (task.status === "running" && task.sandboxId && task.conversationId) {
-      await this.boat.interrupt(task.sandboxId, task.conversationId, options.signal).catch(() => undefined);
+      await this.sandboxProvider(task).interrupt(task.sandboxId, task.conversationId, options.signal).catch(() => undefined);
+    }
+    if (leases.length) {
+      const outcome = await this.macCloseOutcome(task,options.signal,options.discard === true,shippedBeforeClose);
+      for (const lease of leases) {
+        this.store.macLeases.resolveTask(lease.id,task.id,outcome,task.turns);
+        if (outcome === "unshipped") { await this.keepMacLease(lease,options.signal); permanentMacKeep = true; }
+      }
     }
     this.store.addEvent(task.id, status, status === "done" ? "Closed" : "Cancelled");
     let sandbox: "deleted" | "kept" | "gone" | "none" = "none";
     const current = this.store.get(task.id) ?? task;
     const sandboxId = current.sandboxId;
-    if (this.isNativeChat(current)) {
+    if (sandboxId !== null && current.sandboxProvider === "ownmac") {
+      try {
+        let removed = current.hostId === null;
+        if (current.hostId && this.hooks.chat) {
+          try {
+            for (const threadId of this.store.chatThreads(task.id)) await this.hooks.chat.archive(threadId);
+            removed = (await this.removeMachineIfUnused(current)) === "deleted";
+          } catch { removed = false; }
+        }
+        await this.sandboxProviders.all.find(p=>p.id==="ownmac")?.closeTaskCredentials?.(sandboxId,options.signal,removed);
+      }
+      catch(error) { this.store.addEvent(task.id,"credential-cleanup-failed",errorText(error)); this.hooks.changed([task.id]); if(task.orchestratorThreadId && task.orchestratorThreadId!==task.threadId)await this.hooks.tell?.(task.orchestratorThreadId,taskMarker("task",task.id)).catch(()=>undefined); throw error; }
+      sandbox = "kept";
+      this.store.addEvent(task.id,"sandbox","Kept Your Mac and its work; task credentials removed and verified.");
+    } else if (sandboxId !== null && this.store.macLeases.held(sandboxId).length > 0) {
+      sandbox = "kept";
+      this.store.addEvent(task.id, "sandbox", permanentMacKeep ? "Kept the Mac; automatic hand-back is off until it is deleted manually." : "Kept the paid Mac lease for reuse until hand-back.");
+    } else if (this.isNativeChat(current)) {
       sandbox = sandboxId === null ? "none" : "kept";
       this.store.addEvent(task.id, "sandbox", "Kept the native chat and its core-owned machine.");
     } else if (current.runner === "chat" && this.hooks.chat) {
@@ -4168,7 +5252,7 @@ export class BoatService {
     }
     // A kept sandbox may get other tasks: the moved task's old conversation goes.
     if (sandbox === "kept" && sandboxId !== null && this.store.latestEvent(task.id, "moved-to-chat") !== null) {
-      await this.boat
+      await this.sandboxProvider(task)
         .exec(sandboxId, `rm -rf ${shellQuote(transcriptDir(task.id))}`, { timeoutMs: 30_000, signal: options.signal })
         .catch((error) => this.hooks.log.warn(`remove transcript ${task.id}: ${errorText(error)}`));
     }
@@ -4176,6 +5260,8 @@ export class BoatService {
       this.store.expirePreviews(task.id);
       if (sandboxId !== null) this.store.expirePreviewsForSandbox(sandboxId);
     }
+    // Closed: the project sources Boat added for its chat go (a kept sandbox's too), unless another open task uses them.
+    await this.releaseTaskSources(current);
     this.hooks.changed([task.id]);
     return { task: this.store.get(task.id) ?? updated, sandbox };
   }
@@ -4188,7 +5274,7 @@ export class BoatService {
     const targets = this.shipTargets(task);
     if (task.sandboxId === null || targets.length === 0) return 0;
     try {
-      const sandbox = known ?? (await this.boat.findInfo(task.sandboxId, signal));
+      const sandbox = known ?? (await this.sandboxProvider(task).findInfo(task.sandboxId, signal));
       if (sandbox === null) return 0;
       if (!ACTIVE_STATES.has(sandbox.state)) return null;
       // Per repo: commits not on its base, plus 1 when files aren't committed (untracked too).
@@ -4198,7 +5284,7 @@ export class BoatService {
             `cd ${shellQuote(target.path)} 2>/dev/null && echo "BOAT_AHEAD $(git rev-list --count ${shellQuote(`origin/${target.baseBranch}`)}..HEAD 2>/dev/null || echo x) $([ -z "$(git status --porcelain 2>/dev/null)" ] && echo clean || echo dirty)" || echo "BOAT_AHEAD x x"`,
         )
         .join("\n");
-      const result = await this.boat.exec(task.sandboxId, script, { timeoutMs: 30_000, signal });
+      const result = await this.sandboxProvider(task).exec(task.sandboxId, script, { timeoutMs: 30_000, signal });
       const rows = [...result.stdout.matchAll(/BOAT_AHEAD (\S+) (\S+)/g)];
       if (rows.length !== targets.length) return null;
       let total = 0;
@@ -4280,10 +5366,10 @@ export class BoatService {
       let changes: SinceApproval;
       try {
         if (task.sandboxId === null) throw new Error("the task has no sandbox");
-        const sandbox = known ?? (await this.boat.findInfo(task.sandboxId, this.hooks.lifecycle));
+        const sandbox = known ?? (await this.sandboxProvider(task).findInfo(task.sandboxId, this.hooks.lifecycle));
         if (sandbox === null) throw new Error("its sandbox is gone");
         if (!ACTIVE_STATES.has(sandbox.state)) throw new Error(`its sandbox is ${sandbox.state}`);
-        const result = await this.boat.exec(task.sandboxId, sinceApprovalScript(approval), { timeoutMs: 60_000, signal: this.hooks.lifecycle });
+        const result = await this.sandboxProvider(task).exec(task.sandboxId, sinceApprovalScript(approval), { timeoutMs: 60_000, signal: this.hooks.lifecycle });
         changes = parseSinceApproval(result.stdout, task.turns);
       } catch (error) {
         changes = { turns: task.turns, via: "none", text: clip(errorText(error), 300), omitted: 0 };
@@ -4401,6 +5487,7 @@ export class BoatService {
       this.hooks.log.warn(`move reconcile: ${errorText(error)}`);
       return [];
     });
+    await this.sweepProjectSourcesIfDue(now);
     // Worker chats: bb runs them; mirror their state onto the tasks.
     if (this.hooks.chat !== undefined) {
       for (const task of open) {
@@ -4411,11 +5498,19 @@ export class BoatService {
 
     const running = open.filter((task) => task.status === "running" && task.runner === "boat" && task.sandboxId !== null);
     const sandboxes = new Map<string, Sandbox>();
+    /** Providers whose list failed this sweep: their sandboxes are skipped, never taken for gone. */
+    const unlisted = new Set<string>();
     if (running.length > 0 || settings.stopIdleAfterMinutes > 0) {
       try {
-        for (const sandbox of await this.boat.list({ all: true, signal: this.hooks.lifecycle })) {
+        const listed = await this.listSandboxes({ all: true, signal: this.hooks.lifecycle });
+        for (const sandbox of listed.sandboxes) {
           sandboxes.set(sandbox.id, sandbox);
           this.observedSandboxStates.set(sandbox.id, sandbox.state);
+        }
+        // A provider that can't be read: its sandboxes wait for the next sweep.
+        for (const { provider, error } of listed.failed) {
+          unlisted.add(provider);
+          this.hooks.log.warn(`sweep: ${provider} list failed: ${error}`);
         }
       } catch (error) {
         this.hooks.log.warn(`sweep: boat list failed: ${errorText(error)}`);
@@ -4434,11 +5529,12 @@ export class BoatService {
 
     for (const [sandboxId, tasks] of bySandbox) {
       let sandbox = sandboxes.get(sandboxId);
+      if (sandbox === undefined && unlisted.has(this.sandboxProvider(tasks[0]!).id)) continue;
       if (sandbox === undefined) {
         // `boat list` is paged; ask about this one directly before giving up.
         // Only a real 404 (null) counts as gone; other errors retry next sweep.
         try {
-          sandbox = (await this.boat.findInfo(sandboxId, this.hooks.lifecycle)) ?? undefined;
+          sandbox = (await this.sandboxProvider(sandboxId).findInfo(sandboxId, this.hooks.lifecycle)) ?? undefined;
         } catch (error) {
           this.hooks.log.warn(`sweep: info ${sandboxId}: ${errorText(error)}`);
           continue;
@@ -4464,7 +5560,7 @@ export class BoatService {
       }
       let conversations;
       try {
-        conversations = await this.boat.conversations(sandboxId, this.hooks.lifecycle);
+        conversations = await this.sandboxProvider(sandboxId).conversations(sandboxId, this.hooks.lifecycle);
       } catch (error) {
         this.hooks.log.warn(`sweep: conversations ${sandboxId}: ${errorText(error)}`);
         continue;
@@ -4513,11 +5609,12 @@ export class BoatService {
     try {
       state = await chat.state(task.threadId!);
     } catch (error) {
+      if(task.sandboxProvider==="ownmac" && /disconnect|offline|unreachable|connection|host/i.test(errorText(error)))await this.tellOwnMacDisconnect(task);
       this.hooks.log.warn(`sweep: chat ${task.threadId}: ${errorText(error)}`);
       return false;
     }
     const nowIso = new Date(now).toISOString();
-    if (state !== null && task.environmentId === null && state.environmentId !== null) {
+    if (state !== null && state.environmentId !== null && state.environmentId !== task.environmentId) {
       task = this.store.update(task.id, { environmentId: state.environmentId }) ?? task;
     }
     if (state === null || state.archived || hint?.kind === "archived") {
@@ -4525,20 +5622,34 @@ export class BoatService {
         await this.settleReview(task, parseReport(task.result!).verdict!);
         return false;
       }
+      const macLeases = task.sandboxId ? this.store.macLeases.held(task.sandboxId) : [];
+      if (macLeases.length) return this.withMacLock(async () => {
+        const current = this.store.get(task.id);
+        if (!current || !OPEN_STATUSES.includes(current.status)) return false;
+        const outcome = await this.macCloseOutcome(current,this.hooks.lifecycle);
+        const closed = this.store.transition(task.id,["running","idle","failed"],{status:"cancelled",finishedAt:nowIso,shipApproval:null});
+        if (!closed) return false;
+        for (const lease of macLeases) {
+          this.store.macLeases.resolveTask(lease.id,task.id,outcome,current.turns);
+          if (outcome === "unshipped") await this.keepMacLease(lease,this.hooks.lifecycle);
+        }
+        this.store.addEvent(task.id,"cancelled","The task chat was archived or deleted");
+        if (outcome === "unshipped") this.store.addEvent(task.id,"sandbox",`Kept sandbox ${closed.sandboxId}: it holds work that hasn't shipped. Delete it on the Cloud agents page to throw that away.`);
+        await this.releaseTaskSources(closed);
+        return true;
+      });
       // Archived or deleted by hand: the work there is over, and so is its machine.
       const closed = this.store.transition(task.id, ["running", "idle", "failed"], { status: "cancelled", finishedAt: nowIso, shipApproval: null });
       if (closed === null) return false;
       this.store.addEvent(task.id, "cancelled", "The task chat was archived or deleted");
       const settings = await this.settings();
-      if (settings.deleteSandboxOnClose) {
-        if (await this.holdsUnshippedWork({ ...closed, status: "idle", finishedAt: closed.finishedAt ?? nowIso })) {
-          // The only copy of unshipped work: keep the machine until the user decides.
-          this.store.addEvent(task.id, "sandbox", `Kept sandbox ${closed.sandboxId}: it holds work that hasn't shipped. Delete it on the Cloud agents page to throw that away.`);
-        } else {
-          const removed = await this.removeMachineIfUnused(closed);
-          if (removed === "deleted" && closed.sandboxId !== null) this.store.expirePreviewsForSandbox(closed.sandboxId);
-        }
+      if (settings.deleteSandboxOnClose && await this.holdsUnshippedWork(closed)) {
+        this.store.addEvent(task.id, "sandbox", `Kept sandbox ${closed.sandboxId}: it holds work that hasn't shipped. Delete it on the Cloud agents page to throw that away.`);
+      } else if (settings.deleteSandboxOnClose) {
+        const removed = await this.removeMachineIfUnused(closed);
+        if (removed === "deleted" && closed.sandboxId !== null) this.store.expirePreviewsForSandbox(closed.sandboxId);
       }
+      await this.releaseTaskSources(closed);
       return true;
     }
     // Queued messages (a follow-up, a provider retry), background agents and
@@ -4594,9 +5705,11 @@ export class BoatService {
     const guard = { promptId: task.promptId };
     if (state.status === "error" || hint?.kind === "failed") {
       const reason = hint?.error?.trim() || (fresh ? text.trim().split("\n").at(-1) ?? "" : "");
-      if (USAGE_LIMIT_PATTERN.test(`${hint?.error ?? ""}\n${fresh ? text : ""}`) && (await this.chatFailover(task, reason || "usage limit"))) return true;
+      const disconnected=task.sandboxProvider==="ownmac" && /disconnect|offline|unreachable|connection (?:lost|closed)|host.*(?:lost|gone)/i.test(reason);
+      if (disconnected) await this.tellOwnMacDisconnect(task);
+      if (!disconnected && USAGE_LIMIT_PATTERN.test(`${hint?.error ?? ""}\n${fresh ? text : ""}`) && (await this.chatFailover(task, reason || "usage limit"))) return true;
       // A provider Bad Request right after a steer: one automatic retry, and no notice while it runs.
-      const retry = await this.retryAfterSteer(task, now);
+      const retry = disconnected ? "none" : await this.retryAfterSteer(task, now);
       if (retry === "retried") return true;
       if (retry === "wait") return false;
       const retryNote = retry === "tried" ? " An automatic retry was already tried." : retry === "unsent" ? " The automatic retry couldn't be sent." : "";
@@ -4662,6 +5775,9 @@ export class BoatService {
     if (!settings.autoFailover || onlyAgent(settings.agents) !== null) return false;
     if (this.store.events(task.id, 1).at(-1)?.kind === "failover") return false;
     const next: Provider = task.provider === "claude" ? "codex" : "claude";
+    if (settings.relay.paidClaudeFallback) {
+      try { await this.assertSubscriptionRoom(next, { settings, runner: "chat" }); } catch { return false; }
+    }
     const tier = isTier(task.tier) ? task.tier : null;
     const choice = tier === null ? null : choiceFor(settings.modelTiers, tier, next);
     const model = agentModel("chat", next, choice?.model ?? defaultModelFor(next, settings));
@@ -4709,7 +5825,7 @@ export class BoatService {
     if (task.sandboxId === null || task.conversationId === null) return false;
     let events;
     try {
-      events = await this.boat.events(task.sandboxId, task.conversationId, this.hooks.lifecycle);
+      events = await this.sandboxProvider(task).events(task.sandboxId, task.conversationId, this.hooks.lifecycle);
     } catch (error) {
       this.hooks.log.warn(`sweep: events ${task.id}: ${errorText(error)}`);
       return false;
@@ -4749,6 +5865,7 @@ export class BoatService {
       (status === "failed" && USAGE_LIMIT_PATTERN.test(`${failedEvent?.error ?? ""}\n${text}`)) ||
       (status === "finished" && text.length < 400 && LIMIT_NOTICE_PATTERN.test(text));
     if (limitHit) {
+      if ((await this.settings()).relay.paidClaudeHeadless) await this.hooks.usageRefused?.(task.provider);
       const switched = await this.failover(task, `${failedEvent?.error ?? ""}\n${text}`.trim());
       if (switched !== null) return true;
     }
@@ -4815,6 +5932,9 @@ export class BoatService {
     const last = this.store.events(task.id, 1).at(-1);
     if (last?.kind === "failover") return null;
     const next: Provider = task.provider === "claude" ? "codex" : "claude";
+    if (settings.relay.paidClaudeFallback) {
+      try { await this.assertSubscriptionRoom(next, { settings, runner: "boat" }); } catch { return null; }
+    }
     // Same tier on the other agent; without a tier, its configured default.
     const tier = isTier(task.tier) ? task.tier : null;
     const choice = tier === null ? null : choiceFor(settings.modelTiers, tier, next);
@@ -4824,7 +5944,7 @@ export class BoatService {
     const release = this.claim(task.sandboxId);
     try {
       await this.ensureRunning(task.sandboxId, this.hooks.lifecycle);
-      const dispatch = await this.boat.prompt({
+      const dispatch = await this.sandboxProvider(task).prompt({
         sandboxId: task.sandboxId,
         conversationId: task.conversationId,
         provider: next,
@@ -4840,7 +5960,7 @@ export class BoatService {
         { promptId: task.promptId },
       );
       if (updated === null) {
-        await this.boat.interrupt(task.sandboxId, task.conversationId).catch(() => undefined);
+        await this.sandboxProvider(task).interrupt(task.sandboxId, task.conversationId).catch(() => undefined);
         return null;
       }
       this.store.addEvent(
@@ -4912,7 +6032,7 @@ export class BoatService {
   async processesBusy(sandboxId: string, now = Date.now()): Promise<Computing> {
     const cached = this.processChecks.get(sandboxId);
     if (cached !== undefined && now - cached.at < PROCESS_CHECK_MS) return cached.verdict;
-    const sample = await this.boat.processes(sandboxId, this.hooks.lifecycle).catch(() => null);
+    const sample = await this.sandboxProvider(sandboxId).processes(sandboxId, this.hooks.lifecycle).catch(() => null);
     const busy = [...new Set(busyProcesses(sample).map((entry) => programName(entry.command)))];
     const again = cached !== undefined && now - cached.at < 4 * PROCESS_CHECK_MS && busy.some((name) => cached.busy.includes(name));
     const verdict: Computing = busy.length === 0 ? "no" : again ? "busy" : "maybe";
@@ -4940,6 +6060,7 @@ export class BoatService {
     if (this.hooks.chat !== undefined) {
       const byHost = new Map<string, Task[]>();
       for (const task of this.store.list({ statuses: OPEN_STATUSES, limit: 1000 })) {
+        if (task.sandboxSystem === "macos" || (task.sandboxId && this.store.macLeases.held(task.sandboxId).length)) continue;
         if (task.runner !== "chat" || task.hostId === null) continue;
         byHost.set(task.hostId, [...(byHost.get(task.hostId) ?? []), task]);
       }
@@ -5019,6 +6140,7 @@ export class BoatService {
     const seen = new Set<string>();
     for (const task of idle) {
       const sandboxId = task.sandboxId;
+      if (task.sandboxSystem === "macos" || (sandboxId && this.store.macLeases.held(sandboxId).length)) continue;
       if (sandboxId === null || seen.has(sandboxId) || this.claims.has(sandboxId)) continue;
       seen.add(sandboxId);
       const sandbox = sandboxes.get(sandboxId);
@@ -5045,7 +6167,8 @@ export class BoatService {
       }
       this.backgroundSince.delete(sandboxId);
       try {
-        await this.boat.stop(sandboxId, this.hooks.lifecycle);
+        await this.trimBeforeStop(sandboxId, this.hooks.lifecycle, sandboxes.get(sandboxId)?.state);
+        await this.sandboxProvider(sandboxId).stop(sandboxId, this.hooks.lifecycle);
         const hours = Math.round(KEEP_LIMIT_MS / 3_600_000);
         for (const entry of tasks) {
           this.store.addEvent(

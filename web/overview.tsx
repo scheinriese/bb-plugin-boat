@@ -1,3 +1,4 @@
+import { MacLeaseNotices } from "./mac-lease-notices";
 // The Cloud agents page, by state (logic.ts pageState):
 // A. setup needed: only the "Set up cloud agents" checklist;
 // B. ready, never used: status line, "Start your first task", step-up card;
@@ -8,7 +9,7 @@
 // Also one orchestrator's page ("orchestrator/<threadId>").
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { experimental_useRpcMutation, useBbNavigate } from "@get-bb/plugin-sdk/app";
+import { experimental_useRpcMutation, experimental_useRpcQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { rpcContract, type SandboxDto } from "../contract";
 import { Button } from "@/components/ui/button";
 import {
@@ -57,6 +58,7 @@ const COLUMN = "mx-auto box-border w-full max-w-4xl px-4 pb-10 pt-3 md:px-5 md:p
 
 export function Overview({ autoSignIn = false }: { autoSignIn?: boolean }) {
   const navigate = useBbNavigate();
+  const macUsage = experimental_useRpcQuery({contract:rpcContract,method:"macUsage",input:null});
   const setup = useSetup();
   const board = useBoard(null);
   const orchestrators = useOrchestrators();
@@ -70,7 +72,7 @@ export function Overview({ autoSignIn = false }: { autoSignIn?: boolean }) {
   if (loading) {
     return (
       <div className={COLUMN}>
-        <EmptyBox>Loading…</EmptyBox>
+        <MacLeaseNotices notices={macUsage.data?.notices}/><EmptyBox>Loading…</EmptyBox>
       </div>
     );
   }
@@ -83,12 +85,12 @@ export function Overview({ autoSignIn = false }: { autoSignIn?: boolean }) {
   if (state === "setup") {
     return (
       <div className={cn(COLUMN, "space-y-6")}>
-        <SetupCard autoSignIn={autoSignIn} />
+        <MacLeaseNotices notices={macUsage.data?.notices}/><SetupCard autoSignIn={autoSignIn} />
       </div>
     );
   }
   return (
-    <div className={cn(COLUMN, "space-y-8")}>
+    <div className={cn(COLUMN, "space-y-8")}><MacLeaseNotices notices={macUsage.data?.notices}/>
       <div className="space-y-3">
         <StatusLine state={state} />
         {setupOk === false ? <SetupCard autoSignIn={autoSignIn} /> : <SetupWarnings />}
@@ -338,7 +340,7 @@ function FirstTaskCard() {
           title="A whole chat in the cloud"
           text={
             <>
-              In a new chat, pick <span className="font-medium text-foreground">Boat sandbox</span> in the environment menu. The chat runs there
+              In a new chat, pick <span className="font-medium text-foreground">boat.dev sandbox</span> in the environment menu. The chat runs there
               and keeps going while this computer sleeps. Needs bb Connect.
             </>
           }
@@ -357,7 +359,7 @@ function FirstTaskCard() {
 /** bb's new chat screen; the environment menu there has Boat sandbox. */
 export function openBoatChat(navigate: ReturnType<typeof useBbNavigate>) {
   navigate.toCompose({ focusPrompt: true });
-  toast("Pick Boat sandbox in the environment menu", { description: "Under the message box, next to the project." });
+  toast("Pick boat.dev sandbox in the environment menu", { description: "Under the message box, next to the project." });
 }
 
 function WayRow({ icon, title, text, actions }: { icon: string; title: string; text: ReactNode; actions: ReactNode }) {
@@ -562,7 +564,7 @@ function SandboxRow({ sandbox, now }: { sandbox: SandboxDto; now: number }) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
-        <IconButton label="Open in boat" icon="ExternalLink" onClick={() => navigate.openUrl(sandbox.dashboardUrl)} />
+        {sandbox.dashboardUrl ? <IconButton label="Open in boat" icon="ExternalLink" onClick={() => sandbox.dashboardUrl && navigate.openUrl(sandbox.dashboardUrl)} /> : null}
         {canStopSandbox(sandbox.state) ? (
           <IconButton label="Stop" icon="Square" busy={pendingAction === "stop"} onClick={() => void run("stop")} />
         ) : canResumeSandbox(sandbox.state) ? (

@@ -7,8 +7,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type Database from "better-sqlite3";
-import { BOAT_GIT_ENV, BoatApi, chainedHook, invalidBranchNames, parseBranchList, prePushHook } from "../src/boat-api.ts";
-import { BoatCli } from "../src/boat.ts";
+import { BOAT_GIT_ENV, BoatApi, invalidBranchNames, parseBranchList } from "../src/providers/boat/api.ts";
+import { chainedHook, prePushHook, prepareRepo } from "../src/sandbox-repos.ts";
+import { createBoatProvider } from "../src/providers/boat/provider.ts";
+import { BoatCli } from "../src/providers/boat/cli.ts";
 import { localToOrchestratorProject, pushRefusal, type LocalProject } from "../src/local-projects.ts";
 import { kickoffPrompt } from "../src/orchestrator.ts";
 import {
@@ -486,11 +488,11 @@ test("the sandbox-wide protected list is main, master and the extra branches", a
       return { exitCode: 0, stdout: "BOAT_ACCESS ok push=true\nBOAT_SETUP path=/home/user/work/web branch=feature base=main\n", stderr: "" };
     }
   }
-  const api = new CapturingApi(new BoatCli(async () => null));
-  await api.prepareRepo("bx_1", "acme/web", { kind: "new-branch", branch: "feature", base: "main" }, { protect: ["main"], alwaysProtect: ["main", "master", "staging"] });
+  const api = createBoatProvider(new CapturingApi(new BoatCli(async () => null)));
+  await prepareRepo(api, "bx_1", "acme/web", { kind: "new-branch", branch: "feature", base: "main" }, { protect: ["main"], alwaysProtect: ["main", "master", "staging"] });
   assert.match(scripts[0]!, /printf '%s\\n' 'main' 'master' 'staging'; \} \| grep -v '\^\$' \| sort -u > "\$HOOKS\/protected\.new"/);
   // Without the option: only the defaults.
-  await api.prepareRepo("bx_1", "acme/web", { kind: "default-branch", base: "main" });
+  await prepareRepo(api, "bx_1", "acme/web", { kind: "default-branch", base: "main" });
   assert.match(scripts[1]!, /printf '%s\\n' 'main' 'master'; \}/);
 });
 

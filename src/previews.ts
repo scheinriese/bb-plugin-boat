@@ -2,7 +2,7 @@
 // exposes it with `boat host --private`. The link is stable across stop and
 // resume and carries its token in the query (`?_token=…`): the first visit
 // sets a cookie and redirects to the page, so it opens in any browser.
-import { ACTIVE_STATES, type Sandbox } from "./boat-api.ts";
+import { ACTIVE_STATES, type SandboxInfo as Sandbox } from "./providers/types.ts";
 import type { Preview, PreviewHealth, Task } from "./store.ts";
 
 export type PreviewState = "live" | "sleeping" | "expired";

@@ -2,28 +2,28 @@
 import { createFakePluginHost, type CreateFakePluginHostOptions } from "@get-bb/plugin-sdk/testing";
 import type { PluginSettingValue } from "@get-bb/plugin-sdk";
 import { PLUGIN_SETTINGS_KEY } from "../src/settings-store.ts";
-import { isDeclaredKey, isPluginKey } from "../src/settings.ts";
+import { SECRET_SETTINGS, isDeclaredKey, isPluginKey } from "../src/settings.ts";
 import type { Quotas } from "../src/quota.ts";
 import type { EvidenceSource } from "../src/evidence.ts";
-import type { PreflightInput } from "../src/setup.ts";
+import type { PreflightInput } from "../src/providers/boat/setup.ts";
 import { DatabaseSync } from "node:sqlite";
 import type Database from "better-sqlite3";
 import type {
   BoatApi,
   ChatEvent,
-  CheckoutMode,
   Conversation,
   Dispatch,
   Limits,
-  PreparedRepo,
-  PrepareOptions,
   ProcessSample,
   Sandbox,
-} from "../src/boat-api.ts";
-import { BoatError } from "../src/boat.ts";
+} from "../src/providers/boat/api.ts";
+import type { CheckoutMode, PreparedRepo, PrepareOptions } from "../src/providers/types.ts";
+import type { RepoSteps } from "../src/sandbox-repos.ts";
+import { BoatError } from "../src/providers/boat/cli.ts";
 import { SIZE_SPECS, isMachineType, type SizedProject } from "../src/memory.ts";
-import type { MachineTypeFacts } from "../src/setup.ts";
-import type { ChatRunner, ChatSpawn, ChatState, MachineState, SendResult } from "../src/chat.ts";
+import type { MachineTypeFacts } from "../src/providers/boat/setup.ts";
+import { PERSONAL_PROJECT, type ChatRunner, type ChatSpawn, type ChatState, type MachineState, type SendResult } from "../src/chat.ts";
+import type { OwnProjectSource, RemovedProjectSource } from "../src/project-sources.ts";
 import type { TurnEventRow } from "../src/steer-retry.ts";
 import { NO_WORK, addWork, hasWork, messagesWaiting, rowWork, turnRuns, type MachineActivity, type ThreadRow } from "../src/activity.ts";
 import { BoatService, type BoatSettings, type Notification, type ServiceHooks } from "../src/service.ts";
@@ -34,7 +34,8 @@ import { DEFAULT_TIERS } from "../src/tiers.ts";
 /**
  * bb's fake host, with settings from both places stored as if saved before
  * this load: bb's list as stored settings, the plugin's own in its kv.
- * A key that's neither is refused, and boatPath is required: a test must
+ * Secret settings (the Instabox API key) are stored as bb stores them.
+ * A key that's none of these is refused, and boatPath is required: a test must
  * never fall back to a real boat CLI. Sandboxes at once is 0 (the plan's
  * limit) unless a test sets it (undefined: the real default).
  */
@@ -45,11 +46,14 @@ export async function createTestHost(options: Omit<CreateFakePluginHostOptions, 
   const own: Record<string, PluginSettingValue> = {};
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined) continue;
-    if (isDeclaredKey(key)) declared[key] = value as PluginSettingValue;
+    if (isDeclaredKey(key) || Object.hasOwn(SECRET_SETTINGS, key)) declared[key] = value as PluginSettingValue;
     else if (isPluginKey(key)) own[key] = value as PluginSettingValue;
     else throw new Error(`test setting "${key}" doesn't exist`);
   }
   const host = createFakePluginHost({ ...options, settings: declared });
+  // No native goal unless a test explicitly supplies one.
+  host.harness.sdk.stub("threads.timeline", async () => ({goal:null}));
+  host.harness.sdk.stub("threads.list", async () => []);
   await host.bb.storage.kv.set(PLUGIN_SETTINGS_KEY, own);
   return host;
 }
@@ -268,10 +272,77 @@ export class FakeBoat {
     this.calls.push(`delete ${id}`);
     this.sandboxes.delete(id);
   }
-  async stop(id: string): Promise<void> {
-    this.calls.push(`stop ${id}`);
+  /**
+   * How a plain stop goes: it stops; refused (boat says failing, the sandbox
+   * stays up); pending (boat gives a stop id and works on it: the sandbox
+   * stays up while stopStatuses says pending); quiet (nothing said, it stays up).
+   */
+  stopBehavior: "stops" | "refused" | "pending" | "quiet" | "error" = "stops";
+  /** What `boat stop --status <stop id>` says, per stop id, and boat's error on it (error: boat refuses with these words, the status still pending). */
+  stopStatuses = new Map<string, string>();
+  stopErrors = new Map<string, string>();
+  stopError = "Final snapshot failed; stop aborted to protect unsaved data (lazy volume not fully hydrated)";
+  /** A pending stop completes after this many status reads (null: it stays pending). */
+  pendingCompletesAfter: number | null = null;
+  private statusReads = new Map<string, number>();
+  /** --force while a stop is pending hands that stop back (forced false), as boat does. */
+  forceWhilePending = false;
+  private stopIds = 0;
+  async stop(id: string, _signal?: AbortSignal, options: { force?: boolean } = {}): Promise<{ status: string | null; stopId: string | null; forced: boolean | null; error?: string | null }> {
+    this.calls.push(`stop ${id}${options.force ? " --force" : ""}`);
     const sandbox = this.sandboxes.get(id);
-    if (sandbox) sandbox.state = "stopped";
+    if (options.force) {
+      const pending = [...this.stopStatuses.entries()].find(([, status]) => status === "pending");
+      if (pending !== undefined && this.forceWhilePending) return { status: "pending", stopId: pending[0], forced: false };
+      if (sandbox) sandbox.state = "stopped";
+      return { status: "completed", stopId: `stop_${++this.stopIds}`, forced: true };
+    }
+    const stopId = `stop_${++this.stopIds}`;
+    switch (this.stopBehavior) {
+      case "stops":
+        if (sandbox) sandbox.state = "stopped";
+        return { status: "completed", stopId, forced: null };
+      case "refused":
+        this.stopStatuses.set(stopId, "failing");
+        return { status: "failing", stopId, forced: null };
+      case "pending":
+        this.stopStatuses.set(stopId, "pending");
+        return { status: "pending", stopId, forced: null };
+      case "quiet":
+        return { status: null, stopId: null, forced: null };
+      case "error":
+        this.stopStatuses.set(stopId, "pending");
+        this.stopErrors.set(stopId, this.stopError);
+        return { status: "pending", stopId, forced: null, error: this.stopError };
+    }
+  }
+  async stopStatus(id: string, stopId: string): Promise<{ status: string | null; stopId: string | null; forced: null; error: string | null }> {
+    this.calls.push(`stop ${id} --status ${stopId}`);
+    const reads = (this.statusReads.get(stopId) ?? 0) + 1;
+    this.statusReads.set(stopId, reads);
+    if (this.stopStatuses.get(stopId) === "pending" && this.pendingCompletesAfter !== null && reads >= this.pendingCompletesAfter) this.stopStatuses.set(stopId, "completed");
+    const status = this.stopStatuses.get(stopId) ?? null;
+    if (status === "completed") {
+      const sandbox = this.sandboxes.get(id);
+      if (sandbox) sandbox.state = "stopped";
+    }
+    return { status, stopId, forced: null, error: this.stopErrors.get(stopId) ?? null };
+  }
+  /** Test forks made (`boat fork --no-snapshots --wait`), and how one fails. */
+  forks: { from: string; id: string; noSnapshots: boolean; ttlSeconds: number | null }[] = [];
+  forkError: Error | null = null;
+  /** When boat last completed a snapshot (`boat snapshots <id>`). */
+  lastSnapshot: string | null = "2026-11-19T00:41:00.000Z";
+  async fork(id: string, options: { noSnapshots?: boolean; ttlSeconds?: number } = {}): Promise<{ id: string }> {
+    this.calls.push(`fork ${id}`);
+    if (this.forkError) throw this.forkError;
+    counter += 1;
+    const fork = this.addSandbox(`bx_fork${counter}`, this.sandboxes.get(id)?.machineType ?? "default", "idle");
+    this.forks.push({ from: id, id: fork.id, noSnapshots: options.noSnapshots === true, ttlSeconds: options.ttlSeconds ?? null });
+    return { id: fork.id };
+  }
+  async lastSnapshotAt(): Promise<string | null> {
+    return this.lastSnapshot;
   }
   /** A resume waits for this. */
   resumeGate: Promise<void> | null = null;
@@ -456,7 +527,7 @@ export class FakeBoat {
   ships: { id: string; targets: { path: string; baseBranch: string }[] }[] = [];
   shipError: Error | null = null;
   shipCommits = 2;
-  async ship(id: string, targets: { path: string; baseBranch: string }[]) {
+  async ship(id: string, targets: { path: string; baseBranch: string }[], _signal?: AbortSignal, _shippedBy?: (sha: string) => string | null) {
     this.ships.push({ id, targets });
     if (this.shipError) throw this.shipError;
     return { shipped: this.shipCommits === 0 ? [] : targets.slice(0, 1).map((target) => ({ ...target, sha: "abcdef1234567890", commits: this.shipCommits })) };
@@ -600,10 +671,10 @@ export class FakeChat implements ChatRunner {
     if (sandboxId !== null) await this.linked.boat.stop(sandboxId);
     this.machineStates.set(hostId, { phase: "suspended", connected: false, message: null });
   }
-  composed: { taskId: string; request: unknown; parentThreadId: string | null; environmentId: string; threadId: string }[] = [];
+  composed: { taskId: string; request: unknown; parentThreadId: string | null; projectId?: string | null; environmentId: string; threadId: string }[] = [];
   async spawnComposed(args: { taskId: string; request: unknown; parentThreadId: string | null; projectId: string | null; environmentId: string }) {
     const threadId = `thr_c${++this.next}`;
-    this.composed.push({ taskId: args.taskId, request: args.request, parentThreadId: args.parentThreadId, environmentId: args.environmentId, threadId });
+    this.composed.push({ taskId: args.taskId, request: args.request, parentThreadId: args.parentThreadId, projectId: args.projectId, environmentId: args.environmentId, threadId });
     return { threadId };
   }
   adopted: { threadId: string; parentThreadId: string }[] = [];
@@ -647,6 +718,7 @@ export class FakeChat implements ChatRunner {
   async machineState(hostId: string): Promise<MachineState | null> {
     this.machineStateCalls += 1;
     if (this.onMachineState) await this.onMachineState(hostId);
+    if (this.forgottenHosts.has(hostId)) return null;
     const state = this.machineStates.get(hostId) ?? { phase: "active", connected: true, message: null };
     // After a resume, bb reconnects only after a few looks.
     if (state.phase === "active" && !state.connected && this.reconnectAfter !== null) {
@@ -708,8 +780,65 @@ export class FakeChat implements ChatRunner {
   private sandboxOf(hostId: string): string | null {
     return this.machines.find((machine) => machine.hostId === hostId)?.sandboxId ?? null;
   }
+  /** bb's project sources (local_path rows) by project: the user's own and the ones Boat added. Like bb, at most one per project and machine. */
+  projectSources = new Map<string, { id: string; hostId: string; path: string; isDefault: boolean }[]>();
+  /** Boat's registry of the sources it added. */
+  ownSources = new Map<string, OwnProjectSource>();
+  /** Adding a source fails with this. */
+  sourceAddError: Error | null = null;
+  /** Deleting a source fails with this. */
+  sourceDeleteError: Error | null = null;
+  sourceCalls: { method: "ensure" | "add" | "delete"; projectId: string; hostId?: string; path?: string; sourceId?: string }[] = [];
+  /** Machines bb no longer knows (machineState answers null). */
+  forgottenHosts = new Set<string>();
+  private nextSource = 0;
+  async ensureProjectSource(args: { taskId: string; projectId: string; hostId: string; path: string }) {
+    this.sourceCalls.push({ method: "ensure", projectId: args.projectId, hostId: args.hostId, path: args.path });
+    const rows = this.projectSources.get(args.projectId) ?? [];
+    const existing = rows.find((row) => row.hostId === args.hostId);
+    if (existing) {
+      const own = this.ownSources.get(existing.id);
+      if (own && !own.taskIds.includes(args.taskId)) own.taskIds.push(args.taskId);
+      return { sourceId: existing.id, created: false, own: own !== undefined, isDefault: existing.isDefault };
+    }
+    if (this.sourceAddError) throw this.sourceAddError;
+    const id = `src_${++this.nextSource}`;
+    this.sourceCalls.push({ method: "add", projectId: args.projectId, hostId: args.hostId, path: args.path, sourceId: id });
+    // Like bb: a project's first source becomes its default.
+    const isDefault = rows.length === 0;
+    this.projectSources.set(args.projectId, [...rows, { id, hostId: args.hostId, path: args.path, isDefault }]);
+    this.ownSources.set(id, { sourceId: id, projectId: args.projectId, hostId: args.hostId, path: args.path, taskIds: [args.taskId], createdAt: Date.now() + this.nextSource });
+    return { sourceId: id, created: true, own: true, isDefault };
+  }
+  async ownProjectSources() {
+    return [...this.ownSources.values()].map((row) => ({ ...row, taskIds: [...row.taskIds] }));
+  }
+  /** Runs before a removal reads the registry (another change racing it). */
+  onRemoveSource: ((sourceId: string) => void) | null = null;
+  async removeProjectSource(sourceId: string, inUse?: (row: OwnProjectSource) => boolean): Promise<RemovedProjectSource> {
+    this.onRemoveSource?.(sourceId);
+    const own = this.ownSources.get(sourceId);
+    if (!own) return "not-ours";
+    if (inUse?.({ ...own, taskIds: [...own.taskIds] })) return "in-use";
+    const rows = this.projectSources.get(own.projectId) ?? [];
+    if (rows.some((row) => row.id === sourceId)) {
+      // Like bb: a project keeps at least one source.
+      if (rows.length <= 1) return "last-source";
+      if (this.sourceDeleteError) throw this.sourceDeleteError;
+      this.sourceCalls.push({ method: "delete", projectId: own.projectId, sourceId });
+      this.projectSources.set(own.projectId, rows.filter((row) => row.id !== sourceId));
+    }
+    this.ownSources.delete(sourceId);
+    return "removed";
+  }
   async spawn(args: ChatSpawn) {
     if (this.spawnError) throw this.spawnError;
+    // Like bb: a chat in a checkout on a machine needs its (non-Personal) project to have a source there.
+    const projectId = args.projectId ?? PERSONAL_PROJECT;
+    if (args.where.kind === "machine" && args.where.path !== null && projectId !== PERSONAL_PROJECT) {
+      const hostId = args.where.hostId;
+      if (!(this.projectSources.get(projectId) ?? []).some((row) => row.hostId === hostId)) throw new Error("No project source configured for this host (409)");
+    }
     const threadId = `thr_w${++this.next}`;
     const environmentId = args.where.kind === "environment" ? args.where.environmentId : `env_${this.next}`;
     this.spawns.push({ ...args, threadId, environmentId });
@@ -770,6 +899,19 @@ export class FakeChat implements ChatRunner {
       state.updatedAt = Date.now();
     }
   }
+}
+
+/**
+ * The plugin's repo steps on FakeBoat's stand-ins (prepare, login, ship),
+ * as tests had them before the steps ran over any provider's exec. The
+ * scripts themselves are tested with src/sandbox-repos.ts.
+ */
+export function fakeRepos(boat: FakeBoat): RepoSteps {
+  return {
+    prepareRepo: (_provider, id, repo, checkout, options) => boat.prepareRepo(id, repo, checkout, options),
+    githubLogin: (_provider, id) => boat.githubLogin(id),
+    ship: (_provider, id, targets, signal, shippedBy) => boat.ship(id, targets, signal, shippedBy),
+  };
 }
 
 export function defaultSettings(overrides: Partial<BoatSettings> = {}): BoatSettings {
@@ -833,6 +975,8 @@ export function makeService(
     sizeTiming?: ServiceHooks["sizeTiming"];
     /** Another service's store, chat and boat: the plugin after a reload. */
     reuse?: { store: TaskStore; chat?: FakeChat; boat?: FakeBoat };
+    /** Sandbox wakes: the account's pacer and the retry plans (default: none, resumes go out at once). */
+    wakes?: ServiceHooks["wakes"];
   } = {},
 ) {
   const boat = options.reuse?.boat ?? new FakeBoat();
@@ -842,6 +986,8 @@ export function makeService(
   let settings = defaultSettings({ ...(options.chat ? { workerMode: "chat" as const } : {}), ...options.settings });
   const told: { threadId: string; text: string }[] = [];
   const warnings: string[] = [];
+  /** The service's debug lines (the trim before a stop). */
+  const debugs: string[] = [];
   /** Notes a worker gets once with its next prompt after a stop (the watchdog's), per task. */
   const resumeNotes = new Map<string, string>();
   /** Machines the service suspended itself, and whether background work still ran. */
@@ -853,13 +999,14 @@ export function makeService(
   let plan: MachineTypeFacts[] | null = options.plan ?? null;
   let projects: SizedProject[] = options.projects ?? [];
   const service = new BoatService(boat as unknown as BoatApi, store, {
+    repos: fakeRepos(boat),
     settings: async () => settings,
     lifecycle: new AbortController().signal,
     changed: () => undefined,
     notify: async (notification) => {
       notifications.push(notification);
     },
-    log: { info: () => undefined, warn: (message) => void warnings.push(message) },
+    log: { info: () => undefined, warn: (message) => void warnings.push(message), debug: (message) => void debugs.push(message) },
     ...(chat ? { chat } : {}),
     projects: () => projects,
     sizePlan: async () => plan,
@@ -883,6 +1030,7 @@ export function makeService(
     ...(options.repoWorkerMode ? { repoWorkerMode: options.repoWorkerMode } : {}),
     ...(options.projectReviewer ? { projectReviewer: options.projectReviewer } : {}),
     checkPreview: options.checkPreview ?? (async () => "up" as const),
+    ...(options.wakes ? { wakes: options.wakes } : {}),
   });
   if (chat && options.linkedMachines) chat.link(boat, (sandboxId) => service.bringUp(sandboxId));
   return {
@@ -893,6 +1041,7 @@ export function makeService(
     notifications,
     told,
     warnings,
+    debugs,
     resumeNotes,
     planned,
     computingStopped,

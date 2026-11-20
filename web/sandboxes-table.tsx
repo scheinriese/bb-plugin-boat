@@ -1,3 +1,7 @@
+import { StoppedSandboxActions } from "./sandbox-row-actions";
+import { hours as providerHours } from "./provider-format";
+import { Fragment } from "react";
+import { ThisMonthUsage } from "./mac-usage";
 import { useMemo, useState } from "react";
 import {
   UrlLink,
@@ -27,11 +31,13 @@ import {
   useSetup,
   useSettingRows,
   useProjects,
+  useSandboxProviders,
   useTask,
 } from "./hooks";
 import { ResizeDialog } from "./sandbox-size";
 import { AgentLogo, EmptyBox, InlineAlert, showError } from "./ui";
 import { sandboxFailure, sandboxPrimaryTask } from "./sandboxes-logic";
+import { runsOnMachine, runsOnNote } from "./providers-logic";
 export { sandboxFailure } from "./sandboxes-logic";
 
 export type SandboxAction = "resume" | "stop" | "delete";
@@ -149,6 +155,22 @@ export function useSandboxTasks() {
   });
 }
 
+/**
+ * Where a sandbox runs: "boat.dev · Default" on one line, or with what it
+ * costs under it ("Instabox · Mac M2" / "24 h lease · $10.80"). Without the
+ * provider's words, the size as before.
+ */
+function RunsOnCell({ runsOn, size }: { runsOn: SandboxDto["runsOn"]; size: string | null }) {
+  if (runsOn === undefined) return <span className="text-[13px] leading-5 text-muted-foreground">{size}</span>;
+  if (runsOn.detail === null) return <span className="block truncate text-[13px] leading-5 text-muted-foreground">{runsOnMachine(runsOn, size)}</span>;
+  return (
+    <div>
+      <p className="truncate text-[13px] leading-[18px] text-foreground dark:text-[#D2D2D2]">{runsOnMachine(runsOn, size)}</p>
+      <p className="text-xs leading-4 text-[color:var(--boat-faint)]">{runsOn.detail}</p>
+    </div>
+  );
+}
+
 export function SandboxTable() {
   const sandboxes = useSandboxes();
   const tasks = useSandboxTasks();
@@ -162,6 +184,8 @@ export function SandboxTable() {
     method: "fidelityUsage",
     input: { timezoneOffsetMinutes: new Date().getTimezoneOffset() },
   });
+  const providerInfo = useSandboxProviders();
+  const macUsage = experimental_useRpcQuery({ contract: rpcContract, method: "macUsage", input: null });
   const sorted = useMemo(() => {
     const priority = (sandbox: SandboxDto) => {
       const task = sandboxPrimaryTask(sandbox, tasks.data?.tasks ?? []);
@@ -177,7 +201,7 @@ export function SandboxTable() {
       return sandbox.uses.some((use) => use.kind === "orchestrator") ? 7 : 6;
     };
     return [...(sandboxes.data?.sandboxes ?? [])].sort(
-      (a, b) => priority(a) - priority(b),
+      (a, b) => Number(a.uses.length===0) - Number(b.uses.length===0) || priority(a) - priority(b),
     );
   }, [sandboxes.data, tasks.data]);
   const failure = sandboxes.error?.message || sandboxes.data?.error;
@@ -188,54 +212,7 @@ export function SandboxTable() {
   )?.value;
   return (
     <div className="pb-10 dark:[--muted-foreground:#A8A8A8]">
-      <div className="mb-[27px] flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] leading-5 text-muted-foreground dark:text-[#C1C1C1]">
-        <Icon
-          name="boat-sail"
-          fallback="ComputerCloud"
-          className="size-3.5"
-          aria-hidden
-        />
-        {setup.data?.plan?.name && (
-          <>
-            <span className="font-medium text-[color:var(--boat-heading)]">
-              {setup.data.plan.name} plan
-            </span>
-            <span aria-hidden>·</span>
-          </>
-        )}
-        {overview.data && !overview.data.boatError && (
-          <>
-            <span>
-              {overview.data.activeSandboxes}
-              {overview.data.cap === null
-                ? ""
-                : ` of ${overview.data.cap}`}{" "}
-              sandboxes on
-            </span>
-            {typeof hours === "number" && <span aria-hidden>·</span>}
-          </>
-        )}
-        {typeof hours === "number" && (
-          <span>
-            {hours.toLocaleString(undefined, { maximumFractionDigits: 1 })} h
-            left this month
-          </span>
-        )}
-        {typeof idleMinutes === "number" && (
-          <span className="ml-auto text-xs text-[color:var(--boat-faint)]">
-            {idleMinutes > 0
-              ? `Idle sandboxes stop after ${idleMinutes % 60 === 0 ? `${idleMinutes / 60} h` : `${idleMinutes} min`}`
-              : "Idle sandboxes stay on"}{" "}
-            ·{" "}
-            <a
-              href="/settings/plugins/boat"
-              className="text-[#7AA7FF] hover:underline"
-            >
-              change
-            </a>
-          </span>
-        )}
-      </div>
+      <ThisMonthUsage instabox={providerInfo.data?.providers.find(p=>p.id==="instabox" && p.enabled)?.linuxUsage ? {...providerInfo.data.providers.find(p=>p.id==="instabox")!.linuxUsage!,active:sandboxes.data ? sandboxes.data.sandboxes.filter(s=>s.runsOn?.provider==="instabox" && s.runsOn?.os!=="macos" && isSandboxActive(s.state)).length : null} : undefined} providersOff={providerInfo.data?.providers.filter(p=>["instabox","scaleway"].includes(p.id)).every(p=>!p.enabled)} mac={macUsage.data} plan={usage.data?.plan} active={overview.data?.activeSandboxes} boatError={Boolean(overview.data?.boatError)} cap={overview.data?.cap} idleMinutes={typeof idleMinutes === "number" ? idleMinutes : undefined} />
       {failure && <InlineAlert>{failure}</InlineAlert>}
       {tasks.error && <InlineAlert>{tasks.error.message}</InlineAlert>}
       {!sandboxes.data && !failure ? (
@@ -250,7 +227,7 @@ export function SandboxTable() {
             role="region"
             aria-label="Sandboxes table, scroll horizontally for all actions"
           >
-            <table className="w-full min-w-[700px] border-collapse text-left text-[13px]">
+            <table className="w-full min-w-[700px] table-fixed border-collapse text-left text-[13px]">
               <caption className="sr-only">
                 Cloud sandboxes and the chats that use them
               </caption>
@@ -258,15 +235,15 @@ export function SandboxTable() {
                 <tr className="h-8 [&>th]:py-0">
                   <th
                     scope="col"
-                    className="w-[36.5%] px-[14px] pb-2 font-normal"
+                    className="w-[31%] px-[14px] pb-2 font-normal"
                   >
                     Chat
                   </th>
                   <th
                     scope="col"
-                    className="w-[11%] px-[14px] pb-2 font-normal"
+                    className="w-[170px] px-[14px] pb-2 font-normal"
                   >
-                    Size
+                    Runs on
                   </th>
                   <th
                     scope="col"
@@ -274,7 +251,7 @@ export function SandboxTable() {
                   >
                     State
                   </th>
-                  <th scope="col" className="px-[14px] pb-2 font-normal">
+                  <th scope="col" className="whitespace-nowrap px-[14px] pb-2 font-normal">
                     This week
                   </th>
                   <th
@@ -286,7 +263,9 @@ export function SandboxTable() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {sorted.map((sandbox) => (
+                {sorted.map((sandbox,index) => (
+                  <Fragment key={sandbox.id}>
+                  {sandbox.uses.length===0 && (index===0 || sorted[index-1]!.uses.length>0) && <tr className="h-10 border-b border-[#262626]"><td colSpan={5} className="px-3.5 pb-2 align-bottom text-xs text-[#A8A8A8]">Not from a task <span className="text-[#6E6E6E]">· {sorted.filter(s=>s.uses.length===0).length} · started outside Harbormaster, e.g. by another plugin or a review run</span></td></tr>}
                   <SandboxTableRow
                     key={sandbox.id}
                     projects={projects.data?.projects ?? []}
@@ -299,6 +278,7 @@ export function SandboxTable() {
                       )?.hours
                     }
                   />
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -307,16 +287,14 @@ export function SandboxTable() {
       )}
       <div className="flex flex-wrap justify-between gap-x-4 gap-y-2 text-xs leading-[18px] text-[color:var(--boat-faint)]">
         <p className="max-w-[620px]">
-          Stopped sandboxes keep your work and cost nothing; the next message to
+          Stopped Linux sandboxes keep your work and cost nothing; Mac minimums still apply; the next message to
           the chat resumes them. Deleting one removes its files for good.
         </p>
         {usage.data?.week.hours != null && usage.data.week.dollars != null && (
           <p title="Size-weighted machine time and list-price cost of listed sandboxes">
             This week:{" "}
             <span className="text-foreground/75 dark:text-[#C1C1C1]">
-              {usage.data.week.hours.toLocaleString(undefined, {
-                maximumFractionDigits: 1,
-              })}{" "}
+              {providerHours(usage.data.week.hours)}{" "}
               sandbox hours
             </span>
             {" · about "}
@@ -367,7 +345,8 @@ function SandboxTableRow({
     : null;
   const memory = detail.data?.task?.memory;
   const active = !stopped && !failure && !!state?.moving;
-  const label = failure
+  const unowned = sandbox.uses.length===0;
+  const label = unowned && stopped ? "Stopped · not resumable" : failure
     ? `Stopped · ${failure.reason.toLowerCase()}`
     : stopped
       ? use?.kind === "orchestrator"
@@ -407,7 +386,8 @@ function SandboxTableRow({
     <tr className="group h-[52px] rounded-lg hover:bg-[color:var(--boat-chip)]">
       <th scope="row" className="px-[14px] py-2 text-left font-normal">
         <div className="flex items-center gap-2.5">
-          {provider && (
+          {unowned && <span aria-hidden className="size-3.5 shrink-0 rounded border border-dashed border-[#5E5E5E]"/>}
+          {provider && !unowned && (
             <AgentLogo
               provider={provider.includes("codex") ? "codex" : "claude"}
               className="size-3.5"
@@ -434,11 +414,11 @@ function SandboxTableRow({
                   {title}
                 </button>
               ) : (
-                <span>{title}</span>
+                <span className="text-[#A8A8A8]">{unowned ? "Not from a task" : title}</span>
               )}
             </div>
             <p className="line-clamp-1 text-xs leading-4 text-[color:var(--boat-faint)]">
-              {project ? project[0]!.toUpperCase() + project.slice(1) : ""}
+              {unowned ? <span className="font-mono text-[11px]">{sandbox.name ?? sandbox.id}</span> : project ? project[0]!.toUpperCase() + project.slice(1) : ""}
               {task?.role === "review"
                 ? " · review"
                 : use?.kind === "orchestrator"
@@ -448,8 +428,8 @@ function SandboxTableRow({
           </div>
         </div>
       </th>
-      <td className="px-[14px] py-2 text-[13px] leading-5 text-muted-foreground">
-        {size}
+      <td className="px-[14px] py-2">
+        <RunsOnCell runsOn={sandbox.runsOn} size={size ?? null} />
       </td>
       <td className="px-[14px] py-1">
         <div className={cn("flex items-start gap-1.5", tone)}>
@@ -488,7 +468,7 @@ function SandboxTableRow({
             />
           )}
           <div className="text-[13px] leading-5">
-            <p>{label}</p>
+            <p>{!active && !stopped && sandbox.runsOn?.os === "macos" ? `Idle · ${runsOnNote(sandbox.runsOn)}` : label}</p>
             {task?.previewUrl && !stopped && (
               <UrlLink
                 href={task.previewUrl}
@@ -500,8 +480,8 @@ function SandboxTableRow({
           </div>
         </div>
       </td>
-      <td className="px-[14px] py-2 text-[13px] leading-5 tabular-nums text-muted-foreground">
-        {typeof hours === "number" ? `${hours.toFixed(1)} h` : null}
+      <td className="whitespace-nowrap px-[14px] py-2 text-[13px] leading-5 tabular-nums text-muted-foreground">
+        {sandbox.leaseDaysThisWeek !== undefined ? `${sandbox.leaseDaysThisWeek.toLocaleString("en-US", { maximumFractionDigits: 2 })} day${sandbox.leaseDaysThisWeek === 1 ? "" : "s"}` : typeof hours === "number" ? `${hours.toFixed(1)} h` : null}
       </td>
       <td className="py-2 pr-[14px]">
         <div className="flex items-center justify-end gap-1.5">
@@ -514,16 +494,9 @@ function SandboxTableRow({
               Resume on {memory.next?.label ?? "Large"}
             </Button>
           ) : stopped ? (
-            <>
-              <span className="opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 max-md:opacity-100">
-                <SandboxActionButton
-                  sandbox={sandbox}
-                  action="delete"
-                  compact
-                />
-              </span>
-              <SandboxActionButton sandbox={sandbox} action="resume" compact />
-            </>
+            <StoppedSandboxActions unowned={unowned}
+              deleteButton={<SandboxActionButton sandbox={sandbox} action="delete" compact/>}
+              resumeButton={<SandboxActionButton sandbox={sandbox} action="resume" compact/>}/>
           ) : canStopSandbox(sandbox.state) ? (
             <SandboxActionButton sandbox={sandbox} action="stop" compact />
           ) : null}

@@ -1,3 +1,4 @@
+import { hours as providerHours } from "./provider-format";
 // The "Set up cloud agents" checklist: one component for the Cloud agents
 // page (state A, and on top of the page while a required check fails) and
 // the Setup section in the plugin's settings. Every row says what's wrong
@@ -12,7 +13,8 @@ import { cn } from "@/lib/utils";
 import { PANEL_PATH, SIGN_IN_SUBPATH } from "./format";
 import { setupSummaryText, withBoatPath } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
-import { useCopy, useHosts, useInterval, useOverview, useProjects, useSettingRows, useSetup, useTask } from "./hooks";
+import { useCopy, useHosts, useInterval, useOverview, useProjects, useSandboxProviders, useSettingRows, useSetup, useTask } from "./hooks";
+import { readyProvidersText } from "./providers-logic";
 import { checkedAgo, setupNeedsWork, setupProgress, setupTestPassed } from "./v1-settings-logic";
 import { setupEvidence, setupDuration } from "./setup-evidence";
 import { EmptyBox, InlineAlert, RichText, showError } from "./ui";
@@ -86,7 +88,7 @@ function useSignIn() {
           rows: 30,
           scope: { kind: "host_path", hostId: host.id, cwd: null },
           start: { mode: "shell" },
-          title: checkId === "signed-in" ? "Sign in to boat.dev" : "Boat Cloud Agents setup",
+          title: checkId === "signed-in" ? "Sign in to boat.dev" : "Harbormaster setup",
         });
         const shown = await navigate.experimental_openTerminal({ terminalId: terminal.id });
         if (!shown) {
@@ -407,8 +409,8 @@ function LaterFold({ checks }: { checks: readonly SetupCheckDto[] }) {
               title="bb Connect"
               text={
                 connect?.state === "ready"
-                  ? "Ready. Task chats, chats on a Boat sandbox and cloud orchestrators can reach this bb."
-                  : "Only for tasks you can open as bb chats, chats on a Boat sandbox and cloud orchestrators. Set it up in Settings → Plugins → bb connect."
+                  ? "Ready. Task chats, chats on a boat.dev sandbox and cloud orchestrators can reach this bb."
+                  : "Only for tasks you can open as bb chats, chats on a boat.dev sandbox and cloud orchestrators. Set it up in Settings → Plugins → bb connect."
               }
             />
           )}
@@ -506,6 +508,8 @@ export function SetupChecklist() {
   useInterval(() => setClock(Date.now()), test?.status === "running" || test?.status === "starting" ? 1000 : 60_000);
   const navigate = useBbNavigate();
   const actions = useSetupActions();
+  // With more than one provider ready, the All set line counts them instead of naming boat.dev's plan.
+  const providersReady = readyProvidersText(useSandboxProviders().data?.providers);
   const refresh = experimental_useRpcMutation({contract: rpcContract,method:"applySetupFix"});
   useInterval(() => { if (data && setupNeedsWork(data) && refresh.pendingInputs.length === 0) void refresh.mutate({action:"check-again"}).catch(() => undefined); }, data && setupNeedsWork(data) ? 5_000 : null);
   const signIn = useSignIn();
@@ -537,7 +541,7 @@ export function SetupChecklist() {
   }
   if (data.ok && testPassed && startedId !== null) return <div className="rounded-[10px] border border-success/25 bg-success/10 p-4 dark:border-[#23362A] dark:bg-[#16201A]"><div className="flex items-start gap-3"><Icon name="CircleCheck" className="mt-0.5 size-[30px] shrink-0 text-[#5BD08A]" aria-hidden /><div className="min-w-0 flex-1"><p className="text-[15px] font-semibold leading-5 text-success dark:text-[#BFEFD0]">All set. Your first cloud task passed.</p><p className="mt-0.5 text-xs leading-[17px] text-muted-foreground dark:text-[#7FA88C]">{receipt || "The sandbox and agent checks passed on a Small sandbox."}</p><div className="mt-3.5 flex flex-wrap items-center gap-2"><Button size="sm" className="h-[26px] bg-primary px-[11px] text-xs text-primary-foreground" onClick={()=>setAddingProject(true)}>Add your first project</Button><Button size="sm" variant="outline" className="h-[26px] px-[11px] text-xs" onClick={()=>{navigate.toCompose({initialPrompt:"Help me plan and coordinate work for this project.",focusPrompt:true});toast("Choose Start as orchestrator in the send menu");}}>Start an orchestrator</Button><span className="text-xs text-muted-foreground dark:text-[#7FA88C]">or ask any chat to use a cloud agent</span></div></div></div><NewProjectDialog open={addingProject} onOpenChange={setAddingProject} repo="" baseBranch="" /></div>;
   if (data.ok && testPassed) return <div className="flex flex-wrap items-center gap-2.5 rounded-[10px] border border-border bg-card px-3.5 py-2.5">
-    <span className="size-1.5 shrink-0 rounded-full bg-[#5BD08A]" aria-hidden /><span className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">All set</span><span className="min-w-0 flex-1 text-xs leading-4 text-muted-foreground">{[data.plan?.name ? `${data.plan.name} plan` : null, data.plan?.vmHoursRemaining !== null && data.plan?.vmHoursRemaining !== undefined ? `${data.plan.vmHoursRemaining.toLocaleString()} h left` : null, data.agents.effective === "both" ? "Claude and Codex" : data.agents.effective === "claude" ? "Claude" : "Codex", data.checks.some((check) => check.id === "github" && check.state === "ok") ? "GitHub" : null].filter(Boolean).join(" · ")}</span><span className="text-xs leading-4 text-[var(--boat-faint)]">checked {checkedAgo(data.checkedAt, clock)} · <CheckAgainButton quiet /></span>
+    <span className="size-1.5 shrink-0 rounded-full bg-[#5BD08A]" aria-hidden /><span className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">All set</span><span className="min-w-0 flex-1 text-xs leading-4 text-muted-foreground">{[...(providersReady ? [providersReady] : [data.plan?.name ? `${data.plan.name} plan` : null, data.plan?.vmHoursRemaining !== null && data.plan?.vmHoursRemaining !== undefined ? `${providerHours(data.plan.vmHoursRemaining)} h left` : null]), data.agents.effective === "both" ? "Claude and Codex" : data.agents.effective === "claude" ? "Claude" : "Codex", data.checks.some((check) => check.id === "github" && check.state === "ok") ? "GitHub" : null].filter(Boolean).join(" · ")}</span><span className="text-xs leading-4 text-[var(--boat-faint)]">checked {checkedAgo(data.checkedAt, clock)} · <CheckAgainButton quiet /></span>
   </div>;
   const first = complete.length === 0;
   const active = current?.id ?? "test";
@@ -557,11 +561,11 @@ export function SetupChecklist() {
     else await actions.run("check-again");
   };
   const completedRow = (check: SetupCheckDto) => {
-    const label = check.id === "signed-in" ? "Signed in to boat" : check.id === "plan" && data.plan ? `${data.plan.name ?? "Boat"} plan${data.plan.vmHoursRemaining === null ? "" : ` · ${data.plan.vmHoursRemaining} h left`}` : check.id === "agents" ? `${data.agents.effective === "both" ? "Claude and ChatGPT" : data.agents.effective === "claude" ? "Claude" : "ChatGPT"} connected` : check.id === "github" ? (/\b\d+ repos?\b/.exec(check.detail)?.[0] ? `GitHub access to ${/\b\d+ repos?\b/.exec(check.detail)![0]}` : "GitHub access checked") : check.detail || check.label;
+    const label = check.id === "signed-in" ? "Signed in to boat" : check.id === "plan" && data.plan ? `${data.plan.name ?? "boat.dev"} plan${data.plan.vmHoursRemaining === null ? "" : ` · ${data.plan.vmHoursRemaining} h left`}` : check.id === "agents" ? `${data.agents.effective === "both" ? "Claude and ChatGPT" : data.agents.effective === "claude" ? "Claude" : "ChatGPT"} connected` : check.id === "github" ? (/\b\d+ repos?\b/.exec(check.detail)?.[0] ? `GitHub access to ${/\b\d+ repos?\b/.exec(check.detail)![0]}` : "GitHub access checked") : check.detail || check.label;
     return <details key={check.id} className="border-t border-[var(--boat-setting-border)]"><summary className="flex cursor-pointer list-none items-center gap-3 px-3.5 py-2.5 text-xs leading-[17px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Icon name="CircleCheck" className="size-[18px] shrink-0 text-[#5BD08A]" aria-hidden /><span>{label}</span></summary><p className="px-[44px] pb-2 text-xs leading-[17px] text-[var(--boat-faint)]">{check.detail}</p></details>;
   };
   return <div className="space-y-[22px]">
-    {testPassed && !data.ok ? <div role="alert" className="flex items-start gap-2.5 rounded-[10px] border border-[#53312F] bg-[#261918] px-3.5 py-3"><Icon name="AlertTriangle" className="mt-0.5 size-4 shrink-0 text-[#E06C6C]" aria-hidden /><div className="min-w-0 flex-1"><p className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">Cloud agents need a fix</p><p className="mt-0.5 text-xs leading-[17px] text-[#B68C89]">Your saved tasks and changes are still here. {current?.detail}</p></div><CheckAgainButton quiet /></div> : setupNeedsWork(data) ? <div className="flex items-start gap-2.5 rounded-[10px] border border-[#3D3420] bg-[#1E1A12] px-3.5 py-3"><Icon name="AlertTriangle" className="mt-0.5 size-4 shrink-0 text-[#F0B135]" aria-hidden /><div><p className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">Boat Cloud Agents needs setup</p><p className="mt-0.5 text-xs leading-[17px] text-[#A8A090]">{first ? "Shown by bb until the steps below pass. Nothing runs and nothing costs until then." : "One step needs you; one is still checking."}</p></div></div> : null}
+    {testPassed && !data.ok ? <div role="alert" className="flex items-start gap-2.5 rounded-[10px] border border-[#53312F] bg-[#261918] px-3.5 py-3"><Icon name="AlertTriangle" className="mt-0.5 size-4 shrink-0 text-[#E06C6C]" aria-hidden /><div className="min-w-0 flex-1"><p className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">Cloud agents need a fix</p><p className="mt-0.5 text-xs leading-[17px] text-[#B68C89]">Your saved tasks and changes are still here. {current?.detail}</p></div><CheckAgainButton quiet /></div> : setupNeedsWork(data) ? <div className="flex items-start gap-2.5 rounded-[10px] border border-[#3D3420] bg-[#1E1A12] px-3.5 py-3"><Icon name="AlertTriangle" className="mt-0.5 size-4 shrink-0 text-[#F0B135]" aria-hidden /><div><p className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">Harbormaster needs setup</p><p className="mt-0.5 text-xs leading-[17px] text-[#A8A090]">{first ? "Shown by bb until the steps below pass. Nothing runs and nothing costs until then." : "One step needs you; one is still checking."}</p></div></div> : null}
     <div className="overflow-hidden rounded-[10px] border border-border bg-card">
       <header className="space-y-2.5 px-3.5 pb-3 pt-3.5"><div className="flex items-baseline gap-2.5"><h3 className="min-w-0 flex-1 text-[15px] font-semibold leading-5 text-[color:var(--boat-heading)]">Set up cloud agents</h3><span className="text-xs leading-4 text-muted-foreground">{passed.length + (testPassed ? 1 : 0)} of 6</span></div><p className="text-[13px] leading-[19px] text-[var(--boat-secondary)]">{testBusy ? "Last step: a real sandbox, end to end." : first ? "About 5 minutes. Each step checks itself; you can leave and come back." : "Steps that pass fold to one line. Fix the red one; the rest checks itself."}</p><div className="flex gap-1" aria-hidden>{Array.from({length:6},(_,index)=><span key={index} className={cn("h-1 flex-1 rounded-sm", index < passed.length ? "bg-[#5BD08A]" : "bg-[#2E2E2E]")} />)}</div></header>
       {steps.map((step) => {

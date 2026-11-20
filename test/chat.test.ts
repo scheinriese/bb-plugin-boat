@@ -584,3 +584,63 @@ test("the bb runner's moves: a per-try key with the keep flag set first, detach,
     args: { hostId: "host_9", path: "/home/user/.boat-tasks/t_1/conversation.md", content: "# hi", contentEncoding: "utf8", createParents: true, mode: 0o600 },
   });
 });
+
+test("legacy attached Personal checkout handovers keep their host and exact code path when core requires a personal shell workspace", async () => {
+  const calls:Record<string,unknown>[]=[];
+  const bb={pluginId:"boat",sdk:{threads:{spawn:async(args:Record<string,unknown>)=>{calls.push(args);if(calls.length===1)throw new Error("HTTP 409: Personal project threads must reuse a personal workspace");return{id:"thr_next",environmentId:"env_personal"};}},environments:{get:async()=>({id:"env_attached",projectId:"proj_personal",hostId:"host_existing",path:"/home/user/web",environmentProviderId:null})}}} as unknown as BbPluginApi;
+  const runner=createChatRunner(bb);
+  const result=await runner.spawn({taskId:"t_existing",title:"Continue",prompt:"Fix the reviewed change.",provider:"claude",model:null,effort:"high",parentThreadId:null,projectId:"proj_personal",where:{kind:"environment",environmentId:"env_attached"}});
+  assert.deepEqual(result,{threadId:"thr_next",environmentId:"env_personal"});
+  assert.deepEqual(calls[1]!.environment,{type:"host",hostId:"host_existing",workspace:{type:"personal"}});
+  assert.match(String(calls[1]!.prompt),/existing checkout at "\/home\/user\/web"/);
+  assert.match(String(calls[1]!.prompt),/Do not clone/);
+  assert.match(String(calls[1]!.prompt),/Fix the reviewed change/);
+});
+
+test("an automatic review never joins a parent whose chat still works: it takes a new sandbox, or says why it can't", async () => {
+  // Room for one sandbox: the implementer's.
+  const env = makeService({ chat: true, settings: { reviewSandbox: "auto", maxActiveSandboxes: 1 } });
+  const task = await dispatch(env);
+  await settle(env);
+  env.chat.finish(task.threadId!, REPORT);
+  await settle(env);
+  assert.equal(env.store.get(task.id)!.status, "idle");
+  // The task reads idle, but its chat works again (someone typed into it): bb says so for its machine.
+  const busy = env.chat.machineActivity.bind(env.chat);
+  env.chat.machineActivity = async (hostId: string) => ({ ...(await busy(hostId)), turns: true });
+  const before = env.chat.spawns.length;
+  // No slot, and the implementer's sandbox busy: a new sandbox, which there's no room for, refused in plain words.
+  await assert.rejects(env.service.launchTask(await env.service.reviewInput(task.id), 5_000), (error: unknown) => {
+    assert.ok(error instanceof TaskError, String(error));
+    assert.equal(error.code, "boat_at_capacity");
+    assert.match(error.message, /All 1 sandboxes your limit allows are in use/);
+    return true;
+  });
+  assert.equal(env.chat.spawns.length, before, "nothing joined the busy implementer's workspace");
+  // With room, the review gets its own sandbox right away.
+  env.setSettings({ maxActiveSandboxes: 2 });
+  const { task: review } = await env.service.launchTask(await env.service.reviewInput(task.id), 5_000);
+  assert.equal(review.status, "running", review.error ?? "");
+  assert.notEqual(review.sandboxId, task.sandboxId);
+  assert.notEqual(env.chat.spawns.at(-1)!.where.kind, "environment");
+});
+
+test("an automatic review in an idle parent's workspace that bb refuses fails with whose workspace and what to do", async () => {
+  const env = makeService({ chat: true, settings: { reviewSandbox: "auto", maxActiveSandboxes: 1 } });
+  const task = await dispatch(env);
+  await settle(env);
+  env.chat.finish(task.threadId!, REPORT);
+  await settle(env);
+  assert.equal(env.store.get(task.id)!.status, "idle");
+  // No slot: the review shares the implementer's sandbox and joins its workspace; bb answers with nothing useful.
+  env.chat.spawnError = new Error("Something went wrong");
+  await assert.rejects(env.service.launchTask(await env.service.reviewInput(task.id), 5_000), (error: unknown) => {
+    assert.ok(error instanceof TaskError, String(error));
+    assert.equal(error.code, "workspace_unavailable");
+    assert.match(error.message, new RegExp(`^Couldn't open this task's chat in task ${task.id}'s workspace on sandbox ${task.sandboxId}: Something went wrong\\.$`));
+    assert.match(error.hint ?? "", /sandbox "new"/);
+    return true;
+  });
+  // The implementer's sandbox wasn't touched.
+  assert.ok(!env.boat.calls.some((call) => call.startsWith(`stop ${task.sandboxId}`) || call.startsWith(`delete ${task.sandboxId}`)));
+});

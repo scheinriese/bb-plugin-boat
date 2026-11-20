@@ -29,7 +29,7 @@ export function projectReviewInstructions(project: { reviewer?: Reviewer | null 
   if (project?.reviewer === "none") return "Automatic reviews are off for this project. Do not start a review merely because an implementation finishes, even if the shared protocol normally requests one. Manual review remains available when the user asks.";
   if (project?.reviewer === "codex" || project?.reviewer === "claude") {
     const agent = project.reviewer === "codex" ? "Codex" : "Claude";
-    return `This project's default reviewer is ${agent}; boat_review without an explicit agent applies that choice. For a task registered as native-chat, Boat requests its selected automatic review after a completed turn and a reported pull request; check the task's history and avoid duplicating it. A user-requested manual review can choose another agent.`;
+    return `This project's default reviewer is ${agent}; boat_review without an explicit agent applies that choice. For a task registered as native-chat, Harbormaster requests its selected automatic review after a completed turn and a reported pull request; check the task's history and avoid duplicating it. A user-requested manual review can choose another agent.`;
   }
-  return "For a task registered as native-chat, Boat manages its saved automatic-review policy after a completed turn and a reported pull request. Check its history and do not duplicate that automatic request; user-requested manual review remains available.";
+  return "For a task registered as native-chat, Harbormaster manages its saved automatic-review policy after a completed turn and a reported pull request. Check its history and do not duplicate that automatic request; user-requested manual review remains available.";
 }

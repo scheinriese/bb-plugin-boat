@@ -96,9 +96,9 @@ export function registerEntryPoints(app: PluginAppBuilder): void {
     }),
   );
   for (const command of [
-    { id: "new-orchestrator", title: "Boat: new orchestrator" },
-    { id: "resume-sandbox", title: "Boat: resume sandbox" },
-    { id: "go-needs-me", title: "Boat: go to what needs me" },
+    { id: "new-orchestrator", title: "Harbormaster: new orchestrator" },
+    { id: "resume-sandbox", title: "Harbormaster: resume sandbox" },
+    { id: "go-needs-me", title: "Harbormaster: go to what needs me" },
   ] as const)
     attempt(command.title, () =>
       app.commands.register({
@@ -176,7 +176,7 @@ export function registerEntryPoints(app: PluginAppBuilder): void {
     }),
   );
 
-  attempt("Boat sandbox size chip", () =>
+  attempt("boat.dev sandbox size chip", () =>
     app.slots.experimental_machineProviderInputs({
       machineProviderId: "boat-sandbox",
       component: BoatSizeChip,
@@ -532,7 +532,7 @@ function EntryCommand({
         .catch(showError)
         .finally(onDone);
     } else {
-      toast("This chat has no stopped Boat sandbox");
+      toast("This chat has no stopped boat.dev sandbox");
       onDone();
     }
   }, [
@@ -733,7 +733,7 @@ function CoordinateForm({
             .
           </li>
           <li>
-            Its agent gets the orchestrator instructions and the boat tools the
+            Its agent gets the orchestrator instructions and the Harbormaster tools the
             next time the chat starts a new session.
           </li>
           <li>It shows under Orchestrators on the Cloud agents page.</li>
@@ -800,7 +800,7 @@ function StopCoordinatingDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Stop coordinating?"
-      description="The chat stays as it is, but it's no longer an orchestrator. Tasks it started come to you when they finish, and its agent loses the orchestrator instructions and boat tools from its next session."
+      description="The chat stays as it is, but it's no longer an orchestrator. Tasks it started come to you when they finish, and its agent loses the orchestrator instructions and Harbormaster tools from its next session."
       confirmLabel="Stop coordinating"
       pending={set.isPending}
       onConfirm={() => void run()}

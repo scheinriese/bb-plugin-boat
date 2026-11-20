@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { CONFLICT_DETAIL_MAX, NAME_MAX, conflictReason, fileList, parseConflictDetail, parseShipOutput, shipScript } from "../src/boat-api.ts";
+import { CONFLICT_DETAIL_MAX, NAME_MAX, conflictReason, fileList, parseConflictDetail, parseShipOutput, shipScript } from "../src/sandbox-repos.ts";
 import { notificationText, taskDetail } from "../src/format.ts";
 import { codeBlock, codeSpan, plainLine } from "../src/literal.ts";
 import { changedApprovalReason, parseSinceApproval, sinceApprovalNotice } from "../src/ship-approval.ts";

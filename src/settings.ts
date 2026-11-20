@@ -1,3 +1,6 @@
+import { sshAliasSchema } from "../contract-providers.ts";
+import { monthlyMacPricesSchema } from "../contract-monthly-macs.ts";
+import { CREDENTIAL_RISKS_URL } from "../credential-warnings.ts";
 // The plugin's settings live in two places:
 // - SETTINGS: bb's settings list (Settings → Plugins → Boat Cloud Agents,
 //   `bb plugin config boat`), the ten everyday choices in this order;
@@ -8,12 +11,15 @@
 // (src/config.ts) exports and imports all of them.
 import type { PluginSettingDescriptor, PluginSettingValue, PluginSettingsValues } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { MACHINE_TYPES, invalidBranchNames } from "./boat-api.ts";
+import { invalidBranchNames } from "./providers/boat/api.ts";
+import { MACHINE_TYPES } from "./providers/types.ts";
 import { DEFAULT_EVIDENCE_UPLOADER, evidenceSourceProblem } from "./evidence.ts";
 
 /** Number ranges (bb's list shows only label and description; the plugin's own UI shows these). */
 export const NUMBER_RANGES = {
   maxActiveSandboxes: { min: 0, max: 1000, integer: true },
+  macHandBackMarginMinutes: { min: 1, max: 720, integer: true },
+  macIdleNoticeMinutes: { min: 1, max: 1440, integer: true },
   stopIdleAfterMinutes: { min: 0, max: 1440, integer: true },
   tasksBeforeAsking: { min: 0, max: 100, integer: true },
   relaySwitchAt: { min: 5, max: 100, integer: true },
@@ -70,7 +76,7 @@ export const SETTINGS = {
   },
   environment: {
     type: "string",
-    label: "Boat environment",
+    label: "boat.dev environment",
     description:
       "The boat.dev environment new sandboxes start from: its repos, secrets and agent logins. Empty: your boat default. A project can pick its own.",
     default: "",
@@ -86,7 +92,7 @@ export const SETTINGS = {
   maxActiveSandboxes: {
     type: "number",
     label: "Sandboxes at once",
-    description: "The most sandboxes running at the same time. Each one uses sandbox hours on your boat plan. 0: your plan's limit.",
+    description: "The most sandboxes running at the same time, on each provider. Each one uses sandbox hours on your plan. 0: your plan's limit. On Instabox the plan's limit counts stopped and paused machines too, so new work there can wait even when few run.",
     experimental_schema: range("maxActiveSandboxes"),
     default: 3,
   },
@@ -209,7 +215,28 @@ export const PLUGIN_SETTINGS = {
     section: "usage-limits",
     type: "boolean",
     label: "Don't start work on paid extra usage",
-    description: "With your agents near their usage limits, new tasks wait for a reset (and you're told) instead of using paid extra usage.",
+    description: "New work waits near usage limits, except for an enabled automatic paid Claude fallback or a separately confirmed paid start. Running turns can continue past a limit.",
+    default: true,
+  },
+  paidClaudeFallback: {
+    section: "usage-limits",
+    type: "boolean",
+    label: "Allow automatic paid Claude fallback",
+    description: "Use included allowances first. When all connected agents are near their limits, bb task chats and orchestrators may use Claude extra usage if Account Pooler reports it available. Claude enforces your billing limit; Harbormaster cannot read or set the money cap or buy credits.",
+    default: false,
+  },
+  paidClaudeHeadless: {
+    section: "usage-limits",
+    type: "boolean",
+    label: "Include headless Harbormaster tasks in paid fallback",
+    description: "Only with automatic paid Claude fallback enabled. Authorize headless tasks too after confirming Harbormaster uses the same Claude subscription account and billing controls as bb. The availability signal comes from bb; Harbormaster cannot verify every environment's login. Leave off for different accounts or API keys.",
+    default: false,
+  },
+  resumeStoppedChats: {
+    section: "usage-limits",
+    type: "boolean",
+    label: "Resume chats stopped at a limit when paid Claude is available",
+    description: "Only with automatic paid Claude fallback enabled. Claude chats that stopped at a usage limit continue on their own once paid Claude is available, each stopped turn once. A project can opt out. Headless tasks follow the headless setting above.",
     default: true,
   },
   relayEnabled: {
@@ -318,8 +345,8 @@ export const PLUGIN_SETTINGS = {
   orchestratorMachineType: {
     section: "orchestrators",
     type: "select",
-    label: "Size for chats on a Boat sandbox",
-    description: "Cloud orchestrators and any chat you start on a Boat sandbox. They mostly coordinate, so Small is usually enough.",
+    label: "Size for chats on a boat.dev sandbox",
+    description: "Cloud orchestrators and any chat you start on a boat.dev sandbox. They mostly coordinate, so Small is usually enough.",
     options: [...MACHINE_TYPES],
     experimental_optionLabels: SIZE_LABELS,
     default: "small",
@@ -337,7 +364,7 @@ export const PLUGIN_SETTINGS = {
     section: "advanced",
     type: "number",
     label: "Hard stop after (hours)",
-    description: "boat stops a sandbox after this long unless an agent is working. Your plan may stop sandboxes sooner.",
+    description: "boat stops a sandbox after this long unless an agent is working. Your plan may stop sandboxes sooner. Doesn't apply on Instabox, which has no deadline: it pauses a machine after 30 idle minutes instead.",
     experimental_schema: range("sandboxTtlHours"),
     default: 2,
   },
@@ -346,7 +373,7 @@ export const PLUGIN_SETTINGS = {
     type: "boolean",
     label: "Recover any chat after a steer Bad Request",
     description:
-      "When a chat's turn fails with a provider Bad Request right after a message steered it (yours, or another agent's), send that chat one message that repeats it so the work goes on. Boat task chats are retried either way.",
+      "When a chat's turn fails with a provider Bad Request right after a message steered it (yours, or another agent's), send that chat one message that repeats it so the work goes on. Harbormaster task chats are retried either way.",
     default: true,
   },
   freeSlotsWhenFull: {
@@ -392,7 +419,80 @@ export const PLUGIN_SETTINGS = {
     experimental_schema: z.string().max(1000),
     default: "",
   },
+  // Sandbox providers (boat.dev is always on; projects choose where they run)
+  monthlyMacPricesJson: {
+    section: "advanced", type: "string", label: "Monthly Mac prices (JSON)",
+    description: "Optional replacement price table. Each entry needs id, provider, model, chip, ramGB, monthlyPrice, currency (USD or EUR), signupUrl, sourceUrl, asOf (YYYY-MM-DD), available, and billing (monthly or hourly-estimate). Empty uses the dated catalog. Prices stay in their own currency.",
+    experimental_schema: z.string().max(30000).refine(value => { if (!value.trim()) return true; try { return monthlyMacPricesSchema.safeParse(JSON.parse(value)).success; } catch { return false; } }, "Use a valid monthly Mac price table; see docs/monthly-macs.md."),
+    default: "",
+  },
+  macHandBackMarginMinutes: {
+    section: "advanced", type: "number", label: "Mac hand-back margin (min)",
+    description: "Schedule an empty Mac for release at its paid minimum end this many minutes ahead. After the minimum, release on the next pass.",
+    experimental_schema: range("macHandBackMarginMinutes"), default: 30,
+  },
+  macIdleNoticeMinutes: {
+    section: "advanced", type: "number", label: "Mac idle heads-up after (min)",
+    description: "Near the end of paid Mac time, tell the orchestrator once when every open task has been idle this long.",
+    experimental_schema: range("macIdleNoticeMinutes"), default: 60,
+  },
+  ownMacIsolation: {section:"setup",type:"select",default:"vm",label:"Your Mac runs in",description:"A description of the isolated target you set up. This does not create a VM or an account.",options:["vm","user"] as const,experimental_optionLabels:{vm:"macOS VM (recommended)",user:"Separate macOS user"}},
+  ownMacEnabled: { section:"setup", type:"boolean", default:false, label:"Enable Your Mac", description:"Use an isolated VM or separate standard user, never your own login. SSH access and a logged-in session on mains power are required." },
+  ownMacPaused: { section:"setup", type:"boolean", default:false, label:"Pause Your Mac", description:"Stop accepting new tasks. Running tasks keep their session." },
+  ownMacAlias: { section:"setup", type:"string", default:"", label:"Your Mac SSH host alias", description:"A name from your SSH config only. Never enter a key path or key contents.", experimental_schema:sshAliasSchema },
+  ownMacMaxTasks: { section:"setup", type:"number", default:1, label:"Your Mac maximum concurrent tasks", description:"Keep memory and CPU headroom for your own work.", experimental_schema:z.number().int().min(1).max(4) },
+  instaboxEnabled: {
+    section: "advanced",
+    type: "boolean",
+    label: "Instabox",
+    description:
+      "Lets projects run on Instabox Linux machines instead of boat.dev (a project's Runs on). Needs the instabox CLI and your Instabox API key, stored in bb's settings for this plugin (Instabox API key). Task chats on Instabox are offered once the plugin reloads. Hard stop after doesn't apply there (Instabox pauses idle machines instead), and Instabox's own machine limit counts stopped machines too.",
+    default: false,
+  },
+  instaboxSecrets: {
+    section: "advanced",
+    type: "string",
+    label: "Instabox Secrets",
+    description: "Proxy Secrets for new machines: all, none, or comma-separated names. GitHub tasks need GH_TOKEN, scoped to github.com and api.github.com.",
+    experimental_schema: z.string().trim().max(4000).regex(/^(?:all|none|[A-Za-z_][A-Za-z0-9_]*(?:,[A-Za-z_][A-Za-z0-9_]*)*)$/, "Use all, none, or comma-separated Secret names.").refine(value => value === "all" || !value.split(",").includes("all"), "Use all by itself, without Secret names."),
+    default: "all",
+  },
+  scalewayProjectId: {
+    section: "advanced", type: "string", label: "Scaleway project ID",
+    description: "Project for hourly Mac task leases. Add the Scaleway secret key in bb secrets. Task chats need bb Connect and agent logins.",
+    experimental_schema: z.union([z.literal(""), z.string().uuid()]), default: "",
+  },
+  scalewayZone: {
+    section: "advanced", type: "select", label: "Scaleway zone", options: ["fr-par-3", "fr-par-1"], default: "fr-par-3",
+    description: "Paris availability zone for new Mac leases. Release held Macs before changing zones.",
+  },
+  instaboxPath: {
+    section: "advanced",
+    type: "string",
+    label: "Instabox CLI location",
+    description: "Leave empty to find it on PATH (`npm install -g instabox`).",
+    experimental_schema: z.string().max(1000),
+    default: "",
+  },
 } satisfies Record<string, PluginSettingSpec>;
+
+/**
+ * Secret settings: kept in bb's secret store (a 0600 file under bb's data
+ * folder), never in the plugin's database, a settings backup, the page or a
+ * log. bb's settings page for the plugin (Settings → Plugins → Boat Cloud
+ * Agents) is where the owner enters them; only the server reads them.
+ */
+export const SECRET_SETTINGS = {
+  rentedMachineGithubToken: { type: "string", label: "GitHub token for rented machines", description: `Fine-grained token: only selected task repositories; Contents, Pull requests and Workflows read and write; 90-day expiry. Enter it here, never in chat. Delivered over private SSH stdin; normal hand-back requires cleanup. If cleanup fails, delete in the Scaleway console and revoke or rotate the token. Reminders clear only after recorded expiry. A changed Scaleway key/project blocks delivery; to re-enable, clear this field, save, enter the token again and save. This is defence in depth: agents can write these settings too. Shared by rented Macs: compromise exposes every selected repo and its Actions secrets through Workflows write. Logout does not revoke it. Use a dedicated, narrowly scoped token and rotate it after any doubt. Risk details: ${CREDENTIAL_RISKS_URL}`, secret: true },
+  scalewaySecretKey: { type: "string", label: "Scaleway secret key", description: "Only used for Scaleway API authentication. Enter it here, never in chat. Changing this key or the project blocks rented-machine GitHub delivery until the GitHub-token setting is cleared, saved and entered again. This is defence in depth; agents can write settings too.", secret: true },
+  instaboxApiKey: {
+    type: "string",
+    label: "Instabox API key",
+    description: "An API key from `instabox keys create --name bb` (ibk_…), for Instabox machines. Only needed with Instabox turned on in the plugin's settings.",
+    secret: true,
+  },
+} satisfies Record<string, PluginSettingDescriptor>;
+export type SecretKey = keyof typeof SECRET_SETTINGS;
 
 export type DeclaredKey = keyof typeof SETTINGS;
 export type PluginKey = keyof typeof PLUGIN_SETTINGS;

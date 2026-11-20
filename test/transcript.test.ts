@@ -2,7 +2,7 @@
 // message, and boat's model ids as bb's.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ChatEvent } from "../src/boat-api.ts";
+import type { ChatEvent } from "../src/providers/boat/api.ts";
 import { composeHandoverPrompt } from "../src/briefs.ts";
 import { DEFAULT_TIERS, chatChoiceFromBoat } from "../src/tiers.ts";
 import { renderBoatTranscript, transcriptPath, wrapLines } from "../src/transcript.ts";

@@ -5,8 +5,13 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { GITHUB_ACCESS_SNIPPET, envNames, parseGithubAccess } from "../src/boat-api.ts";
-import { BoatError } from "../src/boat.ts";
+import { envNames } from "../src/providers/boat/api.ts";
+import { GITHUB_ACCESS_SNIPPET, parseGithubAccess as parseAccess } from "../src/sandbox-repos.ts";
+import { BOAT_REPO_WORDS } from "../src/providers/boat/provider.ts";
+
+/** In boat.dev's words, as the boat provider has them. */
+const parseGithubAccess = (stdout: string, repo: string, environment: string | null = null) => parseAccess(stdout, repo, environment, BOAT_REPO_WORDS);
+import { BoatError } from "../src/providers/boat/cli.ts";
 import type { OrchestratorProject } from "../src/projects.ts";
 import { TaskError } from "../src/service.ts";
 import { makeService } from "./fakes.ts";

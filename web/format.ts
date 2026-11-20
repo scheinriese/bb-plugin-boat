@@ -9,6 +9,10 @@ export type MachineType = (typeof MACHINE_TYPE_VALUES)[number];
 
 /** The nav panel's `path`; `toPluginPanel` takes it. */
 export const PANEL_PATH = "cloud-agents";
+/** Boat's settings, at the usage view (Settings › Usage limits): the compact usage signals link here. */
+export const USAGE_SETTINGS_HREF = "/settings/plugins/boat#usage";
+/** The Account Pooler's own settings, where accounts are added, signed in, ordered and routed. */
+export const POOLER_SETTINGS_HREF = "/settings/plugins/account-pool";
 
 /** Task ids the server mints (`t_` + hex). Used to validate untrusted input. */
 export const TASK_ID_PATTERN = /^t_[0-9a-f]{4,16}$/;
@@ -217,14 +221,14 @@ export function clockTime(value: string | number | null): string {
   if (value === null) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle:"h23" });
 }
 
 export function dateTime(value: string | null): string {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle:"h23" });
 }
 
 export function prLabel(url: string): string {
@@ -249,7 +253,7 @@ export function plural(count: number, one: string, many = `${one}s`): string {
 
 /** Text a user can paste into any chat to point at a task. */
 export function taskReference(task: Pick<TaskDto, "id" | "title" | "prUrl">): string {
-  const line = `boat task ${task.id} — ${task.title}`;
+  const line = `Harbormaster task ${task.id} — ${task.title}`;
   return task.prUrl ? `${line}\n${task.prUrl}` : line;
 }
 

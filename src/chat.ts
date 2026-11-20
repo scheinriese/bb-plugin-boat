@@ -2,12 +2,36 @@
 // The service decides what to do; this is how it asks bb to do it.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { hasWork, readMachineActivity, rowWork, type MachineActivity, type ThreadRow } from "./activity.ts";
-import { MACHINE_PROVIDER_ID, keepSandboxKey } from "./machine.ts";
+import { MACHINE_PROVIDER_ID } from "./providers/boat/provider.ts";
+import { INSTABOX_MACHINE_PROVIDER_ID } from "./providers/instabox/provider.ts";
+
+/** The bb machine providers this plugin registers: its task chats' machines are on one of them. */
+const PLUGIN_MACHINE_PROVIDERS: ReadonlySet<string> = new Set([MACHINE_PROVIDER_ID, INSTABOX_MACHINE_PROVIDER_ID, "scaleway-sandbox"]);
+import { keepSandboxKey } from "./providers/machine.ts";
+import { createProjectSources, type EnsuredProjectSource, type OwnProjectSource, type RemovedProjectSource } from "./project-sources.ts";
 import { threadSection } from "./sections.ts";
 import { TURN_EVENT_TYPES, type TurnEventRow } from "./steer-retry.ts";
 import type { Provider } from "./store.ts";
 
 export const PERSONAL_PROJECT = "proj_personal";
+
+/** Older personal chats can be attached directly to a checkout that core no
+ * longer permits a new Personal chat to reuse. Keep the same host and code;
+ * only the new chat's shell workspace is personal, as for an initial worker. */
+async function spawnWorkspaceChat(bb: BbPluginApi, args: Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0]) {
+  try {
+    return await bb.sdk.threads.spawn(args);
+  } catch (error) {
+    if (args.projectId !== PERSONAL_PROJECT || args.environment?.type !== "reuse" || !/Personal project threads must reuse a personal workspace/.test(error instanceof Error ? error.message : String(error))) throw error;
+    const raw = await bb.sdk.environments.get({environmentId:args.environment.environmentId});
+    const env = ((raw as {environment?:unknown}).environment ?? raw) as {hostId?:string;path?:string;projectId?:string;environmentProviderId?:string|null};
+    if (env.projectId !== PERSONAL_PROJECT || !env.hostId || !env.path || env.environmentProviderId) throw error;
+    const notice=`Your bb shell workspace is separate from the existing task checkout on this SAME sandbox. Run all repository work in the existing checkout at ${JSON.stringify(env.path)}. Preserve its branch, uncommitted changes and commits. Do not clone or initialize a replacement repository.\n\n`;
+    const environment={type:"host" as const,hostId:env.hostId,workspace:{type:"personal" as const}};
+    if (args.input) return await bb.sdk.threads.spawn({...args,environment,input:[{type:"text",text:notice,mentions:[]},...args.input]});
+    return await bb.sdk.threads.spawn({...args,environment,prompt:notice+args.prompt});
+  }
+}
 
 /** bb's agent provider for each of our agents. */
 export const CHAT_PROVIDER: Record<Provider, string> = { claude: "claude-code", codex: "codex" };
@@ -71,6 +95,8 @@ export interface MachineState {
   connected: boolean;
   /** bb's lifecycle message (a failed resume says why). */
   message: string | null;
+  /** bb's machine provider ("boat-sandbox", "instabox-sandbox", …; absent: not said). */
+  machineProviderId?: string | null;
 }
 
 export interface ChatRunner {
@@ -80,7 +106,8 @@ export interface ChatRunner {
    * (Continue as a chat): a new key per try, and the sandbox outlives the
    * machine until settleMachine.
    */
-  attachMachine(args: { taskId: string; sandboxId: string; signal?: AbortSignal; keepSandbox?: boolean }): Promise<{ hostId: string; key: string }>;
+  /** machineProviderId: the sandbox's provider's bb machine provider (default: boat.dev's). */
+  attachMachine(args: { taskId: string; sandboxId: string; signal?: AbortSignal; keepSandbox?: boolean; machineProviderId?: string }): Promise<{ hostId: string; key: string }>;
   /** Undo an attach made with keepSandbox: bb forgets the machine, the sandbox stays. */
   detachMachine(hostId: string, key: string): Promise<void>;
   /** Keep a machine's sandbox when the machine goes (for a move that reuses it). Returns false when it was kept already. */
@@ -96,8 +123,12 @@ export interface ChatRunner {
   /** Suspend a machine through bb (boat stops the sandbox; bb resumes it on the next message). */
   suspendMachine(hostId: string): Promise<void>;
   resumeMachine(hostId: string): Promise<void>;
-  /** The bb machine wrapping this sandbox, if any (e.g. one whose attach was cut short). */
-  findMachine(sandboxId: string): Promise<string | null>;
+  /**
+   * The bb machine wrapping this sandbox, if any (e.g. one whose attach was cut
+   * short). strict: a machine whose resource couldn't be read makes it throw
+   * instead of answering "none" (it may be this sandbox's).
+   */
+  findMachine(sandboxId: string, options?: { strict?: boolean }): Promise<string | null>;
   /** The machine's phase and connection (null: bb doesn't know it). */
   machineState(hostId: string): Promise<MachineState | null>;
   /** Any chat on the machine is working, a message waits there, or work runs in the background (every thread on it, not only the plugin's). */
@@ -108,6 +139,16 @@ export interface ChatRunner {
    * child chats). Throws when bb can't list its chats.
    */
   machineActivity(hostId: string): Promise<MachineActivity>;
+  /**
+   * A local_path source in a bb project for this machine (bb opens a chat in
+   * a checkout there only then): the project's one there is reused, else one
+   * is added for the path, never asked to be the default (src/project-sources.ts).
+   */
+  ensureProjectSource(args: { taskId: string; projectId: string; hostId: string; path: string }): Promise<EnsuredProjectSource>;
+  /** The project sources Boat added and still tracks. */
+  ownProjectSources(): Promise<OwnProjectSource[]>;
+  /** Delete a project source Boat added unless inUse (asked again just before) says it's still needed; any other source is never touched. */
+  removeProjectSource(sourceId: string, inUse?: (row: OwnProjectSource) => boolean): Promise<RemovedProjectSource>;
   spawn(args: ChatSpawn): Promise<{ threadId: string; environmentId: string | null }>;
   /** A chat the user composed in bb's own composer, placed in a worker's workspace. */
   spawnComposed(args: {
@@ -159,13 +200,14 @@ const WITHDRAW_BACKOFF_MS = [300, 1_200];
 
 export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?: readonly number[] } = {}): ChatRunner {
   const backoffMs = options.withdrawBackoffMs ?? WITHDRAW_BACKOFF_MS;
+  const sources = createProjectSources(bb);
   return {
-    async attachMachine({ taskId, sandboxId, signal, keepSandbox }) {
+    async attachMachine({ taskId, sandboxId, signal, keepSandbox, machineProviderId }) {
       const key = keepSandbox ? `task-${taskId}-m${Date.now().toString(36)}` : `task-${taskId}`;
       // Before bb runs the provider: a failed or cut-short creation can't delete the sandbox.
       if (keepSandbox) await bb.storage.kv.set(keepSandboxKey(key), sandboxId);
       const host = (await bb.sdk.hosts.experimental_create({
-        machineProviderId: MACHINE_PROVIDER_ID,
+        machineProviderId: machineProviderId ?? MACHINE_PROVIDER_ID,
         inputs: keepSandbox ? { sandboxId, taskId, keepSandbox: true } : { sandboxId, taskId },
         key,
         wait: true,
@@ -225,12 +267,13 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
         if (isNotFound(error)) return null;
         throw error;
       }
-      const host = ((raw as { host?: unknown } | null)?.host ?? raw) as { status?: string; lifecycle?: { phase?: string; message?: string | null } | null } | null;
+      const host = ((raw as { host?: unknown } | null)?.host ?? raw) as { status?: string; machineProviderId?: string | null; lifecycle?: { phase?: string; message?: string | null } | null } | null;
       if (host === null) return null;
       return {
         phase: typeof host.lifecycle?.phase === "string" ? host.lifecycle.phase : null,
         connected: host.status === "connected",
         message: typeof host.lifecycle?.message === "string" && host.lifecycle.message !== "" ? host.lifecycle.message : null,
+        ...(typeof host.machineProviderId === "string" ? { machineProviderId: host.machineProviderId } : {}),
       };
     },
 
@@ -241,18 +284,35 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
     },
 
     machineActivity(hostId) {
-      return readMachineActivity(bb, hostId, { providerId: MACHINE_PROVIDER_ID });
+      return readMachineActivity(bb, hostId, { providerId: PLUGIN_MACHINE_PROVIDERS });
     },
 
-    async findMachine(sandboxId) {
+    async findMachine(sandboxId, options = {}) {
       const raw = (await bb.sdk.hosts.list()) as unknown;
       const hosts = (Array.isArray(raw) ? raw : ((raw as { hosts?: unknown[] }).hosts ?? [])) as { id: string; machineProviderId?: string | null }[];
+      const unread: string[] = [];
       for (const host of hosts) {
-        if (host.machineProviderId !== MACHINE_PROVIDER_ID) continue;
-        const resource = (await bb.experimental_machines.getResource(host.id).catch(() => null)) as { sandboxId?: string } | null;
+        if (!PLUGIN_MACHINE_PROVIDERS.has(host.machineProviderId ?? "")) continue;
+        const resource = (await bb.experimental_machines.getResource(host.id).catch(() => {
+          unread.push(host.id);
+          return null;
+        })) as { sandboxId?: string } | null;
         if (resource?.sandboxId === sandboxId) return host.id;
       }
+      if (options.strict === true && unread.length > 0) throw new Error(`bb couldn't read machine ${unread.slice(0, 3).join(", ")}${unread.length > 3 ? "…" : ""}`);
       return null;
+    },
+
+    ensureProjectSource(args) {
+      return sources.ensure(args);
+    },
+
+    ownProjectSources() {
+      return sources.own();
+    },
+
+    removeProjectSource(sourceId, inUse) {
+      return sources.remove(sourceId, inUse);
     },
 
     async spawn(args) {
@@ -265,7 +325,7 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
             : { type: "host" as const, hostId: args.where.hostId, workspace: { type: "unmanaged" as const, path: args.where.path } };
       // Workers join their orchestrator's section (they nest under it there).
       const sectionId = args.parentThreadId ? await threadSection(bb, args.parentThreadId) : null;
-      const result = (await bb.sdk.threads.spawn({
+      const result = (await spawnWorkspaceChat(bb, {
         projectId,
         ...(sectionId ? { sectionId } : {}),
         prompt: args.prompt,
@@ -292,7 +352,7 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
 
     async spawnComposed({ taskId, request, parentThreadId, projectId, environmentId }) {
       const sectionId = parentThreadId ? await threadSection(bb, parentThreadId) : null;
-      const result = (await bb.sdk.threads.spawn({
+      const result = (await spawnWorkspaceChat(bb, {
         ...request,
         projectId: projectId ?? PERSONAL_PROJECT,
         environment: { type: "reuse", environmentId },
@@ -390,9 +450,21 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
     },
 
     async turnEvents(threadId) {
-      const raw = (await bb.sdk.threads.events.list({ threadId, order: "desc", limit: "200", types: [...TURN_EVENT_TYPES] } as never)) as unknown;
-      const rows = (Array.isArray(raw) ? raw : ((raw as { events?: unknown[] } | null)?.events ?? [])) as TurnEventRow[];
-      return rows.filter((row) => row !== null && typeof row === "object" && typeof row.seq === "number" && typeof row.type === "string");
+      // bb caps an event page at 100. Keep the existing 200-event reading
+      // window without losing a turn's opening input or steer at the boundary.
+      const rows = new Map<number, TurnEventRow>();
+      let beforeSeq: number | undefined;
+      for (let page = 0; page < 2; page++) {
+        const raw = (await bb.sdk.threads.events.list({ threadId, order: "desc", limit: "100", types: [...TURN_EVENT_TYPES], ...(beforeSeq === undefined ? {} : { beforeSeq: String(beforeSeq) }) })) as unknown;
+        const entries = (Array.isArray(raw) ? raw : ((raw as { events?: unknown[] } | null)?.events ?? [])) as TurnEventRow[];
+        const valid = entries.filter((row) => row !== null && typeof row === "object" && Number.isSafeInteger(row.seq) && row.seq >= 0 && typeof row.type === "string");
+        for (const row of valid) if (beforeSeq === undefined || row.seq < beforeSeq) rows.set(row.seq, row);
+        if (entries.length < 100 || valid.length === 0) break;
+        const oldest = Math.min(...valid.map((row) => row.seq));
+        if (beforeSeq !== undefined && oldest >= beforeSeq) break;
+        beforeSeq = oldest;
+      }
+      return [...rows.values()];
     },
 
     async stop(threadId) {

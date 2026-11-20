@@ -1,4 +1,11 @@
-# Boat Cloud Agents for bb
+# Harbormaster for bb
+
+Harbormaster coordinates cloud agents across sandbox providers. Use `bb harbor`
+with the optional CLI companion below. `bb boat` keeps working with the main
+plugin alone. Both names reach the same handler; `harbor` help and usage errors
+use `bb harbor`, while agent examples still use `bb boat`. JSON stays unchanged.
+`bb harbormaster` awaits native alias support in bb.
+See [the rename status and step 2 checklist](docs/harbormaster-rename.md).
 
 Run Claude Code and Codex in [boat.dev](https://boat.dev) cloud sandboxes
 from [bb](https://getbb.app). Ask any chat to send a task to the cloud,
@@ -13,9 +20,9 @@ Version 0.2 adds a redesigned Today page, live decision and review cards,
 Task panels, project rules and explicit shipping confirmations. The screenshots
 below use demo data and the optional [Workbench sidebar](https://github.com/scheinriese/bb-plugin-workbench-sidebar).
 
-[![Watch the Boat v1 demo](docs/demos/boat-v1-poster.jpg)](https://scheinriese.github.io/bb-plugin-boat/)
+[![Watch the Harbormaster v1 demo](docs/demos/boat-v1-poster.jpg)](https://scheinriese.github.io/bb-plugin-boat/)
 
-[Watch the v1 demo](https://scheinriese.github.io/bb-plugin-boat/): Boat with bb’s regular sidebar first,
+[Watch the v1 demo](https://scheinriese.github.io/bb-plugin-boat/): Harbormaster with bb’s regular sidebar first,
 then paired with the optional Workbench sidebar. The recording uses staged demo
 data, captions and occasional focus outlines; no real cloud work is started.
 
@@ -57,7 +64,16 @@ agent API key).
    bb shows what it will install and asks you to confirm. A plugin is
    full-trust code, so read [what it runs, reaches and stores](SECURITY.md)
    first.
-5. **Check the setup.** Open **Settings → Plugins → Boat Cloud Agents**.
+
+   **Add the new command** by installing the small CLI companion as well:
+   ```sh
+   bb plugin install git:https://github.com/scheinriese/bb-plugin-boat --subdirectory harbor
+   ```
+   This registers `bb harbor` and forwards to the main plugin. Every `bb boat`
+   example below also works as `bb harbor` after this install. Keep both
+   plugins installed and enabled, and update both when upgrading. Existing
+   installs need no settings or data migration; older hosts retain `bb boat`.
+5. **Check the setup.** Open **Settings → Plugins → Harbormaster**.
    The setup checklist shows a fix for each missing requirement. **Sign in…**
    opens a terminal that runs `boat onboard`; other commands have **Run in
    terminal**. Or run:
@@ -69,14 +85,14 @@ agent API key).
    can only be seen from inside a sandbox, so it shows your last task's
    check (your first task on a repo checks it).
 
-   ![Grouped Boat settings and the setup status](docs/screenshots/v1/settings.png)
+   ![Grouped Harbormaster settings and the setup status](docs/screenshots/v1/settings.png)
 6. **Run a test task.** Click **Run test task** in the setup checklist, or run
    `bb boat task start --test`. It needs no repo and changes nothing: the
    agent reports the sandbox's OS, Node and git versions and whether GitHub
    access works. That proves your sign-in, plan and agent login, for one
    sandbox start and a minute or two of a Small sandbox.
 7. **Real work.** Open bb's **New thread** screen, choose the project and
-   **Boat sandbox** environment, write the brief, and choose **Start** in
+   **boat.dev sandbox** environment, write the brief, and choose **Start** in
    the send menu. The + menu has starters for checking a repo, fixing a bug,
    and exploring a plan. Or ask any chat: "Use a cloud agent to fix the
    flaky login test in acme/web."
@@ -89,9 +105,9 @@ often, add them as [projects](docs/features.md#projects).
 
 ## Three ways to use it
 
-| | Task from a chat | Cloud agents page | Native Boat sandbox chat |
+| | Task from a chat | Cloud agents page | Native boat.dev sandbox chat |
 | --- | --- | --- | --- |
-| How you start it | Ask any chat to use a cloud agent, or use `bb boat task start` | Follow work started from a chat or the native composer | Pick **Boat sandbox** in a new chat's environment menu, then **Start** |
+| How you start it | Ask any chat to use a cloud agent, or use `bb boat task start` | Follow work started from a chat or the native composer | Pick **boat.dev sandbox** in a new chat's environment menu, then **Start** |
 | Where the agent runs | In its own boat sandbox | In its own boat sandbox | The whole chat runs in a boat sandbox |
 | Where you follow it | The source chat hears back; chat-backed tasks nest under it | Today, Sandboxes and Projects; task chats have a Task tab | In the chat and its Task tab |
 | Can you type into it | Through the chat that started it, or the task's reply box | The task's reply box | Yes, it's a regular chat |
@@ -138,7 +154,16 @@ What the plugin does to keep that down:
   retain bb's machine lifecycle.
 - With **Don't start work on paid extra usage**, a current over-limit
   reading queues delegated work until a reset. An early start needs explicit
-  approval for that request; naming a provider or model does not bypass it.
+  approval for that request, or the opt-in **Allow automatic paid Claude
+  fallback** policy; naming a provider or model does not bypass it.
+- Automatic paid Claude fallback uses included allowances first, then permits
+  extra usage for bb task chats and orchestrators only when Account Pooler
+  reports recent availability. Claude enforces your billing limits; Harbormaster cannot
+  read the money cap or balance and never buys credits. Headless tasks need
+  a separate same-account opt-in or their per-task paid confirmation. [Policy and limits](docs/settings.md#automatic-paid-claude-fallback).
+- With the fallback on, Claude chats that stopped at a usage limit continue
+  on their own once paid Claude is available, each stopped turn once. A
+  project can opt out. [How it works](docs/settings.md#chats-stopped-at-a-limit).
 - It never turns on boat's paid extra starts (`boat billing extra-starts`,
   off by default).
 
@@ -165,7 +190,7 @@ of environments you use for repos you don't trust.
   repos you trust. **How tasks run** → "As chats for projects" allows task
   chats only in projects that have **Run tasks as chats** on. **Run as a
   chat** remains a legacy option; **Continue as a chat** warns before
-  converting a repo those rules would keep headless. Choosing **Boat
+  converting a repo those rules would keep headless. Choosing **boat.dev
   sandbox** in the native composer is a separate opt-in; bb keeps control
   of its checkout and machine lifecycle.
 - boat's AI credentials proxy (`boat ai proxy on`, a paid boat add-on:
@@ -181,7 +206,7 @@ and what it stores.
   Sandboxes and Projects, with needs-you work first and links back to chats.
   Task chats have Overview, Reviews, Transcript and Sandbox sub-tabs.
 - [**Start from anywhere**](docs/features.md#start-from-anywhere-in-bb): any
-  chat, the send menu, bb's New thread screen, or a whole chat on a Boat
+  chat, the send menu, bb's New thread screen, or a whole chat on a boat.dev
   sandbox.
 - [**Native starting flow**](docs/features.md#new-task) with starters:
   check a repo runs in a sandbox, fix a bug, explore and plan.
@@ -223,7 +248,7 @@ and what it stores.
 
 ## Settings
 
-Settings → Plugins → Boat Cloud Agents. The setup checklist leads into
+Settings → Plugins → Harbormaster. The setup checklist leads into
 Agents, Sandboxes & cost, Orchestrators and Notifications, with Advanced
 collapsed. On the first update, legacy fields remain visible while their
 values are copied safely; reload the plugin once more to finish moving
@@ -231,6 +256,13 @@ them into the grouped section.
 `bb boat config get | set | reset` reaches every setting, and
 `bb boat config export | import` backs them up. All of them, with keys and
 defaults: [docs/settings.md](docs/settings.md).
+
+**Instabox (optional).** Projects can run on Instabox Linux machines instead
+of boat.dev: install its CLI, store your Instabox API key in bb's settings
+for the plugin, turn it on (`bb boat config set instaboxEnabled true`) and
+pick a project's provider (`bb boat config runs-on <project> instabox`).
+boat.dev stays the default. Steps and limits:
+[docs/settings.md](docs/settings.md#sandbox-providers).
 
 ## Upgrading from 0.1.x
 
@@ -249,10 +281,10 @@ settings. See [settings migration](docs/settings.md).
 
 ## Optional companion: Workbench sidebar
 
-Boat works with bb's regular sidebar. **Workbench sidebar** is a separate
+Harbormaster works with bb's regular sidebar. **Workbench sidebar** is a separate
 plugin for provider rings, task/review nesting, quiet unread signals,
 collapsible work groups and pinned parent rows. It also works with ordinary
-bb chats when Boat is absent. Neither plugin requires the other.
+bb chats when Harbormaster is absent. Neither plugin requires the other.
 
 [Install Workbench](https://github.com/scheinriese/bb-plugin-workbench-sidebar):
 
@@ -306,6 +338,10 @@ in my spare time, so replies can take a while.
   then "Report a vulnerability"; see [SECURITY.md](SECURITY.md)), not in an
   issue or on Discord.
 
+CI scans Git history with gitleaks default rules (including GitHub tokens) plus
+Instabox keys, Scaleway access and contextual UUID secret keys, private preview
+tokens, presigned credentials, and personal Connect hosts.
+
 Before you open a pull request, run `npm run typecheck` and `npm test`. A
 plugin is full-trust code, so I read every change before merging, and I may
 not merge changes I can't maintain.
@@ -322,17 +358,22 @@ bb plugin install "$(pwd)"        # path install
 bb plugin dev                     # rebuild and reload on save
 ```
 
-Layout: `server.ts` wires everything. `src/boat.ts` runs the boat CLI and
-`src/boat-api.ts` types its JSON. `src/setup.ts` holds the setup checks
-(`bb boat doctor`, the checklist, the checks before a sandbox).
-`src/service.ts` owns tasks, capacity, dispatch and the monitor.
+Layout: `server.ts` wires everything. `src/providers/` is the sandbox
+provider layer: `types.ts` is the interface the rest of the plugin uses,
+`registry.ts` says which provider each project and task uses, and
+`machine.ts` registers a provider's sandboxes as bb machines. boat.dev, the
+only provider so far, lives in `src/providers/boat/`: `cli.ts` runs the boat
+CLI, `api.ts` types its JSON, `provider.ts` implements the interface,
+`setup.ts` holds the setup checks (`bb boat doctor`, the checklist, the
+checks before a sandbox), and `fixtures/` has the fake boat CLI the tests
+use. `src/service.ts` owns tasks, capacity, dispatch and the monitor.
 `src/settings.ts` declares both kinds of settings, `src/settings-store.ts`
 merges them, and `src/config.ts` backs them up. `src/cli.ts`, `src/tools.ts`
-and `src/rpc.ts` are the CLI, agent tools and UI RPC. `src/machine.ts` is
-the Boat sandbox machine provider. `app.tsx` and `web/` are the UI
-(`web/entry-points.tsx` adds the send menu, side panel and header actions).
-`skills/` teach agents, and `assets/evidence-upload.mjs` is the built-in
-uploader.
+and `src/rpc.ts` are the CLI, agent tools and UI RPC. `app.tsx` and `web/`
+are the UI (`web/entry-points.tsx` adds the send menu, side panel and header
+actions). `skills/` teach agents, and `assets/evidence-upload.mjs` is the
+built-in uploader. Capture targets (short-lived browsers that screenshot a
+preview on another OS) will be a separate, smaller layer in `src/capture/`.
 
 Automated tests use a fake boat CLI. They do not verify a real paid sandbox
 run. Merge and Ship use explicit in-thread confirmations with fresh source

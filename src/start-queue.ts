@@ -3,7 +3,7 @@ import { startQuotaSchema, type QueuedStartDto } from "../contract-start-queue.t
 import { TaskError, type BoatService, type StartTaskInput } from "./service.ts";
 import { StartQueueStore, durableStartInput, queueDigest, type QueuedStart } from "./start-queue-store.ts";
 import { reviewGeneration } from "./review-policy.ts";
-import { agentWithRoom, onlyAgent } from "./relay.ts";
+import { agentForWork, automaticRoom, onlyAgent } from "./relay.ts";
 import type { Provider, Task } from "./store.ts";
 import type { QuotaReader, Quotas } from "./quota.ts";
 
@@ -84,6 +84,7 @@ export function createStartQueue(deps: StartQueueDeps) {
           ...(paid ? { provider: paid.provider, flexibleAgent: false } : {}),
           queuedStart: {
             taskId: entry.reservedTaskId,
+            paidApproved: !!paid,
             async beforeInsert() {
               quotas = await fresh(signal);
               if (paid) {
@@ -99,7 +100,7 @@ export function createStartQueue(deps: StartQueueDeps) {
               signal.throwIfAborted(); lifecycle.signal.throwIfAborted(); localSourceCurrent(entry);
               assertPolicy(preparedSettings);
               const q = quotas.get(task.provider);
-              if (paid ? task.provider !== paid.provider : !q || q.usedPercent >= threshold) throw new TaskError("The requested agent still has no confirmed subscription room.", "agents_at_limit");
+              if (paid ? task.provider !== paid.provider : !automaticRoom(task.provider, quotas, settings.relay, settings.agents) || task.runner === "boat" && !settings.relay.paidClaudeHeadless && !!q && q.usedPercent >= threshold) throw new TaskError("The requested agent still has no confirmed subscription room or authorized extra usage.", "agents_at_limit");
               return store.attach(entry, task, () => {
                 const saved = save();
                 service.store.addEvent(saved.id, "queued-start", JSON.stringify({ requestId: entry.dto.id, digest: entry.digest }));
@@ -137,9 +138,9 @@ export function createStartQueue(deps: StartQueueDeps) {
         if ((deps.policyRevision?.() ?? 0) !== revision) throw new TaskError("The start policy changed. Check the current settings and request this work again.", "start_policy_changed");
       };
       try { return { kind: "started", ...await service.launchTask({ ...input, subscriptionGuard: {
-        async check(provider, settings) {
+        async check(provider, settings, runner) {
           assertCurrent();
-          await service.assertSubscriptionRoom(provider, { settings, signal: lifecycle.signal });
+          await service.assertSubscriptionRoom(provider, { settings, signal: lifecycle.signal, runner });
           if (queueDigest(await service.settings()) !== queueDigest(settings)) throw new TaskError("The start policy changed. Request this work again.", "start_policy_changed");
           assertCurrent();
         }, assertCurrent,
@@ -217,8 +218,8 @@ export function createStartQueue(deps: StartQueueDeps) {
             }
             const preferred = entry.input.provider ?? (entry.input.role === "review" ? settings.reviewProvider : settings.implementProvider);
             const canSwitch = settings.relay.enabled || (entry.input.role === "review" && !!entry.input.parentTaskId && settings.autoFailover);
-            const candidate = canSwitch ? agentWithRoom(preferred, quotas, settings.relay.switchAtPercent, settings.agents) : onlyAgent(settings.agents) ?? preferred;
-            if (!candidate || !quotas.has(candidate) || quotas.get(candidate)!.usedPercent >= settings.relay.switchAtPercent || settings.notConnectedAgents.includes(candidate)) continue;
+            const candidate = canSwitch ? agentForWork(preferred, quotas, settings.relay, settings.agents) : onlyAgent(settings.agents) ?? preferred;
+            if (!candidate || !automaticRoom(candidate, quotas, settings.relay, settings.agents) || settings.notConnectedAgents.includes(candidate)) continue;
             dispatched++;
             await dispatch(entry, 0);
           } catch (error) {

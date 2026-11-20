@@ -3,7 +3,7 @@
 // follow-up with the new size, and every way it can fail.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BoatError } from "../src/boat.ts";
+import { BoatError } from "../src/providers/boat/cli.ts";
 import { encodeData } from "../src/memory.ts";
 import type { ResizeRequest } from "../src/sandbox-size.ts";
 import { TaskError } from "../src/service.ts";
@@ -576,4 +576,11 @@ test("without the user's OK, an orchestrator moves one size up after running out
   assert.match(skip.hint ?? "", /sandbox_size "default".*Large costs four times as much per hour as Small\./);
   const moved = await env.service.sizes.resize(tool({ type: "default" }));
   assert.equal(moved.to, "default");
+});
+
+test("a completed resize clears its long caller deadline and lets Node exit", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { fileURLToPath } = await import("node:url");
+  await promisify(execFile)(process.execPath, [fileURLToPath(new URL("./fixtures/resize-exit.ts", import.meta.url))], { timeout: 10_000 });
 });

@@ -37,6 +37,11 @@ export function useSandboxSizes(enabled = true) {
   return experimental_useRpcQuery({ contract: rpcContract, method: "sandboxSizes", input: null, enabled });
 }
 
+/** Settings › Sandbox providers and Runs on: each provider's state, and where each project's new work runs. */
+export function useSandboxProviders(enabled = true) {
+  return experimental_useRpcQuery({ contract: rpcContract, method: "sandboxProviders", input: null, enabled });
+}
+
 export function useOverview() {
   return experimental_useRpcQuery({ contract: rpcContract, method: "overview", input: null });
 }

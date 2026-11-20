@@ -3,7 +3,7 @@
 // files, so a branch with unpushed commits must be pushed first.
 import { execFile } from "node:child_process";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { normalizeRepo } from "./boat-api.ts";
+import { normalizeRepo } from "./providers/boat/api.ts";
 import { protectedBranches, type OrchestratorProject, type ProjectStore } from "./projects.ts";
 
 export interface LocalProject {

@@ -25,11 +25,12 @@ import {
 import { toOrchestratorProject, type OrchestratorProject, type ProjectStore } from "./projects.ts";
 import { ensureProjectSection, threadSection } from "./sections.ts";
 import type { QuotaReader, Quotas } from "./quota.ts";
+import { resumeEnabled, type PaidResume, type ResumeReport } from "./paid-resume.ts";
+import type { SandboxWaker, WakeCall, WakeReport } from "./sandbox-wake.ts";
 import type { ConnectCheck, ConnectStatus } from "./connect.ts";
 import type { ConfigDeps } from "./config.ts";
 import type { SettingsStore } from "./settings-store.ts";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
-import type { Setup } from "./setup.ts";
+import type { Setup } from "./providers/boat/setup.ts";
 import {
   AGENT_NAME,
   COOLDOWN_MS,
@@ -54,6 +55,9 @@ import { createStartQueue, type StartQueue, type StartLaunch } from "./start-que
 import { StartQueueStore, queueDigest } from "./start-queue-store.ts";
 import type { StartTaskInput } from "./service.ts";
 import { START_QUEUE_TAG } from "../contract-start-queue.ts";
+import { CONTINUATION_GOAL, continuationGoalSchema, continuationGoalText, readContinuationGoal, type ContinuationGoal } from "./goal-handoff.ts";
+import type { ProviderState } from "./provider-status.ts";
+import type { InstaboxSetupStatus } from "./providers/instabox/setup.ts";
 
 /** How a caller names a project: a configured one, or a local bb project. */
 export type ProjectRef = { kind: "boat"; id: string } | { kind: "local"; bbProjectId: string };
@@ -90,6 +94,7 @@ export interface Runtime {
   saveModelTiers(tiers: TierMap | null): Promise<void>;
   /** The shared protocol plus the project's rules file, for an orchestrator. */
   orchestratorProtocol(project: OrchestratorProject | null, signal?: AbortSignal): Promise<string>;
+  continuationGoal(threadId: string, update?: {status: "active" | "complete" | "blocked" | "paused"; progress: string}, sourceThreadId?: string): Promise<ContinuationGoal | null>;
   /** How long CLI/tool calls wait for a dispatch before returning "starting". */
   launchWaitMs: number;
   /** New work waits durably on agents_at_limit; internal review/test launch paths stay direct. */
@@ -124,12 +129,23 @@ export interface Runtime {
   isHandingOver(threadId: string): Promise<boolean>;
   /** bb's thread.idle for any chat: the relay keeps a requested handoff note. */
   relayIdle(threadId: string, text: string | null, at: number | null): Promise<void>;
+  /** Each agent's usage, as the relay reads it (null in tests that don't wire it). */
+  quotas: QuotaReader | null;
+  /**
+   * Continue what stopped at a usage limit if paid Claude is available now:
+   * one pass, on its own timer (never under the relay's lock), one at a time.
+   */
+  paidResumeCheck(): Promise<RelayAction[]>;
+  /** Chats and headless tasks continued on paid Claude in the last day. */
+  recentPaidResumes(): number;
   /** Usage per agent and what the relay would do for each orchestrator. */
   relayStatus(): Promise<{ quotas: Quotas; orchestrators: { threadId: string; title: string | null; provider: Provider | null; decision: RelayDecision; state: RelayState | null }[] }>;
   /** bb Connect's status (cloud orchestrators and worker chats need it). */
   connectStatus(): Promise<ConnectStatus>;
   /** The setup checks (null in tests that don't wire them). */
   setup: Setup | null;
+  /** The sandbox providers' states and Instabox's checks (null in tests that don't wire them). */
+  providers: ProviderStatusSource | null;
   /** Every setting, wherever it lives (bb's list or the plugin's own). */
   settings: SettingsStore;
   /** Back up and restore: settings, projects, tiers and protocol (src/config.ts). */
@@ -140,16 +156,37 @@ export interface Runtime {
   changed(): void;
   /** Nudge the monitor to check boat soon. */
   wake(): void;
+  /**
+   * Bring a stuck sandbox and its chat back (`bb boat sandbox wake`,
+   * src/sandbox-wake.ts): waited for up to 90 seconds, then reported as running.
+   */
+  wakeSandbox(call: WakeCall): Promise<WakeReport>;
+  /** The running or last wake of the sandbox behind an id (`bb boat sandbox wake --status`). */
+  wakeStatus(id: string): Promise<WakeReport>;
 }
 
 export type RelayAction =
   | { threadId: string; kind: "requested-handoff"; to: Provider; reason: string }
   | { threadId: string; kind: "took-over"; to: Provider; reason: string; successor: string }
   | { threadId: string; kind: "both-out"; reason: string }
+  /** A chat (or headless task: threadId task:<id>) that stopped at a usage limit continues on paid Claude. */
+  | { threadId: string; kind: "resumed"; taskId: string | null; reason: string }
   | { threadId: string; kind: "skipped"; reason: string };
 
 const PROVIDER_FROM_ID: Record<string, Provider> = { "claude-code": "claude", codex: "codex" };
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** What the CLI and the page read of the sandbox providers (src/provider-status.ts). */
+export interface ProviderStatusSource {
+  /** Invalidate presentation facts after secure key changes. */
+  onChange?(listener: () => void): void;
+  /** Every provider with its state (force: check again now). */
+  states(options?: { force?: boolean }): Promise<ProviderState[]>;
+  /** Instabox's own checks (`bb boat doctor`). */
+  instabox(options?: { force?: boolean }): Promise<InstaboxSetupStatus>;
+  /** A key is stored in bb's secrets for this provider (never the key); null: it signs in another way. */
+  keyPresent(providerId: string): boolean | null;
+}
 
 export interface RuntimeDeps {
   bb: BbPluginApi;
@@ -168,6 +205,12 @@ export interface RuntimeDeps {
   settings: SettingsStore;
   /** The setup checks (bb boat doctor, the page, the checks before a sandbox). */
   setup?: Setup;
+  /** Chats stopped at a usage limit continue on paid Claude (src/paid-resume.ts). */
+  paidResume?: PaidResume;
+  /** The sandbox providers' states (src/provider-status.ts). */
+  providers?: ProviderStatusSource;
+  /** `bb boat sandbox wake` (src/sandbox-wake.ts); a getter: it's made after the runtime (null: not available). */
+  sandboxWaker?(): SandboxWaker | null;
   changed(): void;
   wake(): void;
 }
@@ -208,8 +251,8 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
           `No project "${ref.id}".`,
           "project_not_found",
           known.length > 0
-            ? `Known projects: ${known.join(", ")} (or local:<bb project id>). Add one in Settings → Plugins → Boat Cloud Agents.`
-            : "Add one in Settings → Plugins → Boat Cloud Agents, or with `bb boat project add`.",
+            ? `Known projects: ${known.join(", ")} (or local:<bb project id>). Add one in Settings → Plugins → Harbormaster.`
+            : "Add one in Settings → Plugins → Harbormaster, or with `bb boat project add`.",
         );
       }
       await validateLocalProjectLink(bb, project.localBbProjectId, project.repos[0]!.repo);
@@ -267,13 +310,32 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       environmentId?: string | null;
       /** Start in Full Access (an orchestrator in a boat sandbox). */
       fullAccess?: boolean;
+      automaticUsage?: boolean;
     },
   ): Promise<{ threadId: string; movedTaskIds: string[] }> {
     const takeOver = options.takeOver;
     const moving = takeOver?.threadId
       ? service.store.list({ orchestratorThreadId: takeOver.threadId, statuses: OPEN_STATUSES, limit: 500 }).map((task) => task.id)
       : [];
+    if (takeOver?.threadId && takeOver.continuationGoal === undefined) {
+      const source = await readThread(takeOver.threadId);
+      takeOver.continuationGoal = await readContinuationGoal(bb, takeOver.threadId, source?.providerId);
+    }
+    const nativeChildren: string[] = [];
+    if (takeOver?.threadId) {
+      const raw = await bb.sdk.threads.list({parentThreadId:takeOver.threadId,includeHidden:true,limit:200}).catch(()=>[]);
+      const rows = (Array.isArray(raw)?raw:((raw as {threads?:unknown[]}).threads??[])) as {id?:string;archivedAt?:unknown;deletedAt?:unknown}[];
+      nativeChildren.push(...rows.filter(row=>row.id&&!row.archivedAt&&!row.deletedAt).map(row=>row.id!));
+      takeOver.childThreadIds = nativeChildren;
+    }
     const section = takeOver ? await takeOverSection(bb, takeOver, moving) : null;
+    const policy = await service.settings();
+    const policyRevision = startPolicyRevision;
+    if (policy.relay.paidClaudeFallback || options.automaticUsage) {
+      const provider = PROVIDER_FROM_ID[options.providerId ?? ""];
+      if (provider) await service.assertSubscriptionRoom(provider, { settings: policy, runner: "chat" });
+      if (policyRevision !== startPolicyRevision) throw new TaskError("The usage policy changed before the handover. It will be checked again.", "agents_at_limit");
+    }
     const { threadId } = await spawnThread(bb, {
       projectId: options.bbProjectId,
       project,
@@ -286,6 +348,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       title: options.title,
       prompt: options.prompt,
       takeOverSection: section,
+      continuationGoal: takeOver?.continuationGoal,
       sectionId: options.sectionId,
       pinned: options.pinned,
       environmentId: options.environmentId ?? null,
@@ -300,7 +363,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       movedTaskIds = service.store.reassignOpenTasks(old, threadId);
       service.store.reassignOpenDecisions(old, threadId);
       await bb.storage.kv.delete(relayKey(old)).catch(() => undefined);
-      // It loses the boat tools on its next turn, and the relay never moves it again.
+      // It loses the Harbormaster tools on its next turn, and the relay never moves it again.
       await bb.sdk.threads
         .updatePluginMetadata({ threadId: old, pluginId: bb.pluginId, set: { role: "former-orchestrator", successor: threadId } } as never)
         .catch((error: unknown) => bb.log.warn(`retire ${old}: ${message(error)}`));
@@ -312,6 +375,10 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
           .update({ threadId: workerThreadId, parentThreadId: threadId, ...(options.sectionId ? { sectionId: options.sectionId } : {}) } as never)
           .catch((error: unknown) => bb.log.warn(`re-parent ${workerThreadId}: ${message(error)}`));
       }
+    }
+    for (const childId of nativeChildren) {
+      const child = await readThread(childId);
+      if (child?.parentThreadId === old) await bb.sdk.threads.update({threadId:childId,parentThreadId:threadId}).catch(error=>bb.log.warn(`re-parent child ${childId}: ${message(error)}`));
     }
     deps.changed();
     // Notices held back during the hand-over go to the successor now.
@@ -340,7 +407,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     try {
       const listed = (await bb.sdk.hosts.list()) as unknown;
       const hosts = (Array.isArray(listed) ? listed : ((listed as { hosts?: unknown[] }).hosts ?? [])) as { id?: string; machineProviderId?: string | null }[];
-      return hosts.some((host) => host.id === hostId && host.machineProviderId === MACHINE_PROVIDER_ID);
+      return hosts.some((host) => host.id === hostId && service.sandboxProviders.forMachine(host.machineProviderId) !== null);
     } catch {
       return false;
     }
@@ -381,6 +448,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       deletedAt?: unknown;
       environmentId?: string | null;
       projectId?: string | null;
+      parentThreadId?: string | null;
       pinnedAt?: unknown;
     };
   }
@@ -435,11 +503,12 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   }
 
   /** Move an orchestrator to another agent: a successor chat in the same workspace takes over. */
-  async function relayHandover(oldThreadId: string, to: Provider, reason: string, state: RelayState | null): Promise<string> {
+  async function relayHandover(oldThreadId: string, to: Provider, reason: string, state: RelayState | null, automaticUsage = false): Promise<string> {
     const project = await getThreadProject(bb, oldThreadId);
     if (project === null) throw new Error("the orchestrator has no project");
     const old = await readThread(oldThreadId);
     if (old === null || old.deletedAt) throw new Error("the orchestrator chat is gone");
+    const continuationGoal = await readContinuationGoal(bb, oldThreadId, old.providerId);
     handingOver.add(oldThreadId);
     try {
       // Two orchestrators must never act at once: a turn still running (one
@@ -476,6 +545,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         .filter(Boolean)
         .join(" ");
       const { threadId } = await launch(project, {
+        automaticUsage: automaticUsage || state?.phase === "handoff-requested" && state.automaticUsage === true,
         bbProjectId: old.projectId ?? PERSONAL_PROJECT_ID,
         hostId: null,
         cloud: false,
@@ -489,6 +559,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         prompt,
         takeOver: {
           threadId: oldThreadId,
+          continuationGoal,
           // A note followed by another turn isn't its last message any more.
           ...(note !== "" && note !== lastOutput ? { text: note, fileName: "its handoff note" } : {}),
           userMessages: forwardable(rows),
@@ -526,14 +597,14 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     }
   }
 
-  async function relaySwitch(threadId: string, to: Provider, options: { immediate?: boolean; reason?: string } = {}): Promise<RelayAction> {
+  async function relaySwitch(threadId: string, to: Provider, options: { immediate?: boolean; reason?: string; automaticUsage?: boolean } = {}): Promise<RelayAction> {
     const reason = options.reason ?? `requested by hand`;
     const only = onlyAgent((await service.settings()).agents);
     if (only !== null && to !== only) {
       throw new TaskError(
         `Only ${AGENT_NAME[only]} is set up (Coding agents), so an orchestrator can't move to ${AGENT_NAME[to]}.`,
         "agent_unavailable",
-        "Connect both in boat.dev (Coding agents set to Auto-detect), or pick Claude and Codex in Settings → Plugins → Boat Cloud Agents.",
+        "Connect both in boat.dev (Coding agents set to Auto-detect), or pick Claude and Codex in Settings → Plugins → Harbormaster.",
       );
     }
     const view = await orchestratorView(threadId);
@@ -545,11 +616,11 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       throw new TaskError("That orchestrator has no project, so it can't be restarted on another agent.", "project_not_found");
     }
     if (options.immediate || view.status === "error") {
-      const successor = await relayHandover(threadId, to, reason, await readState(threadId));
+      const successor = await relayHandover(threadId, to, reason, await readState(threadId), options.automaticUsage);
       return { threadId, kind: "took-over", to, reason, successor };
     }
     const since = Date.now();
-    await bb.storage.kv.set(relayKey(threadId), { phase: "handoff-requested", to, reason, since } satisfies RelayState);
+    await bb.storage.kv.set(relayKey(threadId), { phase: "handoff-requested", to, reason, since, ...(options.automaticUsage ? { automaticUsage: true, waitForTurn: view.status === "active" } : {}) } satisfies RelayState);
     await bb.sdk.threads.send({
       threadId,
       mode: "queue-if-active",
@@ -575,7 +646,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   async function relayPass(): Promise<RelayAction[]> {
     const settings = await service.settings();
     if (deps.quotas === undefined) return [];
-    const quotas = await deps.quotas.read();
+    const quotas = await deps.quotas.read(undefined, { fresh: settings.relay.paidClaudeFallback === true });
     const actions: RelayAction[] = [];
     const now = () => Date.now();
     // With one agent (Coding agents) the relay is off.
@@ -611,9 +682,9 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       }
       try {
         if (decision.kind === "request-handoff") {
-          actions.push(await relaySwitch(row.threadId, decision.to, { reason: decision.reason }));
+          actions.push(await relaySwitch(row.threadId, decision.to, { reason: decision.reason, automaticUsage: true }));
         } else if (decision.kind === "take-over") {
-          const successor = await relayHandover(row.threadId, decision.to, decision.reason, state);
+          const successor = await relayHandover(row.threadId, decision.to, decision.reason, state, true);
           actions.push({ threadId: row.threadId, kind: "took-over", to: decision.to, reason: decision.reason, successor });
         } else if (decision.kind === "both-out") {
           await bb.storage.kv.set(relayKey(row.threadId), { phase: "both-out", since: now() } satisfies RelayState);
@@ -654,6 +725,21 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         .catch(() => undefined);
     }
     return actions;
+  }
+
+  /** The relay's notes for what the paid resume pass did. */
+  function resumedActions(report: ResumeReport | null): RelayAction[] {
+    return (report?.resumed ?? []).map((work) => ({ threadId: work.threadId ?? `task:${work.taskId}`, kind: "resumed" as const, taskId: work.taskId, reason: work.reason }));
+  }
+
+  async function paidResumePass(quotas: Quotas, settings: Awaited<ReturnType<BoatService["settings"]>>): Promise<RelayAction[]> {
+    if (deps.paidResume === undefined || !resumeEnabled(settings)) return [];
+    const report = await deps.paidResume.pass(quotas, settings).catch((error: unknown) => {
+      bb.log.warn(`paid resume: ${message(error)}`);
+      return null;
+    });
+    if ((report?.resumed.length ?? 0) > 0) deps.changed();
+    return resumedActions(report);
   }
 
   async function relayStatus() {
@@ -768,7 +854,9 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     if (state?.phase !== "handoff-requested" || !text?.trim()) return;
     const when = at ?? Date.now();
     if (when <= state.since) return;
-    await bb.storage.kv.set(relayKey(threadId), { ...state, note: text.slice(0, 20_000), noteAt: when } satisfies RelayState).catch(() => undefined);
+    if (state.waitForTurn && !text.includes("[boat handoff ready]")) return;
+    await bb.storage.kv.set(relayKey(threadId), { ...state, note: text.replace("[boat handoff ready]", "").trim().slice(0, 20_000), noteAt: when } satisfies RelayState);
+    if (text.includes("[boat handoff ready]")) await relayTick();
   }
 
   const startQueue = createStartQueue({ bb, service, store: new StartQueueStore(() => bb.storage.database()), quotas: deps.quotas,
@@ -789,6 +877,25 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       const shared = renderSharedProtocol(deps.protocol.read().text, (await modelTiers()).tiers, await service.settings());
       const rules = await loadProjectRules(project, deps.readRepoFile, signal);
       return composeProtocol(shared, project, rules);
+    },
+    async continuationGoal(threadId, update, sourceThreadId) {
+      const metadata = await bb.sdk.threads.getPluginMetadata({threadId});
+      let parsed = continuationGoalSchema.safeParse((metadata as Record<string, unknown>)[CONTINUATION_GOAL]);
+      if (!parsed.success && sourceThreadId) {
+        const old = await bb.sdk.threads.getPluginMetadata({threadId:sourceThreadId}) as Record<string,unknown>;
+        if (old.role !== "former-orchestrator" || old.successor !== threadId) throw new TaskError("That chat is not this orchestrator's recorded predecessor.","goal_source_mismatch");
+        const source = await readThread(sourceThreadId);
+        const carried = await readContinuationGoal(bb,sourceThreadId,source?.providerId);
+        if (carried) parsed = continuationGoalSchema.safeParse(carried);
+        if (parsed.success) await bb.sdk.threads.updatePluginMetadata({threadId,set:{[CONTINUATION_GOAL]:parsed.data}});
+      }
+      if (!parsed.success) return null;
+      if (!update) return parsed.data;
+      if (parsed.data.goal.status === "complete" && update.status !== "complete") throw new TaskError("A completed carried goal cannot be reopened by this tool. Follow a new explicit user goal instead.", "goal_complete");
+      if (update.status === "active" && (parsed.data.goal.status === "budgetLimited" || parsed.data.goal.tokenBudget !== null && parsed.data.goal.tokensUsed >= parsed.data.goal.tokenBudget)) throw new TaskError("The carried token budget is exhausted; this tool cannot allocate another budget.","goal_budget_limited");
+      const next = continuationGoalSchema.parse({...parsed.data, goal:{...parsed.data.goal,status:update.status}, progress:update.progress});
+      await bb.sdk.threads.updatePluginMetadata({threadId,set:{[CONTINUATION_GOAL]:next}});
+      return next;
     },
     launchWaitMs: 90_000,
     launchTask: (input, waitMs = 90_000) => startQueue.launch(input, waitMs),
@@ -886,6 +993,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
 
     connectStatus,
     setup: deps.setup ?? null,
+    providers: deps.providers ?? null,
     settings: deps.settings,
     config: {
       settings: deps.settings,
@@ -899,6 +1007,14 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     relayTick,
     relaySwitch: (threadId, to, options) => exclusive(() => relaySwitch(threadId, to, options)),
     relayStatus,
+    quotas: deps.quotas ?? null,
+    async paidResumeCheck() {
+      const settings = await service.settings();
+      if (deps.quotas === undefined || deps.paidResume === undefined || !resumeEnabled(settings)) return [];
+      // The relay's pass keeps the reading fresh each minute; this one only reads it.
+      return paidResumePass(await deps.quotas.read(), settings);
+    },
+    recentPaidResumes: () => deps.paidResume?.recent() ?? 0,
     isHandingOver,
     relayIdle,
     chatApproval,
@@ -906,5 +1022,19 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
 
     changed: deps.changed,
     wake: deps.wake,
+    async wakeSandbox(call) {
+      const waker = deps.sandboxWaker?.() ?? null;
+      if (waker === null) throw new TaskError("Waking a sandbox isn't available here.", "wake_unavailable");
+      try {
+        return await waker.wake(call);
+      } finally {
+        deps.changed();
+      }
+    },
+    async wakeStatus(id) {
+      const waker = deps.sandboxWaker?.() ?? null;
+      if (waker === null) throw new TaskError("Waking a sandbox isn't available here.", "wake_unavailable");
+      return waker.status(id);
+    },
   };
 }

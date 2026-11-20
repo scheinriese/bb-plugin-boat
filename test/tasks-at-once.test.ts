@@ -16,7 +16,7 @@ import { PLUGIN_SETTINGS } from "../src/settings.ts";
 import { DEFAULT_TIERS } from "../src/tiers.ts";
 import { createTestHost } from "./fakes.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 
 async function host(settings: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "boat-tasks-at-once-"));

@@ -1,13 +1,17 @@
+import { providerFailureCard } from "../provider-failure.ts";
+import { macRunsOnBatch } from "./mac-lease-view.ts";
 import { projectSnapshotHandlers } from "./project-snapshot.ts";
 import { readProjectCatalog, validateLocalProjectLink } from "./project-catalog.ts";
 import { fidelityHandlers } from "./rpc-fidelity.ts";
 import { shipPresentation } from "./ship-presentation.ts";
 // RPC handlers behind the Cloud agents UI (contract in ../contract.ts).
 import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
-import { TAGS, rpcContract, type PreviewDto, type SandboxDto, type TaskDetailDto, type TaskDto, type TaskSourceDto, type ThreadRoleDto } from "../contract.ts";
+import { TAGS, rpcContract, type PreviewDto, type RunsOnDto, type SandboxDto, type TaskDetailDto, type TaskDto, type TaskSourceDto, type ThreadRoleDto } from "../contract.ts";
 import type { PreviewView } from "./previews.ts";
-import { MACHINE_TYPES, assertBranch, autoStopHours, dashboardUrl, normalizeRepo, type MachineType, type Sandbox } from "./boat-api.ts";
-import { BoatError, resolveBoatBinary } from "./boat.ts";
+import { assertBranch, normalizeRepo } from "./providers/boat/api.ts";
+import { sandboxDashboardUrl } from "./providers/dashboard.ts";
+import { resolveBoatBinary } from "./providers/boat/cli.ts";
+import { MACHINE_TYPES, PROVIDER_NAMES, ProviderError, autoStopHours, type ExplainedError, type MachineType, type SandboxInfo as Sandbox } from "./providers/types.ts";
 import { describeClose } from "./close-outcome.ts";
 import { uiStateHandlers } from "./ui-state.ts";
 import { orchestratorChoiceHandlers } from "./orchestrator-agent.ts";
@@ -24,13 +28,15 @@ import { buildBoard, isReady, phaseOf, reviewState, resolveTaskStatus, type Task
 import { ConfigError, applyImport, changeCount, exportConfig, exportFileName, planImport, summarize } from "./config.ts";
 import { CHAT_PROVIDER } from "./chat.ts";
 import { OPEN_STATUSES, PROVIDERS, type Provider, type Task } from "./store.ts";
-import { effectiveRelay, onlyAgent, relayNote } from "./relay.ts";
-import { explainBoatError, sandboxSizes, testTaskInput, type ExplainedError } from "./setup.ts";
+import { extraUsageDto, poolExtraUsage } from "./quota.ts";
+import { automaticPaidClaude, effectiveRelay, onlyAgent, relayNote } from "./relay.ts";
+import { sandboxSizes, testTaskInput } from "./providers/boat/setup.ts";
 import { SettingsError, settingRows } from "./settings-store.ts";
 import { SETTING_SECTIONS } from "./settings.ts";
-import { MACHINE_PROVIDER_ID } from "./machine.ts";
 import { HIDDEN_EVENT_KINDS } from "./memory.ts";
 import { sizeHandlers } from "./rpc-size.ts";
+import { usageHandlers } from "./rpc-usage.ts";
+import { providerHandlers, runsOnOf } from "./rpc-providers.ts";
 import { currentChanges } from "./ship-approval.ts";
 import { shipRpcContract } from "../contract-ship.ts";
 import { createShipInteractions, parseShipSnapshot, shipSnapshotScript } from "./ship-interaction.ts";
@@ -72,7 +78,7 @@ export function shipApprovalDto(task: Pick<Task, "turns" | "shipApproval">): Tas
 
 export function toTaskDto(
   task: Task,
-  extras: { ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean; publicStatus?: TaskPublicStatus } = {},
+  extras: { providerFailure?: TaskDto["providerFailure"]; ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean; publicStatus?: TaskPublicStatus; runsOn?: RunsOnDto } = {},
 ): TaskDto {
   const report = task.result ? parseReport(task.result) : { status: null, verdict: null };
   const unshipped = holdsUnshippedWork(task);
@@ -113,6 +119,7 @@ export function toTaskDto(
     parentTaskId: task.parentTaskId,
     prUrl: task.prUrl,
     error: task.error,
+    ...(extras.providerFailure ? {providerFailure:extras.providerFailure} : {}),
     turns: task.turns,
     ownsSandbox: task.ownsSandbox,
     createdAt: task.createdAt,
@@ -121,6 +128,7 @@ export function toTaskDto(
     reportStatus: report.status,
     verdict: report.verdict,
     excerpt: task.result ? resultExcerpt(task.result, 600) : null,
+    ...(extras.runsOn ? { runsOn: extras.runsOn } : {}),
   };
 }
 
@@ -153,7 +161,8 @@ export function sandboxUses(
   ];
 }
 
-function toSandboxDto(sandbox: Sandbox, taskIds: string[], uses: SandboxDto["uses"] = []): SandboxDto {
+function toSandboxDto(sandbox: Sandbox & { provider?: string }, taskIds: string[], uses: SandboxDto["uses"] = [], runsOn?: RunsOnDto): SandboxDto {
+  const onInstabox = sandbox.provider === "instabox";
   return {
     id: sandbox.id,
     name: sandbox.name,
@@ -163,17 +172,18 @@ function toSandboxDto(sandbox: Sandbox, taskIds: string[], uses: SandboxDto["use
     createdAt: sandbox.createdAt,
     archiveAfter: sandbox.archiveAfter,
     machineType: sandbox.machineType ?? null,
-    dashboardUrl: dashboardUrl(sandbox.id),
-    sshCommand: `boat ssh ${sandbox.id}`,
+    dashboardUrl: sandboxDashboardUrl(sandbox.id, sandbox.provider),
+    sshCommand: onInstabox ? `instabox ssh ${sandbox.id}` : `boat ssh ${sandbox.id}`,
     taskIds,
     uses,
+    ...(runsOn ? { runsOn } : {}),
   };
 }
 
 function message(error: unknown): string {
-  if (error instanceof BoatError) {
-    // boat's failures in plain words, with what to do (signed out, no CLI, …).
-    const explained = explainBoatError(error);
+  if (error instanceof ProviderError) {
+    // A provider's failures in plain words, with what to do (signed out, no CLI, …).
+    const explained = error.explain();
     return explained.hint ? `${explained.message} ${explained.hint}` : explained.message;
   }
   return error instanceof Error ? error.message : String(error);
@@ -184,13 +194,14 @@ function message(error: unknown): string {
  * show it as is); the plugin's code, the message and the hint ride in its
  * issues as paths ["code"], ["message"], ["hint"] (contract.ts rpcErrorInfo).
  */
-export function refusal(code: "conflict" | "forbidden" | "invalid" | "not_found", error: ExplainedError): experimental_PluginRpcRefusal {
+export function refusal(code: "conflict" | "forbidden" | "invalid" | "not_found", error: ExplainedError & {taskId?:string}): experimental_PluginRpcRefusal {
   return new experimental_PluginRpcRefusal({
     code,
     message: error.hint ? `${error.message} ${error.hint}` : error.message,
     issues: [
       { message: error.code, path: ["code"] },
       { message: error.message, path: ["message"] },
+      ...(error.taskId ? [{message:error.taskId,path:["taskId"]}] : []),
       ...(error.hint ? [{ message: error.hint, path: ["hint"] }] : []),
     ],
   });
@@ -201,10 +212,12 @@ export async function refuse<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
+    const taskId=typeof (error as {taskId?:unknown} | null)?.taskId==="string" ? (error as {taskId:string}).taskId : undefined;
     if (error instanceof TaskError) {
-      throw refusal(error.code === "task_not_found" ? "not_found" : "conflict", { code: error.code, message: error.message, hint: error.hint ?? null });
+      throw refusal(error.code === "task_not_found" ? "not_found" : "conflict", { code: error.code, message: error.message, hint: error.hint ?? null, taskId });
     }
-    if (error instanceof BoatError) throw refusal(error.status === 404 ? "not_found" : "conflict", explainBoatError(error));
+    if (error instanceof ProviderError) throw refusal(error.status === 404 ? "not_found" : "conflict", {...error.explain(),taskId});
+    if (taskId) throw refusal("conflict", {code:"provider_failed",message:message(error),hint:null,taskId});
     throw error;
   }
 }
@@ -217,7 +230,7 @@ export function registerShipRpc(runtime: Runtime): void {
     getTask: (id) => service.mustGet(id),
     latestReview: (id) => service.store.latestEvent(id, "review")?.text ?? null,
     async snapshot(task, targets, signal) {
-      const result = await service.boat.exec(task.sandboxId!, shipSnapshotScript(targets), { timeoutMs: 30_000, signal });
+      const result = await service.sandboxProviders.forTask(task).exec(task.sandboxId!, shipSnapshotScript(targets), { timeoutMs: 30_000, signal });
       if (result.exitCode !== 0) throw new TaskError("Couldn't check a clean checkout. Resume the sandbox, commit any changes, and request shipping again.", "ship_check_failed");
       return parseShipSnapshot(result.stdout, targets.length);
     },
@@ -280,7 +293,7 @@ export function registerRpc(runtime: Runtime): void {
       const raw = (await bb.sdk.hosts.list()) as unknown;
       const hosts = (Array.isArray(raw) ? raw : ((raw as { hosts?: unknown[] } | null)?.hosts ?? [])) as { id?: string; machineProviderId?: string | null }[];
       for (const host of hosts) {
-        if (!host.id || host.machineProviderId !== MACHINE_PROVIDER_ID) continue;
+        if (!host.id || service.sandboxProviders.forMachine(host.machineProviderId) === null) continue;
         const resource = (await bb.experimental_machines.getResource(host.id).catch(() => null)) as { sandboxId?: unknown } | null;
         if (typeof resource?.sandboxId !== "string") continue;
         const rows = rowsOf(await bb.sdk.threads.list({ hostId: host.id } as never).catch(() => []));
@@ -304,8 +317,49 @@ export function registerRpc(runtime: Runtime): void {
   }
   type Sourcing = Awaited<ReturnType<typeof sourcing>>;
 
-  const dto = (task: Task, sources: Sourcing, all?: readonly Task[]) =>
+  /**
+   * The size a sandbox was last read at (the memory probe's reading, kept 15
+   * seconds per sandbox: task lists ask often). Only open tasks are read; a
+   * closed task's sandbox may be long gone.
+   */
+  const sizeCache = new Map<string, { at: number; type: MachineType | null }>();
+  const sizeOf = (sandboxId: string, task: Pick<Task, "id" | "sandboxId">): MachineType | null => {
+    const cached = sizeCache.get(sandboxId);
+    if (cached !== undefined && Date.now() - cached.at < 15_000) return cached.type;
+    let type: MachineType | null = null;
+    try {
+      type = service.sizes.knownSize(task)?.type ?? null;
+    } catch {
+      // Unknown: the line names only the provider.
+    }
+    if (sizeCache.size > 500) sizeCache.clear();
+    sizeCache.set(sandboxId, { at: Date.now(), type });
+    return type;
+  };
+  /** Where a task's sandbox runs (Settings › Sandbox providers words): "boat.dev · Default". */
+  const runsOn = (task: Task, macView: ReturnType<typeof macRunsOnBatch>): RunsOnDto =>
+    macView(task.sandboxId, task.id) ?? runsOnOf(
+      service.sandboxProvider(task),
+      task.sandboxId !== null && OPEN_STATUSES.includes(task.status) ? sizeOf(task.sandboxId, task) : null,
+      service.sandboxProviders.default.id,
+      task.sandboxId,
+    );
+
+  function providerFailure(task: Task): TaskDto["providerFailure"] {
+    if(service.store.latestEvent(task.id,"ownmac-rental-offer"))return undefined;
+    if (task.status !== "failed" || task.turns!==0 || (task.sandboxProvider ?? "boat")==="boat") return undefined;
+    const code = service.store.history({taskId:task.id,limit:30}).events.find(e=>e.kind==="stopped" && e.cause)?.cause ?? "provider_failed";
+    const snapshot=service.store.macLeases.snapshot();
+    const leaseId=snapshot.tasks.find(attached=>attached.taskId===task.id)?.leaseId;
+    const lease = leaseId ? snapshot.leases.find(l=>l.id===leaseId) : snapshot.leases.slice().reverse().find(l=>l.machineId===task.sandboxId);
+    const failure = {code,provider:task.sandboxProvider!,mac:task.sandboxSystem==="macos",released:!!lease?.endedAt,canRetry:task.turns===0 && !task.sandboxId && !["creation_unknown","creation_allocated"].includes(code)};
+    return providerFailureCard(failure,task.error ?? "") ? failure : undefined;
+  }
+  const retrying = new Set<string>();
+  const dto = (task: Task, sources: Sourcing, all?: readonly Task[], macView = macRunsOnBatch(service.store.macLeases.snapshot(), service.store.sandboxTasks(task.sandboxId ?? ""))) =>
     toTaskDto(task, {
+      runsOn: runsOn(task, macView),
+      providerFailure: providerFailure(task),
       publicStatus: service.publicStatus(task, { ready: isReady(task, all ?? service.store.list({ parentTaskId: task.id, limit: 100 }).concat(task), latestReview, sources.isOrchestrator) }),
       untrustedRepo: untrusted(task),
       movingToChat: service.isMovingToChat(task.id),
@@ -368,12 +422,17 @@ export function registerRpc(runtime: Runtime): void {
     projectCatalog: (() => {
       let cached: { at: number; value: ReturnType<typeof readProjectCatalog> } | null = null;
       return () => {
-        if (!cached || Date.now() - cached.at > 60_000) cached = { at: Date.now(), value: readProjectCatalog(bb, service.boat) };
+        // Repos come from named environments, which only some providers have (boat.dev).
+        const withEnvironments = service.sandboxProviders.enabled.find((provider) => provider.caps.environments) ?? service.sandboxProviders.default;
+        if (!cached || Date.now() - cached.at > 60_000) cached = { at: Date.now(), value: readProjectCatalog(bb, withEnvironments) };
         return cached.value;
       };
     })(),
     // Sandbox sizes and memory (src/rpc-size.ts).
     ...sizeHandlers(runtime, refuse),
+    ...usageHandlers(runtime),
+    // Sandbox providers and where each project's work runs (src/rpc-providers.ts).
+    ...providerHandlers(runtime),
     overview: async () => {
       const settings = await service.settings();
       const only = onlyAgent(settings.agents);
@@ -415,18 +474,31 @@ export function registerRpc(runtime: Runtime): void {
 
     sandboxes: async ({ all }) => {
       try {
-        const [sandboxes, chats] = await Promise.all([service.boat.list({ all }), machineChats()]);
+        // Every enabled provider's (one that can't be read is named in error; the others still show).
+        const [listed, chats] = await Promise.all([service.listSandboxes({ all }), machineChats()]);
+        const sandboxes = listed.sandboxes;
         const tasks = service.store.list({ limit: 1000 });
         const orchestrators = service.store.orchestratorThreadIds().current;
+        const macView = macRunsOnBatch(service.store.macLeases.snapshot(), tasks);
         return {
-          sandboxes: sandboxes.map((sandbox) =>
-            toSandboxDto(
+          sandboxes: sandboxes.map((sandbox) => {
+            const own = tasks.filter((task) => task.sandboxId === sandbox.id);
+            const live = own.find((task) => OPEN_STATUSES.includes(task.status)) ?? null;
+            const size = sandbox.machineType ?? (live === null ? null : sizeOf(sandbox.id, live));
+            const result = toSandboxDto(
               sandbox,
-              tasks.filter((task) => task.sandboxId === sandbox.id).map((task) => task.id),
+              own.map((task) => task.id),
               sandboxUses(sandbox.id, tasks, chats, orchestrators),
-            ),
-          ),
-          error: null,
+              macView(sandbox.id) ?? runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id, sandbox.id),
+            );
+            if (result.runsOn?.os === "macos") {
+              const now = Date.now();
+              const monday = new Date(now); monday.setUTCHours(0,0,0,0); monday.setUTCDate(monday.getUTCDate()-(monday.getUTCDay()+6)%7);
+              return { ...result, leaseDaysThisWeek: service.store.macLeases.between(monday.getTime(),now+1,now,sandbox.id).leaseDays };
+            }
+            return result;
+          }),
+          error: listed.failed.length === 0 ? null : listed.failed.map((entry) => `${PROVIDER_NAMES[entry.provider as keyof typeof PROVIDER_NAMES] ?? entry.provider}: ${entry.error}`).join("; "),
         };
       } catch (error) {
         return { sandboxes: [], error: message(error) };
@@ -436,7 +508,8 @@ export function registerRpc(runtime: Runtime): void {
     tasks: async ({ statuses, threadId, limit }) => {
       const list = service.store.list({ statuses: statuses ?? undefined, orchestratorThreadId: threadId ?? undefined, limit });
       const sources = await sourcing(list);
-      return { tasks: list.map((task, _index, all) => dto(task, sources, all)) };
+      const macView = macRunsOnBatch(service.store.macLeases.snapshot(), list);
+      return { tasks: list.map((task, _index, all) => dto(task, sources, all, macView)) };
     },
 
     task: async ({ id }) => {
@@ -451,7 +524,7 @@ export function registerRpc(runtime: Runtime): void {
           .filter((event) => !HIDDEN_EVENT_KINDS.has(event.kind))
           .slice(-100)
           .map(({ at, kind, text }) => ({ at, kind, text })),
-        dashboardUrl: task.sandboxId ? dashboardUrl(task.sandboxId) : null,
+        dashboardUrl: task.sandboxId ? sandboxDashboardUrl(task.sandboxId, task.sandboxProvider) : null,
         memory: await service.sizes.view(task),
         shipApproval: shipApprovalDto(task),
       };
@@ -462,10 +535,11 @@ export function registerRpc(runtime: Runtime): void {
       const result: Record<string, TaskDto[]> = {};
       const lists = keys.slice(0, 200).map((threadId) => [threadId, service.store.list({ orchestratorThreadId: threadId, limit: 100 })] as const);
       const sources = await sourcing(lists.flatMap(([, tasks]) => tasks.slice(0, 1)));
+      const macView = macRunsOnBatch(service.store.macLeases.snapshot(), lists.flatMap(([,tasks]) => tasks));
       for (const [threadId, tasks] of lists) {
         const open = tasks.filter((task) => OPEN_STATUSES.includes(task.status));
         const closed = tasks.filter((task) => !OPEN_STATUSES.includes(task.status));
-        result[threadId] = [...open, ...closed].map((task) => dto(task, sources, tasks));
+        result[threadId] = [...open, ...closed].map((task) => dto(task, sources, tasks, macView));
       }
       return result;
     },
@@ -476,7 +550,7 @@ export function registerRpc(runtime: Runtime): void {
         return { events: [], error: task === null ? `No task ${id}` : null };
       }
       try {
-        const events = await service.boat.events(task.sandboxId, task.conversationId);
+        const events = await service.sandboxProviders.forTask(task).events(task.sandboxId, task.conversationId);
         return {
           events: events.slice(-limit).map((event) => ({
             type: event.type,
@@ -502,6 +576,10 @@ export function registerRpc(runtime: Runtime): void {
         preferred: settings.relay.preferred,
         switchAtPercent: settings.relay.switchAtPercent,
         avoidExtraUsage: settings.avoidExtraUsage,
+        paidClaudeFallback: settings.relay.paidClaudeFallback === true,
+        paidClaudeAvailable: automaticPaidClaude(status.quotas, settings.relay, settings.agents),
+        claudeExtraUsage: extraUsageDto(status.quotas.get("claude")?.extraUsage ?? await poolExtraUsage(bb, "claude")),
+        paidClaudeHeadless: settings.relay.paidClaudeHeadless === true,
         agents: PROVIDERS.filter((provider) => onlyAgent(settings.agents) === null || provider === settings.agents).map((provider) => {
           const quota = status.quotas.get(provider);
           return { provider, usedPercent: quota?.usedPercent ?? null, window: quota?.window ?? null, resetsAt: quota?.resetsAt ?? null };
@@ -608,6 +686,7 @@ export function registerRpc(runtime: Runtime): void {
             // The user is the one clicking: their choice is the approval.
             userApproved: true,
             sandbox: input.sandbox || null,
+            sandboxSystem: input.sandboxSystem,
             machineType: (input.machineType as MachineType | null) ?? null,
             orchestratorThreadId: input.notifyThreadId,
             project: input.projectId ? await runtime.resolveProject({ kind: "boat", id: input.projectId }) : null,
@@ -623,6 +702,28 @@ export function registerRpc(runtime: Runtime): void {
         const { task, pending } = result;
         return { task: await single(task), pending };
       }),
+
+    retryProviderStart: ({id}) => refuse(async () => {
+      const task=service.mustGet(id);
+      if (!providerFailure(task)?.canRetry || retrying.has(task.id)) throw new TaskError("Check the provider machine list before retrying this start.","task_busy");
+      retrying.add(task.id);
+      try {
+        const project=task.boatProject ? await runtime.resolveProject({kind:"boat",id:task.boatProject}) : null;
+        const result=await runtime.launchTask({title:task.title,brief:task.brief,role:task.role,parentTaskId:task.parentTaskId,repo:task.repo,branch:task.branch,baseBranch:task.baseBranch,provider:task.provider,model:task.model,tier:task.tier as import("./tiers.ts").Tier | null,reasoningEffort:task.reasoningEffort,userApproved:true,runner:task.runner,project,orchestratorThreadId:task.orchestratorThreadId,sandboxSystem:task.sandboxSystem,environment:task.environment,snapshot:task.snapshot,machineType:task.startOptions?.machineType ?? service.sizes.knownSize(task)?.type ?? null,confirmUntrustedChat:task.startOptions?.confirmUntrustedChat ?? null},runtime.launchWaitMs);
+        service.store.transition(task.id,["failed"],{status:"cancelled"});
+        runtime.changed();runtime.wake();
+        if(result.kind==="queued")return {queued:result.request,pending:true as const};
+        return {task:await single(result.task),pending:result.pending};
+      } catch (error) {
+        const replacementId=(error as {taskId?:unknown} | null)?.taskId;
+        const replacement=typeof replacementId==="string" ? service.store.get(replacementId) : null;
+        if(replacement && replacement.id!==task.id && replacement.status==="failed") {
+          service.store.transition(task.id,["failed"],{status:"cancelled"});
+          runtime.changed();runtime.wake();
+        }
+        throw error;
+      } finally {retrying.delete(task.id);}
+    }),
 
     continueAsChatStatus: ({ id }) => refuse(() => service.continueAsChatStatus(id)),
 
@@ -778,7 +879,7 @@ export function registerRpc(runtime: Runtime): void {
       try {
         const result = await service.snapshots();
         return {
-          snapshots: result.snapshots.map(({ name, sizeBytes, createdAt, type, status }) => ({ name, sizeBytes, createdAt, type, status })),
+          snapshots: result.snapshots.map(({ name, sizeBytes, createdAt, type, status, provider }) => ({ name, sizeBytes, createdAt, type, status, ...(provider === "boat" ? {} : { provider }) })),
           included: result.included,
           used: result.used,
           error: null,
@@ -805,14 +906,14 @@ export function registerRpc(runtime: Runtime): void {
         if (repo !== null) {
           const always = alwaysProtectedBranches((await service.settings()).extraProtectedBranches);
           try {
-            await service.boat.prepareRepo(
+            await service.prepareRepo(
               sandbox.id,
               repo,
               branch ? { kind: "new-branch", branch, base: null } : { kind: "default-branch" },
               { protect: protectedBranches(null, service.projectBaseBranches([repo]), always), alwaysProtect: always },
             );
           } catch (error) {
-            await service.boat.delete(sandbox.id).catch(() => undefined);
+            await service.sandboxProvider(sandbox.id).delete(sandbox.id).catch(() => undefined);
             throw error;
           }
         }
@@ -824,10 +925,12 @@ export function registerRpc(runtime: Runtime): void {
 
     sandboxAction: ({ id, action }) =>
       refuse(async () => {
-        const settings = await service.settings();
-        const { limits } = await service.capacity();
-        const hours = autoStopHours(settings.sandboxTtlHours, limits?.autoStopCapHours ?? null);
-        if (action !== "delete") await service.sandboxAction(id, action, Math.round(hours * 3600));
+        if (action !== "delete") {
+          const settings = await service.settings();
+          const { limits } = await service.capacity(undefined, id);
+          const hours = autoStopHours(settings.sandboxTtlHours, limits?.autoStopCapHours ?? null);
+          await service.sandboxAction(id, action, Math.round(hours * 3600));
+        }
         else {
           const live = service.store.liveSandboxTasks(id);
           await service.sandboxAction(id, "delete", 0);
@@ -934,12 +1037,13 @@ export function registerRpc(runtime: Runtime): void {
       });
       const tasks = found.flatMap(([, task]) => (task === null ? [] : [task]));
       const sources = tasks.length > 0 ? await sourcing(tasks) : null;
+      const macView = macRunsOnBatch(service.store.macLeases.snapshot(), tasks);
       const result: Record<string, ThreadRoleDto> = {};
       for (const [threadId, task] of found) {
         result[threadId] = orchestrators.has(threadId)
           ? { kind: "orchestrator" }
           : task !== null && sources !== null
-            ? { kind: "task", task: dto(task, sources) }
+            ? { kind: "task", task: dto(task, sources, undefined, macView) }
             : { kind: "chat" };
       }
       return result;
@@ -1025,6 +1129,7 @@ export function registerRpc(runtime: Runtime): void {
       const decisions = service.store.decisions({ orchestratorThreadId: threadId, statuses: ["open"] });
       const sources = await sourcing(tasks);
       // A finished turn of a page or plain-chat task is ready for the user (and counts in the badge).
+      const macView = macRunsOnBatch(service.store.macLeases.snapshot(), tasks);
       const board = buildBoard({ tasks, decisions, latestVerdict: latestReview, isOrchestrator: sources.isOrchestrator });
       const toDecisionDto = (decision: (typeof decisions)[number]) => ({
         id: decision.id,
@@ -1044,12 +1149,12 @@ export function registerRpc(runtime: Runtime): void {
       return {
         needsYou: board.needsYou.map(toDecisionDto),
         ready: board.ready.map((task) =>
-          dto(task, sources, tasks),
+          dto(task, sources, tasks, macView),
         ),
         running: board.running.map((task) =>
-          dto(task, sources, tasks),
+          dto(task, sources, tasks, macView),
         ),
-        done: board.done.map((task) => dto(task, sources, tasks)),
+        done: board.done.map((task) => dto(task, sources, tasks, macView)),
       };
     },
 

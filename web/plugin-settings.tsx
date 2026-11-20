@@ -1,9 +1,10 @@
+import { hours as providerHours } from "./provider-format";
 // The plugin's own settings sections (Settings → Plugins → Boat Cloud
 // Agents, below bb's list): Setup, Usage limits, Models, Orchestrators
 // (optional) and Advanced. Projects and Back up and restore have their own
 // files. Rows look and behave like bb's own settings list: switches and
 // selects save at once, text and numbers when you leave the field.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { experimental_useRpcMutation, experimental_useRpcQuery, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { rpcContract, rpcErrorInfo, type SandboxSizeDto, type SettingDto } from "../contract";
@@ -21,6 +22,8 @@ import { SetupChecklist } from "./setup";
 import { BackupSettings } from "./backup-settings";
 import { EVERYDAY_SETTING_COPY, groupedSettings, notificationSettingPatch, setupNeedsWork, setupTestPassed } from "./v1-settings-logic";
 import { useSettingsFrameTweak } from "./workarounds/settings-frame";
+import { UsageLimitsSection } from "./usage-limits";
+import { SandboxProvidersSettings } from "./providers";
 import { Disclosure, EmptyBox, InlineAlert, RichText, SETTING_INPUT, SETTING_SELECT, SettingField, SettingsCard, Switch, focusNeighbour, showError } from "./ui";
 
 type SettingValue = string | number | boolean;
@@ -552,14 +555,18 @@ function DesktopBoatSettings() {
   const master = query.data?.settings.find((row) => row.key === "pushNotifications")?.value === true;
   return <div className="boat-settings space-y-[22px] text-[13px] leading-[18px]">
     <SetupChecklist />
+    {/* First, so the usage links (homepage, thread chip, a waiting start) land on it. */}
+    <UsageLimitsSection />
     <Loading error={query.error} rows={query.data?.settings.length ?? 0} />
-    {grouped.groups.map((group) => <section key={group.title} aria-label={group.title} className={cn("space-y-2", dimmed && "opacity-35")}>
+    {grouped.groups.map((group) => <Fragment key={group.title}><section aria-label={group.title} className={cn("space-y-2", dimmed && "opacity-35")}>
       <h3 className="text-[13px] font-medium leading-[18px] text-[color:var(--boat-group-heading)]">{group.title}</h3>
       <div className="divide-y divide-[color:var(--boat-divider)] overflow-hidden rounded-[10px] border border-[var(--boat-setting-border)] bg-card">
         {group.rows.map((row) => <EverydaySettingRow key={row.key} row={row} saver={saver} sizes={sizes} master={master} />)}
 
       </div>
-    </section>)}
+    </section>
+    {/* Sandbox providers and Runs on sit between Agents and Sandboxes & cost. */}
+    {group.title === "Agents" ? <SandboxProvidersSettings className={cn(dimmed && "opacity-35")} /> : null}</Fragment>)}
     <div className={cn("space-y-2", dimmed && "opacity-35")}>
     <div className="flex flex-wrap items-center gap-2.5 rounded-[10px] border border-[var(--boat-setting-border)] bg-card px-3.5 py-3">
       <div className="min-w-0 flex-1"><p className="text-[var(--boat-label)]">Projects</p><p className="mt-0.5 text-xs leading-[17px] text-muted-foreground">{projects.length ? `${projects.map((project) => project.name).join(", ")} · repos, how work lands, sizes, reviewers` : "Repos, how work lands, sizes, reviewers"}</p></div>
@@ -605,9 +612,11 @@ export function MobileBoatSettings() {
   const rows = query.data?.settings ?? [];
   const master = rows.find((row) => row.key === "pushNotifications")?.value === true;
   return <div className="space-y-3.5 text-sm">
-    <div className="flex items-center gap-2 rounded-[12px] border border-border bg-[var(--boat-mobile-card)] px-3.5 py-3 text-[14px] leading-[19px]"><span aria-hidden className={cn("size-[7px] shrink-0 rounded-full",setup?.ok ? "bg-[#5BD08A]" : "bg-[#F0B135]")} /><span>{setup === undefined ? "Checking cloud agents…" : setup.ok ? ["All set",setup.plan?.maxActiveSandboxes ? `${setup.plan.activeSandboxes} of ${setup.plan.maxActiveSandboxes} sandboxes on` : null,usage?.plan?.hoursRemaining !== null && usage?.plan?.hoursRemaining !== undefined ? `${usage.plan.hoursRemaining.toLocaleString()} h left` : null].filter(Boolean).join(" · ") : "Cloud agents need setup"}</span></div>
+    <div className="flex items-center gap-2 rounded-[12px] border border-border bg-[var(--boat-mobile-card)] px-3.5 py-3 text-[14px] leading-[19px]"><span aria-hidden className={cn("size-[7px] shrink-0 rounded-full",setup?.ok ? "bg-[#5BD08A]" : "bg-[#F0B135]")} /><span>{setup === undefined ? "Checking cloud agents…" : setup.ok ? ["All set",setup.plan?.maxActiveSandboxes ? `${setup.plan.activeSandboxes} of ${setup.plan.maxActiveSandboxes} sandboxes on` : null,usage?.plan?.hoursRemaining !== null && usage?.plan?.hoursRemaining !== undefined ? `${providerHours(usage.plan.hoursRemaining)} h left` : null].filter(Boolean).join(" · ") : "Cloud agents need setup"}</span></div>
+    {/* The homepage's usage link opens this page on a phone or a narrow window too. */}
+    <UsageLimitsSection compact />
     <div className="divide-y divide-border overflow-hidden rounded-[12px] border border-border bg-[var(--boat-mobile-card)]">
-      {rows.filter((row) => ["notifyNeedsYou","notifyReady","avoidExtraUsage"].includes(row.key)).sort((a,b)=>["notifyNeedsYou","notifyReady","avoidExtraUsage"].indexOf(a.key)-["notifyNeedsYou","notifyReady","avoidExtraUsage"].indexOf(b.key)).map((row) => <div key={row.key} className="flex items-center gap-3 px-3.5 py-3"><div className="min-w-0 flex-1"><p className="text-[15px] leading-5 text-[color:var(--boat-heading)]">{row.key === "avoidExtraUsage" ? "Don’t start on paid extra usage" : row.label}</p><p className="mt-0.5 text-[13px] leading-[18px] text-muted-foreground">{row.key === "notifyNeedsYou" ? "A decision or an OK waits on you" : row.key === "notifyReady" ? "A change is reviewed and can ship" : "New tasks wait for the reset"}</p>{saver.errors[row.key] ? <p role="alert" className="text-xs text-[#E06C6C]">{saver.errors[row.key]}</p> : null}</div><Switch aria-label={row.label} className="h-[26px] w-[44px] border-0 p-[3px] data-[state=checked]:bg-primary [&>span]:size-5 [&>span]:data-[state=checked]:translate-x-[18px] [&>span]:data-[state=checked]:bg-[var(--boat-mobile-card)] [&>span]:data-[state=unchecked]:translate-x-0" checked={row.value===true&&(row.key==="avoidExtraUsage"||master)} onCheckedChange={(checked)=>void(row.key==="notifyNeedsYou"||row.key==="notifyReady" ? saver.runValues(notificationSettingPatch(master,row.key,checked)) : saver.run(row.key,checked))}/></div>)}
+      {rows.filter((row) => ["notifyNeedsYou","notifyReady","avoidExtraUsage","paidClaudeFallback","paidClaudeHeadless","resumeStoppedChats"].includes(row.key)).sort((a,b)=>["notifyNeedsYou","notifyReady","avoidExtraUsage","paidClaudeFallback","paidClaudeHeadless","resumeStoppedChats"].indexOf(a.key)-["notifyNeedsYou","notifyReady","avoidExtraUsage","paidClaudeFallback","paidClaudeHeadless","resumeStoppedChats"].indexOf(b.key)).map((row) => <div key={row.key} className="flex items-center gap-3 px-3.5 py-3"><div className="min-w-0 flex-1"><p className="text-[15px] leading-5 text-[color:var(--boat-heading)]">{row.key === "avoidExtraUsage" ? "Don’t start on paid extra usage" : row.label}</p><p className="mt-0.5 text-[13px] leading-[18px] text-muted-foreground">{row.key === "notifyNeedsYou" ? "A decision or an OK waits on you" : row.key === "notifyReady" ? "A change is reviewed and can ship" : ["paidClaudeFallback","paidClaudeHeadless","resumeStoppedChats"].includes(row.key) ? row.description : "Wait near limits, except for an authorized Claude fallback or a confirmed paid start"}</p>{saver.errors[row.key] ? <p role="alert" className="text-xs text-[#E06C6C]">{saver.errors[row.key]}</p> : null}</div><Switch aria-label={row.label} className="h-[26px] w-[44px] border-0 p-[3px] data-[state=checked]:bg-primary [&>span]:size-5 [&>span]:data-[state=checked]:translate-x-[18px] [&>span]:data-[state=checked]:bg-[var(--boat-mobile-card)] [&>span]:data-[state=unchecked]:translate-x-0" checked={row.value===true&&(!["notifyNeedsYou","notifyReady"].includes(row.key)||master)} onCheckedChange={(checked)=>void(row.key==="notifyNeedsYou"||row.key==="notifyReady" ? saver.runValues(notificationSettingPatch(master,row.key,checked)) : saver.run(row.key,checked))}/></div>)}
     </div>
     <p className="text-[13px] leading-[18px] text-[var(--boat-faint)]">Everything else is in Settings on your computer.</p>
   </div>;

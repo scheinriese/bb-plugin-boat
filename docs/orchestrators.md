@@ -26,7 +26,7 @@ without one.
 ## When a single task is better
 
 - **One fix that fits in one task.** Ask any chat to use a cloud agent, or
-  use **Start** on bb's New thread screen with **Boat sandbox** selected.
+  use **Start** on bb's New thread screen with **boat.dev sandbox** selected.
 - **A quick look.** A single task with the "Explore and plan, no changes"
   starter.
 - **A tight budget.** An orchestrator uses agent usage and sandbox hours
@@ -36,13 +36,13 @@ without one.
 
 ## Starting one
 
-1. **Choose a project** on bb's New thread screen. Add its Boat settings on
+1. **Choose a project** on bb's New thread screen. Add its Harbormaster settings on
    **Cloud agents → Projects** or with `bb boat project add` when needed.
    An orchestrator works on one project.
 2. **Write the goal** in bb's composer and choose **Start as orchestrator**
-   in the send menu. Choose **Boat sandbox** for a cloud chat, or use an
+   in the send menu. Choose **boat.dev sandbox** for a cloud chat, or use an
    existing bb environment. bb keeps the environment, provider, model and
-   effort you selected; Boat marks that chat as an orchestrator before its
+   effort you selected; Harbormaster marks that chat as an orchestrator before its
    first turn.
 3. **Other entry points** remain available:
    - **New orchestrator…** in the command palette opens the native starting
@@ -61,7 +61,7 @@ without one.
 
 For the existing dialog or CLI flow, pick where it runs: **This computer**
 (`--local`), another bb machine (`--machine <host id>`), or **In the cloud**
-(a Boat sandbox; `--cloud`, needs bb Connect). Without a choice, it runs in
+(a boat.dev sandbox; `--cloud`, needs bb Connect). Without a choice, it runs in
 the cloud when bb Connect is set up, and on this computer otherwise.
 
 Check what it runs as. In the dialog, one line under Where says it, for
@@ -79,7 +79,7 @@ Manually created bb chats also appear in Today and the Home summary once they
 have visible, unarchived child chats. Nested delegations stay under their
 coordinating chat, with live native activity and links to each child. These
 rows are labelled **bb chats**: discovery does not change their instructions,
-register a Boat orchestrator or create a project or sandbox. Native idle chats
+register a Harbormaster orchestrator or create a project or sandbox. Native idle chats
 remain **idle**, without implying a review approval or readiness to ship.
 
 - **Needs you:** decisions only you can make, each with the orchestrator's
@@ -140,8 +140,8 @@ that model's agent again.
 An orchestrator can run in its own boat sandbox instead of on this
 computer. It needs bb Connect, so the sandbox can reach your bb.
 
-- It uses one sandbox, Small by default (**Size for chats on a Boat
-  sandbox**, which also sizes any chat you start on a Boat sandbox), since
+- It uses one sandbox, Small by default (**Size for chats on a boat.dev
+  sandbox**, which also sizes any chat you start on a boat.dev sandbox), since
   orchestrators mostly coordinate.
 - Setup takes about 1–2 minutes. Claude Code and Codex come preinstalled and
   use the logins connected in boat.dev (or bb's Account Pooler, if it routes
@@ -157,7 +157,7 @@ they run unattended on a machine of their own. Off, they use your default
 mode for new chats, where Claude Code's sandbox can block the `bb` command.
 
 - This applies to new cloud orchestrators, and to Claude ↔ Codex switching
-  that lands in a Boat sandbox.
+  that lands in a boat.dev sandbox.
 - Orchestrators on your own machines always keep your default mode.
 - Change it in Settings → Orchestrators → **Full access for cloud
   orchestrators**, or:
@@ -167,7 +167,7 @@ mode for new chats, where Claude Code's sandbox can block the `bb` command.
 
 ## Tools first
 
-Orchestrators get the boat tools. Their instructions, the protocol and the
+Orchestrators get the Harbormaster tools. Their instructions, the protocol and the
 `boat-orchestrator` skill tell them to use the tools for everything the
 tools cover, and not the `bb boat` command: the agent's own command sandbox
 may block `bb`. `bb boat …` is only for what no tool does.
@@ -184,6 +184,7 @@ may block `bb`. `bb boat …` is only for what no tool does.
 | `boat_needs_you` / `boat_resolve` | Put a decision on your Cloud agents page; close it once you answered |
 | `boat_ready` | Mark work ready for you to review (after the review approved) |
 | `boat_preview` | List previews; wake, extend or stop one |
+| `boat_wake` | Bring a chat or task stuck on a paused or resuming machine back (`bb boat sandbox wake`) |
 | `boat_ship` | Projects that ship after approval: push the work to the base branch, only on your OK in the orchestrator's chat |
 
 `boat_ship` only works from the task's own orchestrator chat, after the

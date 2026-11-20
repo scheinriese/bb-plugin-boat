@@ -3,9 +3,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type { BoatApi, Sandbox } from "../src/boat-api.ts";
-import { BLOCKED_GRACE_MS, KEEP_LIMIT_MS, KEPT_ON_EVENT, STOPPING_GRACE_MS, createSandboxKeeper, threadWorking, type KeeperDeps } from "../src/keeper.ts";
-import { MACHINE_PROVIDER_ID } from "../src/machine.ts";
+import type { BoatApi, Sandbox } from "../src/providers/boat/api.ts";
+import { BLOCKED_GRACE_MS, KEEP_LIMIT_MS, KEPT_ON_EVENT, STOPPING_GRACE_MS, createSandboxKeeper, threadWorking, type KeeperDeps } from "../src/providers/boat/keeper.ts";
+import { MACHINE_PROVIDER_ID } from "../src/providers/boat/provider.ts";
 import { FakeBoat, defaultSettings, makeService, memoryStore } from "./fakes.ts";
 
 const MINUTE = 60_000;
@@ -310,7 +310,7 @@ test("a running task chat counts even when bb lists no chats there; bb not answe
   assert.deepEqual(idle.suspended, []);
 });
 
-test("chats on a Boat sandbox without a task (a cloud orchestrator) are kept on too, and suspended once idle", async () => {
+test("chats on a boat.dev sandbox without a task (a cloud orchestrator) are kept on too, and suspended once idle", async () => {
   const time = clock();
   const boat = new FakeBoat();
   const store = memoryStore();
@@ -573,7 +573,7 @@ test("background commands and bb workflows keep a chat's sandbox on after its tu
   }
 });
 
-test("a child chat working elsewhere keeps its parent's sandbox on; one on another Boat sandbox doesn't", async () => {
+test("a child chat working elsewhere keeps its parent's sandbox on; one on another boat.dev sandbox doesn't", async () => {
   const idle = () => ({ id: "thr_orch", status: "idle", queuedWork: "none", activity: { activeBackgroundAgentCount: 0 } });
   const elsewhere = orchestratorMachine(idle, { children: { thr_orch: [{ id: "thr_sub", status: "active", environmentHostId: "host_laptop" }] } });
   const sandbox = await elsewhere.start();

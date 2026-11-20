@@ -1,9 +1,9 @@
-// Setup checks: boat's JSON (real shapes in fixtures/boat-json), the
+// Setup checks: boat's JSON (real shapes in src/providers/boat/fixtures/boat-json), the
 // checklist, the checks before a sandbox, and the cached reader.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BoatError, type BoatCli, type BoatRunResult, type JsonRecord } from "../src/boat.ts";
+import { BoatError, type BoatCli, type BoatRunResult, type JsonRecord } from "../src/providers/boat/cli.ts";
 import {
   AGENTS_URL,
   INSTALL_COMMAND,
@@ -30,11 +30,11 @@ import {
   type BoatFacts,
   type CheckContext,
   type SetupSettings,
-} from "../src/setup.ts";
+} from "../src/providers/boat/setup.ts";
 import { TaskError } from "../src/service.ts";
-import { BoatApi, TRIAL_AUTO_STOP_HOURS, aiProxyPrice, autoStopCapFromLimits, autoStopCapFromText, parseAiProxy, withinAutoStopCap } from "../src/boat-api.ts";
+import { BoatApi, TRIAL_AUTO_STOP_HOURS, aiProxyPrice, autoStopCapFromLimits, autoStopCapFromText, parseAiProxy, withinAutoStopCap } from "../src/providers/boat/api.ts";
 
-const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/boat-json/${name}`, import.meta.url), "utf8")) as JsonRecord;
+const fixture = (name: string) => JSON.parse(readFileSync(new URL(`../src/providers/boat/fixtures/boat-json/${name}`, import.meta.url), "utf8")) as JsonRecord;
 
 /** Facts from the real shapes: signed in, Standard plan, both agents, a "base" default environment. */
 function facts(overrides: Partial<BoatFacts> = {}): BoatFacts {
@@ -339,7 +339,7 @@ test("each missing piece says how to fix it", () => {
   assert.doesNotMatch(check(safe, "environment").fix!.text, /boat env set/);
   assert.equal(check(safe, "agents").state, "unknown", "fix the environment first");
   assert.equal(check(safe, "agents").fix, undefined);
-  assert.match(summaryLine(safe), /^Setup: 1 thing to fix \(Boat environment\)/);
+  assert.match(summaryLine(safe), /^Setup: 1 thing to fix \(boat.dev environment\)/);
 
   // Installed after the plugin loaded: bb's "needs configuration" stays until a reload.
   const reload = buildChecks(facts(), context({}, { reloadNeeded: true }));
@@ -413,7 +413,7 @@ test("the checks before a sandbox: unknowns never block, broken setups do", () =
   assert.match(preflightProblem(hidden, SETTINGS, { agent: "claude", environment: "web" })!.message, /^Your boat environment "web" doesn't pass agent logins to sandboxes \("Safe for third parties"\)\.$/);
 });
 
-test("a Boat sandbox machine says what's missing", () => {
+test("a boat.dev sandbox machine says what's missing", () => {
   assert.equal(machineProblem(facts(), SETTINGS, { state: "ready", fix: null }), null);
   assert.match(machineProblem(facts({ account: { signedIn: false, identifier: null, plan: null, error: null } }), SETTINGS, null)!, /boat onboard/);
   assert.match(machineProblem(withProfile([]), SETTINGS, null)!, /Connect Claude or ChatGPT/);

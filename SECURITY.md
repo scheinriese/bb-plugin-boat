@@ -111,8 +111,8 @@ rights of the user who runs bb. In particular, it uses:
   on GitHub. Registering a native chat does not prepare a new checkout or
   retrofit that hook; it keeps bb's existing checkout behavior.
 - **bb machine credentials** in the sandboxes of task chats, chats on a
-  Boat sandbox and cloud orchestrators. Those sandboxes run bb's daemon,
-  connected to your bb through bb Connect. Choosing **Boat sandbox** on the
+  boat.dev sandbox and cloud orchestrators. Those sandboxes run bb's daemon,
+  connected to your bb through bb Connect. Choosing **boat.dev sandbox** on the
   native New thread screen opts that chat into this access, with bb keeping
   its selected provider, permissions and machine lifecycle. For delegated
   work, **How tasks run** and your projects' **Run tasks as chats** decide
@@ -139,7 +139,7 @@ rights of the user who runs bb. In particular, it uses:
   status, when installed.
 - **Messages in bb**, through bb's message hook: bb asks the plugin about
   each message before an agent gets it. The plugin handles its explicit
-  native-start intent, subscription admission for a cold Boat start, and a task chat whose sandbox stopped under background
+  native-start intent, subscription admission for a cold boat.dev start, and a task chat whose sandbox stopped under background
   work. For the latter it holds one message
   to that chat once, for 10 seconds, and puts a note for the agent in
   front of it in bb's queue. It keeps no message text.
@@ -162,13 +162,23 @@ may use paid extra usage; it is not covered by that delegated confirmation.
   next plugin reload. Also your model presets, page state and the
   Claude ↔ Codex switching state (including orchestrators' handoff notes)
   in bb's plugin storage; each orchestrator's role and project on its
-  thread. None of the settings are secret.
+  thread. None of these settings are secret (the Instabox API key, below,
+  is bb's secret setting).
 - Shipping choices and optional notes in task history and the interaction's
   transcript description. Pending confirmations expire or cancel on plugin
   disposal; a note is not an approval token.
-- No passwords or API keys. Environment secrets show by name only; the
-  plugin drops their values as soon as it reads them, so they never reach
-  the UI, the logs or a chat (agents can read them in their sandbox).
+- One API key, only if you use Instabox: you enter it on bb's settings page
+  for the plugin (Instabox API key), and bb stores it as a secret setting (a
+  0600 file in bb's data folder), never in the plugin's database, a settings
+  backup, the page or a log. The server hands it only to the Instabox CLI
+  (in its environment, `INSTABOX_API_KEY`, never its arguments) and to
+  Instabox's API (the `X-API-Key` header). bb's setup on an Instabox machine
+  runs with Instabox's `noHistory`, so bb's enrollment input and its server's
+  address never land in the machine's exec history. Otherwise no passwords
+  or API keys: boat.dev uses its CLI's own login. Environment secrets show
+  by name only; the plugin drops their values as soon as it reads them, so
+  they never reach the UI, the logs or a chat (agents can read them in their
+  sandbox).
 - No cloud service of its own: in the cloud there are only your sandboxes.
 - Two kinds of links carry access on purpose, and the database keeps them:
   private preview links (`?_token=…`, they work as long as the sandbox

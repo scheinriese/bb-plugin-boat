@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import plugin from "../server.ts";
 import { createTestHost } from "./fakes.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 
 const REPORT = `Done.
 === REPORT ===

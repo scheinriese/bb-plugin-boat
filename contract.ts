@@ -24,6 +24,12 @@ export { UI_TAG, uiStateSchema, type UiStateDto } from "./contract-ui.ts";
 // What a new orchestrator starts with (contract-orchestrator.ts), spread in at the end too.
 import { orchestratorEffortSchema, orchestratorRpcMethods } from "./contract-orchestrator.ts";
 export { ORCHESTRATOR_EFFORT_VALUES, type OrchestratorChoicesDto, type OrchestratorEffortDto } from "./contract-orchestrator.ts";
+// The usage view (contract-usage.ts), spread in at the end too.
+import { extraUsageViewSchema, usageRpcMethods } from "./contract-usage.ts";
+export { USAGE_STALE_MS, type UsageAccountDto, type UsageViewDto, type UsageWindowDto } from "./contract-usage.ts";
+// Sandbox providers (contract-providers.ts): spread in at the end too, and runsOn on tasks and sandboxes.
+import { providerRpcMethods, runsOnSchema } from "./contract-providers.ts";
+export * from "./contract-providers.ts";
 
 export const PROVIDER_VALUES = ["claude", "codex"] as const;
 export const ROLE_VALUES = ["implement", "review", "custom"] as const;
@@ -75,7 +81,7 @@ export const TAGS = {
 } as const;
 
 // ------------------------------------------------------------- setup checks
-// Mirrors src/setup.ts (the app can't import server modules).
+// Mirrors src/providers/boat/setup.ts (the app can't import server modules).
 
 export const SETUP_CHECK_IDS = ["cli", "signed-in", "plan", "agents", "environment", "boat-credentials", "github", "connect", "gh"] as const;
 export const SETUP_CHECK_STATES = ["ok", "missing", "warning", "unknown", "optional"] as const;
@@ -158,6 +164,7 @@ export type SetupStatusDto = z.infer<typeof setupStatusSchema>;
  * in its issues.
  */
 export interface RpcErrorInfo {
+  taskId?: string;
   code: string | null;
   message: string;
   hint: string | null;
@@ -174,7 +181,8 @@ export function rpcErrorInfo(error: unknown): RpcErrorInfo {
     );
     return typeof found?.message === "string" ? found.message : null;
   };
-  return { code: part("code"), message: part("message") ?? message, hint: part("hint") };
+  const taskId=part("taskId");
+  return { ...(taskId ? {taskId} : {}), code: part("code"), message: part("message") ?? message, hint: part("hint") };
 }
 
 export const projectRepoSchema = z.object({ repo: z.string(), baseBranch: z.string() });
@@ -198,6 +206,11 @@ export const projectSchema = z.object({
   /** Size of its new task sandboxes (null: the Default sandbox size setting). */
   machineType: machineTypeSchema.nullable(),
   reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
+  /** Its chats stopped at a usage limit never continue on paid Claude. */
+  neverPaidClaude: z.boolean().optional(),
+  /** The sandbox provider its new work runs on (Settings › Runs on); null or absent: the default, boat.dev. */
+  sandboxSystem: z.enum(["linux", "macos"]).optional(),
+  sandboxProvider: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -224,6 +237,11 @@ export const projectInputSchema = z.object({
   /** null: the Default sandbox size setting; absent: unchanged. */
   machineType: machineTypeSchema.nullable().optional(),
   reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
+  /** absent: unchanged. */
+  neverPaidClaude: z.boolean().optional(),
+  /** The sandbox provider for its new work; null: the default; absent: unchanged. */
+  sandboxSystem: z.enum(["linux", "macos"]).optional(),
+  sandboxProvider: z.string().trim().min(1).max(40).nullable().optional(),
 });
 export type ProjectInputDto = z.infer<typeof projectInputSchema>;
 
@@ -325,6 +343,7 @@ export const taskSchema = z.object({
   parentTaskId: z.string().nullable(),
   prUrl: z.string().nullable(),
   error: z.string().nullable(),
+  providerFailure: z.object({code:z.string(),provider:z.string(),mac:z.boolean(),released:z.boolean(),canRetry:z.boolean()}).optional(),
   turns: z.number(),
   ownsSandbox: z.boolean(),
   createdAt: z.string(),
@@ -335,6 +354,8 @@ export const taskSchema = z.object({
   verdict: z.string().nullable(),
   /** The tail of the agent's last message (≤ 600 chars) for cards. */
   excerpt: z.string().nullable(),
+  /** Where its sandbox runs: the provider and the machine (absent: not said; read it as boat.dev). */
+  runsOn: runsOnSchema.optional(),
 });
 export type TaskDto = z.infer<typeof taskSchema>;
 
@@ -380,6 +401,7 @@ export const sandboxUseSchema = z.object({
 export type SandboxUseDto = z.infer<typeof sandboxUseSchema>;
 
 export const sandboxSchema = z.object({
+  leaseDaysThisWeek: z.number().optional(),
   id: z.string(),
   name: z.string().nullable(),
   state: z.string(),
@@ -388,12 +410,14 @@ export const sandboxSchema = z.object({
   createdAt: z.string().nullable(),
   /** Auto-stop deadline (ISO), null when stopped. */
   archiveAfter: z.string().nullable(),
-  dashboardUrl: z.string(),
+  dashboardUrl: z.string().nullable(),
   sshCommand: z.string(),
   machineType: machineTypeSchema.nullable().optional(),
   taskIds: z.array(z.string()),
   /** What uses it: open tasks first, then chats on it (empty: not in use). */
   uses: z.array(sandboxUseSchema),
+  /** Its provider and machine (Cloud agents › Sandboxes' Runs on column; absent: not said). */
+  runsOn: runsOnSchema.optional(),
 });
 export type SandboxDto = z.infer<typeof sandboxSchema>;
 
@@ -645,6 +669,15 @@ export const rpcContract = defineRpcContract({
       preferred: providerSchema,
       switchAtPercent: z.number(),
       avoidExtraUsage: z.boolean(),
+      paidClaudeFallback: z.boolean().optional(),
+      paidClaudeAvailable: z.boolean().optional(),
+      /**
+       * Claude extra usage as the Account Pooler last saw it, and when (epoch
+       * ms; null: never). pool "off"/"not-routing": nothing is known. Never a
+       * money balance.
+       */
+      claudeExtraUsage: extraUsageViewSchema.optional(),
+      paidClaudeHeadless: z.boolean().optional(),
       agents: z.array(
         z.object({
           provider: providerSchema,
@@ -746,6 +779,7 @@ export const rpcContract = defineRpcContract({
       /** Model tier; the plugin picks model and effort (an explicit model wins). */
       tier: tierSchema.nullable().optional(),
       effort: effortSchema.nullable().optional(),
+      sandboxSystem: z.enum(["linux", "macos"]).optional(),
       sandbox: z.string().trim().nullable(),
       machineType: machineTypeSchema.nullable(),
       /** Thread to notify when turns finish (null: nobody). */
@@ -764,6 +798,7 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.union([launchResult, z.object({ queued: queuedStartSchema, pending: z.literal(true) })]),
   },
+  retryProviderStart: { input: z.object({id:z.string()}), output: z.union([launchResult,z.object({queued:queuedStartSchema,pending:z.literal(true)})]) },
   review: {
     input: z.object({
       id: z.string(),
@@ -834,7 +869,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({ sandbox: sandboxSchema }),
   },
   sandboxAction: {
-    input: z.object({ id: z.string(), action: z.enum(["stop", "resume", "delete"]) }),
+    input: z.strictObject({ id: z.string(), action: z.enum(["stop", "resume", "delete"]) }),
     output: ok,
   },
   /** Save a sandbox's state under a name (a project's "start from"); not for sandboxes that run bb. */
@@ -899,7 +934,7 @@ export const rpcContract = defineRpcContract({
   snapshots: {
     input: z.null(),
     output: z.object({
-      snapshots: z.array(z.object({ name: z.string(), sizeBytes: z.number().nullable(), createdAt: z.string().nullable(), type: z.string().nullable(), status: z.string().max(60).nullable().optional() })),
+      snapshots: z.array(z.object({ name: z.string(), sizeBytes: z.number().nullable(), createdAt: z.string().nullable(), type: z.string().nullable(), status: z.string().max(60).nullable().optional(), provider: z.string().max(40).optional() })),
       included: z.number().nullable(),
       used: z.number().nullable(),
       error: z.string().nullable(),
@@ -1080,6 +1115,10 @@ export const rpcContract = defineRpcContract({
   ...uiRpcMethods,
   // ------------------------------------------------------------- what a new orchestrator starts with (contract-orchestrator.ts)
   ...orchestratorRpcMethods,
+  // ------------------------------------------------------------- the usage view (contract-usage.ts)
+  ...usageRpcMethods,
+  // ------------------------------------------------------------- sandbox providers (contract-providers.ts)
+  ...providerRpcMethods,
 });
 
 export type RpcContract = typeof rpcContract;

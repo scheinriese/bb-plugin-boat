@@ -1,8 +1,9 @@
 import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidelity.ts";
 // `bb boat …` — the agent- and human-facing command line.
 import { PluginCliError, cliCommand, defineCli, type PluginCliContext } from "@get-bb/plugin-sdk";
-import { MACHINE_TYPES, autoStopHours, dashboardUrl, type MachineType } from "./boat-api.ts";
-import { BoatError } from "./boat.ts";
+import { sandboxDashboardUrl } from "./providers/dashboard.ts";
+import { DEFAULT_PROVIDER_ID, MACHINE_TYPES, PROVIDER_IDS, PROVIDER_NAMES, ProviderError, autoStopHours, canHostMac, type MachineType, type ProviderId } from "./providers/types.ts";
+import { instaboxDoctorText } from "./providers/instabox/setup.ts";
 import { describeClose } from "./close-outcome.ts";
 import {
   agentLine,
@@ -27,8 +28,9 @@ import { EFFORTS, TIERS, type Tier } from "./tiers.ts";
 import { quotaLine } from "./quota.ts";
 import { AGENT_NAME, effectiveRelay, onlyAgent, otherAgent, relayNote } from "./relay.ts";
 import { SIZE_SPECS } from "./memory.ts";
+import { wakeText } from "./sandbox-wake.ts";
 import { resizeText } from "./sandbox-size.ts";
-import { doctorText, explainBoatError, testTaskInput, type SetupStatus } from "./setup.ts";
+import { doctorText, testTaskInput, type SetupStatus } from "./providers/boat/setup.ts";
 import { ALL_SETTINGS, ORCHESTRATOR_EFFORTS, parseSettingText, type SettingKey } from "./settings.ts";
 import { choiceSummary } from "./orchestrator-agent.ts";
 import { SettingsError, settingRows, settingsText, type SettingRow } from "./settings-store.ts";
@@ -72,8 +74,8 @@ async function guard<T>(fn: () => Promise<T>): Promise<T> {
   } catch (error) {
     if (error instanceof PluginCliError) throw error;
     if (error instanceof TaskError) throw new PluginCliError(error.message, { code: error.code, hint: error.hint });
-    if (error instanceof BoatError) {
-      const explained = explainBoatError(error);
+    if (error instanceof ProviderError) {
+      const explained = error.explain();
       throw new PluginCliError(explained.message, { code: explained.code, ...(explained.hint ? { hint: explained.hint } : {}) });
     }
     throw error;
@@ -135,11 +137,12 @@ async function setupStatus(runtime: Runtime, force: boolean): Promise<SetupStatu
 }
 
 function launchMessage(task: Task, pending: boolean): string {
+  const dashboard = task.sandboxId ? sandboxDashboardUrl(task.sandboxId, task.sandboxProvider) : null;
   const lines = [
     pending
       ? `Task ${task.id} is starting (sandbox setup is still running). You will be notified if dispatch fails.`
       : `Task ${task.id} dispatched: ${task.role} with ${agentLine(task)}${task.reason ? ` — ${task.reason}` : ""}${task.runner === "chat" && task.threadId ? `, as the task chat @thread:${task.threadId}` : ""}.`,
-    task.sandboxId ? `Sandbox: ${task.sandboxId}  ${dashboardUrl(task.sandboxId)}` : null,
+    task.sandboxId ? `Sandbox: ${task.sandboxId}${dashboard ? `  ${dashboard}` : ""}` : null,
     task.branch ? `Branch: ${task.branch}` : null,
     task.orchestratorThreadId
       ? "This thread gets a [boat] message when the turn finishes. End your turn instead of polling."
@@ -150,12 +153,18 @@ function launchMessage(task: Task, pending: boolean): string {
 
 export function buildCli(runtime: Runtime) {
   const { service } = runtime;
+  const projectSystem = (providerId: string, current: "linux" | "macos" = "linux") => {
+    const provider = service.sandboxProviders.all.find(candidate => candidate.id === providerId);
+    if (!provider) return current;
+    if (provider.caps.os === "macos" && !provider.caps.systems?.includes("linux")) return "macos";
+    return canHostMac(provider) ? current : "linux";
+  };
 
   return defineCli({
     name: "boat",
-    summary: "Run coding agents in boat.dev cloud sandboxes and orchestrate them from bb",
+    summary: "Harbormaster: coding agents across cloud sandbox providers, orchestrated from bb",
     description:
-      "Tasks are coding agents (Claude Code or Codex) in boat.dev sandboxes: headless in boat by default, or task chats you can open in bb. The chat that started a task is told when a turn finishes. New here? Run `bb boat doctor`, then `bb boat task start --test`. See the boat and boat-orchestrator skills.",
+      "Harbormaster runs coding agents (Claude Code or Codex) in cloud sandboxes on boat.dev, Instabox, Scaleway or your own Mac: headless in boat by default, or task chats you can open in bb. The chat that started a task is told when a turn finishes. New here? Run `bb boat doctor`, then `bb boat task start --test`. See the boat and boat-orchestrator skills.",
     commands: {
       doctor: cliCommand({
         summary: "Check the setup: boat CLI, sign-in, plan, agent logins, environment, boat login in sandboxes, GitHub, bb Connect",
@@ -165,9 +174,17 @@ export function buildCli(runtime: Runtime) {
         async run({ options }) {
           return guard(async () => {
             const status = await setupStatus(runtime, true);
+            // Instabox's own checks, when it's turned on (it then counts toward the exit code).
+            const instabox = runtime.providers ? await runtime.providers.instabox({ force: true }).catch(() => null) : null;
+            const checked = instabox !== null && instabox.turnedOn ? instabox : null;
+            const ok = status.ok && (checked === null || checked.ok);
             return {
-              exitCode: status.ok ? 0 : 1,
-              stdout: `${options.json ? JSON.stringify({ ok: status.ok, checks: status.checks }, null, 2) : doctorText(status)}\n`,
+              exitCode: ok ? 0 : 1,
+              stdout: `${
+                options.json
+                  ? JSON.stringify({ ok, checks: status.checks, ...(checked ? { instabox: { ok: checked.ok, checks: checked.checks } } : {}) }, null, 2)
+                  : `${doctorText(status)}${checked ? `\n\n${instaboxDoctorText(checked)}` : ""}`
+              }\n`,
             };
           });
         },
@@ -184,11 +201,25 @@ export function buildCli(runtime: Runtime) {
             try {
               capacity = await service.capacity(ctx.signal);
             } catch (error) {
-              if (!(error instanceof BoatError) || setup === null) throw error;
-              boatProblem = explainBoatError(error).message;
+              if (!(error instanceof ProviderError) || setup === null) throw error;
+              boatProblem = error.explain().message;
               // boat just failed: the cached checks may be out of date.
               setup = await setupStatus(runtime, true).catch(() => setup);
             }
+            // Every other enabled provider's room (boat.dev's is the line above it).
+            const others = await Promise.all(
+              service.sandboxProviders.enabled
+                .filter((provider) => provider !== service.sandboxProviders.default)
+                .map(async (provider) => {
+                  try {
+                    const room = await service.capacity(ctx.signal, undefined, provider);
+                    const orphans = provider.orphans ? await provider.orphans(ctx.signal).catch(() => null) : undefined;
+                    return { provider: provider.id, name: provider.displayName, limits: room.limits, active: room.active.length, cap: room.cap, free: room.free, error: null, orphans };
+                  } catch (error) {
+                    return { provider: provider.id, name: provider.displayName, limits: null, active: 0, cap: null, free: null, error: error instanceof ProviderError ? error.explain().message : String(error), orphans: undefined };
+                  }
+                }),
+            );
             const open = service.store.list({ statuses: OPEN_STATUSES });
             const orchestrator = ctx.threadId ? await runtime.isOrchestrator(ctx.threadId).catch(() => false) : false;
             const project = await runtime.projectForThread(ctx.threadId);
@@ -207,12 +238,17 @@ export function buildCli(runtime: Runtime) {
               openTasks: open,
               thisThreadIsOrchestrator: orchestrator,
               access: access.map(({ project: entry, access: result }) => ({ project: entry.id, ...result })),
+              ...(others.length > 0 ? { providers: others } : {}),
             };
             return out(value, options.json, () =>
               [
                 setup?.summary ?? null,
                 capacity ? `boat: ${limitsLine(capacity.limits, capacity.active.length, capacity.cap)}` : `boat: ${boatProblem ?? "not reachable"}`,
                 capacity?.limits?.summary ? `plan: ${capacity.limits.summary}` : null,
+                ...others.flatMap((entry) => [
+                  `${entry.name}: ${entry.error ?? limitsLine(entry.limits, entry.active, entry.cap)}`,
+                  ...(entry.orphans === null ? ["  Orphan check unavailable"] : (entry.orphans ?? []).map(server=>`  orphan: ${server.id} (${server.name}) · not managed`)),
+                ]),
                 tasksAtOnceLine(tasksBeforeAsking),
                 ctx.threadId ? `this thread: ${orchestrator ? "orchestrator" : "not an orchestrator"}` : null,
                 project ? `project: ${project.name} (${project.repos.map((r) => `${r.repo}@${r.baseBranch}`).join(", ")}; environment ${project.environment ?? "default"})` : null,
@@ -230,23 +266,39 @@ export function buildCli(runtime: Runtime) {
       }),
 
       // ---------------------------------------------------------------- sandboxes
+      "providers recover": cliCommand({
+        summary: "Reconcile unresolved provider creates against a complete machine list",
+        description: "Scaleway: recover matching server names and IDs, or clear absent recovery records and their unused SSH keys. A failed list never clears a record.",
+        positionals: [{name:"provider",description:"Provider id (scaleway)",required:true}], options:{json},
+        async run({positionals,options},ctx) { return guard(async()=>{
+          const provider=service.sandboxProviders.all.find(provider=>provider.id===positionals.provider);
+          if (!provider?.recoverCreations) throw new PluginCliError("This provider has no create recovery command.",{code:"unsupported"});
+          const result=await provider.recoverCreations(ctx.signal);runtime.changed();
+          return out(result,options.json,()=>`Recovered ${result.recovered} allocation(s); cleared ${result.cleared} absent recovery record(s).`);
+        }); },
+      }),
       "sandbox list": cliCommand({
-        summary: "List boat sandboxes (running by default)",
+        summary: "List sandboxes on every enabled provider (running by default)",
         options: { all: { type: "boolean", description: "Include stopped and failed sandboxes" }, json },
         async run({ options }, ctx) {
           return guard(async () => {
-            const sandboxes = await service.boat.list({ all: options.all, signal: ctx.signal });
-            return out(sandboxes, options.json, () =>
-              sandboxes.length === 0
-                ? "No sandboxes."
-                : sandboxes
-                    .map((sandbox) =>
-                      sandboxLine(
-                        sandbox,
-                        service.store.liveSandboxTasks(sandbox.id).map((task) => task.id),
-                      ),
-                    )
-                    .join("\n"),
+            const { sandboxes, failed } = await service.listSandboxes({ all: options.all, signal: ctx.signal });
+            // With boat.dev alone the list reads as it always did; with another provider each line names its own.
+            const several = service.sandboxProviders.enabled.length > 1;
+            return out(several || failed.length > 0 ? { sandboxes, failed } : sandboxes.map(({ provider: _provider, ...sandbox }) => sandbox), options.json, () =>
+              [
+                sandboxes.length === 0
+                  ? "No sandboxes."
+                  : sandboxes
+                      .map((sandbox) =>
+                        `${several ? `${PROVIDER_NAMES[sandbox.provider as keyof typeof PROVIDER_NAMES] ?? sandbox.provider}  ` : ""}${sandboxLine(
+                          sandbox,
+                          service.store.liveSandboxTasks(sandbox.id).map((task) => task.id),
+                        )}`,
+                      )
+                      .join("\n"),
+                ...failed.map((entry) => `${PROVIDER_NAMES[entry.provider as keyof typeof PROVIDER_NAMES] ?? entry.provider}: couldn't list its sandboxes (${entry.error})`),
+              ].join("\n"),
             );
           });
         },
@@ -263,7 +315,7 @@ export function buildCli(runtime: Runtime) {
         },
         async run({ options }, ctx) {
           return guard(async () => {
-            const { normalizeRepo, assertBranch } = await import("./boat-api.ts");
+            const { normalizeRepo, assertBranch } = await import("./providers/boat/api.ts");
             if ((options.branch || options.base) && !options.repo) {
               throw new PluginCliError("--branch and --base need --repo.", { code: "invalid_value" });
             }
@@ -280,14 +332,14 @@ export function buildCli(runtime: Runtime) {
             if (repo !== null) {
               const always = alwaysProtectedBranches((await service.settings()).extraProtectedBranches);
               try {
-                checkout = await service.boat.prepareRepo(
+                checkout = await service.prepareRepo(
                   sandbox.id,
                   repo,
                   branch ? { kind: "new-branch", branch, base } : { kind: "default-branch", base },
                   { signal: ctx.signal, protect: protectedBranches(null, [base, ...service.projectBaseBranches([repo])], always), alwaysProtect: always },
                 );
               } catch (error) {
-                await service.boat.delete(sandbox.id).catch(() => undefined);
+                await service.sandboxProvider(sandbox.id).delete(sandbox.id).catch(() => undefined);
                 throw error;
               }
             }
@@ -297,7 +349,7 @@ export function buildCli(runtime: Runtime) {
                 `Created sandbox ${sandbox.id} (${sandbox.state}).`,
                 checkout ? `Checked out ${checkout.branch ?? "default branch"} at ${checkout.path}` : null,
                 `Shell:     boat ssh ${sandbox.id}`,
-                `Dashboard: ${dashboardUrl(sandbox.id)}`,
+                sandboxDashboardUrl(sandbox.id, service.sandboxProvider(sandbox.id).id) ? `Dashboard: ${sandboxDashboardUrl(sandbox.id, service.sandboxProvider(sandbox.id).id)}` : null,
                 `Run an agent in it: bb boat task start --sandbox ${sandbox.id} --title "…" --brief "…"`,
               ]
                 .filter(Boolean)
@@ -312,7 +364,7 @@ export function buildCli(runtime: Runtime) {
         options: { json },
         async run({ positionals, options }, ctx) {
           return guard(async () => {
-            const sandbox = await service.boat.info(positionals.id, ctx.signal);
+            const sandbox = await service.sandboxProvider(positionals.id).info(positionals.id, ctx.signal);
             const tasks = service.store.list({ limit: 1000 }).filter((task) => task.sandboxId === sandbox.id);
             return out({ sandbox, tasks }, options.json, () =>
               [
@@ -348,11 +400,43 @@ export function buildCli(runtime: Runtime) {
         async run({ positionals, options }, ctx) {
           return guard(async () => {
             const settings = await service.settings();
-            const { limits } = await service.capacity(ctx.signal);
+            // The sandbox's own provider's limits (its auto-stop cap), never another's.
+            const { limits } = await service.capacity(ctx.signal, positionals.id);
             const ttl = Math.round(autoStopHours(settings.sandboxTtlHours, limits?.autoStopCapHours ?? null) * 3600);
             await service.sandboxAction(positionals.id, "resume", ttl, ctx.signal);
             runtime.changed();
             return out({ ok: true }, options.json, () => `Resumed ${positionals.id}.`);
+          });
+        },
+      }),
+      "sandbox wake": cliCommand({
+        summary: "Bring a stuck sandbox and its chat back (a sandbox, task or chat id)",
+        description:
+          "For a chat or task stuck on \"Machine is paused\" or \"resuming\". Resumes the sandbox (paced, within the start limit), waits until it answers, and looks at it. A read waiting on the disk is waited for first. A disk that's unreadable, reads still stuck after that, or an npm zombie: it stops the sandbox with a plain stop and starts it again (boat.dev's fix); --force only when nothing there could be lost and a test fork of its snapshot reads fine. Never under a running turn. Then it turns off the login message scripts, updates bb there safely if it's old or broken, brings bb's machine back and retries the chat. A sandbox whose tasks are all cancelled or closed isn't woken without --force-wake, and their chats are never retried. One wake per sandbox at a time, for about 25 minutes: the command waits up to 90 seconds, then the wake goes on (--status shows it, and the chat that asked hears when it's done). Exits 1 with \"Needs you\" when it stops for safety. A start may use one boat start; never a paid extra start without --allow-paid-start.",
+        positionals: [{ name: "id", description: "Sandbox id (bx_…), task id (t_…) or a chat's thread id", required: true }],
+        options: {
+          "dry-run": { type: "boolean", description: "Only look and print the plan; change nothing" },
+          "allow-paid-start": { type: "boolean", description: "Allow a paid extra start when no included boat start is left (only when the user agreed)" },
+          status: { type: "boolean", description: "Show the running or last wake of this sandbox; starts nothing" },
+          "force-wake": { type: "boolean", description: "Wake it although its tasks are cancelled or closed (only when the user asked; their chats are still never retried)" },
+          json,
+        },
+        async run({ positionals, options }, ctx) {
+          return guard(async () => {
+            const report = options.status
+              ? await runtime.wakeStatus(positionals.id)
+              : await runtime.wakeSandbox({
+                  target: positionals.id,
+                  dryRun: options["dry-run"] === true,
+                  allowPaidStart: options["allow-paid-start"] === true,
+                  forceWake: options["force-wake"] === true,
+                  threadId: ctx.threadId ?? null,
+                  ...(ctx.signal ? { signal: ctx.signal } : {}),
+                });
+            return {
+              exitCode: report.outcome === "needs-you" ? 1 : 0,
+              stdout: `${options.json ? JSON.stringify(report, null, 2) : wakeText(report)}\n`,
+            };
           });
         },
       }),
@@ -483,7 +567,7 @@ export function buildCli(runtime: Runtime) {
               passthrough.length === 1
                 ? passthrough[0]!
                 : passthrough.map((part) => `'${part.replace(/'/g, `'\\''`)}'`).join(" ");
-            const result = await service.boat.exec(positionals.id, command, {
+            const result = await service.sandboxProvider(positionals.id).exec(positionals.id, command, {
               timeoutMs: options.timeout,
               signal: ctx.signal,
             });
@@ -500,6 +584,7 @@ export function buildCli(runtime: Runtime) {
           "Creates (or reuses) a sandbox, checks out the repository, and sends the brief to the agent. Returns in under ~90 s; the invoking thread is messaged when the agent's turn finishes. `--test` starts a small task with no repo that only reports the sandbox's tools: it proves sign-in, plan and agent login (one sandbox start, a minute or two of a small sandbox).",
         options: {
           title: { type: "string", description: "Short task title (required unless --test)" },
+          system: { type: "enum", values: ["linux", "macos"], description: "Task system (default: the project); Macs use an enabled macOS provider" },
           "compact-title": { type: "string", description: "Authored short subject for mobile task chips (at most 120 characters)" },
           test: { type: "boolean", description: "Start the test task: no repo, changes nothing, reports uname, node, git and GitHub access" },
           brief: { type: "string", description: "Self-contained task brief (goal, context, acceptance criteria)" },
@@ -582,6 +667,7 @@ export function buildCli(runtime: Runtime) {
             const result = await runtime.launchTask(
               {
                 title: options.title,
+                sandboxSystem: options.system as "linux" | "macos" | undefined,
                 compactTitle: options["compact-title"] ? compactTitleSchema.parse(options["compact-title"]) : null,
                 role: options.role,
                 brief: `${brief ?? ""}${context}`,
@@ -696,6 +782,12 @@ export function buildCli(runtime: Runtime) {
           });
         },
       }),
+      "task reopen": cliCommand({
+        summary:"Restore a cancelled task chat on its original existing workspace, only at the user's request; starts no turn",
+        positionals:[{name:"id",description:"Cancelled task id",required:true}],
+        options:{"user-approved":{type:"boolean",description:"The user explicitly asked to resume this cancelled work"},json},
+        async run({positionals,options}) {return guard(async()=>{const task=await service.reopenTask(positionals.id,options["user-approved"]===true);return out(task,options.json,()=>`Reopened ${task.id} on its existing workspace; no agent turn or sandbox was started.`);});},
+      }),
       "task transcript": cliCommand({
         summary: "Show the task's conversation so far (prompts, tool steps, replies)",
         positionals: [{ name: "id", description: "Task id", required: true }],
@@ -709,7 +801,7 @@ export function buildCli(runtime: Runtime) {
             if (task.sandboxId === null || task.conversationId === null) {
               throw new PluginCliError(`Task ${task.id} has no conversation yet.`, { code: "task_not_dispatched" });
             }
-            const events = (await service.boat.events(task.sandboxId, task.conversationId, ctx.signal)).slice(-options.limit);
+            const events = (await service.sandboxProviders.forTask(task).events(task.sandboxId, task.conversationId, ctx.signal)).slice(-options.limit);
             const moved =
               task.runner === "chat" && task.threadId !== null
                 ? `Task ${task.id} now runs as the task chat @thread:${task.threadId}; below is its headless conversation from before the move.\n`
@@ -1030,7 +1122,7 @@ export function buildCli(runtime: Runtime) {
             const project = options.project ? await runtime.resolveProject(parseProjectRef(options.project)) : null;
             await runtime.setOrchestrator(threadId, true, project);
             return out({ threadId, orchestrator: true }, options.json, () =>
-              `Thread ${threadId} is now a boat orchestrator. Its agent gets the boat tools and orchestrator instructions the next time the chat starts a new session.`,
+              `Thread ${threadId} is now a Harbormaster orchestrator. Its agent gets the Harbormaster tools and orchestrator instructions the next time the chat starts a new session.`,
             );
           });
         },
@@ -1209,7 +1301,9 @@ export function buildCli(runtime: Runtime) {
                   : relay.enabled
                     ? `Claude ↔ Codex switching on: hands over at ${relay.switchAtPercent}%, back to ${AGENT_NAME[relay.preferred]} below ${relay.switchBackBelowPercent}% after ${relay.quietMinutes} quiet minutes.`
                     : "Claude ↔ Codex switching off: orchestrators stay on their agent.",
-                avoidExtraUsage
+                relay.paidClaudeFallback
+                  ? `Included allowances first; automatic Claude extra usage is authorized when Account Pooler confirms availability. Claude enforces billing limits; Harbormaster cannot read the money cap. ${relay.paidClaudeHeadless ? "Headless tasks included: owner-confirmed same Claude subscription/billing account." : "Headless tasks require separate approval."}`
+                  : avoidExtraUsage
                   ? `No paid extra usage: with ${only === null ? "both agents" : AGENT_NAME[only]} near ${only === null ? "their limits" : "its limit"}, new work waits.`
                   : "Paid extra usage allowed.",
                 "",
@@ -1225,11 +1319,11 @@ export function buildCli(runtime: Runtime) {
         },
       }),
       "relay check": cliCommand({
-        summary: "Run Claude ↔ Codex switching once now (it also runs every minute while bb is open)",
+        summary: "Run Claude ↔ Codex switching once now, then continue chats stopped at a limit if paid Claude is available (both also run every minute while bb is open)",
         options: { json },
         async run({ options }) {
           return guard(async () => {
-            const actions = await runtime.relayTick();
+            const actions = [...(await runtime.relayTick()), ...(await runtime.paidResumeCheck())];
             runtime.changed();
             return out({ actions }, options.json, () =>
               actions.length === 0
@@ -1242,12 +1336,20 @@ export function buildCli(runtime: Runtime) {
                           ? `Asked @thread:${action.threadId} for a handoff note for ${AGENT_NAME[action.to]} (${action.reason}).`
                           : action.kind === "both-out"
                             ? `@thread:${action.threadId} waits: ${action.reason}.`
-                            : `@thread:${action.threadId}: skipped (${action.reason}).`,
+                            : action.kind === "resumed"
+                              ? `${action.threadId.startsWith("task:") ? `Task ${action.taskId}` : `@thread:${action.threadId}`} continues ${action.reason}.`
+                              : `@thread:${action.threadId}: skipped (${action.reason}).`,
                     )
                     .join("\n"),
             );
           });
         },
+      }),
+      "goal": cliCommand({
+        summary:"Read or update an existing carried goal; does not control native provider goals or reset budgets",
+        positionals:[{name:"thread",description:"Successor orchestrator thread (default: this one)",required:false}],
+        options:{"source-thread":{type:"string",description:"Recover a missing snapshot only from its recorded predecessor"},status:{type:"enum",values:["active","complete","blocked","paused"],description:"active only when the user explicitly requested continuation"},progress:{type:"string",description:"Recorded progress or blocker"},json},
+        async run({positionals,options},ctx){return guard(async()=>{const id=positionals.thread??ctx.threadId;if(!id)throw new PluginCliError("Name the successor orchestrator thread.",{code:"invalid_value"});const goal=await runtime.continuationGoal(id,options.status?{status:options.status as "active"|"complete"|"blocked"|"paused",progress:options.progress??""}:undefined,options["source-thread"]);return out(goal,options.json,()=>goal?JSON.stringify(goal,null,2):"No carried goal is recorded.");});},
       }),
       "relay switch": cliCommand({
         summary: "Move an orchestrator to the other agent now (it writes a handoff note first unless --now)",
@@ -1296,7 +1398,7 @@ export function buildCli(runtime: Runtime) {
         },
       }),
       "protocol path": cliCommand({
-        summary: "Where the shared protocol file lives (edit it there or in Settings → Plugins → Boat Cloud Agents)",
+        summary: "Where the shared protocol file lives (edit it there or in Settings → Plugins → Harbormaster)",
         options: { json },
         async run({ options }) {
           return guard(async () => {
@@ -1341,7 +1443,7 @@ export function buildCli(runtime: Runtime) {
             return out({ projects: configured, local }, options.json, () =>
               [
                 configured.length === 0
-                  ? 'No projects yet. Add your first one: `bb boat project add --name "Web app" --repo acme/web@main` (or in Settings → Plugins → Boat Cloud Agents → Projects).'
+                  ? 'No projects yet. Add your first one: `bb boat project add --name "Web app" --repo acme/web@main` (or in Settings → Plugins → Harbormaster → Projects).'
                   : configured.map(projectLine).join("\n"),
                 ...(options.local
                   ? [
@@ -1443,7 +1545,7 @@ export function buildCli(runtime: Runtime) {
         },
       }),
       "project set": cliCommand({
-        summary: "Change one project's settings (how work lands, task chats, snapshot, environment, protected branches, instructions)",
+        summary: "Change one project's settings (how work lands, task chats, snapshot, environment, protected branches, instructions, paid Claude)",
         positionals: [{ name: "id", description: "Project id", required: true }],
         options: {
           delivery: { type: "enum", values: ["pr", "push"], description: "pr: draft pull requests; push: approved work ships to the base branch" },
@@ -1458,7 +1560,14 @@ export function buildCli(runtime: Runtime) {
             values: [...MACHINE_TYPES, "none"],
             description: 'Sandbox size for its new tasks and their reviews ("none": the Default sandbox size setting); xlarge from an agent\'s chat needs --user-approved',
           },
+          "paid-claude": {
+            type: "enum",
+            values: ["allow", "never"],
+            description:
+              "never: Never continue on paid Claude. Its chats stopped at a usage limit wait for included usage. allow: they continue when paid Claude is available (default)",
+          },
           "user-approved": { type: "boolean", description: "The user approved XLarge sandboxes for this project" },
+          "runs-on": { type: "enum", values: [...PROVIDER_IDS], description: "Where its new tasks' sandboxes run: boat (boat.dev, the default) instabox or scaleway (Mac task chats)" },
           json,
         },
         async run({ positionals, options }, ctx) {
@@ -1484,6 +1593,8 @@ export function buildCli(runtime: Runtime) {
                   : {}),
                 ...(instructions !== undefined ? { instructions: instructions.trim() === "none" ? "" : instructions } : {}),
                 ...(options.size !== undefined ? { machineType: options.size === "none" ? null : (options.size as MachineType) } : {}),
+                ...(options["paid-claude"] !== undefined ? { neverPaidClaude: options["paid-claude"] === "never" } : {}),
+                ...(options["runs-on"] !== undefined ? { sandboxProvider: options["runs-on"] as ProviderId, sandboxSystem: projectSystem(options["runs-on"], existing.sandboxSystem) } : {}),
               });
             } catch (error) {
               throw new PluginCliError(error instanceof Error ? error.message : String(error), { code: "invalid_value" });
@@ -1536,6 +1647,72 @@ export function buildCli(runtime: Runtime) {
             ];
             return out({ path, settings: Object.keys(file.settings).length, projects: file.projects.length, customTiers: file.modelTiers !== null, customProtocol: file.protocol !== null }, options.json, () =>
               `Saved ${path}: ${parts.join(", ")}. Keep it private. Restore it with \`bb boat config import ${options.output}\`.`,
+            );
+          });
+        },
+      }),
+      "config runs-on": cliCommand({
+        summary: "Show where each project's tasks run, or set one project's: boat (boat.dev, the default) instabox or scaleway",
+        description:
+          "Without arguments: every project with its provider. With a project and a provider: its new tasks' sandboxes run there (tasks already started stay where they are). Instabox needs `bb boat config set instaboxEnabled true` and its API key in bb's settings for this plugin; `bb boat doctor` checks it.",
+        positionals: [
+          { name: "project", description: "Project id or name", required: false },
+          { name: "provider", description: "boat instabox or scaleway", required: false },
+        ],
+        options: { json },
+        async run({ positionals, options }) {
+          return guard(async () => {
+            const name = (id: string) => PROVIDER_NAMES[id as ProviderId] ?? id;
+            if (positionals.project === undefined) {
+              const rows = runtime.projects.list().map((project) => ({ project: project.id, name: project.name, runsOn: project.sandboxProvider ?? DEFAULT_PROVIDER_ID }));
+              return out({ projects: rows }, options.json, () => (rows.length === 0 ? "No projects." : rows.map((row) => `${row.project}  ${row.name}  runs on ${name(row.runsOn)}`).join("\n")));
+            }
+            const project = runtime.projects.find(positionals.project);
+            if (project === null) throw new PluginCliError(`No project "${positionals.project}".`, { code: "project_not_found" });
+            if (positionals.provider === undefined) {
+              const runsOn = project.sandboxProvider ?? DEFAULT_PROVIDER_ID;
+              return out({ project: project.id, runsOn }, options.json, () => `${project.id} runs on ${name(runsOn)}`);
+            }
+            const provider = positionals.provider.trim().toLowerCase();
+            if (!(PROVIDER_IDS as readonly string[]).includes(provider)) {
+              throw new PluginCliError(`"${positionals.provider}" isn't a sandbox provider.`, { code: "invalid_value", hint: `Use one of: ${PROVIDER_IDS.join(", ")}.` });
+            }
+            const saved = runtime.projects.save({ ...project, sandboxProvider: provider as ProviderId, sandboxSystem: projectSystem(provider, project.sandboxSystem) });
+            runtime.changed();
+            const off = service.sandboxProviders.get(provider) === null;
+            return out({ project: saved.id, runsOn: saved.sandboxProvider ?? DEFAULT_PROVIDER_ID, enabled: !off }, options.json, () =>
+              [
+                `${saved.id} now runs on ${name(provider)}.`,
+                off && provider === "scaleway" ? "Add the Scaleway secret key in bb secrets and set scalewayProjectId in Harbormaster settings." : off ? `${name(provider)} isn't on yet, so its new tasks won't start: turn it on (\`bb boat config set ${provider}Enabled true\`), add its API key in bb's settings for this plugin, then run \`bb boat doctor\`.` : null,
+              ]
+                .filter(Boolean)
+                .join("\n"),
+            );
+          });
+        },
+      }),
+      providers: cliCommand({
+        summary: "Show the sandbox providers: which are on, whether a key is stored, and what to fix",
+        description: "Read-only. boat.dev is always on and the default; turn Instabox on with `bb boat config set instaboxEnabled true` and store its API key in bb's settings for this plugin (Settings → Plugins → Harbormaster).",
+        options: { json },
+        async run({ options }) {
+          return guard(async () => {
+            if (runtime.providers === null) throw new PluginCliError("Provider checks aren't available here.", { code: "setup_unavailable" });
+            const states = await runtime.providers.states({ force: true });
+            return out({ providers: states }, options.json, () =>
+              states
+                .map((state) =>
+                  [
+                    `${state.displayName}${state.isDefault ? " (default)" : ""}: ${state.status}${state.enabled ? "" : state.turnedOn ? " (not usable yet)" : ""}`,
+                    state.keyPresent === null ? null : `  API key: ${state.keyPresent ? "stored" : "none"}`,
+                    state.projectIds.length > 0 ? `  projects: ${state.projectIds.join(", ")}` : null,
+                    state.problem ? `  ${state.problem}` : null,
+                    ...(state.orphans ?? []).map(server=>`  orphan: ${server.id} (${server.name}) · not managed`),
+                  ]
+                    .filter(Boolean)
+                    .join("\n"),
+                )
+                .join("\n"),
             );
           });
         },
@@ -1650,7 +1827,7 @@ export function buildCli(runtime: Runtime) {
 
 function projectLine(project: BoatProject): string {
   const repos = project.repos.map((entry) => `${entry.repo}@${entry.baseBranch}`).join(" + ");
-  return `${project.id}  ${project.name}  ${repos}  env ${project.environment ?? "default"}${project.snapshot ? `  snapshot ${project.snapshot}` : ""}${project.protocolPath ? `  protocol ${project.protocolPath}` : ""}  ${project.workerMode === "boat" ? "tasks in boat only" : "tasks as chats allowed"}  ${project.delivery === "push" ? "ships after approval" : "draft PRs"}${project.machineType ? `  ${SIZE_SPECS[project.machineType].label.toLowerCase()} sandboxes` : ""}${project.protectedBranches.length > 0 ? `  protects ${project.protectedBranches.join(", ")}` : ""}${project.instructions ? "  has instructions" : ""}`;
+  return `${project.id}  ${project.name}  ${repos}  env ${project.environment ?? "default"}${project.snapshot ? `  snapshot ${project.snapshot}` : ""}${project.protocolPath ? `  protocol ${project.protocolPath}` : ""}  ${project.workerMode === "boat" ? "tasks in boat only" : "tasks as chats allowed"}  ${project.delivery === "push" ? "ships after approval" : "draft PRs"}${project.machineType ? `  ${SIZE_SPECS[project.machineType].label.toLowerCase()} sandboxes` : ""}${project.protectedBranches.length > 0 ? `  protects ${project.protectedBranches.join(", ")}` : ""}${project.instructions ? "  has instructions" : ""}${project.neverPaidClaude ? "  never continues on paid Claude" : ""}`;
 }
 
 /**
@@ -1668,7 +1845,8 @@ function assertProjectSizeAllowed(size: string | undefined, userApproved: boolea
 /** A project size the plan doesn't allow (yet): what happens until it does. */
 async function projectSizeNote(runtime: Runtime, project: BoatProject): Promise<string | null> {
   if (project.machineType === null) return null;
-  const verdict = await runtime.service.sizes.projectSizeVerdict(project.machineType);
+  // Its own provider's plan (boat.dev's; another's isn't known ahead, and that provider refuses in its words).
+  const verdict = await runtime.service.sizes.projectSizeVerdict(project.machineType, runtime.service.sandboxProviders.forProject(project));
   if (verdict.allowed) return null;
   const label = SIZE_SPECS[project.machineType].label;
   return `Note: your boat plan doesn't include ${label} right now (${(verdict.reason ?? "").replace(/[.\s]+$/, "")}). Until it does, this project's tasks start on the Default sandbox size setting.`;

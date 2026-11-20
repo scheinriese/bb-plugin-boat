@@ -142,7 +142,7 @@ export function parseConfigText(text: string): ParsedFile {
   }
   const head = raw as { format?: unknown; version?: unknown } | null;
   if (head === null || typeof head !== "object" || Array.isArray(head) || head.format !== CONFIG_FORMAT) {
-    throw new ConfigError([`This isn't a Boat backup: its "format" should be "${CONFIG_FORMAT}" (make one with \`bb boat config export\`).`]);
+    throw new ConfigError([`This isn't a Harbormaster backup: its "format" should be "${CONFIG_FORMAT}" (make one with \`bb boat config export\`).`]);
   }
   if (typeof head.version === "number" && head.version > CONFIG_VERSION) {
     throw new ConfigError([`This backup has format version ${head.version}, and this plugin reads versions up to ${CONFIG_VERSION}. Update the plugin first.`]);
@@ -201,7 +201,7 @@ export interface ImportPlan {
   replaceProjects: boolean;
 }
 
-const PROJECT_FIELDS = ["name", "repos", "environment", "snapshot", "protocolPath", "workerMode", "delivery", "protectedBranches", "instructions", "machineType", "reviewer", "localBbProjectId"] as const;
+const PROJECT_FIELDS = ["name", "repos", "environment", "snapshot", "protocolPath", "workerMode", "delivery", "protectedBranches", "instructions", "machineType", "reviewer", "localBbProjectId", "neverPaidClaude"] as const;
 
 /**
  * A file's settings by today's keys. Older files: workerMode and
@@ -321,16 +321,18 @@ export async function planImport(deps: ConfigDeps, text: string, options: { repl
     }
     seen.add(id);
     const before = deps.projects.get(id);
+    // A project is exported with Never continue on paid Claude only when it's on: absent means off.
+    const input = { ...entry, id, neverPaidClaude: entry.neverPaidClaude ?? false } as ProjectInput & { id: string };
     let normalized: BoatProject;
     try {
-      normalized = normalizeProject({ ...entry, id } as ProjectInput, before);
+      normalized = normalizeProject(input, before);
     } catch (error) {
       const reason = error instanceof z.ZodError ? issueLines(error).join("; ") : error instanceof Error ? error.message : String(error);
       problems.push(`${label}: ${reason}`);
       continue;
     }
     const fields = before === null ? [] : PROJECT_FIELDS.filter((field) => !sameValue(before[field], normalized[field]));
-    save.push({ input: { ...entry, id } as ProjectInput & { id: string }, change: before === null ? "added" : fields.length > 0 ? "updated" : "unchanged", fields });
+    save.push({ input, change: before === null ? "added" : fields.length > 0 ? "updated" : "unchanged", fields });
   }
   const removed: ProjectChange[] = [];
   const blocked: (ProjectChange & { reason: string })[] = [];

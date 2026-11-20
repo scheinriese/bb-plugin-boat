@@ -7,7 +7,7 @@
 // passwordless sudo), and `boat exec` runs a login shell whose profile it can
 // write. Every value is clamped, process names are sanitized, and probe data
 // never moves a sandbox by itself.
-import type { MachineType } from "./boat-api.ts";
+import type { MachineType } from "./providers/types.ts";
 import type { Runner, TaskEvent } from "./store.ts";
 import { AUTO_RETRY_RECORD } from "./steer-retry.ts";
 
@@ -923,6 +923,9 @@ export interface SizedProject {
   name: string;
   repos: readonly { repo: string }[];
   machineType: MachineType | null;
+  /** Where its new tasks run (absent: boat.dev); the service reads it too (Runs on). */
+  sandboxProvider?: string | null;
+  sandboxSystem?: "linux" | "macos";
 }
 
 /**

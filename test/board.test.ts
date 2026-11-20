@@ -128,7 +128,7 @@ test("another chat can join a worker's workspace from bb's composer, or by being
 
   // Chats in the workspace (not the worker's own) get the workspace as instructions.
   const instructions = env.service.workspaceInstructions(environmentId, "thr_native")!;
-  assert.match(instructions, new RegExp(`workspace of the boat task ${task.id} "Header"`));
+  assert.match(instructions, new RegExp(`workspace of the Harbormaster task ${task.id} "Header"`));
   assert.match(instructions, /The checkout is at \/home\/user\/work\/[\w/]*web, on the branch boat\//);
   assert.equal(env.service.workspaceInstructions(environmentId, task.threadId!), null);
 

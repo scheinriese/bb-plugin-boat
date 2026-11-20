@@ -1,6 +1,6 @@
 # Features
 
-Everything Boat Cloud Agents does, section by section. To get started, see
+Everything Harbormaster does, section by section. To get started, see
 the [README](../README.md); for every setting, [settings.md](settings.md);
 for orchestrators, [orchestrators.md](orchestrators.md).
 
@@ -26,7 +26,7 @@ Task chats have a **Task** side-panel tab with **Overview**, **Reviews**,
 **Transcript** and **Sandbox**. It shows the brief, report, branch and links,
 recorded reviews, searchable transcript, measured memory and sandbox actions.
 Chat transcripts use bb's own read-only log; the headless transcript contains
-the messages and tool names Boat reports. The plugin does not invent test
+the messages and tool names Harbormaster reports. The plugin does not invent test
 results, git totals, memory samples or costs when they are unavailable.
 
 Source chats keep a **Cloud agents** tab for the work they started. A task
@@ -34,7 +34,7 @@ that still runs headless has its existing detail page and reply box, with
 **Continue as a chat** when supported. See [How tasks
 run](#how-tasks-run-in-boat-or-as-task-chats).
 
-The sidebar footer's Boat icon opens sandbox meters: sandboxes on, plan
+The sidebar footer's Harbormaster icon opens sandbox meters: sandboxes on, plan
 hours remaining when reported; today's cost is currently unavailable. Only failures
 are listed below the meters; an idle stopped sandbox is neutral. **All
 sandboxes** opens the Sandboxes tab. Agent usage stays in bb's usage widget.
@@ -47,7 +47,7 @@ sandboxes** opens the Sandboxes tab. Agent usage stays in bb's usage widget.
 - **The send menu:** **Send to a cloud agent** in an existing chat sends
   your message with a request to use one. On bb's New thread screen,
   **Start** and **Start as orchestrator** submit the native composer.
-- **The environment menu:** **Boat sandbox** runs a whole chat in a
+- **The environment menu:** **boat.dev sandbox** runs a whole chat in a
   sandbox, with a size chip next to it. Sizes your plan can't use are
   greyed out with boat's reason.
 - **A task chat's header/context card:** an action suited to its state,
@@ -61,15 +61,15 @@ sandboxes** opens the Sandboxes tab. Agent usage stays in bb's usage widget.
 
 ## New task
 
-Start on bb's **New thread** screen. Pick the project and **Boat sandbox**
-environment, then write the brief. The Boat chip exposes the available
+Start on bb's **New thread** screen. Pick the project and **boat.dev sandbox**
+environment, then write the brief. The boat.dev chip exposes the available
 sandbox sizes and snapshots. In the send menu, choose **Start** for one task
 or **Start as orchestrator** to coordinate the project. The + menu inserts
 a brief starter: **Check the repo runs**, **Fix a bug**, or **Explore and
 plan**. A starter fills the draft; it does not launch work until you submit.
 
 bb keeps control of the selected project, environment, provider, model,
-effort, draft and provisioning. Boat registers the resulting chat as a task;
+effort, draft and provisioning. Harbormaster registers the resulting chat as a task;
 it does not launch a second worker or replace bb's sandbox ownership.
 Registering an existing chat does not establish its checkout branch, so
 direct shipping is not offered for that adopted record.
@@ -238,7 +238,7 @@ only while its preview is live, under the [preview rules](#previews).
 
 boat's own auto-stop (**Hard stop after**, within your plan's cap) only
 sees boat's headless agents at work, not a chat's. While a turn runs in a
-task chat, or in any chat on a Boat sandbox (a cloud orchestrator, a chat
+task chat, or in any chat on a boat.dev sandbox (a cloud orchestrator, a chat
 you started there), or background work runs there, the plugin moves that
 stop out shortly before it comes, by up to Hard stop after (within the
 cap). The task's history says "Kept the sandbox on while the agent works",
@@ -267,7 +267,10 @@ machine that's offline):
 - **Messages waiting on a stopped machine.** A suspended machine with a
   message waiting for it is resumed once the message has waited about a
   minute, if bb hasn't resumed it already. Messages held for later on purpose (a retry at a usage
-  limit's reset, a slot under bb's limits) don't count.
+  limit's reset, a slot under bb's limits) don't count. Each resume takes one
+  of the account's wakes. One that fails is tried again 3, 6, 12 … minutes
+  later, at most an hour apart, until the machine is back, and a machine that
+  keeps failing never holds the others.
 - **One `[boat] Watchdog:` message per incident** to the task's
   orchestrator, with what happened and what the plugin did:
   - a task's or orchestrator's sandbox stopped while background work was
@@ -293,6 +296,228 @@ machine that's offline):
   straight to the worker waits 10 seconds once for that. Each stop gets
   its own note, so a second interruption is told too. After a stop at
   the 12-hour limit, the note says the job may have been stuck instead.
+
+### Waking sandboxes gently
+
+boat.dev restores a woken sandbox's disk lazily, from its storage. Waking
+many at once (a usage limit's reset retrying every chat that stopped at
+it) can overload that storage, so the plugin wakes sandboxes gently:
+
+- **At most 2 wakes a minute** for the whole account, whoever asks: bb
+  resuming a machine, the watchdog, a follow-up, a preview's wake, a start,
+  Resume in Sandboxes. A third waits for its slot, up to 2 minutes; past
+  that it fails at once, saying when the plugin wakes it itself. After a
+  wake fails, the next one waits 30 seconds, doubling up to 10 minutes.
+- **Login message scripts off.** Before bb is set up over `boat ssh`, the
+  plugin turns off Ubuntu's login message scripts (`/etc/update-motd.d`)
+  over boat's exec API, once per sandbox. Right after a wake, one of them
+  can hang on a file that isn't restored yet, and SSH sessions then never
+  start. Only the folder changes: its scripts lose their execute bit, and
+  links in it (such as `50-landscape-sysinfo`) get a `.disabled` suffix,
+  so the files they point to are left alone.
+- **A failed wake in plain words.** The plugin looks at the sandbox over
+  boat's exec API (no SSH): files that fail with "Input/output error",
+  lazyfs's `HYDRATOR FAILED` or "hydration in progress" in the journal,
+  processes stuck reading from the disk (`fuse_*`), hung login scripts.
+  bb's machine card and the sandbox's tasks then say what's going on, for
+  example "boat.dev is still restoring this sandbox's disk (its storage is
+  returning errors). Harbormaster will retry at 01:52 UTC; pressing Resume earlier
+  won't help."
+- **Harbormaster retries later.** For a disk still being restored, a restore boat
+  refused ("Please reduce your request rate") or an SSH session that never
+  starts, the plugin wakes the machine again itself after 2, 4, 8 and 16
+  minutes, and refuses earlier resumes without asking boat.dev. After 5
+  failures it stops and puts it under Needs you for the orchestrator,
+  with the sandbox and boat.dev's error. `bb boat sandbox resume <id>`
+  tries again at once.
+- **bb's daemon broken by an update.** An `npm install` left as a zombie,
+  a missing `npm/bin/bb-app`, or a module it can't load (a unit only
+  "deactivating" isn't enough, and a read still waiting on the disk comes
+  first): the machine says so, and Needs you has the repair by hand
+  (reinstall bb's downloaded package into a fresh folder, swap it in,
+  restart this machine's own daemon unit).
+- **Too large for its size.** boat refuses to start a sandbox whose data
+  doesn't fit its size ("does not fit any available 'small' machine").
+  The machine says so in plain words, and Needs you has the way back by
+  hand: one start on Large (`boat resume <id> --type large`), then
+  `boat exec <id> --timeout 300 -- sudo fstrim -av` and
+  `boat exec <id> -- sudo -n docker image prune -f` (dangling images only),
+  `boat stop <id>`, and `boat resume <id> --type <its size>`. If that last
+  resume still fails, removing every image no container uses
+  (`docker image prune -af`) is the optional extra step. The plugin never
+  does this itself, since a larger size costs more, and it doesn't retry
+  or hold resumes for it. A move to a smaller size that boat refuses this
+  way isn't asked about: the move says so and goes back to the old size.
+- **Off a node that keeps failing.** Once the plugin itself has seen the
+  same hydrator failure at least 3 times over more than 15 minutes (on
+  wakes, or on stops boat refused), it moves the sandbox to a new node.
+  lazyfs's own attempt count doesn't count: an outage across boat.dev
+  shows high counts everywhere.
+  - First it checks that nothing there could be lost: no task or chat
+    mid-turn or with background work running, and every git checkout in
+    the sandbox has no unpushed commits on any branch, no changes (untracked
+    files included) and no stashes.
+  - It also checks the snapshot with a short-lived test fork (never
+    snapshotted, deleted right after). A fork that can't tell is tried
+    again once; then, like any unsafe case, it goes under Needs you with
+    the commands and the time of the last completed snapshot. If the fork
+    can't read the files either, the snapshot itself is the problem.
+  - Then a plain `boat stop`, which takes a fresh snapshot. The plugin
+    follows that stop (`boat stop --status`, never a second stop) and uses
+    `boat stop --force`, which keeps only the last completed snapshot, only
+    once boat refuses the stop (its error, a failing status, or the sandbox
+    staying up). Right before forcing it checks again that nothing there
+    would be lost, since the sandbox stayed up meanwhile. A stop still
+    pending after 20 minutes goes under Needs you. Then a resume puts it on
+    a new node. Files git ignores (a local `.env`, build output) written
+    since the last snapshot aren't kept; the messages say so.
+  - While a move is under way, the plugin sends no work to that sandbox
+    (follow-ups, starts, previews, ships wait, saying why).
+- **Freed disk space trimmed before a stop.** boat's snapshot counts the
+  disk blocks deleted files freed until they're trimmed, so a sandbox can
+  outgrow its size while `df` shows far less in use. Before every stop the
+  plugin makes on purpose (bb suspending a boat.dev machine, the idle stop,
+  making room, Stop in Sandboxes, a preview's stop, a resize), it runs
+  `sudo -n fstrim -av` there over boat's exec API, only while the sandbox
+  runs. It takes at most a minute (20 seconds when it makes room for new
+  work, since starts wait for it) and never fails the stop; bb's debug log
+  has the amount trimmed.
+- **Suspending follows boat's stop.** boat usually answers a stop with
+  "pending" while it takes the final snapshot; a suspend follows it (its
+  status) for up to 90 seconds and counts as done, unless boat refuses it.
+- **Teardown backs off too.** After boat.dev fails to stop or delete a
+  sandbox, bb's retries in between fail at once, without asking boat.dev
+  again (30 seconds, doubling up to 15 minutes).
+- **bb's files read first.** Right after a wake, before bb starts there,
+  the plugin reads through bb's data dir (`~/.bb-machines/<server>`) and
+  the node bb runs on (`~/.nvm/versions/node/<version>`), gently (nice,
+  ionice, one file at a time), so boat.dev restores them before bb needs
+  them. Nothing else is read. It stops after 60 seconds or 1.5 GiB, and
+  never holds up the wake longer than that, whatever the disk does.
+- **bb updated safely.** bb's service on a sandbox updates itself in place
+  when the bb server is newer, and on a disk still being restored that
+  `npm install` can hang for good, or stop half way and leave bb unable to
+  start (`MODULE_NOT_FOUND`). Before bb's setup on each resume, the plugin
+  compares the installed bb with the server's version. When they differ
+  and the server's build is already downloaded on the sandbox (bb's
+  service left it in `host-package-download`), or when the install is
+  broken, it installs that build into a fresh folder next to the old one
+  (its own npm cache in `/tmp`, at most 5 minutes), checks it and swaps it
+  in, keeping the old one as `npm.old-<version>-<time>`, then starts bb's
+  service again; bb's setup then finds the same build and doesn't install
+  it again. If anything fails, bb's service starts again, the sandbox's
+  tasks hear why and what became of the old bb (kept as it was, or, when it
+  isn't complete any more, moved aside so bb's setup installs it again),
+  bb's own setup goes ahead, and the plugin tries again after 30 minutes
+  (doubling up to 6 hours).
+- **From the npm registry without a download.** When the sandbox has no
+  download of the server's version (none, one that can't be read, or
+  another version), the plugin installs `bb-app` at exactly the server's
+  version from the npm registry (registry.npmjs.org, never `latest`) the
+  same way, as it was done by hand. It fetches it with `npm pack` before
+  bb's service stops, so a version the registry doesn't have, a registry it
+  can't reach or a timeout leaves bb running as it was; the tasks hear why,
+  with the same backoff. It doesn't write bb's digest
+  (`host-artifact.sha256`): that's the hash of the server's own build, and
+  the file stays as it was. So bb's setup, right after, installs the
+  server's own build over it in place, unless that build is the one the
+  digest already names; that install only reads files the plugin has just
+  written. A broken install the registry couldn't replace is moved aside
+  first, as before, so bb installs into an empty folder. The prefetch and
+  the fetch take a while, and bb may repair or update its install
+  meanwhile, so nothing is stopped or moved on the first look: right before
+  bb's service stops, the plugin reads the install again. When it's the
+  server's version by then, nothing is stopped or installed; when it's
+  complete, that's what a failed install keeps and starts again. A broken
+  install goes aside only when a new look, and a last check right before
+  the stop, still find it broken; bb's own update running then is waited
+  for and never stopped. When the server's
+  version is unknown, bb's own update runs.
+- **bb's own update is never stopped half way.** When bb's service is
+  updating itself right now (an `npm install` into its folder, in any
+  state), the plugin waits for it to finish, looking again every 10
+  seconds for up to 3 minutes, and then decides; still running after that,
+  it's left to the plugin's wake retries. The install checks once more
+  right before it stops bb's service.
+- **A hung update isn't fought.** When bb's own update already hangs
+  there, the plugin stops nothing and installs nothing, and bb's setup
+  doesn't run into it. A zombie `npm install` (seen twice, 5 seconds apart)
+  only goes with a VM restart: that's the broken daemon above, with its
+  repair under Needs you. An `npm install` whose read of the disk made no
+  progress for 2 minutes, or bb's service stuck stopping, waits on boat.dev:
+  the plugin's own retries take it, as for a disk still being restored.
+- **Usage limit resets, paced.** At a limit's reset, bb's provider retry
+  retries every chat the limit stopped within the same minute. A retry
+  that would wake a boat.dev sandbox now waits for its machine's slot, 30
+  seconds after the one before (2 a minute, the wake pace, and never
+  during the hold after a wake the paid resume made failed), with the time on the
+  queued message; every retry for the same machine goes in its slot. bb
+  still owns and sends the retry. On bb 0.49, which
+  asks the sending plugin first (`provider-retry.v1.consent`), the plugin
+  declines usage-limit retries of the chats it runs (task chats, reviews,
+  orchestrators) and queues each stopped turn again itself for the reset,
+  once; the next stop of the same chat is provider retry's again. That
+  queued retry is an ordinary retry row, so anything that continues a
+  stopped chat earlier sees it as the chat's one pending retry. Overloads
+  and server errors are always left to bb. bb 0.50 no longer asks, so there
+  only the pacing applies.
+
+### Waking a stuck sandbox
+
+A chat or task stuck on **Machine is paused** or **resuming** comes back
+with one command: `bb boat sandbox wake <id>`, with the sandbox's id, a
+task's or a chat's (orchestrators have it as the `boat_wake` tool). It uses
+the pieces above, in the order that worked by hand:
+
+1. A stopped sandbox is resumed with a wake slot, within the boat start
+   limit. When no included start is left it says so; a paid extra start needs
+   `--allow-paid-start`, and the plugin never turns paid extra starts on.
+   Limits that don't show a start is included (unreadable, or partial with
+   paid extra starts not known to be off) count as possibly paid.
+2. It waits until boat's exec answers, then looks at the disk, the SSH login
+   and bb's install there. A read waiting on the disk is waited for first, up
+   to 2 minutes.
+3. A disk that's unreadable, reads still stuck after that wait, an exec that
+   never answers, or an `npm install` zombie: it stops the sandbox and starts
+   it again, boat.dev's fix for a stuck sandbox. That's a plain stop first,
+   followed by its status (never a second stop). `--force` comes only as for a
+   move to a new node: nothing there could be lost, and a test fork of the
+   snapshot reads fine on another node. Never under a running turn: a
+   headless agent, or a chat on a machine that's connected or that the plugin
+   can't read. Otherwise it stops with the facts and the commands. Still
+   unreadable after that: Needs you.
+4. Login message scripts off. When bb has the machine suspended, only `bb
+   machine resume` (bb's own resume updates bb safely and starts it). When it's
+   disconnected but not suspended, bb's safe update if it's older than the
+   server or broken, and bb's service restarted. Then a wait until it
+   connects. Without bb's download on the sandbox, that update installs the
+   server's version from the npm registry.
+5. The chat: a pending provider retry is sent now, a failed turn is retried
+   (not one stopped at a usage limit), and a queue that's already sending is
+   left alone.
+
+`--dry-run` only looks and prints the plan, `--json` gives the report. When it
+stops for safety it exits 1 with "Needs you" and the commands to run.
+
+Work that's over isn't woken for. A chat whose Harbormaster task is cancelled or
+closed is never retried. A sandbox whose tasks are all cancelled or closed, a
+closed task, or a closed task's chat isn't woken unless you add
+`--force-wake`. Before a wake brings a machine back, the chats of cancelled
+or closed tasks on it lose their pending provider retry (like `bb
+provider-retry cancel`); their other queued messages are left alone and
+listed, to cancel in bb if they're stale. A retry that can't be cancelled
+stops the wake first. A bb machine the plugin couldn't look up counts as one that
+may be running chats: nothing is stopped there, and the wake ends with Needs
+you. A sandbox a cut-off wake left stopped is started again for a day; after
+that, every task that ran there, closed ones included, gets a note instead.
+
+One wake per sandbox runs at a time (a second one shows the first one's
+progress), for about 25 minutes; no stop goes out without time left to
+start the sandbox again. The command waits up to 90 seconds, then the wake
+goes on in the plugin: `bb boat sandbox wake <id> --status` shows it, and the
+chat that asked gets a `[boat]` message when it's done. A wake cut off
+between its stop and its start (a reload) leaves a note in the plugin's
+storage, and the next check starts the sandbox again.
 
 ![A task chat: the worker's brief and progress, its parent orchestrator, and the boat sandbox it runs on](screenshots/worker-chat.png)
 
@@ -354,7 +579,7 @@ through the recorded report.
 
 ## Live cards and notifications
 
-Assistant messages can include Boat's directive markers to show live task
+Assistant messages can include Harbormaster's directive markers to show live task
 lists, task chips, review verdicts, ready results, decisions and problems.
 The plugin reads their current data; the marker does not turn an assistant's
 claim into approval or a verified check.
@@ -384,11 +609,11 @@ it does not approve shipping or answer a decision.
   and additive Parent context item are controlled by bb.
 - Digest and handoff renderers are not an automatic last-seen digest or a
   guaranteed handoff summary for every switch.
-- Usage comes from bounded Boat readings; task costs on shared sandboxes
+- Usage comes from bounded boat.dev readings; task costs on shared sandboxes
   cannot be attributed perfectly. Memory charts show measured samples only.
 - Native cold starts wait when usage is exhausted or cannot be verified.
   bb's explicit **Send now** overrides dispatch hooks and may use paid extra
-  usage; it is separate from Boat's guarded delegated paid-start confirmation.
+  usage; it is separate from Harbormaster's guarded delegated paid-start confirmation.
 - The automated test suite uses a fake CLI, not a real paid sandbox run.
 
 ## Protected branches
@@ -442,7 +667,7 @@ grey out the sizes your boat plan doesn't include, with boat's reason.
   - A size picked for a task that your plan doesn't include is refused
     before anything starts. A project size it doesn't include falls back to
     the setting (or a smaller size the plan has), the task's history says
-    so. Native starts instead use the Boat size chip in bb's composer.
+    so. Native starts instead use the boat.dev size chip in bb's composer.
   - Set a project's size in Cloud agents → Projects → **Sandbox size** ("Same
     as the setting" is the default), or:
     ```sh
@@ -523,7 +748,7 @@ grey out the sizes your boat plan doesn't include, with boat's reason.
   memory or something was stopped for memory, else the same size (on
   XLarge: run fewer tests at once). A size your plan doesn't include says
   so. For a project's repo, **Use Large for Web app** sets the project's
-  size; without a project, pick a size in the Boat chip for the next native
+  size; without a project, pick a size in the boat.dev chip for the next native
   time. When other tasks used the sandbox meanwhile, the page says part of
   the peak is theirs.
 
@@ -564,7 +789,7 @@ failures without providing that reproducibility guarantee.
 
 Tasks start in a **boat environment**: the repos it clones, the variables
 and secret files it injects, and whether your GitHub and AI logins go in.
-Empty **Boat environment** uses your boat default; a project can pick its
+Empty **boat.dev environment** uses your boat default; a project can pick its
 own.
 
 - **Create one and add secrets** on the boat.dev dashboard, or with the boat
@@ -711,6 +936,34 @@ costs no tokens. When any chat on this bb fails on a usage limit, that agent
 counts as full until the limit resets. `bb boat relay status` shows each
 agent's usage.
 
+**Settings › Usage limits**, at the top of Harbormaster's settings (and on the
+mobile settings page), says which agent can run now, and why:
+
+- One line on where new work goes, from the same checks a start makes:
+  "Codex is at 99% · Claude is at its weekly limit · paid Claude is
+  available, so new work goes to Claude", or "Both are at their limits ·
+  work waits until Thu 01:00". When chats that stopped at a limit continued
+  on paid Claude in the last day, it adds how many: "· 3 stopped chats
+  resumed on paid Claude".
+- Each account in the Account Pooler, with a bar for every limit (model-only
+  ones such as Fable are labelled; they don't stop the agent) and when it
+  resets, in your local time. Claude accounts add their extra usage:
+  available, blocked, off for this account, or unknown, with when the Pooler
+  checked. Harbormaster never sees a money amount.
+- A reading older than about ten minutes shows as stale. **Account Pooler
+  off** and **Not routing Claude** are states of their own, with the reading
+  from this computer's own login when there is one.
+- **Refresh** asks the Pooler for new readings of each account it uses
+  (only when you press it) and says in plain words which ones failed,
+  including an account the Pooler no longer has.
+  Accounts are managed in the Account Pooler's own settings; the section
+  links there.
+
+The usage numbers on the homepage, the thread's usage chip and a waiting
+start's **Change in Settings › Usage limits** link open this section. Harbormaster
+only reads from the Account Pooler: it never touches its logins or changes
+its accounts or routing.
+
 ## Model presets
 
 A task can run with a model preset: Light, Review, Build, Deep or Frontier
@@ -761,6 +1014,7 @@ command has `--help`, and `--json` gives machine-readable output.
 | `bb boat task wait <id>…` | Block until tasks stop running; a last resort: ending the turn is better, the chat is told when a turn ends |
 | `bb boat preview list \| wake \| extend \| stop` | Previews |
 | `bb boat sandbox list \| new \| info \| stop \| resume \| resize \| delete \| exec` | Sandboxes (`resize <id> --type <size>` moves a task's sandbox to another size) |
+| `bb boat sandbox wake <id>` | Bring a stuck sandbox and its chat back, from its sandbox, task or chat id ([Waking a stuck sandbox](#waking-a-stuck-sandbox); `--dry-run`, `--allow-paid-start`) |
 | `bb boat sandbox snapshot \| snapshots` | Snapshots |
 | `bb boat project list [--local] \| add \| set \| remove` | Projects (`--protected-branches`, `--instructions`, `--delivery`, `--workers`, `--size` …) |
 | `bb boat config get [key] \| set <key> <value> \| reset <key>` | Every setting, wherever it's shown ([settings.md](settings.md)) |
@@ -772,3 +1026,41 @@ command has `--help`, and `--json` gives machine-readable output.
 Orchestrators get the same as agent tools (`boat_dispatch`, `boat_review`,
 `boat_followup`, `boat_tasks`, `boat_ship` and others). The `boat` and
 `boat-orchestrator` skills teach agents how to use them.
+
+### Goal continuity during provider switches
+
+At the usage cutoff, an active orchestrator receives one queued handoff request
+instead of waiting indefinitely for its long-running goal to become idle. It
+finishes its current turn; the plugin never interrupts that turn on an automatic
+handoff timer. An explicit `[boat handoff ready]` note lets the plugin complete
+the handoff promptly. At a hard limit it can use the saved goal, latest reply and
+open tasks without inventing a handoff note.
+
+Before stopping the source, the plugin reads its public native goal snapshot.
+The successor receives its exact objective, status, restrictions and original
+usage/budget figures in its kickoff and plugin metadata. Unreadable or oversized
+native goal data defers handover rather than silently losing the goal. Paused,
+completed and budget-limited goals are not automatically restarted. A cleared
+native Codex goal is not resurrected from an older carried record.
+
+On a provider without native goal controls, this is an explicit continuation
+objective and plan, not a claim of native automatic goal scheduling. `boat_goal`
+reads the carried record after compaction and records completion, a blocker or a
+pause; active requires an explicit user request to resume. A missing record from
+an older handoff can be recovered only from its recorded predecessor; `boat_protocol` includes it too. This tool does not create a goal, automatically resume a
+paused one, control a native goal, or reset its token budget. A bounded budget
+that cannot be accounted for across providers requires clarification.
+
+Task handover and workspace chats follow the current core thread environment,
+even if core replaced an earlier non-null environment ID. The task registry is
+reconciled from that current attachment; the existing checkout is reused rather
+than creating a new sandbox to evade an unavailable workspace.
+
+A cancellation used as a recovery workaround can be reversed explicitly with
+`bb boat task reopen <id> --user-approved`, only after the owner asks to resume.
+It requires the original sandbox and an idle, unarchived chat workspace, restores
+that task to idle, and starts no turn or new sandbox. It cannot recover a deleted
+checkout or silently revive cancelled work. `bb boat goal <thread>` reads the
+carried goal; `--source-thread` can recover a missing older snapshot only through
+the recorded predecessor/successor link. `--status active` requires the owner's
+explicit continuation request and cannot reset an exhausted token budget.

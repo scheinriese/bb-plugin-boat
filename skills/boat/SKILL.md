@@ -1,16 +1,56 @@
 ---
 name: boat
-description: Run coding agents (Claude Code or Codex) in boat.dev cloud sandboxes with the `bb boat` CLI — check the setup, start tasks, request reviews, send follow-ups, inspect sandboxes, and close work. Use when the user asks to spin up a cloud sandbox or cloud agent, delegate coding work to the cloud, check on boat tasks, or clean up sandboxes.
+description: Use Harbormaster to run coding agents (Claude Code or Codex) in boat.dev cloud sandboxes with the `bb boat` CLI — check the setup, start tasks, request reviews, send follow-ups, inspect sandboxes, and close work. Use when the user asks to spin up a cloud sandbox or cloud agent, delegate coding work to the cloud, check on boat / Harbormaster tasks, or clean up sandboxes.
 ---
 
-# boat: cloud agents in boat.dev sandboxes
+# Harbormaster: cloud agents
 
-The Boat Cloud Agents plugin runs Claude Code and Codex in boat.dev
+The Harbormaster plugin runs Claude Code and Codex in boat.dev
 sandboxes, on the user's boat plan and their Claude and ChatGPT
 subscriptions (connected in boat.dev). Everything goes through `bb boat …`,
 which runs the user's signed-in `boat` CLI on the bb server's machine, so it
 works from any chat, local or cloud. If you're an orchestrator with `boat_*`
 tools, use the tools instead (see the `boat-orchestrator` skill).
+
+With the optional Harbormaster CLI companion installed, `bb harbor …` forwards
+to the same handler and state. All `bb boat` examples still work; the companion's
+help uses `bb harbor`. `bb harbormaster` is not registered. If another plugin
+owns `bb harbor`, use `bb plugin run harbor …` to reach the companion explicitly.
+
+Projects can also run on Instabox. GitHub tasks there need an org proxy
+Secret named `GH_TOKEN`, scoped to both `github.com` and `api.github.com`.
+`instaboxSecrets` (Advanced settings) defaults to `all`; use `none` or
+comma-separated names to change the selection. GitHub work requires
+`GH_TOKEN` in that selection. The plugin checks metadata before renting
+and refreshes older machines missing the placeholder before repo prep.
+Enter token values only in Instabox's dashboard or its secure CLI prompt,
+never in chat. Setup and permissions: [settings](../../docs/settings.md#sandbox-providers).
+
+Mac tasks also have **Your Mac** (`ownmac`), off by default: an isolated macOS
+VM or a separate standard user reached through an SSH Host alias. The bb
+server's own login on the same machine is always refused. An admin is allowed
+only inside a detected VM. Setup, power and login remain the owner's choices;
+the plugin never wakes the Mac or changes those settings. New starts need
+mains power, a logged-in execution session, 6 GB free memory and a free task
+slot (default 1). Running work is not moved or killed when availability changes.
+
+Automatic Mac routing prefers Your Mac, existing monthly capacity, a held rental,
+then a new rental. Explicit Scaleway or Instabox Runs-on choices take precedence.
+A new rental shows its live cost and waits for the owner's choice;
+never approve it yourself. Waiting tasks that never started can resume when
+Your Mac returns. Never blindly replay work after a disconnect. Close/cancel
+removes task credentials and revokes proxy access. A failed check automatically
+pauses new starts until the read-only **Check again** passes; the owner can
+copy the exact manual steps, with no one-click removal. See
+[Your Mac setup](../../docs/settings.md#your-mac). Internal tool and CLI names
+remain `boat_*` and `bb boat`.
+
+Test connection pins the alias and Mac account identity. A change posts a timed
+notice addressed to the owner. Agents must not run Test connection or change
+Your Mac settings. The owner must re-test in Settings; use the next approved
+route meanwhile. Resolved changes do not notify later orchestrators.
+Inside a VM, power checks read the guest and may miss a host on battery;
+the owner must keep the physical host on mains power.
 
 ## Words to use with the user
 
@@ -150,6 +190,7 @@ size. Agents are told their sandbox's size.
 | `bb boat task ship <id>` | Projects that ship after approval: push the task's commits to its base branch. Only from the task's orchestrator chat, after the user said so there |
 | `bb boat preview list` / `preview wake\|extend\|stop <id>` | Previews agents left running (private links), and bringing a sleeping one back |
 | `bb boat sandbox list [--all]` / `sandbox new [--repo …]` / `sandbox info\|stop\|resume\|delete <id>` | Sandboxes |
+| `bb boat sandbox wake <id>` | A chat or task stuck on "Machine is paused" or "resuming": bring its sandbox and chat back (sandbox, task or chat id; `--dry-run` first if unsure). See the boat-sandbox-wake skill |
 | `bb boat sandbox resize <id> --type <size>` | Move a task's sandbox to another size without a follow-up (see Sandbox sizes) |
 | `bb boat sandbox exec <id> -- <command>` | Run a shell command in a sandbox |
 | `bb boat sandbox snapshot <id> <name>` / `sandbox snapshots` | Save a sandbox as a snapshot; list saved ones (`--snapshot <name>` on task start starts from one) |
@@ -236,3 +277,15 @@ environment (`EVIDENCE_BUCKET`, `EVIDENCE_ACCESS_KEY_ID`,
 - `bb boat config import` and `bb boat config set` change the user's
   settings: run them only when the user asks, and show them the
   `--dry-run` summary of an import first.
+
+## Automatic paid Claude fallback
+
+The owner can opt into `paidClaudeFallback` in Usage limits or with
+`bb boat config set paidClaudeFallback true`. Use included allowances first;
+only then may eligible bb task chats and orchestrators use Claude extra usage
+when Account Pooler reports recent availability. Claude enforces billing; Harbormaster
+cannot read a money cap or balance and never buys credits. Headless Harbormaster tasks
+need per-request paid approval unless `paidClaudeHeadless` is also enabled
+after the owner confirms the same Claude subscription and billing account. Do not name a provider/model to bypass a
+waiting receipt or dispatch replacement work. If billing is unavailable, keep
+waiting. This setting changes spending behavior: set it only when the owner asks.

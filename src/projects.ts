@@ -2,7 +2,9 @@
 // sandboxes can't see local files, so every repo is cloned from GitHub.
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { DEFAULT_PROTECTED_BRANCHES, MACHINE_TYPES, assertBranch, invalidBranchNames, normalizeRepo, parseBranchList, type MachineType } from "./boat-api.ts";
+import { assertBranch, invalidBranchNames, normalizeRepo, parseBranchList } from "./providers/boat/api.ts";
+import { DEFAULT_PROTECTED_BRANCHES } from "./sandbox-repos.ts";
+import { DEFAULT_PROVIDER_ID, MACHINE_TYPES, type MachineType } from "./providers/types.ts";
 
 /** Longest project instructions (they go into every brief of the project's tasks). */
 export const MAX_PROJECT_INSTRUCTIONS = 10_000;
@@ -33,6 +35,11 @@ export const projectInputSchema = z.object({
   machineType: z.enum(MACHINE_TYPES).nullable().optional(),
   /** null: configured reviewer; none: no automatic review. */
   reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
+  /** Chats of this project never continue on paid Claude after a usage limit; absent: unchanged. */
+  neverPaidClaude: z.boolean().optional(),
+  /** The sandbox provider for its new work (Settings › Runs on); null: the default; absent: unchanged. */
+  sandboxSystem: z.enum(["linux", "macos"]).optional(),
+  sandboxProvider: z.string().trim().min(1).max(40).regex(/^[a-z0-9-]+$/, "Use a sandbox provider's id, like boat.").nullable().optional(),
 });
 export type ProjectInput = z.infer<typeof projectInputSchema>;
 
@@ -65,6 +72,14 @@ export interface BoatProject {
   /** Size of new task sandboxes for this project (and their reviews); null: the Default sandbox size setting. */
   machineType: MachineType | null;
   reviewer?: "codex" | "claude" | "none" | null;
+  /** Its chats stopped at a usage limit wait for included usage instead of continuing on paid Claude (src/paid-resume.ts). */
+  neverPaidClaude?: boolean;
+  /**
+   * The sandbox provider its new work runs on (Settings › Runs on; the
+   * registry's forProject reads it). Absent: the default provider, boat.dev.
+   */
+  sandboxProvider?: string;
+  sandboxSystem?: "linux" | "macos";
   createdAt: string;
   updatedAt: string;
 }
@@ -128,6 +143,11 @@ export function normalizeProject(input: ProjectInput, existing?: BoatProject | n
     instructions: parsed.instructions !== undefined ? parsed.instructions.trim() : (existing?.instructions ?? ""),
     machineType: parsed.machineType !== undefined ? parsed.machineType : (existing?.machineType ?? null),
     reviewer: parsed.reviewer !== undefined ? parsed.reviewer : (existing?.reviewer ?? null),
+    // Kept only when on, so older projects and their backups stay as they were.
+    ...((parsed.neverPaidClaude ?? existing?.neverPaidClaude) === true ? { neverPaidClaude: true } : {}),
+    // Likewise only when the project picked a provider of its own.
+    ...((parsed.sandboxSystem ?? existing?.sandboxSystem) === "macos" ? { sandboxSystem: "macos" as const } : {}),
+    ...providerPick(parsed.sandboxProvider !== undefined ? parsed.sandboxProvider : existing?.sandboxProvider),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -157,12 +177,20 @@ export function protectedBranches(
   return [...set];
 }
 
+/** A project's own provider, kept only when it names one (not the default's id: that's no pick). */
+function providerPick(value: unknown): { sandboxProvider?: string } {
+  return typeof value === "string" && /^[a-z0-9-]{1,40}$/.test(value) && value !== DEFAULT_PROVIDER_ID ? { sandboxProvider: value } : {};
+}
+
 type Row = Record<string, unknown>;
 
 /** Projects saved before a field existed get its default. */
-function withDefaults(project: BoatProject): BoatProject {
+function withDefaults(stored: BoatProject): BoatProject {
+  const { neverPaidClaude, sandboxProvider, ...project } = stored;
   return {
     ...project,
+    ...(neverPaidClaude === true ? { neverPaidClaude: true } : {}),
+    ...providerPick(sandboxProvider),
     localBbProjectId: typeof project.localBbProjectId === "string" && project.localBbProjectId.length <= 200 ? project.localBbProjectId : null,
     workerMode: project.workerMode === "boat" ? "boat" : "chat",
     delivery: project.delivery === "push" ? "push" : "pr",

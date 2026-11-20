@@ -1,3 +1,5 @@
+import { footerOnCount } from "./own-mac-count";
+import { FooterUsage } from "./footer-usage";
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
   type ExperimentalSidebarFooterDisclosureProps,
@@ -9,9 +11,7 @@ import { rpcContract } from "../contract";
 import { Button } from "../components/ui/button";
 import { Icon } from "../components/ui/icon";
 import { canResumeSandbox, isSandboxActive, PANEL_PATH } from "./format";
-import { cardStatus } from "./cards-logic";
-import { sandboxPrimaryTask } from "./sandboxes-logic";
-import { useOverview, useSandboxes } from "./hooks";
+import { useOverview, useSandboxes, useSandboxProviders } from "./hooks";
 import {
   SandboxActionButton,
   sandboxFailure,
@@ -157,7 +157,8 @@ function BoatFooterIcon({ className }: { className?: string }) {
     method: "overview",
     input: null,
   });
-  const count = overview.data?.activeSandboxes;
+  const own=experimental_useRpcQuery({pluginId:"boat",contract:rpcContract,method:"macUsage",input:{timezoneOffsetMinutes:new Date().getTimezoneOffset()}});
+  const count = footerOnCount(sandboxes.data?.sandboxes,own.data?.ownMac?.running);
   const broken = sandboxes.data?.sandboxes.some((sandbox) =>
     sandboxFailure(sandbox, tasks.data?.tasks ?? []),
   );
@@ -182,6 +183,8 @@ export function BoatFooter({
   onDialogOpenChange?: (open: boolean) => void;
 }) {
   const overview = useOverview();
+  const providerInfo = useSandboxProviders();
+  const mac = experimental_useRpcQuery({contract:rpcContract,method:"macUsage",input:{timezoneOffsetMinutes:new Date().getTimezoneOffset()}});
   const sandboxes = useSandboxes();
   const usage = experimental_useRpcQuery({
     contract: rpcContract,
@@ -198,41 +201,9 @@ export function BoatFooter({
       }),
     [sandboxes.data, tasks.data],
   );
-  const count =
-    overview.data && !overview.data.boatError
-      ? overview.data.activeSandboxes
-      : null;
-  const cap = overview.data?.cap ?? null;
-  const planHours = usage.data?.plan?.hoursRemaining;
-  const planTotal = usage.data?.plan?.hoursTotal;
-  const resetsAt = usage.data?.plan?.resetsAt;
-  const resetLabel = resetsAt
-    ? new Date(resetsAt).toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-      })
-    : null;
-  const day = usage.data?.day;
-  const activity = sandboxes.data?.sandboxes.reduce(
-    (counts, sandbox) => {
-      if (!isSandboxActive(sandbox.state)) return counts;
-      const task = sandboxPrimaryTask(sandbox, tasks.data?.tasks ?? []);
-      const state = task ? cardStatus(task) : null;
-      if (task?.role === "review" && state?.moving) counts.reviewing++;
-      else if (
-        state?.moving ||
-        state?.status === "needs-you" ||
-        (!task &&
-          ["running", "starting", "provisioned", "cloning"].includes(
-            sandbox.state,
-          ))
-      )
-        counts.working++;
-      else counts.idle++;
-      return counts;
-    },
-    { working: 0, reviewing: 0, idle: 0 },
-  );
+  const count = footerOnCount(sandboxes.data?.sandboxes,mac.data?.ownMac?.running) ?? null;
+  const boatOn = sandboxes.data?.sandboxes.filter(s=>s.runsOn?.provider==="boat" && isSandboxActive(s.state)).length ?? null;
+  const providers = providerInfo.data?.providers.map(p=>p.id==="instabox" && p.linuxUsage ? {...p,linuxUsage:{...p.linuxUsage,active:sandboxes.data?.sandboxes.filter(s=>s.runsOn?.provider==="instabox" && s.runsOn?.os!=="macos" && isSandboxActive(s.state)).length ?? null}} : p);
   function allSandboxes() {
     navigate.toPluginPanel(PANEL_PATH, { subPath: "sandboxes" });
     dismiss();
@@ -242,46 +213,8 @@ export function BoatFooter({
       className="boat-ui w-full max-w-[calc(100vw-24px)] space-y-3 p-3.5 text-xs"
       aria-label="Cloud sandboxes"
     >
-      <h2 className="text-[13px] leading-[18px] font-semibold text-[color:var(--boat-heading)]">
-        Cloud sandboxes
-      </h2>
-      {count !== null && (
-        <Meter
-          label="Sandboxes on"
-          value={`${count}${cap === null ? "" : ` of ${cap}`}`}
-          fraction={cap !== null && cap > 0 ? count / cap : null}
-          detail={
-            activity
-              ? `${activity.working} working${activity.reviewing ? ` · ${activity.reviewing} reviewing` : ""} · ${activity.idle} idle`
-              : null
-          }
-        />
-      )}
-      {typeof planHours === "number" && (
-        <Meter
-          label="Plan hours left"
-          value={`${planHours.toLocaleString(undefined, { maximumFractionDigits: 1 })} h`}
-          color="bg-[#5BD08A]"
-          fraction={planTotal && planTotal > 0 ? planHours / planTotal : null}
-          detail={[
-            typeof planTotal === "number"
-              ? `of ${planTotal.toLocaleString(undefined, { maximumFractionDigits: 1 })} h`
-              : "",
-            resetLabel ? `resets ${resetLabel}` : "",
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        />
-      )}
-      {day?.dollars != null && day.hours != null && (
-        <Meter
-          label="Today"
-          value={`$${day.dollars.toFixed(2)}`}
-          fraction={null}
-          showBar={false}
-          detail={`${day.hours.toLocaleString(undefined, { maximumFractionDigits: 1 })} sandbox hours`}
-        />
-      )}
+      <h2 className="flex items-center justify-between text-[13px] leading-[18px] font-semibold text-[color:var(--boat-heading)]">Cloud sandboxes <span className="text-xs font-normal text-[#A8A8A8]">{count===null ? "" : `${count} on`}</span></h2>
+      <FooterUsage plan={usage.data?.plan} providers={providers} mac={mac.data} boatOn={boatOn} cap={overview.data?.cap ?? null} day={usage.data?.day}/>
       {exceptions.length > 0 && (
         <div className="flex flex-col border-t border-border pt-1">
           <h3 className="pt-1.5 text-[11px] leading-[14px] text-[color:var(--boat-faint)]">
@@ -310,7 +243,7 @@ export function BoatFooter({
                     {reason}
                   </p>
                 </div>
-                {canResumeSandbox(sandbox.state) && (
+                {sandbox.uses.length>0 && canResumeSandbox(sandbox.state) && (
                   <SandboxActionButton
                     sandbox={sandbox}
                     action="resume"
@@ -343,52 +276,5 @@ export function BoatFooter({
         </Button>
       </div>
     </section>
-  );
-}
-
-function Meter({
-  label,
-  value,
-  detail,
-  fraction,
-  color = "bg-foreground dark:bg-[#D6D6D6]",
-  showBar = true,
-}: {
-  label: string;
-  value: string;
-  detail?: string | null;
-  fraction: number | null;
-  color?: string;
-  showBar?: boolean;
-}) {
-  return (
-    <div className="space-y-[5px]">
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-muted-foreground dark:text-[#A8A8A8]">
-          {label}
-        </span>
-        <span className="text-[13px] leading-4 font-medium tabular-nums text-[color:var(--boat-heading)]">
-          {value}
-        </span>
-      </div>
-      {showBar && (
-        <div
-          className="h-1 overflow-hidden rounded-sm bg-muted dark:bg-[#2E2E2E]"
-          aria-hidden="true"
-        >
-          {fraction !== null && (
-            <div
-              className={`h-full rounded-sm ${color}`}
-              style={{ width: `${Math.max(0, Math.min(1, fraction)) * 100}%` }}
-            />
-          )}
-        </div>
-      )}
-      {detail && (
-        <p className="text-[11px] leading-[14px] text-[color:var(--boat-faint)]">
-          {detail}
-        </p>
-      )}
-    </div>
   );
 }

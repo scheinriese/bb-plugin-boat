@@ -1,3 +1,5 @@
+import { MonthlyMacAdvisor, MONTHLY_MAC_MIGRATIONS } from "./monthly-mac-advisor.ts";
+import { MacLeaseLedger, MAC_LEASE_MIGRATIONS, MAC_CREDENTIAL_NOTICES_MIGRATION, MAC_CREDENTIAL_EXPIRIES_MIGRATION } from "./mac-leases.ts";
 // Plugin-owned task registry (SQLite, <dataDir>/plugins/boat/data.db).
 //
 // A task is one piece of delegated work: a coding agent conversation inside a
@@ -6,7 +8,9 @@ import { eventMetadata, projectHistoryEvent, reviewFindings, type EventMetadata 
 import { randomBytes } from "node:crypto";
 import { START_QUEUE_MIGRATIONS } from "./start-queue-migrations.ts";
 import { CHAT_RECOVERY_MIGRATIONS } from "./chat-recovery-migrations.ts";
+import { PAID_RESUME_MIGRATIONS } from "./paid-resume-migrations.ts";
 import type Database from "better-sqlite3";
+import { DEFAULT_PROVIDER_ID, MACHINE_TYPES, type MachineType } from "./providers/types.ts";
 import { normalizeDecisionOptions, type DecisionOption, type DecisionOptionInput, historyInputSchema, type HistoryEventDto } from "../contract-fidelity.ts";
 
 export const TASK_ROLES = ["implement", "review", "custom"] as const;
@@ -101,6 +105,13 @@ export interface Task {
    * the user hasn't seen; cleared once the task ships or closes.
    */
   shipApproval: ShipApproval | null;
+  /**
+   * The sandbox provider its sandbox is on (src/providers/registry.ts).
+   * Absent: boat.dev, the only one so far (so tasks read as before).
+   */
+  sandboxProvider?: string;
+  sandboxSystem?: "linux" | "macos";
+  startOptions?: { machineType: MachineType; confirmUntrustedChat: string[] | null };
 }
 
 /** "What changed since you approved": compared in the sandbox after the turn that followed a conflict. */
@@ -257,6 +268,10 @@ const MIGRATIONS = [
   `ALTER TABLE tasks ADD COLUMN compact_title TEXT`,
   ...START_QUEUE_MIGRATIONS,
   ...CHAT_RECOVERY_MIGRATIONS,
+  ...PAID_RESUME_MIGRATIONS,
+  // The sandbox provider a task's sandbox is on (src/providers/registry.ts);
+  // tasks from before there were providers are on boat.dev.
+  `ALTER TABLE tasks ADD COLUMN sandbox_provider TEXT NOT NULL DEFAULT 'boat'`,
 ];
 
 export const DECISION_STATUSES = ["open", "answered", "withdrawn"] as const;
@@ -398,6 +413,9 @@ const COLUMN_BY_FIELD: Record<keyof Task, string> = {
   notifiedAt: "notified_at",
   unshipped: "unshipped",
   shipApproval: "ship_approval",
+  sandboxProvider: "sandbox_provider",
+  sandboxSystem: "sandbox_system",
+  startOptions: "start_options",
 };
 
 function nullableString(value: unknown): string | null {
@@ -405,6 +423,7 @@ function nullableString(value: unknown): string | null {
 }
 
 function toTask(row: Row): Task {
+  const startOptions = parseStartOptions(row.start_options);
   return {
     id: String(row.id),
     title: String(row.title),
@@ -449,7 +468,22 @@ function toTask(row: Row): Task {
     notifiedAt: nullableString(row.notified_at),
     unshipped: row.unshipped === null || row.unshipped === undefined ? null : Number(row.unshipped),
     shipApproval: parseShipApproval(row.ship_approval),
+    ...(startOptions ? { startOptions } : {}),
+    ...(row.sandbox_system === "macos" ? { sandboxSystem: "macos" as const } : {}),
+    // Only another provider's: a task on boat.dev reads as it did before the column.
+    ...(typeof row.sandbox_provider === "string" && row.sandbox_provider !== DEFAULT_PROVIDER_ID ? { sandboxProvider: row.sandbox_provider } : {}),
   };
+}
+
+function parseStartOptions(raw: unknown): Task["startOptions"] {
+  if (typeof raw !== "string") return undefined;
+  try {
+    const value = JSON.parse(raw);
+    if (!value || !MACHINE_TYPES.includes(value.machineType)) return undefined;
+    const confirmed = value.confirmUntrustedChat;
+    if (confirmed !== null && (!Array.isArray(confirmed) || !confirmed.every((repo: unknown) => typeof repo === "string"))) return undefined;
+    return { machineType: value.machineType, confirmUntrustedChat: confirmed };
+  } catch { return undefined; }
 }
 
 function parseShipApproval(value: unknown): ShipApproval | null {
@@ -500,6 +534,9 @@ function parseRepos(value: unknown): { repo: string; baseBranch: string; path?: 
 
 function toColumnValue(field: keyof Task, value: unknown): unknown {
   if (field === "ownsSandbox") return value === true ? 1 : 0;
+  if (field === "sandboxSystem") return value === "macos" ? "macos" : "linux";
+  if (field === "sandboxProvider") return typeof value === "string" && value !== "" ? value : DEFAULT_PROVIDER_ID;
+  if (field === "startOptions") return value === undefined ? null : JSON.stringify(value);
   if (field === "extraRepos") return JSON.stringify(Array.isArray(value) ? value : []);
   if (field === "shipApproval") return value === null || value === undefined ? null : JSON.stringify(value);
   return value ?? null;
@@ -517,14 +554,23 @@ export interface TaskFilter {
 }
 
 export class TaskStore {
+  readonly macLeases: MacLeaseLedger;
+  readonly monthlyMacs: MonthlyMacAdvisor;
   private readonly db: () => Database.Database;
 
   constructor(db: () => Database.Database) {
     this.db = db;
+    this.macLeases = new MacLeaseLedger(db);
+    this.monthlyMacs = new MonthlyMacAdvisor(db, this.macLeases);
   }
 
   static migrations(): string[] {
-    return [...MIGRATIONS];
+    return [...MIGRATIONS, ...MAC_LEASE_MIGRATIONS, `ALTER TABLE tasks ADD COLUMN sandbox_system TEXT NOT NULL DEFAULT 'linux'`,
+      `ALTER TABLE mac_leases ADD COLUMN billing_increment_seconds INTEGER NOT NULL DEFAULT 1`,
+      `ALTER TABLE tasks ADD COLUMN start_options TEXT`, MAC_CREDENTIAL_NOTICES_MIGRATION, MAC_CREDENTIAL_EXPIRIES_MIGRATION,
+      ...MONTHLY_MAC_MIGRATIONS,
+      // Reset earlier instruction-time delivery claims for live sessions.
+      `DELETE FROM monthly_mac_shown`];
   }
 
   insert(task: Task): Task {
@@ -697,6 +743,12 @@ export class TaskStore {
   queuedGuards(): { queuedMessageId: string; threadId: string; createdAt: number }[] {
     const rows = this.db().prepare(`SELECT queued_message_id, thread_id, at FROM queue_guards WHERE state != 'removed'`).all() as { queued_message_id: string; thread_id: string; at: string }[];
     return rows.map((row) => ({ queuedMessageId: row.queued_message_id, threadId: row.thread_id, createdAt: Date.parse(row.at) || 0 }));
+  }
+
+  /** The sandbox provider its newest task recorded for a sandbox (null: no task has it). */
+  sandboxProviderOf(sandboxId: string): string | null {
+    const row = this.db().prepare(`SELECT sandbox_provider FROM tasks WHERE sandbox_id = ? ORDER BY updated_at DESC LIMIT 1`).get(sandboxId) as { sandbox_provider?: unknown } | undefined;
+    return typeof row?.sandbox_provider === "string" ? row.sandbox_provider : null;
   }
 
   liveSandboxTasks(sandboxId: string): Task[] {
@@ -1031,10 +1083,35 @@ export class TaskStore {
   }
 
   /** The newest event of one kind (e.g. "review", "approval"), or null. */
+  countOwnMacTasksSince(since:string):number {
+    const row=this.db().prepare(`SELECT COUNT(*) AS n FROM tasks WHERE sandbox_provider='ownmac' AND sandbox_id IS NOT NULL AND created_at>=? AND (turns>0 OR status IN ('starting','running','idle'))`).get(since) as {n:number};
+    return row.n;
+  }
+  /** Bounded provider state for Your Mac cards, outside the public history feed. */
+  addOwnMacEvent(taskId:string,kind:string,text:string,payload:unknown):void {
+    if(!kind.startsWith("ownmac-"))throw new Error("Invalid Your Mac event kind");
+    const metadata=JSON.stringify({ownMac:payload});
+    if(metadata.length>12000)throw new Error("Your Mac event is too large");
+    this.db().prepare(`INSERT INTO task_events (task_id,at,kind,text,metadata) VALUES (?,?,?,?,?)`).run(taskId,new Date().toISOString(),kind,text.slice(0,4000),metadata);
+  }
+  ownMacEventData(taskId:string,kind:string):unknown {
+    const row=this.db().prepare(`SELECT metadata FROM task_events WHERE task_id=? AND kind=? ORDER BY seq DESC LIMIT 1`).get(taskId,kind) as {metadata:string}|undefined;
+    try{return row?JSON.parse(row.metadata).ownMac:null;}catch{return null;}
+  }
+
   latestEvent(taskId: string, kind: string): TaskEvent | null {
     const row = this.db()
       .prepare(`SELECT task_id, at, kind, text FROM task_events WHERE task_id = ? AND kind = ? ORDER BY seq DESC LIMIT 1`)
       .get(taskId, kind) as Row | undefined;
+    return row === undefined ? null : { taskId: String(row.task_id), at: String(row.at), kind: String(row.kind), text: String(row.text) };
+  }
+
+  /** The newest event of any of these kinds (however many other events came after it), or null. */
+  latestEventOf(taskId: string, kinds: readonly string[]): TaskEvent | null {
+    if (kinds.length === 0) return null;
+    const row = this.db()
+      .prepare(`SELECT task_id, at, kind, text FROM task_events WHERE task_id = ? AND kind IN (${kinds.map(() => "?").join(", ")}) ORDER BY seq DESC LIMIT 1`)
+      .get(taskId, ...kinds) as Row | undefined;
     return row === undefined ? null : { taskId: String(row.task_id), at: String(row.at), kind: String(row.kind), text: String(row.text) };
   }
 

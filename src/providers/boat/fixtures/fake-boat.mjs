@@ -27,7 +27,7 @@ const flag = (name) => {
   return index === -1 ? null : rest[index + 1];
 };
 
-// Setup facts (test/fixtures/boat-json has the real shapes): signed in, a
+// Setup facts (boat-json has the real shapes): signed in, a
 // trial, both agents connected, unless the state says otherwise.
 const signedOut = state.signedOut === true;
 if (signedOut && ["limits", "env", "ai", "list", "new"].includes(command)) {
@@ -49,7 +49,7 @@ switch (command) {
   case "ai":
     // `boat ai proxy` without on or off only shows the account's proxy.
     if (rest[0] === "proxy" && (rest[1] === undefined || rest[1].startsWith("-"))) {
-      // The real shape (test/fixtures/boat-json/ai-proxy.json); the proxy is a paid add-on.
+      // The real shape (boat-json/ai-proxy.json); the proxy is a paid add-on.
       print({ enabled: state.aiProxy !== false, enabledAt: null, org: false, pricing: { dailyDollars: 1, dollarsPer1000Requests: 1 }, proxyUrl: "https://ai-proxy.example.com", success: true });
       break;
     }
@@ -69,7 +69,7 @@ switch (command) {
     break;
   case "limits":
     if (state.limitsFail) fail("boat_timeout", "boat.dev didn't answer");
-    print({ accessTier: state.accessTier ?? "trial", trialLine: "trialLine" in state ? state.trialLine : "2 boxes, 75 new/day, 25h of 25h compute left, auto-stop max 2h, no large or xlarge types", activeSandboxes: Object.values(state.sandboxes).filter((s) => s.state !== "stopped").length, maxActiveSandboxes: state.maxActive ?? 2, currentLimits: { activeSandboxes: state.maxActive ?? 2 }, canStart: state.checkoutRequired !== true, checkoutRequired: state.checkoutRequired === true, starts: { day: { remaining: 70, limit: 75 }, hour: { remaining: 20 } }, machineTypes: state.machineTypes ?? [{ type: "small", available: true, reason: null }, { type: "default", available: true, reason: null }, { type: "large", available: false, reason: "needs a paid plan" }, { type: "xlarge", available: false, reason: "needs the $100/month plan or higher" }] });
+    print({ accessTier: state.accessTier ?? "trial", trialLine: "trialLine" in state ? state.trialLine : "2 boxes, 75 new/day, 25h of 25h compute left, auto-stop max 2h, no large or xlarge types", activeSandboxes: Object.values(state.sandboxes).filter((s) => s.state !== "stopped").length, maxActiveSandboxes: state.maxActive ?? 2, currentLimits: { activeSandboxes: state.maxActive ?? 2 }, canStart: state.checkoutRequired !== true, checkoutRequired: state.checkoutRequired === true, starts: state.starts ?? { day: { remaining: 70, limit: 75 }, hour: { remaining: 20 } }, keepGoing: { enabled: state.extraStarts === true }, nextStartDollars: state.nextStartDollars ?? 0, machineTypes: state.machineTypes ?? [{ type: "small", available: true, reason: null }, { type: "default", available: true, reason: null }, { type: "large", available: false, reason: "needs a paid plan" }, { type: "xlarge", available: false, reason: "needs the $100/month plan or higher" }] });
     break;
   case "list": {
     const all = rest.includes("--all");
@@ -138,6 +138,23 @@ switch (command) {
     }
     if (script.includes("BOAT_LOGIN")) {
       print({ exitCode: 0, stdout: state.loginExpired ? "BOAT_LOGIN expired\n" : "BOAT_LOGIN ok\nBOAT_GH_EXPIRES 2099-01-01 00:00:00 UTC\n", stderr: "" });
+      break;
+    }
+    // bb boat sandbox wake (src/sandbox-wake.ts): exec answering, the disk check, the checkouts, bb's install.
+    if (script === "echo BOAT_EXEC_OK") {
+      print({ exitCode: 0, stdout: "BOAT_EXEC_OK\n", stderr: "" });
+      break;
+    }
+    if (script.includes("BOAT_DISK_END")) {
+      print({ exitCode: 0, stdout: state.diskCheck ?? "BOAT_DISK ok .profile\nBOAT_DISK_END\n", stderr: "" });
+      break;
+    }
+    if (script.includes("BOAT_GIT_SCAN_END")) {
+      print({ exitCode: 0, stdout: state.checkouts ?? "BOAT_GIT_SCAN_END\n", stderr: "" });
+      break;
+    }
+    if (script.includes("host-package-download/bb-app.tgz") && script.includes("say end")) {
+      print({ exitCode: 0, stdout: state.bbInspect ?? "BOAT_BB none\nBOAT_BB end\n", stderr: "" });
       break;
     }
     const repo = /REPO='([^']+)'/.exec(script)?.[1] ?? "x/y";

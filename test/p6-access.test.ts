@@ -9,10 +9,14 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import plugin from "../server.ts";
 import { createTestHost } from "./fakes.ts";
-import { GITHUB_ACCESS_SNIPPET, parseGithubAccess } from "../src/boat-api.ts";
-import { BoatError } from "../src/boat.ts";
+import { GITHUB_ACCESS_SNIPPET, parseGithubAccess as parseAccess } from "../src/sandbox-repos.ts";
+import { BOAT_REPO_WORDS } from "../src/providers/boat/provider.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+/** In boat.dev's words, as the boat provider has them. */
+const parseGithubAccess = (stdout: string, repo: string, environment: string | null = null) => parseAccess(stdout, repo, environment, BOAT_REPO_WORDS);
+import { BoatError } from "../src/providers/boat/cli.ts";
+
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 
 async function setup(t: { after(fn: () => unknown): void }) {
   const dir = mkdtempSync(join(tmpdir(), "boat-p6-test-"));

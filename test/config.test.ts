@@ -13,7 +13,7 @@ import { ALL_SETTINGS, PLUGIN_SETTINGS, SETTINGS } from "../src/settings.ts";
 import { PLUGIN_SETTINGS_KEY } from "../src/settings-store.ts";
 import { DEFAULT_TIERS } from "../src/tiers.ts";
 
-const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
 
 /** A plugin in a fresh fake bb; `files` stands in for the machine the CLI runs on. */
 async function setup(settings: Record<string, unknown> = {}) {
@@ -89,6 +89,9 @@ const EVERY_SETTING = {
   evidenceUploader: "acme/tools:scripts/evidence-upload.mjs@0123abc",
   autoFailover: false,
   avoidExtraUsage: false,
+  paidClaudeFallback: true,
+  paidClaudeHeadless: true,
+  resumeStoppedChats: false,
   relayEnabled: true,
   relaySwitchAt: 85,
   relaySwitchBackBelow: 40,
@@ -109,6 +112,19 @@ const EVERY_SETTING = {
   reviewSandbox: "new",
   extraProtectedBranches: "release, develop",
   boatPath: "~/bin/boat",
+  monthlyMacPricesJson: "[]",
+  macHandBackMarginMinutes: 20,
+  macIdleNoticeMinutes: 90,
+  ownMacIsolation:"user",
+  ownMacEnabled:true,
+  ownMacPaused:true,
+  ownMacAlias:"fake-mac",
+  ownMacMaxTasks:2,
+  instaboxEnabled: true,
+  instaboxSecrets: "GH_TOKEN,MODEL_KEY",
+  instaboxPath: "~/bin/instabox",
+  scalewayProjectId: "10000000-0000-4000-8000-000000000001",
+  scalewayZone: "fr-par-1",
 };
 
 /**
@@ -324,7 +340,7 @@ test("a version 1 backup with every old setting imports into today's settings", 
   assert.match(dry.stdout, /From an older backup: workers from workerMode "chat" and adhocWorkerMode "boat": "projects"/);
   assert.match(dry.stdout, /Ignored, no longer settings: pollIntervalSeconds/);
   // The settings newer than the file are named, with the values they keep (the defaults here).
-  assert.match(dry.stdout, /Not in the file, stay as they are: experimentalUiTweaks = false, notifyNeedsYou = true, notifyReady = true, notifyProgress = false, orchestratorEffort = "high", tasksBeforeAsking = 5, cloudOrchestratorFullAccess = true, recoverChatsAfterSteer = true\n/);
+  assert.match(dry.stdout, /Not in the file, stay as they are: experimentalUiTweaks = false, notifyNeedsYou = true, notifyReady = true, notifyProgress = false, paidClaudeFallback = false, paidClaudeHeadless = false, resumeStoppedChats = true, orchestratorEffort = "high" and 16 more settings\n/);
   assert.doesNotMatch(dry.stdout, /Skipped, not settings of this version/);
 
   const result = await importFile(file);
@@ -344,7 +360,7 @@ test("a version 1 backup with every old setting imports into today's settings", 
 
   // The effective settings are the intended ones: the file's values by today's keys, defaults for the rest.
   const { workerMode: _w, adhocWorkerMode: _a, pollIntervalSeconds: _p, ...rest } = V1_SETTINGS;
-  const intended = { ...rest, workers: "projects", experimentalUiTweaks: false, notifyNeedsYou: true, notifyReady: true, notifyProgress: false, orchestratorEffort: "high", tasksBeforeAsking: 5, cloudOrchestratorFullAccess: true, recoverChatsAfterSteer: true };
+  const intended = { ...rest, ownMacIsolation:"vm",ownMacEnabled:false,ownMacPaused:false,ownMacAlias:"",ownMacMaxTasks:1, workers: "projects", experimentalUiTweaks: false, notifyNeedsYou: true, notifyReady: true, notifyProgress: false, paidClaudeFallback: false, paidClaudeHeadless: false, resumeStoppedChats: true, orchestratorEffort: "high", tasksBeforeAsking: 5, cloudOrchestratorFullAccess: true, recoverChatsAfterSteer: true, monthlyMacPricesJson: "", macHandBackMarginMinutes: 30, macIdleNoticeMinutes: 60, instaboxEnabled: false, instaboxSecrets: "all", instaboxPath: "", scalewayProjectId: "", scalewayZone: "fr-par-3" };
   const after = await exported();
   assert.deepEqual(after.settings, Object.fromEntries(Object.keys(ALL_SETTINGS).map((key) => [key, intended[key as keyof typeof intended]])));
   assert.equal(after.version, 2);
@@ -472,7 +488,7 @@ test("an invalid file is refused with a clear reason, and nothing changes", asyn
   const before = await exported();
   const cases: [unknown, RegExp][] = [
     ["{ not json", /The file isn't valid JSON/],
-    [{ format: "something-else", version: 1 }, /This isn't a Boat backup: its "format" should be "bb-plugin-boat-config"/],
+    [{ format: "something-else", version: 1 }, /This isn't a Harbormaster backup: its "format" should be "bb-plugin-boat-config"/],
     [{ format: CONFIG_FORMAT, version: 3 }, /format version 3, and this plugin reads versions up to 2\. Update the plugin first\./],
     [{ format: CONFIG_FORMAT, version: 0 }, /Unknown format version 0\./],
     [
@@ -552,8 +568,8 @@ test("the settings section's RPCs: export, preview (changes nothing) and import"
 
   // Problems come back as data, so the dialog can show them.
   const bad = (await harness.callRpc("previewConfigImport", { text: "[]", replaceProjects: false })) as { problems: string[] };
-  assert.match(bad.problems[0] ?? "", /This isn't a Boat backup/);
-  await assert.rejects(harness.callRpc("importConfig", { text: "[]", replaceProjects: false }), /This isn't a Boat backup/);
+  assert.match(bad.problems[0] ?? "", /This isn't a Harbormaster backup/);
+  await assert.rejects(harness.callRpc("importConfig", { text: "[]", replaceProjects: false }), /This isn't a Harbormaster backup/);
 
   const done = (await harness.callRpc("importConfig", { text, replaceProjects: false })) as { changes: number };
   assert.equal(done.changes, preview.changes);
@@ -622,6 +638,35 @@ test("a project's sandbox size: exported, kept by older files, listed when it ch
 });
 
 
+test("a project's Never continue on paid Claude: a backup turns it on, and one taken with it off turns it off again", async (t) => {
+  const { harness, exported, importFile } = await setup();
+  t.after(() => harness.lifecycle.dispose());
+  assert.equal((await importFile(ownerFile())).exitCode, 0);
+  // Off: not even written down, in the store or the backup.
+  const off = await exported();
+  assert.equal(off.projects.some((project) => "neverPaidClaude" in project), false);
+
+  // A backup with it on turns it on, as a change of that field.
+  const on = PROJECTS.map((project) => (project.id === "web" ? { ...project, neverPaidClaude: true } : project));
+  const turnedOn = await importFile({ format: CONFIG_FORMAT, version: 2, projects: on });
+  assert.equal(turnedOn.exitCode, 0, turnedOn.stderr);
+  assert.match(turnedOn.stdout, /Update web \(Web app\): neverPaidClaude/);
+  const withOptOut = await exported();
+  assert.equal(withOptOut.projects.find((project) => project.id === "web")?.neverPaidClaude, true);
+
+  // The backup taken while it was off (no key) restores it off.
+  const restored = await importFile({ format: CONFIG_FORMAT, version: 2, projects: off.projects });
+  assert.equal(restored.exitCode, 0, restored.stderr);
+  assert.match(restored.stdout, /Update web \(Web app\): neverPaidClaude/);
+  assert.equal("neverPaidClaude" in (await exported()).projects.find((project) => project.id === "web")!, false);
+
+  // Round trip: the backup taken with it on gives it back on, and then changes nothing.
+  assert.equal((await importFile({ format: CONFIG_FORMAT, version: 2, projects: withOptOut.projects })).exitCode, 0);
+  assert.equal((await exported()).projects.find((project) => project.id === "web")?.neverPaidClaude, true);
+  const again = await importFile({ format: CONFIG_FORMAT, version: 2, projects: withOptOut.projects }, ["--dry-run"]);
+  assert.match(again.stdout, /Projects: 0 added, 0 updated, 3 unchanged/);
+});
+
 test("local bb project links survive backup roundtrip and unrelated legacy imports", async (t) => {
   const { harness, exported, importFile } = await setup();
   t.after(() => harness.lifecycle.dispose());
@@ -635,4 +680,19 @@ test("local bb project links survive backup roundtrip and unrelated legacy impor
   const unchanged = await importFile({ ...file, projects: [legacy] });
   assert.equal(unchanged.exitCode, 0, unchanged.stderr);
   assert.equal((await exported()).projects[0].localBbProjectId, "proj_demo");
+});
+
+for (const command of ["config runs-on", "project set"]) test(`${command} keeps a mixed provider's project system and changes it only for a single-system provider`, async t => {
+  const {harness,cli,exported,importFile}=await setup();
+  t.after(()=>harness.lifecycle.dispose());
+  const backup=await exported();
+  const seeded=await importFile({...backup,projects:[{...PROJECTS[0],id:"ios-app",name:"iOS app",sandboxProvider:"instabox",sandboxSystem:"macos"}]});
+  assert.equal(seeded.exitCode,0,seeded.stderr);
+  for (const [provider,system] of [["instabox","macos"],["scaleway","macos"],["instabox","macos"],["boat","linux"],["instabox","linux"],["scaleway","macos"]]) {
+    const args=command==="config runs-on"?["config","runs-on","ios-app",provider!]:["project","set","ios-app","--runs-on",provider!];
+    const result=await cli(args);assert.equal(result.exitCode,0,result.stderr);
+    const project=(await exported()).projects[0]!;
+    assert.equal(project.sandboxSystem ?? "linux",system,`${command} ${provider}`);
+    assert.equal(project.sandboxProvider ?? "boat",provider);
+  }
 });

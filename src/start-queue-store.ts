@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { QueuedStartDto } from "../contract-start-queue.ts";
-import { MACHINE_TYPES } from "./boat-api.ts";
+import { MACHINE_TYPES } from "./providers/types.ts";
 import { newTaskId, type Task } from "./store.ts";
 import type { StartTaskInput } from "./service.ts";
 import { TIERS } from "./tiers.ts";
@@ -18,6 +18,7 @@ export const queuedInputSchema = z.object({
   title: z.string().trim().min(1).max(200), compactTitle: text(120), role: z.enum(["implement", "review", "custom"]), brief: z.string().trim().min(1).max(100_000),
   repo: text(), branch: text(), baseBranch: text(), pr: text(1000), provider: z.enum(["claude", "codex"]).nullable().optional(), model: text(), reasoningEffort: text(40),
   tier: z.enum(TIERS).nullable().optional(), reason: text(4000), userApproved: z.boolean().optional(), flexibleAgent: z.boolean().optional(),
+  sandboxSystem: z.enum(["linux", "macos"]).optional(),
   sandbox: text(), machineType: z.enum(MACHINE_TYPES).nullable().optional(), parentTaskId: text(), orchestratorThreadId: text(), projectId: text(),
   project: projectSchema.nullable().optional(), environment: text(), snapshot: text(), runner: z.enum(["boat", "chat"]).nullable().optional(),
   confirmUntrustedChat: z.array(z.string().max(200)).max(20).nullable().optional(), evidence: z.boolean().optional(), measureMemory: z.boolean().optional(),

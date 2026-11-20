@@ -5,10 +5,11 @@ import type {
   MessageDispatchHookDecision,
 } from "@get-bb/plugin-sdk";
 import { reviewerSchema } from "../contract-review.ts";
-import { normalizeRepo } from "./boat-api.ts";
+import { normalizeRepo } from "./providers/boat/api.ts";
 import { newTaskId } from "./store.ts";
 import type { Runtime } from "./runtime.ts";
 import type { QuotaReader } from "./quota.ts";
+import { automaticPaidClaude } from "./relay.ts";
 
 const NATIVE_USAGE_RETRY_MS = 30_000;
 const NATIVE_USAGE_READ_MS = 4_000;
@@ -80,7 +81,7 @@ async function nativeUsageWait(
         : "the selected agent";
   const unknown = () => ({
     action: "wait" as const,
-    reason: `Couldn’t confirm usage for ${agent}. Waiting before starting this Boat chat. ${NATIVE_OVERRIDE}`,
+    reason: `Couldn’t confirm usage for ${agent}. Waiting before starting this Harbormaster chat. ${NATIVE_OVERRIDE}`,
     sendAt: Date.now() + NATIVE_USAGE_RETRY_MS,
   });
   try {
@@ -108,6 +109,7 @@ async function nativeUsageWait(
     )
       return unknown();
     if (quota.usedPercent < current.relay.switchAtPercent) return null;
+    if (provider === "claude" && !current.notConnectedAgents.includes(provider) && automaticPaidClaude(reading, current.relay, current.agents)) return null;
     const now = Date.now(),
       reset = quota.resetsAt ? Date.parse(quota.resetsAt) : NaN;
     // A real earlier reset can shorten the retry. A future timestamp alone
@@ -268,7 +270,7 @@ export async function adoptNativeChat(
   service.store.addEvent(
     task.id,
     "native-chat",
-    "Registered this existing Boat chat; bb owns its sandbox lifecycle.",
+    "Registered this existing Harbormaster chat; bb owns its sandbox lifecycle.",
   );
   service.store.addEvent(task.id, "chat", threadId);
   const reviewer = reviewerSchema.safeParse(resource.reviewer);

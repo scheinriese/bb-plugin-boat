@@ -123,7 +123,7 @@ function nextTurn(seq: number, options: { status: "failed" | "completed"; opener
   return rows;
 }
 
-test("a chat that isn't a Boat task recovers once after an agent's steers and a Bad Request", async () => {
+test("a chat that isn't a Harbormaster task recovers once after an agent's steers and a Bad Request", async () => {
   const env = setup();
   env.threads.failedThread(THREAD, ROWS, GOAL);
   // thread.failed and turn.failed arrive together: one message.
@@ -214,7 +214,7 @@ test("a second failure, in the recovery's own turn, gets no second recovery", as
   assert.equal(await later.recovery.failed(THREAD), "recovered");
 });
 
-test("archived, deleted, stopped or interrupted chats, and Boat task chats, are left alone", async () => {
+test("archived, deleted, stopped or interrupted chats, and Harbormaster task chats, are left alone", async () => {
   const env = setup({ taskThreads: ["thr_task"] });
   env.threads.failedThread("thr_archived");
   env.threads.states.get("thr_archived")!.archived = true;
@@ -478,7 +478,7 @@ async function pluginHost(t: { after(fn: () => unknown): void }, settings: Recor
   const { join } = await import("node:path");
   const { fileURLToPath } = await import("node:url");
   process.env.FAKE_BOAT_STATE = join(mkdtempSync(join(tmpdir(), "boat-recovery-")), "state.json");
-  const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+  const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
   const { bb, harness } = await createTestHost({ pluginId: "boat", settings: { boatPath: fakeBoat, evidenceUploader: "", ...settings }, agentSkillIds: ["boat", "boat-orchestrator"] });
   t.after(() => harness.lifecycle.dispose());
   const { makeThreadResponse } = await import("@get-bb/plugin-sdk/testing");
@@ -603,7 +603,7 @@ test("through the plugin, a queued recovery bb won't delete is refused at dispat
   assert.ok(host.queued.has("qm_1"));
   const refused = await drain("qm_1");
   assert.equal(refused.action, "reject");
-  assert.match(refused.message!, /Boat withdrew this automatic message/);
+  assert.match(refused.message!, /Harbormaster withdrew this automatic message/);
   assert.notEqual((await drain("qm_someone_else")).action, "reject");
 });
 

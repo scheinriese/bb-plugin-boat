@@ -135,7 +135,9 @@ export function agentsText(settings?: Omit<ProtocolSettings, "workerMode" | "evi
   const only = onlyAgent(settings.agents);
   const lines: string[] = [];
   const limitLine = (who: string) =>
-    settings.avoidExtraUsage
+    settings.relay.paidClaudeFallback
+      ? "- Use included allowances first. The saved automatic Claude fallback policy may authorize extra usage for eligible bb chats after all connected agents reach the cutoff. Claude controls billing; Harbormaster cannot read the money cap. If work still queues, preserve its receipt and wait; do not bypass the guard."
+      : settings.avoidExtraUsage
       ? `- If a dispatch fails with \`agents_at_limit\`, ${who}. Tell me and wait for a reset (\`bb boat relay status\` shows when); don't name an agent to get around it unless I said paid extra usage is fine.`
       : "- Paid extra usage is allowed in the plugin settings, so new work starts even near a usage limit.";
   if (only !== null) {
@@ -225,7 +227,7 @@ export function composeProtocol(shared: string, project: OrchestratorProject | n
   } else if (rules === null) {
     parts.push(
       `# Project rules: ${project.name}`,
-      "This project has no rules file in its repo (set one in Settings → Plugins → Boat Cloud Agents → Projects). Tasks still follow the repo's AGENTS.md.",
+      "This project has no rules file in its repo (set one in Settings → Plugins → Harbormaster → Projects). Tasks still follow the repo's AGENTS.md.",
     );
   } else if (rules.text !== null) {
     parts.push(
@@ -242,6 +244,10 @@ export function composeProtocol(shared: string, project: OrchestratorProject | n
   }
   const review = projectReviewInstructions(project);
   if (review) parts.push("# Project review policy", review);
-  parts.push("# Waiting work", "When boat_dispatch returns a ::boat-start-queue{id=\"...\"} receipt, reproduce that exact returned marker once in your message. If several requests for the same chat are queued together, emit only the first marker; its live card lists the waiting siblings. The original requests are persisted and no sandbox has been created. Do not dispatch replacements or name an agent to bypass the wait; paid extra usage requires the user's separate in-thread confirmation for each request.");
+  parts.push(
+    "# Stuck machines",
+    "- If a chat or task is stuck on a paused or resuming machine (\"Machine is paused\", \"resuming\"), or I say \"wake this machine\", run `bb boat sandbox wake <id>` (the `boat_wake` tool) with its sandbox, task or chat id; don't hand-repair. If it ends with Needs you, tell me what it says.",
+  );
+  parts.push("# Waiting work", "When boat_dispatch returns a ::boat-start-queue{id=\"...\"} receipt, reproduce that exact returned marker once in your message. If several requests for the same chat are queued together, emit only the first marker; its live card lists the waiting siblings. The original requests are persisted and no sandbox has been created. Do not dispatch replacements or name an agent to bypass the wait. Paid starts require a separate in-thread confirmation unless the saved automatic Claude fallback policy authorizes this task.");
   return parts.join("\n\n");
 }

@@ -162,7 +162,7 @@ test("native adoption records the real chat once without a sandbox start or laun
   );
   assert.equal(task.snapshot, "demo-base");
   assert.equal(await adoptNativeChat("thr_native", runtime), false);
-  assert.deepEqual(fake.boat.calls, [], "passive adoption never calls Boat");
+  assert.deepEqual(fake.boat.calls, [], "passive adoption never calls Harbormaster");
 });
 
 import {
@@ -252,7 +252,7 @@ function usageFixture() {
   };
 }
 
-test("first pending selected Boat start waits on fresh actual-provider usage; explicit model/provider is not paid consent", async (t) => {
+test("first pending selected boat.dev start waits on fresh actual-provider usage; explicit model/provider is not paid consent", async (t) => {
   const e = usageFixture();
   t.after(() => e.harness.lifecycle.dispose());
   const before = structuredClone(e.context);
@@ -399,7 +399,7 @@ test("unknown, invalid and failed native usage wait honestly without exposing so
   e.noWork();
 });
 
-test("native opt-out and warm/join/non-Boat dispatches do not read or alter usage admission", async (t) => {
+test("native opt-out and warm/join/non-Harbormaster dispatches do not read or alter usage admission", async (t) => {
   const e = usageFixture();
   t.after(() => e.harness.lifecycle.dispose());
   e.setSettings({ avoidExtraUsage: false });
@@ -441,7 +441,7 @@ test("native opt-out and warm/join/non-Boat dispatches do not read or alter usag
   e.noWork();
 });
 
-test("first pending start on a selected suspended Boat host is gated before resume", async (t) => {
+test("first pending start on a selected suspended Harbormaster host is gated before resume", async (t) => {
   const e = usageFixture();
   t.after(() => e.harness.lifecycle.dispose());
   const host = makeHostResponse({ machineProviderId: "boat-sandbox" });
@@ -524,3 +524,11 @@ test(
     e.noWork();
   },
 );
+
+test("saved automatic Claude policy admits only the selected Claude with fresh paid room, and pauses again when availability is lost", async t=>{
+ const e=usageFixture();t.after(()=>e.harness.lifecycle.dispose());const settings=await e.service.settings();e.setSettings({relay:{...settings.relay,paidClaudeFallback:true}});e.context.requestedExecution.providerId="claude-code";
+ const q:Quotas=new Map([['claude',{provider:'claude',usedPercent:100,resetsAt:null,window:'Weekly limit',extraUsage:{allowed:true,observedAt:Date.now()}}],['codex',{provider:'codex',usedPercent:100,resetsAt:null,window:'Weekly limit'}]]);e.usage(q);
+ assert.equal(await nativeStart(e.context,e.runtime,e.reader),null);e.noWork();
+ q.get('claude')!.extraUsage!.allowed=false;assert.equal((await nativeStart(e.context,e.runtime,e.reader))?.action,'wait');e.noWork();
+ q.get('claude')!.extraUsage!.allowed=true;q.get('codex')!.usedPercent=10;assert.equal((await nativeStart(e.context,e.runtime,e.reader))?.action,'wait','selected Claude cannot bypass included Codex');e.noWork();
+});

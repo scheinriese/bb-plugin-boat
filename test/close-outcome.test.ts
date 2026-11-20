@@ -155,7 +155,7 @@ test("the page's Close toast says why a sandbox was kept", () => {
 });
 
 test("the CLI and the agent tool say a shipped task closed and why its sandbox stayed", async (t) => {
-  const fakeBoat = fileURLToPath(new URL("./fixtures/fake-boat.mjs", import.meta.url));
+  const fakeBoat = fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs", import.meta.url));
   const dir = mkdtempSync(join(tmpdir(), "boat-close-test-"));
   const statePath = join(dir, "state.json");
   process.env.FAKE_BOAT_STATE = statePath;

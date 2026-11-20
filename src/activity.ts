@@ -141,10 +141,11 @@ export async function threadsOnMachine(bb: BbPluginApi, hostId: string): Promise
 }
 
 /** bb machines that are Boat sandboxes (the plugin looks after those itself). */
-export async function boatMachineIds(bb: BbPluginApi, providerId: string): Promise<Set<string>> {
+export async function boatMachineIds(bb: BbPluginApi, providerId: string | ReadonlySet<string>): Promise<Set<string>> {
   const raw = (await bb.sdk.hosts.list()) as unknown;
   const hosts = (Array.isArray(raw) ? raw : ((raw as { hosts?: unknown[] } | null)?.hosts ?? [])) as { id?: string; machineProviderId?: string | null }[];
-  return new Set(hosts.filter((host) => host.machineProviderId === providerId && typeof host.id === "string").map((host) => host.id!));
+  const ours = (id: string | null | undefined) => (typeof providerId === "string" ? id === providerId : providerId.has(id ?? ""));
+  return new Set(hosts.filter((host) => ours(host.machineProviderId) && typeof host.id === "string").map((host) => host.id!));
 }
 
 /**
@@ -169,7 +170,7 @@ export async function workingChildren(bb: BbPluginApi, parents: ThreadRow[], boa
 }
 
 /** What runs on a machine. Throws when bb can't list its chats. */
-export async function readMachineActivity(bb: BbPluginApi, hostId: string, options: { children?: boolean; providerId?: string } = {}): Promise<MachineActivity> {
+export async function readMachineActivity(bb: BbPluginApi, hostId: string, options: { children?: boolean; providerId?: string | ReadonlySet<string> } = {}): Promise<MachineActivity> {
   const rows = (await threadsOnMachine(bb, hostId)).filter(isOpen);
   const children =
     options.children === false
