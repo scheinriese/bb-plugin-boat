@@ -81,7 +81,7 @@ async function nativeUsageWait(
         : "the selected agent";
   const unknown = () => ({
     action: "wait" as const,
-    reason: `Couldn’t confirm usage for ${agent}. Waiting before starting this Boat chat. ${NATIVE_OVERRIDE}`,
+    reason: `Couldn’t confirm usage for ${agent}. Waiting before starting this Harbormaster chat. ${NATIVE_OVERRIDE}`,
     sendAt: Date.now() + NATIVE_USAGE_RETRY_MS,
   });
   try {
@@ -270,7 +270,7 @@ export async function adoptNativeChat(
   service.store.addEvent(
     task.id,
     "native-chat",
-    "Registered this existing Boat chat; bb owns its sandbox lifecycle.",
+    "Registered this existing Harbormaster chat; bb owns its sandbox lifecycle.",
   );
   service.store.addEvent(task.id, "chat", threadId);
   const reviewer = reviewerSchema.safeParse(resource.reviewer);

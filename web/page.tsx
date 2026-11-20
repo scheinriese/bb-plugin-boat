@@ -224,7 +224,7 @@ export function CloudAgentsHeader(_props: PluginNavPanelProps) {
             <Icon name="Plus" /> New sandbox
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openBoatChat(navigate)}>
-            <Icon name="MessageSquare" /> New chat in a Boat sandbox
+            <Icon name="MessageSquare" /> New chat in a boat.dev sandbox
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => setDialog("orchestrator")}>
@@ -250,11 +250,11 @@ export function useCloudAgentsPageTitle({
   const orchestratorTitle = useThreadDisplayTitle(orchestratorId);
   if (orchestratorId !== null) {
     const title = orchestratorTitle ?? "Orchestrator";
-    return { title, windowTitle: `${title} · Cloud agents` };
+    return { title, windowTitle: `${title} · Harbormaster` };
   }
-  if (id === null) return null;
+  if (id === null) return { title: "Cloud agents", windowTitle: "Harbormaster · Cloud agents" };
   const title = data?.task?.title ?? id;
-  // The host already shows "Cloud agents" before the page title.
+  // The host already shows "Harbormaster" before the page title.
   void pluginId;
-  return { title, windowTitle: `${title} · Cloud agents` };
+  return { title, windowTitle: `${title} · Harbormaster` };
 }

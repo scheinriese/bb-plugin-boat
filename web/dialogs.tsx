@@ -581,7 +581,7 @@ export function NewTaskForm({
               <Field
                 label="Project"
                 htmlFor={`${uid}-project`}
-                hint={projects.data !== undefined && projectList.length === 0 ? "No projects yet: Settings → Plugins → Boat Cloud Agents → Projects." : undefined}
+                hint={projects.data !== undefined && projectList.length === 0 ? "No projects yet: Settings → Plugins → Harbormaster → Projects." : undefined}
               >
                 <Select value={chosenProject ?? AUTO_PROJECT} onValueChange={(next) => setChosenProject(next === AUTO_PROJECT ? null : next)}>
                   <SelectTrigger id={`${uid}-project`}>
@@ -1352,7 +1352,7 @@ function NewOrchestratorForm({ projectId, onDone }: { projectId: string | null; 
                 </SelectItem>
               ))}
               {hostList.length > 0 ? <SelectSeparator /> : null}
-              {/* The note under the select says Boat sandbox and bb Connect. */}
+              {/* The note under the select says boat.dev sandbox and bb Connect. */}
               <SelectItem value={CLOUD_ORCHESTRATOR}>In the cloud</SelectItem>
             </SelectContent>
           </Select>
@@ -1418,7 +1418,7 @@ function CloudOrchestratorNote({ overview, fullAccess }: { overview: OverviewDat
   return (
     <div className="grid gap-2 sm:col-span-2">
       <p className="text-xs text-pretty text-muted-foreground">
-        Runs in a Boat sandbox. {uses}, {machine} size. Setup takes about 1–2 min.
+        Runs in a boat.dev sandbox. {uses}, {machine} size. Setup takes about 1–2 min.
         {capHours !== null ? ` Your ${sizes?.plan ?? "boat"} plan stops it after ${capHours} h; your next message wakes it.` : null}
       </p>
       {fullAccess ? (

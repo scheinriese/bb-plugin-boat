@@ -1,6 +1,6 @@
 # Settings
 
-Settings → Plugins → Boat Cloud Agents. The plugin's setup checklist comes
+Settings → Plugins → Harbormaster. The plugin's setup checklist comes
 first, followed by **Agents**, **Sandbox providers**, **Runs on**,
 **Sandboxes & cost**, **Orchestrators** and **Notifications**. **Advanced** is collapsed and holds the remaining choices,
 model presets, protocol, and backup and restore. Projects has a link to the
@@ -9,7 +9,7 @@ and ready counts, notifications and the paid-usage guard.
 `bb boat config get` lists every setting with its value, and
 `bb boat config set <key> <value>` / `bb boat config reset <key>` change
 any of them. Use these commands rather than `bb plugin config boat set`:
-after migration, Boat's values live in the plugin's own storage.
+after migration, Harbormaster's values live in the plugin's own storage.
 
 On the first update, legacy fields can still appear above the grouped
 section. Their effective values are copied safely before those fields are
@@ -22,7 +22,7 @@ hidden. Reload the plugin once more to finish the transition; see
 | --- | --- | --- | --- |
 | Coding agents | `agents` | `auto` | Auto-detect (`auto`) from boat.dev, or Claude and Codex (`both`), Only Claude (`claude`), Only Codex (`codex`). With one agent, every task and review runs on it |
 | How tasks run | `workers` | `boat` | Delegated work: In boat (`boat`), As chats for projects (`projects`) or As chats everywhere (`all`). Native starts keep the environment selected in bb. Chats need bb Connect |
-| Boat environment | `environment` | empty | The boat environment new sandboxes start from; empty is your boat default. A project can pick its own |
+| boat.dev environment | `environment` | empty | The boat environment new sandboxes start from; empty is your boat default. A project can pick its own |
 | Default sandbox size | `machineType` | `default` | For new task sandboxes: `small`, `default`, `large` or `xlarge` ([sizes](features.md#sandbox-sizes-and-memory)). A project or a task can pick another |
 | Sandboxes at once | `maxActiveSandboxes` | `3` | The most sandboxes running at the same time, on each provider; 0 is your plan's limit (on Instabox the plan's limit counts stopped and paused machines too) |
 | Agent for tasks | `implementProvider` | `claude` | For tasks that don't name an agent. With one agent connected, it runs everything |
@@ -46,8 +46,8 @@ warns when a worker environment passes boat credentials into sandboxes.
 **Sandbox providers** lists where sandboxes can run and whether each one is
 connected: boat.dev (the default, with its plan and hours left), Instabox (not
 in this version yet, so it shows as not connected, without a key), and your
-Mac and a monthly Mac (greyed out until Boat can run agents on a Mac). A
-provider that signs in with an API key keeps it in bb's secrets; Boat never
+Mac and a monthly Mac (greyed out until Harbormaster can run agents on a Mac). A
+provider that signs in with an API key keeps it in bb's secrets; Harbormaster never
 sees the value. **Runs on** picks the provider for each project's new work;
 only connected providers can be picked, and tasks already running stay where
 they are. Task rows in the tasks-started card say where each task runs
@@ -69,7 +69,7 @@ inherits the global setting; an explicit native task drawer choice wins.
 | Advanced | When an agent hits its limit mid-task, continue with the other one | `autoFailover` | on |
 | Advanced | Don't start work on paid extra usage | `avoidExtraUsage` | on |
 | Usage limits | Allow automatic paid Claude fallback | `paidClaudeFallback` | off |
-| Usage limits | Include headless Boat tasks in paid fallback | `paidClaudeHeadless` | off |
+| Usage limits | Include headless Harbormaster tasks in paid fallback | `paidClaudeHeadless` | off |
 | Usage limits | Resume chats stopped at a limit when paid Claude is available | `resumeStoppedChats` | on (only with `paidClaudeFallback`) |
 | Advanced | Claude ↔ Codex switching for orchestrators | `relayEnabled` | off |
 | Advanced | Switch at (% of a usage limit) | `relaySwitchAt` | `90` |
@@ -82,7 +82,7 @@ inherits the global setting; an explicit native task drawer choice wins.
 | Orchestrators | Effort for orchestrators | `orchestratorEffort` | `high`; `low`, `medium`, `xhigh` |
 | Orchestrators | Tasks at once before asking | `tasksBeforeAsking` | `5`; 0 never asks |
 | Orchestrators | Orchestrators in the sidebar | `sidebarLayout` | `sections` |
-| Orchestrators | Size for chats on a Boat sandbox | `orchestratorMachineType` | `small` |
+| Orchestrators | Size for chats on a boat.dev sandbox | `orchestratorMachineType` | `small` |
 | Orchestrators | Full access for cloud orchestrators | `cloudOrchestratorFullAccess` | on |
 | Advanced | Hard stop after (hours) | `sandboxTtlHours` | `2` (boat.dev only; Instabox pauses idle machines instead) |
 | Advanced | Recover any chat after a steer Bad Request | `recoverChatsAfterSteer` | on |
@@ -111,7 +111,7 @@ provider, off until you turn it on:
 
 1. Install its CLI where bb runs: `npm install -g instabox`.
 2. Create an API key: `instabox keys create --name bb`.
-3. Store the key in bb: Settings → Plugins → Boat Cloud Agents → **Instabox
+3. Store the key in bb: Settings → Plugins → Harbormaster → **Instabox
    API key**. bb keeps it as a secret setting (a 0600 file in its data
    folder), never in the plugin's database, a backup, the page or a log.
    Only the server reads it, to hand it to the CLI (`INSTABOX_API_KEY`) and
@@ -250,7 +250,7 @@ hold. Fresh included quota takes precedence again after reset. Running turns
 are not interrupted just to change providers; orchestrators use the existing
 handoff/successor path, retaining their workspace and task relationships.
 
-Claude enforces the account's spend cap and credit availability. Boat cannot
+Claude enforces the account's spend cap and credit availability. Harbormaster cannot
 read or verify the numeric cap, balance, tax, bundle discount or auto-reload
 configuration, does not track a separate money budget, and never purchases
 credits. Set and verify the desired monthly cap in Claude before enabling this
@@ -258,15 +258,15 @@ policy. Auto-reload purchases and monthly consumption are separate billing
 controls. Do not present the usage percentage or an allowed header as euros
 remaining or proof that a particular request is being billed.
 
-The availability signal comes from Account Pooler. Headless Boat tasks may
+The availability signal comes from Account Pooler. Headless Harbormaster tasks may
 use separately stored credentials. They require a separate paid confirmation
 unless `paidClaudeHeadless` is enabled too. Enable that only after confirming
 those environments use the same Claude subscription account and billing controls
-as bb; leave it off for different accounts or API keys. Boat does not attest
+as bb; leave it off for different accounts or API keys. Harbormaster does not attest
 every environment login. An explicitly chosen Codex/model/reviewer
 is not silently turned into paid Claude; fixed-agent requests can remain queued.
 Native Send now retains its documented core override. Ordinary local chats that
-are not registered Boat orchestrators/tasks are not automatically migrated by
+are not registered Harbormaster orchestrators/tasks are not automatically migrated by
 this plugin. This policy cannot guarantee completion when a provider, network,
 authentication, sandbox or billing account is unavailable.
 
@@ -284,7 +284,7 @@ With the fallback on, `resumeStoppedChats` (on by default) continues Claude
 Code chats whose latest turn stopped at a usage limit (a 429, such as the
 Account Pooler's "No Account Pooler account is currently eligible") once paid
 Claude is available. That uses the same check a start makes. It covers any
-Claude Code chat on this bb, not only Boat tasks. It runs on its own
+Claude Code chat on this bb, not only Harbormaster tasks. It runs on its own
 one-minute timer, apart from the relay and the task checks, and once a few
 seconds after chats stop while paid Claude is already available. A burst of
 stops makes one check.
@@ -313,7 +313,7 @@ the plugin was off, and has no retry waiting, isn't found; continue it by hand
   stays stopped, so a spend limit can't cause a loop.
 - Nothing is continued while the reading is stale, Claude is on hold after a
   refused turn, or extra usage is rejected.
-- Headless Boat tasks that stopped at a limit in the last week get a
+- Headless Harbormaster tasks that stopped at a limit in the last week get a
   follow-up, only with `paidClaudeHeadless`, at most one a check.
 - A project can stay on included usage: **Never continue on paid Claude** in
   its settings, or `bb boat project set <id> --paid-claude never`. It applies

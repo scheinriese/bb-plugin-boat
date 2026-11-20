@@ -93,7 +93,7 @@ function fakeBb(sources: Record<string, { id: string; type?: string; hostId: str
   return { bb, calls, kv, sources };
 }
 
-test("the bb runner adds a local_path source for the machine's checkout, never asking for the default, and tracks it as Boat's", async () => {
+test("the bb runner adds a local_path source for the machine's checkout, never asking for the default, and tracks it as Harbormaster's", async () => {
   const { bb, calls, kv, sources } = fakeBb({ [PROJECT]: [{ ...LAPTOP, type: "local_path" }] });
   const runner = createChatRunner(bb);
   const made = await runner.ensureProjectSource({ taskId: "t_1", projectId: PROJECT, hostId: "host_9", path: CHECKOUT });
@@ -110,7 +110,7 @@ test("the bb runner adds a local_path source for the machine's checkout, never a
   assert.deepEqual(await createProjectSources(empty).ensure({ taskId: "t_1", projectId: "proj_new", hostId: "host_9", path: CHECKOUT }), { sourceId: "src_new1", created: true, own: true, isDefault: true });
 });
 
-test("the bb runner reuses the project's source on the machine, whatever its path: the user's stays theirs, Boat's gains the task", async () => {
+test("the bb runner reuses the project's source on the machine, whatever its path: the user's stays theirs, Harbormaster's gains the task", async () => {
   const { bb, calls } = fakeBb({ [PROJECT]: [{ ...LAPTOP, type: "local_path" }, { id: "src_user", type: "local_path", hostId: "host_9", path: "/home/user/elsewhere", isDefault: false }] });
   const sources = createProjectSources(bb);
   // bb keeps one source per project and machine, so any one there will do.
@@ -125,7 +125,7 @@ test("the bb runner reuses the project's source on the machine, whatever its pat
   assert.equal(calls.filter((call) => call.method === "sources.add").length, 1);
 });
 
-test("the bb runner deletes only sources Boat added: never the user's, never a project's last, and not one still in use", async () => {
+test("the bb runner deletes only sources Harbormaster added: never the user's, never a project's last, and not one still in use", async () => {
   const { bb, calls, sources } = fakeBb({ [PROJECT]: [{ ...LAPTOP, type: "local_path" }], proj_docs: [{ id: "src_docs", type: "local_path", hostId: "host_laptop", path: "/home/dev/code/docs" }] });
   const runner = createChatRunner(bb);
   const ours = await runner.ensureProjectSource({ taskId: "t_1", projectId: PROJECT, hostId: "host_9", path: CHECKOUT });
@@ -202,7 +202,7 @@ test("a task chat outside Personal adds a source for its sandbox's checkout, the
   assert.deepEqual(events(env, task.id, "project-fallback"), []);
 });
 
-test("the project's existing source on the sandbox is reused, whatever its path, and closing leaves it (Boat didn't add it)", async () => {
+test("the project's existing source on the sandbox is reused, whatever its path, and closing leaves it (Harbormaster didn't add it)", async () => {
   const env = withLaptop(makeService({ chat: true }));
   env.chat.projectSources.get(PROJECT)!.push({ id: "src_user", hostId: "host_1", path: "/home/user/elsewhere", isDefault: false });
   const task = await dispatch(env);
@@ -211,7 +211,7 @@ test("the project's existing source on the sandbox is reused, whatever its path,
     ["ensure"],
   );
   assert.equal(env.chat.spawns[0]!.projectId, PROJECT);
-  assert.deepEqual(events(env, task.id, "project-source"), [`bb project ${PROJECT} already has a source on the sandbox (src_user, not added by Boat: it stays)`]);
+  assert.deepEqual(events(env, task.id, "project-source"), [`bb project ${PROJECT} already has a source on the sandbox (src_user, not added by Harbormaster: it stays)`]);
   await env.service.closeTask(task.id, { discard: true });
   assert.ok(!env.chat.sourceCalls.some((call) => call.method === "delete"));
   assert.deepEqual(sourceIds(env), [LAPTOP.id, "src_user"]);
@@ -253,7 +253,7 @@ test("bb refusing the chat for want of a source still falls back to Personal", a
   assert.match(events(env, task.id, "project-fallback")[0]!, /^bb refused the chat in project proj_storefront: No project source configured for this host \(409\)\. Opened the chat in Personal instead/);
 });
 
-test("other spawn errors still fail the dispatch, and the source Boat added goes with the machine", async () => {
+test("other spawn errors still fail the dispatch, and the source Harbormaster added goes with the machine", async () => {
   const env = withLaptop(makeService({ chat: true }));
   env.chat.spawnError = new Error("provider unavailable");
   await assert.rejects(dispatch(env), /provider unavailable/);
@@ -265,7 +265,7 @@ test("other spawn errors still fail the dispatch, and the source Boat added goes
   assert.deepEqual(events(env, task!.id, "project-fallback"), []);
 });
 
-test("closing a task removes only the source Boat added for it, never the user's", async () => {
+test("closing a task removes only the source Harbormaster added for it, never the user's", async () => {
   const env = withLaptop(makeService({ chat: true }));
   const task = await dispatch(env);
   assert.deepEqual(sourceIds(env), [LAPTOP.id, "src_1"]);
@@ -280,7 +280,7 @@ test("closing a task removes only the source Boat added for it, never the user's
   assert.deepEqual(events(env, task.id, "project-source").at(-1), `Removed the sandbox's source from bb project ${PROJECT} (src_1)`);
 });
 
-test("closing with the sandbox kept still removes Boat's source; one another open task uses stays", async () => {
+test("closing with the sandbox kept still removes Harbormaster's source; one another open task uses stays", async () => {
   const env = withLaptop(makeService({ chat: true }));
   const task = await dispatch(env);
   const other = await dispatch(env, { title: "Add a footer", repo: "acme/web" });
@@ -296,7 +296,7 @@ test("closing with the sandbox kept still removes Boat's source; one another ope
   assert.deepEqual(sourceIds(env), [LAPTOP.id]);
 });
 
-test("an archived task chat cancels its task and removes Boat's source", async () => {
+test("an archived task chat cancels its task and removes Harbormaster's source", async () => {
   const env = withLaptop(makeService({ chat: true }));
   const task = await dispatch(env);
   env.chat.states.get(task.threadId!)!.archived = true;
@@ -305,7 +305,7 @@ test("an archived task chat cancels its task and removes Boat's source", async (
   assert.deepEqual(sourceIds(env), [LAPTOP.id]);
 });
 
-test("the sweep removes Boat's sources whose machine is gone or that no open task uses, and keeps the rest", async () => {
+test("the sweep removes Harbormaster's sources whose machine is gone or that no open task uses, and keeps the rest", async () => {
   const env = withLaptop(makeService({ chat: true }));
   const live = await dispatch(env);
   const lost = await dispatch(env, { title: "Add a footer" });
@@ -425,7 +425,7 @@ test("continuing a headless task as a chat adds the source first; a move that fa
   assert.deepEqual(sourceIds(failing.made), [LAPTOP.id]);
 });
 
-test("with no open task, the sweep still tidies Boat's sources after a start, then waits ten minutes", async () => {
+test("with no open task, the sweep still tidies Harbormaster's sources after a start, then waits ten minutes", async () => {
   const env = withLaptop(makeService({ chat: true }));
   const leftover = (id: string) => {
     env.chat.projectSources.get(PROJECT)!.push({ id, hostId: "host_old", path: "/home/user/work/old", isDefault: false });
@@ -479,7 +479,7 @@ test("the sweep keeps a source while a review on its machine is open, even with 
   assert.deepEqual(sourceIds(env), [LAPTOP.id]);
 });
 
-test("a second task chat on the same sandbox reuses Boat's source (bb allows one per machine) and keeps it until both close", async () => {
+test("a second task chat on the same sandbox reuses Harbormaster's source (bb allows one per machine) and keeps it until both close", async () => {
   const env = withLaptop(makeService({ chat: true }));
   env.boat.limitsValue.maxActiveSandboxes = 20;
   const first = await dispatch(env);
@@ -494,7 +494,7 @@ test("a second task chat on the same sandbox reuses Boat's source (bb allows one
   assert.deepEqual(sourceIds(env), [LAPTOP.id]);
 });
 
-test("bb making Boat's source a project's default is recorded on the task and logged", async () => {
+test("bb making Harbormaster's source a project's default is recorded on the task and logged", async () => {
   const env = makeService({ chat: true });
   env.chat.projectSources.set(PROJECT, []);
   const task = await dispatch(env);
@@ -563,7 +563,7 @@ test("a source bb won't take back after a failed registry write is named in the 
   const { bb, sources } = fakeBb({ proj_new: [] }, { kvSetError: new Error("database is locked") });
   await assert.rejects(
     createProjectSources(bb).ensure({ taskId: "t_1", projectId: "proj_new", hostId: "host_9", path: CHECKOUT }),
-    /^Error: database is locked; bb kept source src_new1, which Boat couldn't record or remove \(Cannot delete the last source of a project \(409\)\)$/,
+    /^Error: database is locked; bb kept source src_new1, which Harbormaster couldn't record or remove \(Cannot delete the last source of a project \(409\)\)$/,
   );
   assert.deepEqual(sources.proj_new!.map((row) => row.id), ["src_new1"]);
 });

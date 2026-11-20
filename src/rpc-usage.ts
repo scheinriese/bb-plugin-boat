@@ -76,7 +76,7 @@ export function refreshErrorText(error: unknown): string {
   const name = error instanceof Error ? error.name : "";
   if (name === "TimeoutError" || name === "AbortError") return "The Account Pooler didn't answer in time.";
   const text = (error instanceof Error ? error.message : String(error)).trim();
-  if (/unknown method|method not found|no such method|not implemented/i.test(text)) return "This Account Pooler can't refresh from Boat. Use Reload in its own settings.";
+  if (/unknown method|method not found|no such method|not implemented/i.test(text)) return "This Account Pooler can't refresh from Harbormaster. Use Reload in its own settings.";
   if (/not installed|not enabled|disabled|not running/i.test(text)) return "The Account Pooler is off.";
   return text.slice(0, 300) || "The Account Pooler couldn't refresh it.";
 }

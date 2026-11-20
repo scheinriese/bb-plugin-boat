@@ -856,7 +856,7 @@ export function ProjectEditor({
                   </button>
                 )}
               <p className="text-xs leading-[17px] text-muted-foreground">
-                Repos configured on Boat are listed.{" "}
+                Repos configured on boat.dev are listed.{" "}
                 <UrlLink
                   href="https://boat.dev/dashboard?tab=environment"
                   className="text-[color:var(--project-link)] hover:underline"
@@ -1046,7 +1046,7 @@ export function ProjectEditor({
             </FieldGroup>
             <FieldGroup label="Environment">
               <Input
-                aria-label="Boat environment"
+                aria-label="boat.dev environment"
                 className={FIELD}
                 value={environment}
                 onChange={(event) => setEnvironment(event.target.value)}

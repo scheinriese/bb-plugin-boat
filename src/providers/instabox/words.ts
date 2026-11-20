@@ -9,7 +9,7 @@ export const KEYS_URL = "https://instabox.sh/docs/security/api-keys.md";
 export const GITHUB_LOGIN_HINT = "The Instabox machine has no GitHub login. Save a GitHub token as an Instabox Secret for github.com and api.github.com (`instabox secrets set GH_TOKEN --host github.com --host api.github.com`). For a team org, add `--org <org>` so the Secret is saved in the API key's org. Then try again.";
 /** Where the owner stores the key: bb's secure entry for this plugin's secret setting. */
 export const KEY_HINT =
-  "Add your Instabox API key in bb: Settings → Plugins → Boat Cloud Agents → Instabox API key (create one with `instabox keys create --name bb`). It is kept in bb's secret store.";
+  "Add your Instabox API key in bb: Settings → Plugins → Harbormaster → Instabox API key (create one with `instabox keys create --name bb`). It is kept in bb's secret store.";
 export const ENABLE_HINT = "Turn Instabox on with `bb boat config set instaboxEnabled true` (or in the plugin's settings), then add its API key.";
 export const INSTALL_HINT = `Install the instabox CLI: run \`${INSTALL_COMMAND}\` in a terminal. Installed somewhere else? Set Instabox CLI location (\`bb boat config set instaboxPath <path>\`).`;
 export const INVITE_HINT = "Instabox's free accounts are invite-only: redeem an invite code (`instabox login --invite-code <code>`) or start a paid plan at https://instabox.sh/pricing.";

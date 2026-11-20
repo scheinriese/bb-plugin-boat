@@ -28,6 +28,6 @@ export function claudeExtraUsageLine(value:ClaudeExtraUsageView|undefined,availa
  const by=value.observedAt===null?'':` · last checked ${checkedAt(value.observedAt,now)} by the Account Pooler`;
  if(value.status==='rejected')return `Claude extra usage: blocked${by}`;
  if(value.status==='disabled')return `Claude extra usage: off for this account${by}`;
- if(value.status==='allowed')return `Claude extra usage: available at the last check${by} · Boat waits for a newer check`;
+ if(value.status==='allowed')return `Claude extra usage: available at the last check${by} · Harbormaster waits for a newer check`;
  return value.observedAt===null?'Claude extra usage: unknown (no Account Pooler reading yet)':`Claude extra usage: unknown${by}`;
 }

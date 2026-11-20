@@ -172,7 +172,7 @@ test("the update decision: the server's version, the download's, and a broken in
   assert.deepEqual(decideBbUpdate(seen({ tgz: "unreadable" }), "0.50.1"), npm);
   assert.deepEqual(decideBbUpdate(seen({ tgz: "0.50.0" }), "0.50.1"), npm);
   // The server's version unknown: nothing to ask the registry for (never "latest").
-  assert.deepEqual(decideBbUpdate(seen({ tgz: "none" }), null), { kind: "none", why: "Boat couldn't tell which bb the server needs" });
+  assert.deepEqual(decideBbUpdate(seen({ tgz: "none" }), null), { kind: "none", why: "Harbormaster couldn't tell which bb the server needs" });
   assert.equal(decideBbUpdate(seen({ tgz: "unreadable" }), null).kind, "none");
   assert.equal(decideBbUpdate(seen({ installed: "0.51.0", tgz: "none" }), "0.50.1").kind, "none", "newer: bb's setup decides");
   assert.equal(decideBbUpdate(seen({ installed: "unreadable" }), "0.50.1").kind, "none", "an unreadable file is not a missing one");
@@ -575,7 +575,7 @@ test("a failed update keeps the old bb, tells the tasks in plain words, and back
   const update = createBbUpdater({ boat: exec.boat, kv, serverVersion: async () => "0.50.1", tell: (_id, text) => told.push(text), now: () => at });
   const first = await update(prep());
   assert.equal(first.kind, "failed", "the wake goes on to bb's own setup");
-  assert.equal((first as { text: string }).text, "Boat couldn't update bb on this sandbox to 0.50.1: npm install failed (ETIMEDOUT). It kept the bb that was there, and bb's own setup goes ahead. Boat tries the update again after 02:30 UTC.");
+  assert.equal((first as { text: string }).text, "Harbormaster couldn't update bb on this sandbox to 0.50.1: npm install failed (ETIMEDOUT). It kept the bb that was there, and bb's own setup goes ahead. Harbormaster tries the update again after 02:30 UTC.");
   assert.deepEqual(told, [(first as { text: string }).text]);
   assert.equal((kv.values.get(BB_UPDATES_KEY) as Record<string, { failures: number }>).bx_one!.failures, 1);
   // Within the backoff: no install at all.
@@ -598,7 +598,7 @@ test("a failed update keeps the old bb, tells the tasks in plain words, and back
   assert.equal((kv.values.get(BB_UPDATES_KEY) as Record<string, unknown>).bx_one, undefined);
 });
 
-test("bb's own update running: Boat waits for it (bounded), looks again, and never stops it", async () => {
+test("bb's own update running: Harbormaster waits for it (bounded), looks again, and never stops it", async () => {
   let at = Date.parse("2026-11-19T02:00:00Z");
   const running = INSPECTED.replace("BOAT_BB end", "BOAT_BB live 4242 20\nBOAT_BB end");
   const looks: string[] = [];
@@ -633,12 +633,12 @@ test("a failure's words follow the old install as the script found it", async ()
   const say = async (old: string | null) => {
     const exec = fakeExec({ inspect: () => INSPECTED, install: () => `${old ? `BOAT_BBOLD ${old}\n` : ""}BOAT_BBUP fail npm ETIMEDOUT\n` });
     const update = createBbUpdater({ boat: exec.boat, kv: kvStore(), serverVersion: async () => "0.50.1", now: () => Date.parse("2026-11-19T02:00:00Z") });
-    return ((await update(prep())) as { text: string }).text.replace(/^Boat couldn't update bb on this sandbox to 0\.50\.1: npm install failed \(ETIMEDOUT\)\. /, "").replace(/ Boat tries the update again after 02:30 UTC\.$/, "");
+    return ((await update(prep())) as { text: string }).text.replace(/^Harbormaster couldn't update bb on this sandbox to 0\.50\.1: npm install failed \(ETIMEDOUT\)\. /, "").replace(/ Harbormaster tries the update again after 02:30 UTC\.$/, "");
   };
   assert.equal(await say("intact"), "It kept the bb that was there, and bb's own setup goes ahead.");
-  assert.equal(await say("set-aside"), "The bb that was there isn't complete any more, so Boat moved it aside and bb's own setup installs it again.");
+  assert.equal(await say("set-aside"), "The bb that was there isn't complete any more, so Harbormaster moved it aside and bb's own setup installs it again.");
   assert.equal(await say("broken"), "The bb that was there isn't complete; bb's own setup installs it again.");
-  assert.equal(await say("unknown"), "Boat couldn't check the bb that was there (its files aren't readable yet); bb's own setup goes ahead.");
+  assert.equal(await say("unknown"), "Harbormaster couldn't check the bb that was there (its files aren't readable yet); bb's own setup goes ahead.");
   assert.equal(await say(null), "bb's own setup goes ahead and checks the bb that's there.", "no word on it: no claim either way");
 });
 
@@ -663,7 +663,7 @@ test("without a download of the server's version, the updater installs it from t
   answer = "BOAT_BBOLD intact\nBOAT_BBUP fail registry ETARGET\n";
   const failed = (await update(prep())) as { kind: string; text: string };
   assert.equal(failed.kind, "failed");
-  assert.equal(failed.text, "Boat couldn't update bb on this sandbox to 0.50.1: the npm registry doesn't have bb-app 0.50.1 (ETARGET). It kept the bb that was there, and bb's own setup goes ahead. Boat tries the update again after 02:30 UTC.");
+  assert.equal(failed.text, "Harbormaster couldn't update bb on this sandbox to 0.50.1: the npm registry doesn't have bb-app 0.50.1 (ETARGET). It kept the bb that was there, and bb's own setup goes ahead. Harbormaster tries the update again after 02:30 UTC.");
   assert.deepEqual(told, [failed.text]);
   assert.equal((kv.values.get(BB_UPDATES_KEY) as Record<string, { failures: number; detail: string }>).bx_one!.failures, 1);
   assert.equal(exec.scripts.some((script) => script.includes("BOAT_BBFIX")), false, "an install that isn't broken stays where it is");
@@ -677,7 +677,7 @@ test("without a download of the server's version, the updater installs it from t
   assert.equal((kv.values.get(BB_UPDATES_KEY) as Record<string, { retryAt: number }>).bx_one!.retryAt, at + updateBackoffMs(2));
   // The server's version unknown: nothing asked of the registry (never "latest").
   const blind = fakeExec({ inspect: () => noDownload });
-  assert.deepEqual(await createBbUpdater({ boat: blind.boat, kv: kvStore(), serverVersion: async () => null })(prep()), { kind: "none", why: "Boat couldn't tell which bb the server needs" });
+  assert.deepEqual(await createBbUpdater({ boat: blind.boat, kv: kvStore(), serverVersion: async () => null })(prep()), { kind: "none", why: "Harbormaster couldn't tell which bb the server needs" });
   assert.equal(blind.scripts.some((script) => script.includes("BOAT_BBUP")), false);
 });
 
@@ -689,7 +689,7 @@ test("a broken install the npm registry couldn't replace still goes aside for bb
   const update = createBbUpdater({ boat: exec.boat, kv: kvStore(), serverVersion: async () => "0.50.1", now: () => at, prefetch: async (_id, request) => { prefetched.push(request); } });
   const failed = (await update(prep())) as { kind: string; text: string };
   assert.equal(prefetched[0]!.skipInstall, true, "a broken install isn't read: it's replaced or goes aside");
-  assert.equal(failed.text, "Boat couldn't update bb on this sandbox to 0.50.1: the npm registry couldn't be reached (ENOTFOUND). bb's install there was already broken, so Boat moved it aside and bb's own setup installs it again. Boat tries the update again after 02:30 UTC.");
+  assert.equal(failed.text, "Harbormaster couldn't update bb on this sandbox to 0.50.1: the npm registry couldn't be reached (ENOTFOUND). bb's install there was already broken, so Harbormaster moved it aside and bb's own setup installs it again. Harbormaster tries the update again after 02:30 UTC.");
   assert.deepEqual(exec.scripts.map((script) => (script.includes("say end") ? "look" : script.includes("BOAT_BBUP") ? "install" : script.includes("BOAT_BBFIX") ? "set aside" : "other")), ["look", "install", "look", "set aside"], "looked at again after the failed fetch, before anything stops");
   assert.match(exec.scripts[3]!, /BOAT_BBFIX busy/, "and the set-aside checks once more right before the stop");
   // Held after that: no fetch, and a broken install there again goes aside again.
@@ -698,7 +698,7 @@ test("a broken install the npm registry couldn't replace still goes aside for bb
   assert.deepEqual(await update(step), { kind: "set-aside" });
   assert.equal(exec.scripts.filter((script) => script.includes("BOAT_BBUP")).length, 1);
   assert.equal(exec.scripts.filter((script) => script.includes("BOAT_BBFIX")).length, 2);
-  assert.deepEqual(step.logs, ["bb's install on the sandbox was broken (npm/bin/bb-app is missing); Boat moved it aside so bb's setup installs it again"]);
+  assert.deepEqual(step.logs, ["bb's install on the sandbox was broken (npm/bin/bb-app is missing); Harbormaster moved it aside so bb's setup installs it again"]);
 });
 
 /** The updater over the real scripts, run on a sandbox copy (procfs and the look's 5 s sample faked). */
@@ -716,7 +716,7 @@ function realUpdater(box: ReturnType<typeof sandboxHome>, env: Record<string, st
   return { update, told };
 }
 
-test("bb repairs its broken install while the npm registry answers: after the failed fetch Boat looks again and leaves it alone", LINUX_ONLY, async (t) => {
+test("bb repairs its broken install while the npm registry answers: after the failed fetch Harbormaster looks again and leaves it alone", LINUX_ONLY, async (t) => {
   // The reviewer's case, with the real scripts: the bin is missing at the look; during the fetch
   // bb's own setup puts back a complete 0.50.1; then the registry says E404.
   const box = sandboxHome(t, { tgz: null, bin: false });
@@ -725,7 +725,7 @@ test("bb repairs its broken install while the npm registry answers: after the fa
   const { update, told } = realUpdater(box, { FAKE_PACK_FAIL: "E404" }, { proc: join(box.root, "proc") });
   const result = (await update(prep({ hostId: HOST, woke: false }))) as { kind: string; text: string };
   assert.equal(result.kind, "failed");
-  assert.match(result.text, /^Boat couldn't update bb on this sandbox to 0\.50\.1: the npm registry doesn't have bb-app 0\.50\.1 \(E404\)\. Meanwhile bb's install there became complete again, so Boat kept it; bb's own setup goes ahead\. Boat tries the update again after /);
+  assert.match(result.text, /^Harbormaster couldn't update bb on this sandbox to 0\.50\.1: the npm registry doesn't have bb-app 0\.50\.1 \(E404\)\. Meanwhile bb's install there became complete again, so Harbormaster kept it; bb's own setup goes ahead\. Harbormaster tries the update again after /);
   assert.deepEqual(told, [result.text]);
   assert.equal(box.log().includes("systemctl --user stop"), false, "bb's service never stopped");
   assert.equal(box.version(), "0.50.1", "the repaired install stays where it is");
@@ -734,12 +734,12 @@ test("bb repairs its broken install while the npm registry answers: after the fa
   const still = sandboxHome(t, { tgz: null, bin: false });
   writeFileSync(join(still.data, "host-artifact.sha256"), "a".repeat(64));
   const second = realUpdater(still, { FAKE_PACK_FAIL: "E404" }, { proc: join(still.root, "proc") });
-  assert.match(((await second.update(prep({ hostId: HOST, woke: false }))) as { text: string }).text, /bb's install there was already broken, so Boat moved it aside and bb's own setup installs it again/);
+  assert.match(((await second.update(prep({ hostId: HOST, woke: false }))) as { text: string }).text, /bb's install there was already broken, so Harbormaster moved it aside and bb's own setup installs it again/);
   assert.equal(existsSync(join(still.data, "npm")), false);
   assert.equal(readdirSync(still.data).filter((name) => name.startsWith("npm.broken-")).length, 1);
 });
 
-test("bb's own update starts while the npm registry answers: Boat waits for it after the failed fetch, and never stops it or moves its install", LINUX_ONLY, async (t) => {
+test("bb's own update starts while the npm registry answers: Harbormaster waits for it after the failed fetch, and never stops it or moves its install", LINUX_ONLY, async (t) => {
   let at = Date.parse("2026-11-19T02:00:00Z");
   const sleeps: number[] = [];
   // It's still running after the 3 minutes: left to Boat's wake retries, nothing touched.
@@ -753,10 +753,10 @@ test("bb's own update starts while the npm registry answers: Boat waits for it a
   const { update, told } = realUpdater(box, { FAKE_PACK_FAIL: "ENOTFOUND" }, { proc, now: () => at, sleep: async (ms) => { sleeps.push(ms); at += ms; } });
   const error = (await update(prep({ hostId: HOST, woke: false })).catch((caught: unknown) => caught)) as BbUpdateHung;
   assert.ok(error instanceof BbUpdateHung, String(error));
-  assert.equal(error.wakeDiagnosis.kind, "disk-restoring", "Boat's wake retries take it, as for any update of bb's own that won't end");
+  assert.equal(error.wakeDiagnosis.kind, "disk-restoring", "Harbormaster's wake retries take it, as for any update of bb's own that won't end");
   assert.ok(sleeps.length >= 18 && sleeps.every((ms) => ms === 10_000), "it waited, looking again every 10 s");
   assert.equal(told.length, 1);
-  assert.match(told[0]!, /: the npm registry couldn't be reached \(ENOTFOUND\)\. bb's own update was running there, so Boat left its install alone\. Boat tries the update again after /);
+  assert.match(told[0]!, /: the npm registry couldn't be reached \(ENOTFOUND\)\. bb's own update was running there, so Harbormaster left its install alone\. Harbormaster tries the update again after /);
   assert.equal(box.log().includes("systemctl --user stop"), false);
   assert.ok(existsSync(join(box.data, "npm")), "its install stays where bb's update writes it");
   assert.deepEqual(readdirSync(box.data).filter((name) => /^npm\./.test(name)), []);
@@ -779,7 +779,7 @@ test("bb's own update starts while the npm registry answers: Boat waits for it a
       if (!existsSync(join(ends.data, "npm", "bin", "bb-app"))) symlinkSync("../lib/node_modules/bb-app/dist/bb-app.js", join(ends.data, "npm", "bin", "bb-app"));
     },
   });
-  assert.match(((await done.update(prep({ hostId: HOST, woke: false }))) as { text: string }).text, /Meanwhile bb's install there became complete again, so Boat kept it/);
+  assert.match(((await done.update(prep({ hostId: HOST, woke: false }))) as { text: string }).text, /Meanwhile bb's install there became complete again, so Harbormaster kept it/);
   assert.deepEqual(waits, [10_000]);
   assert.equal(ends.log().includes("systemctl --user stop"), false);
   assert.deepEqual(readdirSync(ends.data).filter((name) => /^npm\./.test(name)), []);
@@ -859,7 +859,7 @@ test("a repair during a fetch that worked, then a failed fresh-prefix install: t
   const second = realUpdater(other, { FAKE_NPM_FAIL: "ENOTFOUND" }, { proc: join(other.root, "proc") });
   const failed = (await second.update(prep({ hostId: HOST, woke: false }))) as { kind: string; text: string };
   assert.equal(failed.kind, "failed");
-  assert.match(failed.text, /: npm install failed \(ENOTFOUND\)\. Meanwhile bb's install there became complete again, so Boat kept it; bb's own setup goes ahead\./);
+  assert.match(failed.text, /: npm install failed \(ENOTFOUND\)\. Meanwhile bb's install there became complete again, so Harbormaster kept it; bb's own setup goes ahead\./);
   assert.ok(other.log().includes(`systemctl --user stop ${other.unit}`));
   assert.ok(other.log().includes(`systemctl --user start ${other.unit}`), "started again");
   assert.equal(readFileSync(join(other.fake, "active"), "utf8").trim(), "active");
@@ -960,14 +960,14 @@ test("the download's install script reads the old install again right before the
   assert.equal(up.log().includes("systemctl --user stop"), false);
 });
 
-test("a repair or an in-place update between the look and the stop, with a download there: Boat acts on the install as it is right before the stop", LINUX_ONLY, async (t) => {
+test("a repair or an in-place update between the look and the stop, with a download there: Harbormaster acts on the install as it is right before the stop", LINUX_ONLY, async (t) => {
   // Broken at the look, repaired during the prefetch (complete, 0.49.0), then the install fails:
   // the rollback keeps the repaired install and starts bb's service again.
   const box = sandboxHome(t, { bin: false });
   const { update, told } = realUpdater(box, { FAKE_NPM_FAIL: "ENOTFOUND" }, { proc: join(box.root, "proc"), prefetch: () => box.run(repair(box, "0.49.0")) });
   const failed = (await update(prep({ hostId: HOST }))) as { kind: string; text: string };
   assert.equal(failed.kind, "failed");
-  assert.match(failed.text, /: npm install failed \(ENOTFOUND\)\. Meanwhile bb's install there became complete again, so Boat kept it; bb's own setup goes ahead\./);
+  assert.match(failed.text, /: npm install failed \(ENOTFOUND\)\. Meanwhile bb's install there became complete again, so Harbormaster kept it; bb's own setup goes ahead\./);
   assert.deepEqual(told, [failed.text]);
   assert.equal(box.version(), "0.49.0");
   assert.equal(readFileSync(join(box.fake, "active"), "utf8").trim(), "active", "bb's service runs again");
@@ -984,7 +984,7 @@ test("a repair or an in-place update between the look and the stop, with a downl
   // Still broken right before the stop, and the install fails: aside, as before.
   const still = sandboxHome(t, { bin: false });
   const third = realUpdater(still, { FAKE_NPM_FAIL: "ENOTFOUND" }, { proc: join(still.root, "proc"), prefetch: () => undefined });
-  assert.match(((await third.update(prep({ hostId: HOST }))) as { text: string }).text, /bb's install there was already broken, so Boat moved it aside and bb's own setup installs it again/);
+  assert.match(((await third.update(prep({ hostId: HOST }))) as { text: string }).text, /bb's install there was already broken, so Harbormaster moved it aside and bb's own setup installs it again/);
   assert.equal(existsSync(join(still.data, "npm")), false);
   assert.equal(npmDirs(still).filter((name) => name.startsWith("npm.broken-")).length, 1);
   // bb's own update starts during the prefetch: the install script backs off before the stop, Boat
@@ -1016,7 +1016,7 @@ test("the server's version unknown, a broken install: the set-aside looks again 
   const first = realUpdater(box, {}, { proc: join(box.root, "proc"), serverVersion: null, prefetch: () => box.run(repair(box, "0.49.0")) });
   const step = prep({ hostId: HOST });
   assert.deepEqual(await first.update(step), { kind: "none", why: "bb's install there is complete again" });
-  assert.deepEqual(step.logs, ["bb's install on the sandbox is complete again (bb repaired it meanwhile); Boat left it as it is"]);
+  assert.deepEqual(step.logs, ["bb's install on the sandbox is complete again (bb repaired it meanwhile); Harbormaster left it as it is"]);
   assert.equal(box.log().includes("systemctl --user stop"), false, "bb's service never stopped");
   assert.equal(readFileSync(join(box.fake, "active"), "utf8").trim(), "active");
   assert.equal(box.version(), "0.49.0");
@@ -1027,7 +1027,7 @@ test("the server's version unknown, a broken install: the set-aside looks again 
   const second = realUpdater(still, {}, { proc: join(still.root, "proc"), serverVersion: null, prefetch: () => undefined });
   const moved = prep({ hostId: HOST });
   assert.deepEqual(await second.update(moved), { kind: "set-aside" });
-  assert.deepEqual(moved.logs, ["bb's install on the sandbox was broken (npm/bin/bb-app is missing); Boat moved it aside so bb's setup installs it again"]);
+  assert.deepEqual(moved.logs, ["bb's install on the sandbox was broken (npm/bin/bb-app is missing); Harbormaster moved it aside so bb's setup installs it again"]);
   assert.equal(existsSync(join(still.data, "npm")), false);
   assert.equal(npmDirs(still).filter((name) => name.startsWith("npm.broken-")).length, 1);
   assert.equal(existsSync(join(still.data, "host-artifact.sha256")), false);
@@ -1067,10 +1067,10 @@ test("the server's version unknown: bb's own update starting right before the se
   const sleeps: number[] = [];
   const update = createBbUpdater({ boat: exec.boat, kv: kvStore(), serverVersion: async () => null, now: () => at, sleep: async (ms) => { sleeps.push(ms); at += ms; } });
   const step = prep();
-  assert.deepEqual(await update(step), { kind: "none", why: "Boat couldn't tell which bb the server needs" });
+  assert.deepEqual(await update(step), { kind: "none", why: "Harbormaster couldn't tell which bb the server needs" });
   assert.equal(fixes, 1);
   assert.deepEqual(sleeps, [10_000]);
-  assert.ok(step.steps.includes("Waiting for bb's own update on the sandbox to finish (it started while Boat was about to move its broken install aside)"), step.steps.join("\n"));
+  assert.ok(step.steps.includes("Waiting for bb's own update on the sandbox to finish (it started while Harbormaster was about to move its broken install aside)"), step.steps.join("\n"));
   assert.deepEqual(exec.scripts.map((script) => (script.includes("say end") ? "look" : script.includes("BOAT_BBFIX") ? "set aside" : "other")), ["look", "look", "set aside", "look"], "looked at again before the set-aside, and after the wait");
   assert.match(exec.scripts[2]!, /BOAT_BBFIX busy/, "the set-aside checks once more right before the stop");
   // Twice in a row: Boat's wake retries take it from here.
@@ -1182,7 +1182,7 @@ test("a zombie on a woken machine: no bb setup, the daemon repair under Needs yo
   const first = (await env.resume(resource).catch((error: unknown) => error)) as Error;
   assert.equal(first.message, "bb's daemon on this sandbox broke during an update (npm install left a zombie: pid 812), so bb can't start there. It needs a repair by hand; the steps are under Needs you.");
   assert.equal(env.order.includes("bootstrap"), false, "bb's setup never ran into the hung update");
-  assert.deepEqual(env.boat.calls.filter((call) => call.startsWith("stop ")), [], "Boat doesn't stop or force anything itself");
+  assert.deepEqual(env.boat.calls.filter((call) => call.startsWith("stop ")), [], "Harbormaster doesn't stop or force anything itself");
   const plan = await env.wakes.scheduled(sandboxId);
   assert.equal(plan?.kind, "daemon-broken");
   const decision = env.store.decisions({ statuses: ["open"], limit: 10 }).find((entry) => entry.id === plan?.decisionId);
@@ -1191,11 +1191,11 @@ test("a zombie on a woken machine: no bb setup, the daemon repair under Needs yo
   assert.match(decision!.recommendation, /VM restart/);
 });
 
-test("an update waiting on the disk of a woken machine: Boat's own retries, as for a disk still restoring", async () => {
+test("an update waiting on the disk of a woken machine: Harbormaster's own retries, as for a disk still restoring", async () => {
   const env = machine({ inspect: () => INSPECTED.replace("BOAT_BB end", "BOAT_BB blocked 640 300\nBOAT_BB end") });
   const resource = await env.stopped();
   const error = (await env.resume(resource).catch((caught: unknown) => caught)) as Error;
-  assert.match(error.message, /^boat\.dev is still restoring this sandbox's disk \(files bb needs there aren't readable yet\)\. Boat will retry at \d\d:\d\d UTC; pressing Resume earlier won't help\.$/);
+  assert.match(error.message, /^boat\.dev is still restoring this sandbox's disk \(files bb needs there aren't readable yet\)\. Harbormaster will retry at \d\d:\d\d UTC; pressing Resume earlier won't help\.$/);
   const plan = await env.wakes.scheduled(resource.sandboxId);
   assert.equal(plan?.kind, "disk-restoring");
   assert.equal(plan?.failures, 1);

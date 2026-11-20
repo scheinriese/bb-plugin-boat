@@ -69,7 +69,7 @@ test("history scan is bounded even when private raw logs dominate", () => {
   const tail = store.history({ beforeSeq: first.nextBeforeSeq! }); assert.equal(tail.nextBeforeSeq, null);
 });
 
-test("actual Boat limits and documented usage payload retain measured numbers and drop unrelated secrets", () => {
+test("actual Harbormaster limits and documented usage payload retain measured numbers and drop unrelated secrets", () => {
   const fixture = JSON.parse(readFileSync(new URL("../src/providers/boat/fixtures/boat-json/limits-standard.json", import.meta.url), "utf8"));
   assert.deepEqual(parseUsagePlan(fixture), { name: "standard", hoursRemaining: 550, hoursTotal: 555.56, resetsAt: "2026-02-01T12:00:00.000Z" });
   assert.deepEqual(parseSandboxUsage({ ok: true, type: "sandbox.usage", sandboxId: "bx_23456789", sandboxType: "default", billingMultiplier: 1, since: "2026-09-01T00:00:00.000Z", until: "2026-09-14T09:30:00.000Z", seconds: 4980, dollars: 0.0498, secondsPerDollar: 100000, running: false, token: "hidden" }), { seconds: 4980, hours: 4980 / 3600, dollars: 0.0498, since: "2026-09-01T00:00:00.000Z", until: "2026-09-14T09:30:00.000Z", running: false });

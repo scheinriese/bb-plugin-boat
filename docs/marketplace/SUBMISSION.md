@@ -53,7 +53,7 @@ the maintainers' choice).
 ```markdown
 ## What the plugin does
 
-Boat Cloud Agents runs Claude Code and Codex in boat.dev cloud sandboxes
+Harbormaster runs Claude Code and Codex in boat.dev cloud sandboxes
 from bb. Any chat can send a task to the cloud (a `boat` skill teaches it
 `bb boat task start`); the agent works on its own branch and opens a draft
 pull request, and the chat hears back when it's done. A Cloud agents page
@@ -65,7 +65,7 @@ or ships to the base branch only after the user approves it. Optional
 orchestrator chats plan a project's work, start the tasks and bring the
 user only decisions and finished results. The plugin also adds a `bb boat`
 CLI, agent tools and skills, send-menu and New thread entry points, and a
-"Boat sandbox" machine provider.
+"boat.dev sandbox" machine provider.
 
 ## Source
 
@@ -97,7 +97,7 @@ CLI, agent tools and skills, send-menu and New thread entry points, and a
   and run before a sandbox is created, so a broken setup uses no starts.
 - Needs a boat.dev account and plan, the boat CLI signed in, GitHub
   connected on boat.dev with access to the user's repos, and a Claude or
-  ChatGPT subscription connected in boat.dev. Task chats, chats on a Boat
+  ChatGPT subscription connected in boat.dev. Task chats, chats on a boat.dev
   sandbox and cloud orchestrators need bb Connect.
 - At most 3 sandboxes run at once by default, and the plugin never turns on
   boat's paid extra starts. Orchestrators are told to ask before running

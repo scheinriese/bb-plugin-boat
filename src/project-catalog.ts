@@ -46,5 +46,5 @@ export async function readProjectCatalog(bb: Pick<BbPluginApi, "sdk">, provider:
     const branch = source?.path ? await run("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: source.path, signal, timeout: 1000 }).catch(() => null) : null;
     local.push({ id: row.id, name: row.name, repo, branch: branch?.slice(0, 200) ?? null });
   }
-  return { repos: entries, local, scope: "configured-boat-repos", truncated: names.length > 8 || repos.size >= 200 || rows.length > 100 || entries.length > 40, error: failed || names.length === 0 ? "Some configured Boat repositories could not be read. You can enter a repository by name." : null };
+  return { repos: entries, local, scope: "configured-boat-repos", truncated: names.length > 8 || repos.size >= 200 || rows.length > 100 || entries.length > 40, error: failed || names.length === 0 ? "Some configured boat.dev repositories could not be read. You can enter a repository by name." : null };
 }

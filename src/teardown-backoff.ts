@@ -25,7 +25,7 @@ export class TeardownBackoff {
   held(id: string, action: string): string | null {
     const entry = this.entries.get(`${action} ${id}`);
     if (entry === undefined || entry.until <= this.now()) return null;
-    return `boat.dev failed to ${action} this sandbox a moment ago (${entry.error}). Boat asks it again at ${clockTime(entry.until, this.now())}.`;
+    return `boat.dev failed to ${action} this sandbox a moment ago (${entry.error}). Harbormaster asks it again at ${clockTime(entry.until, this.now())}.`;
   }
 
   /** boat.dev failed a step: the next waits. Returns the message to report. */
@@ -34,7 +34,7 @@ export class TeardownBackoff {
     const failures = (this.entries.get(`${action} ${id}`)?.failures ?? 0) + 1;
     const until = this.now() + Math.min(TEARDOWN_MAX_MS, TEARDOWN_BASE_MS * 2 ** Math.min(failures - 1, 20));
     this.entries.set(`${action} ${id}`, { failures, until, error: text });
-    return `boat.dev failed to ${action} this sandbox (${text}). Boat asks it again at ${clockTime(until, this.now())}.`;
+    return `boat.dev failed to ${action} this sandbox (${text}). Harbormaster asks it again at ${clockTime(until, this.now())}.`;
   }
 
   succeeded(id: string, action: string): void {

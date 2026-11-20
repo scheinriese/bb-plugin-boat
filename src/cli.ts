@@ -162,9 +162,9 @@ export function buildCli(runtime: Runtime) {
 
   return defineCli({
     name: "boat",
-    summary: "Run coding agents in boat.dev cloud sandboxes and orchestrate them from bb",
+    summary: "Harbormaster: coding agents across cloud sandbox providers, orchestrated from bb",
     description:
-      "Tasks are coding agents (Claude Code or Codex) in boat.dev sandboxes: headless in boat by default, or task chats you can open in bb. The chat that started a task is told when a turn finishes. New here? Run `bb boat doctor`, then `bb boat task start --test`. See the boat and boat-orchestrator skills.",
+      "Harbormaster runs coding agents (Claude Code or Codex) in cloud sandboxes on boat.dev, Instabox and Scaleway: headless in boat by default, or task chats you can open in bb. The chat that started a task is told when a turn finishes. New here? Run `bb boat doctor`, then `bb boat task start --test`. See the boat and boat-orchestrator skills.",
     commands: {
       doctor: cliCommand({
         summary: "Check the setup: boat CLI, sign-in, plan, agent logins, environment, boat login in sandboxes, GitHub, bb Connect",
@@ -1122,7 +1122,7 @@ export function buildCli(runtime: Runtime) {
             const project = options.project ? await runtime.resolveProject(parseProjectRef(options.project)) : null;
             await runtime.setOrchestrator(threadId, true, project);
             return out({ threadId, orchestrator: true }, options.json, () =>
-              `Thread ${threadId} is now a boat orchestrator. Its agent gets the boat tools and orchestrator instructions the next time the chat starts a new session.`,
+              `Thread ${threadId} is now a Harbormaster orchestrator. Its agent gets the Harbormaster tools and orchestrator instructions the next time the chat starts a new session.`,
             );
           });
         },
@@ -1302,7 +1302,7 @@ export function buildCli(runtime: Runtime) {
                     ? `Claude ↔ Codex switching on: hands over at ${relay.switchAtPercent}%, back to ${AGENT_NAME[relay.preferred]} below ${relay.switchBackBelowPercent}% after ${relay.quietMinutes} quiet minutes.`
                     : "Claude ↔ Codex switching off: orchestrators stay on their agent.",
                 relay.paidClaudeFallback
-                  ? `Included allowances first; automatic Claude extra usage is authorized when Account Pooler confirms availability. Claude enforces billing limits; Boat cannot read the money cap. ${relay.paidClaudeHeadless ? "Headless tasks included: owner-confirmed same Claude subscription/billing account." : "Headless tasks require separate approval."}`
+                  ? `Included allowances first; automatic Claude extra usage is authorized when Account Pooler confirms availability. Claude enforces billing limits; Harbormaster cannot read the money cap. ${relay.paidClaudeHeadless ? "Headless tasks included: owner-confirmed same Claude subscription/billing account." : "Headless tasks require separate approval."}`
                   : avoidExtraUsage
                   ? `No paid extra usage: with ${only === null ? "both agents" : AGENT_NAME[only]} near ${only === null ? "their limits" : "its limit"}, new work waits.`
                   : "Paid extra usage allowed.",
@@ -1398,7 +1398,7 @@ export function buildCli(runtime: Runtime) {
         },
       }),
       "protocol path": cliCommand({
-        summary: "Where the shared protocol file lives (edit it there or in Settings → Plugins → Boat Cloud Agents)",
+        summary: "Where the shared protocol file lives (edit it there or in Settings → Plugins → Harbormaster)",
         options: { json },
         async run({ options }) {
           return guard(async () => {
@@ -1443,7 +1443,7 @@ export function buildCli(runtime: Runtime) {
             return out({ projects: configured, local }, options.json, () =>
               [
                 configured.length === 0
-                  ? 'No projects yet. Add your first one: `bb boat project add --name "Web app" --repo acme/web@main` (or in Settings → Plugins → Boat Cloud Agents → Projects).'
+                  ? 'No projects yet. Add your first one: `bb boat project add --name "Web app" --repo acme/web@main` (or in Settings → Plugins → Harbormaster → Projects).'
                   : configured.map(projectLine).join("\n"),
                 ...(options.local
                   ? [
@@ -1683,7 +1683,7 @@ export function buildCli(runtime: Runtime) {
             return out({ project: saved.id, runsOn: saved.sandboxProvider ?? DEFAULT_PROVIDER_ID, enabled: !off }, options.json, () =>
               [
                 `${saved.id} now runs on ${name(provider)}.`,
-                off && provider === "scaleway" ? "Add the Scaleway secret key in bb secrets and set scalewayProjectId in Boat settings." : off ? `${name(provider)} isn't on yet, so its new tasks won't start: turn it on (\`bb boat config set ${provider}Enabled true\`), add its API key in bb's settings for this plugin, then run \`bb boat doctor\`.` : null,
+                off && provider === "scaleway" ? "Add the Scaleway secret key in bb secrets and set scalewayProjectId in Harbormaster settings." : off ? `${name(provider)} isn't on yet, so its new tasks won't start: turn it on (\`bb boat config set ${provider}Enabled true\`), add its API key in bb's settings for this plugin, then run \`bb boat doctor\`.` : null,
               ]
                 .filter(Boolean)
                 .join("\n"),
@@ -1693,7 +1693,7 @@ export function buildCli(runtime: Runtime) {
       }),
       providers: cliCommand({
         summary: "Show the sandbox providers: which are on, whether a key is stored, and what to fix",
-        description: "Read-only. boat.dev is always on and the default; turn Instabox on with `bb boat config set instaboxEnabled true` and store its API key in bb's settings for this plugin (Settings → Plugins → Boat Cloud Agents).",
+        description: "Read-only. boat.dev is always on and the default; turn Instabox on with `bb boat config set instaboxEnabled true` and store its API key in bb's settings for this plugin (Settings → Plugins → Harbormaster).",
         options: { json },
         async run({ options }) {
           return guard(async () => {

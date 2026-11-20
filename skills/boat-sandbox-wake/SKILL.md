@@ -1,11 +1,11 @@
 ---
 name: boat-sandbox-wake
-description: "Bring a stuck boat.dev sandbox and its chat back with one command, `bb boat sandbox wake <id>` (the `boat_wake` tool for orchestrators). Use when the user says \"wake this machine\", or a chat or task is stuck on \"Machine is paused\" or \"resuming\", or a Boat sandbox chat doesn't come back after a stop. Don't repair the sandbox by hand."
+description: "Bring a stuck boat.dev sandbox and its chat back with one command, `bb boat sandbox wake <id>` (the `boat_wake` tool for orchestrators). Use when the user says \"wake this machine\", or a chat or task is stuck on \"Machine is paused\" or \"resuming\", or a boat.dev sandbox chat doesn't come back after a stop. Don't repair the sandbox by hand."
 ---
 
 # Waking a stuck sandbox
 
-When a chat or task on a Boat sandbox is stuck on **Machine is paused** or
+When a chat or task on a boat.dev sandbox is stuck on **Machine is paused** or
 **resuming**, or the user says "wake this machine", run:
 
 ```sh
@@ -62,7 +62,7 @@ it starts the sandbox again.
   queued messages are listed for the user to cancel in bb if they're stale.
 - `--allow-paid-start`: allow a paid extra boat start when no included start
   is left. Only when the user agreed in this chat. Without it, the command
-  stops and says so. Boat never turns on paid extra starts.
+  stops and says so. Harbormaster never turns on paid extra starts.
 
 ## When it stops
 
@@ -70,7 +70,7 @@ It exits 1 with **Needs you** and the commands to run when it stops for
 safety:
 
 - a turn is running there (a headless agent, or a chat on a machine that's
-  connected or that Boat can't read): a stop would interrupt it;
+  connected or that Harbormaster can't read): a stop would interrupt it;
 - a stop it won't force, and why (work that could be lost, or a test fork
   that couldn't read the snapshot);
 - a disk still unreadable after a stop and a start;
@@ -81,7 +81,7 @@ safety:
   checked;
 - the sandbox's tasks are all cancelled or closed (wake it anyway with
   `--force-wake` only when the user asks; their chats are never retried);
-- a closed task's pending provider retry Boat couldn't cancel (cancel it with
+- a closed task's pending provider retry Harbormaster couldn't cancel (cancel it with
   `bb provider-retry cancel <chat id>` first);
 - bb's machine not connecting.
 

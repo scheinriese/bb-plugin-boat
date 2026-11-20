@@ -346,8 +346,8 @@ export function startCheck(limits: Limits | null, allowPaidStart: boolean, neede
   const these = needed === 1 ? "this start" : `these ${needed} starts (a test fork, then the start)`;
   if (limits === null) {
     return allowPaidStart
-      ? { ok: true, paid: true, text: "a boat start (Boat couldn't read your start limits; --allow-paid-start allows a paid one)" }
-      : { ok: false, code: "start_unknown", text: `Boat couldn't read your boat start limits, so it can't tell whether ${these} would be a paid extra start.`, commands: ["boat limits"] };
+      ? { ok: true, paid: true, text: "a boat start (Harbormaster couldn't read your start limits; --allow-paid-start allows a paid one)" }
+      : { ok: false, code: "start_unknown", text: `Harbormaster couldn't read your boat start limits, so it can't tell whether ${these} would be a paid extra start.`, commands: ["boat limits"] };
   }
   if (limits.checkoutRequired) return { ok: false, code: "start_blocked", text: "Your boat.dev account has no plan yet, so boat can't start sandboxes.", commands: ["boat billing plan 20"] };
   if (!limits.canStart) return { ok: false, code: "start_blocked", text: `boat won't start a sandbox right now${limits.blockedReason ? `: ${limits.blockedReason}` : ""}.`, commands: ["boat limits --all"] };
@@ -386,7 +386,7 @@ export function startCheck(limits: Limits | null, allowPaidStart: boolean, neede
   const usedUp = windows.length > 0 ? `${needed === 1 ? "No included boat start is" : `Fewer than ${needed} included boat starts are`} left ${windows.join(" or ")}` : "Your included boat starts are used up";
   if (extraOff && !priced) {
     const back = windows.includes("today") ? "tomorrow" : windows.includes("this hour") ? "within the hour" : "in a minute";
-    return { ok: false, code: "no_start", text: `${usedUp}, and boat's paid extra starts are off (Boat never turns them on), so boat can't start it now. Included starts come back ${back}.`, commands: ["boat limits"] };
+    return { ok: false, code: "no_start", text: `${usedUp}, and boat's paid extra starts are off (Harbormaster never turns them on), so boat can't start it now. Included starts come back ${back}.`, commands: ["boat limits"] };
   }
   const cost = priced ? ` (about $${price.toFixed(2)})` : "";
   const may = !priced && limits.extraStartsEnabled !== true ? " may be" : " would be";
@@ -530,12 +530,12 @@ function noDownload(look: BbLook): boolean {
 }
 
 function noDownloadText(look: BbLook): string {
-  return `No download of bb${look.target ? ` ${look.target}` : ""} is on the sandbox, so Boat can't install the server's build there itself.`;
+  return `No download of bb${look.target ? ` ${look.target}` : ""} is on the sandbox, so Harbormaster can't install the server's build there itself.`;
 }
 
 function manualText(look: BbLook, sandboxId: string): string {
   if (look.target === null || look.seen.dataDir === null) return "";
-  return `To install it by hand from the npm registry instead (a manual step; Boat doesn't run it): ${npmRegistrySteps(sandboxId, look.seen.dataDir, look.seen.unit, look.target)
+  return `To install it by hand from the npm registry instead (a manual step; Harbormaster doesn't run it): ${npmRegistrySteps(sandboxId, look.seen.dataDir, look.seen.unit, look.target)
     .map((line) => `\`${line}\``)
     .join(", then ")}.`;
 }
@@ -713,7 +713,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
     const hostId = await deps.machines.hostOf(thread.environmentId);
     if (hostId === null) throw new TaskError(`Chat ${id}'s workspace isn't on a bb machine.`, "not_on_sandbox");
     const sandboxId = await deps.machines.sandboxOf(hostId);
-    if (sandboxId === null) throw new TaskError(`Chat ${id} runs on bb machine ${hostId}, which isn't a Boat sandbox.`, "not_on_sandbox", "Only chats on a Boat sandbox machine can be woken this way.");
+    if (sandboxId === null) throw new TaskError(`Chat ${id} runs on bb machine ${hostId}, which isn't a boat.dev sandbox.`, "not_on_sandbox", "Only chats on a boat.dev sandbox machine can be woken this way.");
     return {
       kind: "thread",
       input: id,
@@ -785,7 +785,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
      */
     async function quietClosedChats(): Promise<void> {
       const onMachine = target.hostId === null ? [] : await deps.machines.threadsOn(target.hostId).then((rows) => rows.filter((row) => isOpen(row) && typeof row.id === "string").map((row) => row.id!), () => null);
-      if (onMachine === null) say("chat", "info", "Boat couldn't list the chats on bb's machine to check for closed tasks' queued retries; only the chats named here were checked.");
+      if (onMachine === null) say("chat", "info", "Harbormaster couldn't list the chats on bb's machine to check for closed tasks' queued retries; only the chats named here were checked.");
       for (const threadId of [...new Set([...target.threadIds, ...(onMachine ?? [])])]) {
         const task = await deps.tasks.forThread(threadId).catch(() => null);
         if (task === null || !closed(task)) continue;
@@ -793,8 +793,8 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         const over = `task ${task.id} is ${task.status === "cancelled" ? "cancelled" : "closed"}`;
         const rows = await deps.threads.queued(threadId).catch(() => UNKNOWN);
         if (rows === UNKNOWN) {
-          if (!dry) stop(`Boat couldn't read the queue of ${name} (${over}), so it can't tell whether a provider retry would go out once the machine is back. Check it in bb (cancel a stale retry with \`bb provider-retry cancel ${threadId}\`), then wake the sandbox again.`, [`bb provider-retry cancel ${threadId}`, again], { step: "chat" });
-          say("chat", "planned", `Check the queue of ${name} (${over}); Boat couldn't read it.`);
+          if (!dry) stop(`Harbormaster couldn't read the queue of ${name} (${over}), so it can't tell whether a provider retry would go out once the machine is back. Check it in bb (cancel a stale retry with \`bb provider-retry cancel ${threadId}\`), then wake the sandbox again.`, [`bb provider-retry cancel ${threadId}`, again], { step: "chat" });
+          say("chat", "planned", `Check the queue of ${name} (${over}); Harbormaster couldn't read it.`);
           continue;
         }
         for (const row of rows.filter((entry) => entry.retry)) {
@@ -804,7 +804,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
           }
           const result = await deps.threads.cancelRetry(threadId, row.id).catch((): "stuck" => "stuck");
           if (result !== "removed") {
-            stop(`Boat couldn't cancel the pending provider retry of ${name} (${over}), and it would go out once the machine is back. Cancel it in bb, then wake the sandbox again.`, [`bb provider-retry cancel ${threadId}`, again], { step: "chat" });
+            stop(`Harbormaster couldn't cancel the pending provider retry of ${name} (${over}), and it would go out once the machine is back. Cancel it in bb, then wake the sandbox again.`, [`bb provider-retry cancel ${threadId}`, again], { step: "chat" });
           }
           say("chat", "done", `Cancelled the pending provider retry of ${name}: ${over}.`);
         }
@@ -832,7 +832,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       await putMarker(id, (current) => (current === null ? null : { ...current, heartbeatAt: now(), restart: null }));
     }
 
-    const lookupFailed = target.hostLookupFailed === null ? null : `Boat couldn't look up bb's machine on sandbox ${id} (${target.hostLookupFailed}), so it can't tell whether a chat runs there`;
+    const lookupFailed = target.hostLookupFailed === null ? null : `Harbormaster couldn't look up bb's machine on sandbox ${id} (${target.hostLookupFailed}), so it can't tell whether a chat runs there`;
     say(
       "resolve",
       "info",
@@ -846,11 +846,11 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
     );
     /** Needs you: bb's machine there is unknown (it can't be brought back, nor its chats checked). */
     const machineUnknown = (): never =>
-      stop(`Boat couldn't look up bb's machine on sandbox ${id} (${target.hostLookupFailed}), so it can't bring bb back there or check the chats on it. Try again in a minute, or wake it by a chat's id.`, [again], { step: "machine" });
+      stop(`Harbormaster couldn't look up bb's machine on sandbox ${id} (${target.hostLookupFailed}), so it can't bring bb back there or check the chats on it. Try again in a minute, or wake it by a chat's id.`, [again], { step: "machine" });
 
     /** Closed work isn't woken for: a task cancelled or done, a chat of one, a sandbox with only those. */
     async function closedTarget(): Promise<string | null> {
-      const why = "so Boat doesn't wake it: a chat there could go on with superseded work. Wake it anyway with --force-wake only if the user wants that.";
+      const why = "so Harbormaster doesn't wake it: a chat there could go on with superseded work. Wake it anyway with --force-wake only if the user wants that.";
       if (target.kind === "task") {
         const task = deps.tasks.resolve(target.input);
         return task !== null && closed(task) ? `Task ${task.id} is ${task.status === "cancelled" ? "cancelled" : "closed"}, ${why}` : null;
@@ -889,8 +889,8 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       const step: WakeStepId = how === "resume" ? "resume" : "restart";
       const check = startCheck(await deps.boat.capacity(signal).catch(() => null), allowPaid);
       if (!check.ok) {
-        if (how === "start-again" && !dry) stop(`Boat stopped sandbox ${id}, but can't start it again now: ${lower(check.text)} Boat starts it again once it can (every few minutes), or run \`bb boat sandbox resume ${id}\`.`, check.commands, { step: "start-limit" });
-        stop(how === "resume" ? check.text : `The sandbox would be stopped, but Boat couldn't start it again: ${lower(check.text)}`, check.commands, { step: "start-limit" });
+        if (how === "start-again" && !dry) stop(`Harbormaster stopped sandbox ${id}, but can't start it again now: ${lower(check.text)} Harbormaster starts it again once it can (every few minutes), or run \`bb boat sandbox resume ${id}\`.`, check.commands, { step: "start-limit" });
+        stop(how === "resume" ? check.text : `The sandbox would be stopped, but Harbormaster couldn't start it again: ${lower(check.text)}`, check.commands, { step: "start-limit" });
       }
       if (dry) {
         const at = await deps.pacer.nextWakeAt();
@@ -903,7 +903,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         permit = await deps.pacer.acquire({ signal, ...(how === "start-again" ? { maxWaitMs: RESTART_SLOT_WAIT_MS } : {}), onWait: (until, reason) => say(step, "info", `${waitStep(until, reason, now())}.`) });
       } catch (error) {
         if (error instanceof WakeDeferred) {
-          if (how === "start-again") stop(`Boat stopped sandbox ${id}, but no wake slot is free before ${clockTime(error.retryAt, now())}. Boat starts it again then.`, [`bb boat sandbox resume ${id}`], { retryAt: error.retryAt, step });
+          if (how === "start-again") stop(`Harbormaster stopped sandbox ${id}, but no wake slot is free before ${clockTime(error.retryAt, now())}. Harbormaster starts it again then.`, [`bb boat sandbox resume ${id}`], { retryAt: error.retryAt, step });
           stop(error.message, [again], { retryAt: error.retryAt, step });
         }
         throw error;
@@ -915,9 +915,9 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         if (!signal.aborted) await permit.failed();
         signal.throwIfAborted();
         const verb = how === "resume" ? "resume" : "start";
-        const later = how === "start-again" ? ` Boat stopped it for this wake and keeps trying to start it again (every few minutes); or run \`bb boat sandbox resume ${id}\`.` : "";
+        const later = how === "start-again" ? ` Harbormaster stopped it for this wake and keeps trying to start it again (every few minutes); or run \`bb boat sandbox resume ${id}\`.` : "";
         // The plugin's own refusal (no room for another sandbox, its start limit): its words and hint.
-        if (error instanceof TaskError) stop(`Boat couldn't ${verb} sandbox ${id}: ${error.message}${error.hint ? ` ${error.hint}` : ""}${later}`, [again]);
+        if (error instanceof TaskError) stop(`Harbormaster couldn't ${verb} sandbox ${id}: ${error.message}${error.hint ? ` ${error.hint}` : ""}${later}`, [again]);
         stop(`boat couldn't ${verb} sandbox ${id}: ${firstLine(error)}.${later || " boat.dev may still be restoring older sandboxes slowly; try again in a few minutes."}`, [`boat info ${id}`, again]);
       }
       woke = true;
@@ -1025,8 +1025,8 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         .map((task) => `task ${task.id} is mid-turn`);
       if (live) {
         for (const row of threads ?? []) if (turnRuns(row) || (isOpen(row) && row.hasPendingInteraction === true)) reasons.push(`${row.title ? `the chat "${clip(row.title)}"` : "a chat there"} is mid-turn`);
-        if (target.hostId === null && target.hostLookupFailed !== null) reasons.push(`Boat couldn't look up bb's machine there (${target.hostLookupFailed}), so it can't see whether a chat is mid-turn`);
-        else if (threads === null && target.hostId !== null) reasons.push("Boat couldn't see whether a chat there is mid-turn");
+        if (target.hostId === null && target.hostLookupFailed !== null) reasons.push(`Harbormaster couldn't look up bb's machine there (${target.hostLookupFailed}), so it can't see whether a chat is mid-turn`);
+        else if (threads === null && target.hostId !== null) reasons.push("Harbormaster couldn't see whether a chat there is mid-turn");
       }
       return [...new Set(reasons)];
     }
@@ -1050,7 +1050,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       if (busy.length > 0) {
         const running = deps.tasks.liveSandboxTasks(id).filter((task) => task.status === "running" || task.status === "starting");
         // Only unknowns (Boat couldn't see the chats): nothing to finish or interrupt, just to look at again.
-        const unknownOnly = busy.every((reason) => reason.startsWith("Boat couldn't"));
+        const unknownOnly = busy.every((reason) => reason.startsWith("Harbormaster couldn't"));
         stop(
           unknownOnly
             ? `${capitalize(why)}, but ${busy.join("; ")}. Nothing was stopped: try again in a minute, or wake it by a chat's id.`
@@ -1067,7 +1067,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
           `Stop it with a plain boat stop (a fresh snapshot, nothing lost), follow that stop, and start it again: boat.dev's fix for a stuck sandbox. ${
             safe.auto
               ? "If boat refuses the plain stop, check the snapshot with a test fork on another node first, and force the stop only if it reads fine there (nothing there could be lost)."
-              : `If boat refuses the plain stop, Boat won't force it: ${safe.reasons.join("; ")}.`
+              : `If boat refuses the plain stop, Harbormaster won't force it: ${safe.reasons.join("; ")}.`
           }`,
         );
         await start("start-again");
@@ -1110,7 +1110,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       if (outcome.kind !== "stopped") {
         // The stop may still end with the sandbox stopped: the marker stays, and the monitor's pass starts it again then.
         stop(
-          `boat's ${forced ? "forced " : ""}stop of sandbox ${id} is still pending after ${minutes(timing.stopWaitMs)}. Check it by its status (not a second stop); once it's stopped, Boat starts it again on its own.`,
+          `boat's ${forced ? "forced " : ""}stop of sandbox ${id} is still pending after ${minutes(timing.stopWaitMs)}. Check it by its status (not a second stop); once it's stopped, Harbormaster starts it again on its own.`,
           [outcome.stopId !== null ? `boat stop ${id} --status ${outcome.stopId}` : `boat info ${id}`, again],
         );
       }
@@ -1134,7 +1134,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       const recheck = moveDecision(await moveFacts(deps.boat, id, deps.tasks.liveSandboxTasks(id), target.hostId !== null ? () => deps.machines.threadsOn(target.hostId!) : null, signal));
       const snapshotAt = await deps.boat.lastSnapshotAt(id, signal).catch(() => null);
       const keeps = `Forcing the stop keeps only ${snapshotText(snapshotAt, now())}, so what changed since is lost, files git ignores included.`;
-      if (!recheck.auto) await giveUp(`${refused}. ${keeps} Boat won't force it because ${recheck.reasons.join("; ")}.`, [`boat stop ${id} --force`, again]);
+      if (!recheck.auto) await giveUp(`${refused}. ${keeps} Harbormaster won't force it because ${recheck.reasons.join("; ")}.`, [`boat stop ${id} --force`, again]);
       if (left() < timing.restartBudgetMs) await giveUp(`${refused}. This wake has run for ${minutes(now() - startedAt)}, too long for a test fork, a forced stop and a start within its limit of about ${minutes(timing.maxMs)}; the sandbox is still running.`, [again]);
       const two = startCheck(await deps.boat.capacity(signal).catch(() => null), allowPaid, 2);
       if (!two.ok) await giveUp(`${refused}. Forcing it needs a test fork of its snapshot first and then a start, but ${lower(two.text)}`, [...two.commands, again]);
@@ -1148,7 +1148,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         await giveUp(`${refused}, and a test fork from the same snapshot couldn't read its files either: forcing the stop would keep only that snapshot. Leave it and report it to boat.dev with the error above.`, [again]);
       }
       if (fork !== "healthy") {
-        await giveUp(`${refused}, and Boat couldn't check its snapshot with a test fork, so it won't force the stop: without a clear "it reads fine", nothing is forced. ${keeps}`, [`boat stop ${id} --force`, again]);
+        await giveUp(`${refused}, and Harbormaster couldn't check its snapshot with a test fork, so it won't force the stop: without a clear "it reads fine", nothing is forced. ${keeps}`, [`boat stop ${id} --force`, again]);
       }
       say("restart", "info", "A test fork from the same snapshot restored fine on another node, and nothing there could be lost: forcing the stop.");
     }
@@ -1180,7 +1180,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
      */
     async function updateBb(look: BbLook | null, last: WakeRoute, machine: MachineNow): Promise<boolean> {
       if (look === null) {
-        say("bb-update", "skipped", target.hostId === null ? "No bb on this sandbox to update." : "Boat couldn't look at bb's install there; bb's own setup checks it.");
+        say("bb-update", "skipped", target.hostId === null ? "No bb on this sandbox to update." : "Harbormaster couldn't look at bb's install there; bb's own setup checks it.");
         return false;
       }
       if (look.seen.dataDir === null) {
@@ -1195,11 +1195,11 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       }
       if (mayRun(machine)) {
         const unread = machine.kind === "unknown" || (machine.kind === "known" && machine.state === null);
-        say("bb-update", "skipped", unread ? "Boat couldn't read bb's machine, so it leaves bb's install alone (it may be running turns)." : "bb's machine is connected, so Boat leaves bb's install alone (bb updates itself).");
+        say("bb-update", "skipped", unread ? "Harbormaster couldn't read bb's machine, so it leaves bb's install alone (it may be running turns)." : "bb's machine is connected, so Harbormaster leaves bb's install alone (bb updates itself).");
         return false;
       }
       if (machine.kind === "none" && last.problem !== "bb-broken") {
-        say("bb-update", "skipped", "No bb machine is known on this sandbox, so Boat leaves bb's install there alone.");
+        say("bb-update", "skipped", "No bb machine is known on this sandbox, so Harbormaster leaves bb's install there alone.");
         return false;
       }
       if (dry) {
@@ -1232,14 +1232,14 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
           say("bb-update", "done", `Updated bb on the sandbox from ${result.from ?? "a broken install"} to ${result.to}${result.npm ? ", installed from the npm registry" : ""}.`);
           return true;
         case "set-aside":
-          say("bb-update", "done", "bb's install there was broken, so Boat moved it aside; bb's setup installs it again.");
+          say("bb-update", "done", "bb's install there was broken, so Harbormaster moved it aside; bb's setup installs it again.");
           if (noDownload(look)) say("bb-update", "info", `${noDownloadText(look)} ${manualText(look, id)}`);
           return false;
         case "failed":
           say("bb-update", "failed", result.text);
           return false;
         case "held":
-          say("bb-update", "skipped", `A bb update failed there recently; Boat tries again after ${clockTime(result.until, now())}.`);
+          say("bb-update", "skipped", `A bb update failed there recently; Harbormaster tries again after ${clockTime(result.until, now())}.`);
           return false;
         case "none":
           if (noDownload(look)) say("bb-update", "info", `${noDownloadText(look)} ${manualText(look, id)}`);
@@ -1289,7 +1289,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
           stop(`bb couldn't resume its machine ${hostId}: ${firstLine(error)}.`, [`bb machine resume ${hostId}`]);
         }
       } else if (serviceStarted) say("bb-service", "skipped", "bb's update started bb's service again.");
-      else if (unit === null) say("bb-service", "skipped", "Boat couldn't find bb's service on the sandbox; bb's own setup starts it.");
+      else if (unit === null) say("bb-service", "skipped", "Harbormaster couldn't find bb's service on the sandbox; bb's own setup starts it.");
       else {
         await beforeActing();
         try {
@@ -1298,7 +1298,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
           say("bb-service", up ? "done" : "failed", up ? `Restarted bb's service (${unit}).` : `bb's service (${unit}) is ${said} after a restart.`);
         } catch (error) {
           signal.throwIfAborted();
-          say("bb-service", "failed", `Boat couldn't restart bb's service (${firstLine(error)}).`);
+          say("bb-service", "failed", `Harbormaster couldn't restart bb's service (${firstLine(error)}).`);
         }
       }
       const span = Math.max(timing.pollMs, within(timing.connectWaitMs));
@@ -1329,11 +1329,11 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       // A chat of a task that's over is never retried: it could push superseded work.
       const task = await deps.tasks.forThread(threadId).catch(() => null);
       if (task !== null && closed(task)) {
-        return { status: "skipped", text: `${capitalize(name)} belongs to task ${task.id}, which is ${task.status === "cancelled" ? "cancelled" : "closed"}: Boat doesn't retry it (it could push superseded work).` };
+        return { status: "skipped", text: `${capitalize(name)} belongs to task ${task.id}, which is ${task.status === "cancelled" ? "cancelled" : "closed"}: Harbormaster doesn't retry it (it could push superseded work).` };
       }
       if (isBusy(thread.status)) return { status: "skipped", text: `${capitalize(name)} is running a turn.` };
       const rows = await deps.threads.queued(threadId).catch(() => UNKNOWN);
-      if (rows === UNKNOWN) return { status: "skipped", text: `Boat couldn't read ${name}'s queue, so it left it alone.` };
+      if (rows === UNKNOWN) return { status: "skipped", text: `Harbormaster couldn't read ${name}'s queue, so it left it alone.` };
       const pending = rows.find((row) => row.retry) ?? null;
       if (pending !== null && pending.sendAt !== null && pending.sendAt > now()) {
         if (dry) return { status: "planned", text: `Send ${name}'s pending provider retry now (it's due at ${clockTime(pending.sendAt, now())}).` };
@@ -1342,7 +1342,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
           return { status: "done", text: `Sent ${name}'s pending provider retry now.` };
         } catch (error) {
           if (nothingSent(error)) return { status: "skipped", text: `${capitalize(name)}'s pending retry was gone already.` };
-          return { status: "failed", text: `Boat couldn't send ${name}'s pending retry (${firstLine(error)}).` };
+          return { status: "failed", text: `Harbormaster couldn't send ${name}'s pending retry (${firstLine(error)}).` };
         }
       }
       if (rows.length > 0) {
@@ -1359,7 +1359,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
         return { status: "done", text: `Retried ${name}'s failed turn.` };
       } catch (error) {
         if (nothingSent(error)) return { status: "skipped", text: `${capitalize(name)}'s failed turn moved on already.` };
-        return { status: "failed", text: `Boat couldn't retry ${name}'s failed turn (${firstLine(error)}).` };
+        return { status: "failed", text: `Harbormaster couldn't retry ${name}'s failed turn (${firstLine(error)}).` };
       }
     }
 
@@ -1398,7 +1398,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       let sandbox = await deps.boat.findInfo(id, signal);
       if (sandbox === null) stop(`Sandbox ${id} no longer exists on boat.dev.`, [], { step: "sandbox" });
       if ((await deps.guard?.moving(id).catch(() => false)) === true) {
-        stop(`Boat is moving sandbox ${id} to a new boat.dev node (its node keeps failing its disk). Let that finish, then wake it.`, [`bb boat sandbox info ${id}`], { step: "sandbox" });
+        stop(`Harbormaster is moving sandbox ${id} to a new boat.dev node (its node keeps failing its disk). Let that finish, then wake it.`, [`bb boat sandbox info ${id}`], { step: "sandbox" });
       }
       sandbox = await settled(sandbox);
       say("sandbox", "info", `It's ${sandbox.state}.`);
@@ -1445,7 +1445,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
           await beforeActing();
           const quiet = await deps.quietLogins(id, signal);
           if (quiet === "disabled") say("login-scripts", "done", "Turned off the login message scripts.");
-          else if (quiet === "failed") say("login-scripts", "failed", "Boat couldn't turn off the login message scripts (no sudo there?); bb's setup goes ahead.");
+          else if (quiet === "failed") say("login-scripts", "failed", "Harbormaster couldn't turn off the login message scripts (no sudo there?); bb's setup goes ahead.");
           else say("login-scripts", "skipped", "The login message scripts are off already.");
         }
         const bb = state.findings?.bb ?? (await lookAtBb());
@@ -1462,7 +1462,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       }
       // Cut off (a reload) or an error Boat didn't expect: said, and a restart's marker stays for the monitor's pass.
       const reason = signal.aborted
-        ? `The wake was cut off (the plugin stopped or reloaded) at: ${steps.at(-1)?.text ?? "the start"} If it had stopped the sandbox, Boat starts it again on its own.`
+        ? `The wake was cut off (the plugin stopped or reloaded) at: ${steps.at(-1)?.text ?? "the start"} If it had stopped the sandbox, Harbormaster starts it again on its own.`
         : `The wake failed: ${firstLine(error)}`;
       say(steps.at(-1)?.step ?? "sandbox", "needs-you", reason);
       return report("needs-you", { reason, commands: [again], retryAt: null });
@@ -1578,9 +1578,9 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       if (expired || (over.length > 0 && over.every(closed))) {
         await putMarker(sandboxId, (current) => (current === null ? null : { ...current, restart: null }));
         const why = expired ? "couldn't start it again within a day" : `its tasks are over (${over.map(closedText).join(", ")})`;
-        deps.log?.(`sandbox wake ${sandboxId}: a wake stopped it at ${new Date(stoppedAt).toISOString()} and ${why}; Boat no longer starts it on its own`);
+        deps.log?.(`sandbox wake ${sandboxId}: a wake stopped it at ${new Date(stoppedAt).toISOString()} and ${why}; Harbormaster no longer starts it on its own`);
         // On the record of every task that ran there, closed ones too (they may all be).
-        deps.tell?.(sandboxId, `A wake stopped this sandbox at ${clockTime(stoppedAt, now())} and ${why}, so Boat no longer starts it on its own. Start it with \`bb boat sandbox wake ${sandboxId}\` when it's needed.`, { closedToo: true });
+        deps.tell?.(sandboxId, `A wake stopped this sandbox at ${clockTime(stoppedAt, now())} and ${why}, so Harbormaster no longer starts it on its own. Start it with \`bb boat sandbox wake ${sandboxId}\` when it's needed.`, { closedToo: true });
         continue;
       }
       const paidStart = marker.restart.paidStart;
@@ -1614,7 +1614,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       await putMarker(sandboxId, (current) => (current === null ? null : { ...current, restart: null }));
       started.push(sandboxId);
       deps.log?.(`sandbox wake ${sandboxId}: started it again; a wake had stopped it and was cut off before its start`);
-      deps.tell?.(sandboxId, "A wake stopped this sandbox and was cut off before it started it again, so Boat started it again now.");
+      deps.tell?.(sandboxId, "A wake stopped this sandbox and was cut off before it started it again, so Harbormaster started it again now.");
     }
     return started;
   }

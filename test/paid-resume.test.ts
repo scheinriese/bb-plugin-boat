@@ -398,7 +398,7 @@ test("a project that never continues on paid Claude keeps its chats and tasks on
   assert.equal(env.store.stops().length, 3);
 });
 
-test("headless Boat tasks continue only with the headless opt-in, and once per stopped turn", async () => {
+test("headless Harbormaster tasks continue only with the headless opt-in, and once per stopped turn", async () => {
   const headless = task({ id: "t_headless", runner: "boat", orchestratorThreadId: "thr_orch", error: "Claude AI usage limit reached|1763600000", turns: 3 });
   const spent = task({ id: "t_spent", runner: "boat", error: "You're out of extra usage" });
   const codex = task({ id: "t_codex", runner: "boat", provider: "codex", error: "You've hit your usage limit" });
@@ -472,7 +472,7 @@ test("each pass resumes at most ten chats, a few seconds apart; the rest go next
   assert.equal(env.threads.retried.length, 12);
 });
 
-test("a Boat orchestrator hears once per pass which of its workers continue", async () => {
+test("a Harbormaster orchestrator hears once per pass which of its workers continue", async () => {
   const env = setup({
     orchestrators: [{ threadId: "thr_orch", projectId: null }],
     tasks: [task({ id: "t_1", threadId: "thr_w1", orchestratorThreadId: "thr_orch", title: "Header" })],

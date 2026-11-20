@@ -37,7 +37,7 @@ test("lazyfs's failure line: its attempt count and the object it fails", () => {
   assert.equal(parseHydratorFailure(null), null);
 });
 
-test("stuck on its node only from Boat's own looks: the same object at least 3 times, over more than 15 minutes", () => {
+test("stuck on its node only from Harbormaster's own looks: the same object at least 3 times, over more than 15 minutes", () => {
   const t0 = Date.parse("2026-11-19T00:00:00Z");
   // lazyfs's own counter doesn't count: "attempt 77" (or the incident's 32) on the first look isn't stuck.
   const first = trackHydrator(null, parseHydratorFailure(LINE)!, t0);
@@ -66,7 +66,7 @@ const at = (path: string, git: { unpushed: number; dirty: boolean; stashes: numb
 test("on its own only when nothing there could be lost: chats, tasks and every checkout", () => {
   // An orchestrator's or plain bb machine's sandbox counts only once its chats and checkouts are known to be clean.
   assert.deepEqual(moveDecision(safe()), { auto: true, reasons: [] });
-  assert.deepEqual(moveDecision(safe({ threads: null })).reasons, ["Boat couldn't see which chats run there"]);
+  assert.deepEqual(moveDecision(safe({ threads: null })).reasons, ["Harbormaster couldn't see which chats run there"]);
   assert.deepEqual(moveDecision(safe({ threads: [{ id: "thr_o", title: "Orchestrator", status: "active" }] })).reasons, ['the chat "Orchestrator" is mid-turn']);
   assert.deepEqual(moveDecision(safe({ threads: [{ id: "thr_o", status: "pending" }] })).reasons, ["a chat there is mid-turn"]);
   assert.deepEqual(moveDecision(safe({ threads: [{ id: "thr_o", status: "idle", hasPendingInteraction: true }] })).reasons, ["a chat there is mid-turn"]);
@@ -75,18 +75,18 @@ test("on its own only when nothing there could be lost: chats, tasks and every c
   assert.equal(moveDecision(safe({ threads: [{ id: "thr_o", status: "idle", queuedWork: "waiting" }] })).auto, true);
   assert.equal(moveDecision(safe({ threads: [{ id: "thr_x", status: "active", archivedAt: 1 }] })).auto, true, "archived chats don't count");
   // Checkouts: unpushed commits on any branch, changes (untracked too), stashes, or a scan that couldn't finish.
-  assert.deepEqual(moveDecision(safe({ checkouts: null })).reasons, ["Boat couldn't check every git checkout in the sandbox"]);
-  assert.deepEqual(moveDecision(safe({ checkouts: { checkouts: [], complete: false } })).reasons, ["Boat couldn't check every git checkout in the sandbox"]);
+  assert.deepEqual(moveDecision(safe({ checkouts: null })).reasons, ["Harbormaster couldn't check every git checkout in the sandbox"]);
+  assert.deepEqual(moveDecision(safe({ checkouts: { checkouts: [], complete: false } })).reasons, ["Harbormaster couldn't check every git checkout in the sandbox"]);
   assert.deepEqual(
     moveDecision(safe({ checkouts: { checkouts: [at("/home/user/.bb-machines/acme/workspaces/w1/web", { unpushed: 2, dirty: true, stashes: 1 }), at("/home/user/notes", null)], complete: true } })).reasons,
-    ["~/.bb-machines/acme/workspaces/w1/web has 2 unpushed commits", "~/.bb-machines/acme/workspaces/w1/web has changes that aren't committed", "~/.bb-machines/acme/workspaces/w1/web has 1 stash", "Boat couldn't check ~/notes"],
+    ["~/.bb-machines/acme/workspaces/w1/web has 2 unpushed commits", "~/.bb-machines/acme/workspaces/w1/web has changes that aren't committed", "~/.bb-machines/acme/workspaces/w1/web has 1 stash", "Harbormaster couldn't check ~/notes"],
   );
   // Tasks: named by their checkout; mid-turn; unshipped work; a checkout the scan didn't reach.
   assert.deepEqual(moveDecision(safe({ tasks: [task], checkouts: { checkouts: [at(task.repoPath)], complete: true } })), { auto: true, reasons: [] });
   assert.deepEqual(moveDecision(safe({ tasks: [task], checkouts: { checkouts: [at(task.repoPath, { unpushed: 1, dirty: false, stashes: 0 })], complete: true } })).reasons, ["task t_1 has 1 unpushed commit"]);
   assert.deepEqual(moveDecision(safe({ tasks: [{ ...task, status: "running" }], checkouts: { checkouts: [at(task.repoPath)], complete: true } })).reasons, ["task t_1 is mid-turn"]);
   assert.deepEqual(moveDecision(safe({ tasks: [{ ...task, unshipped: 3 }], checkouts: { checkouts: [at(task.repoPath)], complete: true } })).reasons, ["task t_1 has 3 commits not shipped yet"]);
-  assert.deepEqual(moveDecision(safe({ tasks: [task] })).reasons, ["Boat couldn't check task t_1's branch"]);
+  assert.deepEqual(moveDecision(safe({ tasks: [task] })).reasons, ["Harbormaster couldn't check task t_1's branch"]);
   assert.deepEqual(moveDecision(safe({ tasks: [{ ...task, repoPath: null }] })), { auto: true, reasons: [] }, "no checkout of its own: the scan covers its workspace");
 });
 
@@ -171,11 +171,11 @@ test("a stop is followed by what boat says of it: forced only once boat refused 
   assert.deepEqual(stopReport([{ stop: { id: "stop_5", status: "failing", error: { message: "snapshot upload failed" } } }]).error, "snapshot upload failed");
 });
 
-test("Needs you says the exact commands, what would be lost, and why Boat didn't do it", () => {
+test("Needs you says the exact commands, what would be lost, and why Harbormaster didn't do it", () => {
   const now = Date.parse("2026-11-19T02:00:00Z");
   const asked = moveQuestion({ sandboxId: "bx_demo1", snapshotAt: "2026-11-19T00:41:00.000Z", reasons: ["task t_1 has 2 unpushed commits"], detail: LINE, fork: "healthy", now });
   assert.equal(asked.question, "Sandbox bx_demo1 is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? If boat can't take a fresh snapshot, that loses what changed there since 00:41 UTC (its last completed snapshot), files git ignores (a local .env, build output) included.");
-  assert.equal(asked.recommendation, "Move it if nothing written since then matters: run `boat stop bx_demo1` (if boat refuses it, `boat stop bx_demo1 --force`), then `bb boat sandbox resume bx_demo1`. Boat didn't do it itself because task t_1 has 2 unpushed commits. Otherwise wait for boat.dev to recover.");
+  assert.equal(asked.recommendation, "Move it if nothing written since then matters: run `boat stop bx_demo1` (if boat refuses it, `boat stop bx_demo1 --force`), then `bb boat sandbox resume bx_demo1`. Harbormaster didn't do it itself because task t_1 has 2 unpushed commits. Otherwise wait for boat.dev to recover.");
   assert.equal(asked.context, `boat.dev said: ${LINE}. A test fork from the same snapshot restored fine on another node.`);
   assert.deepEqual(asked.options, ["Move it now", "Wait for boat.dev"]);
   assert.match(moveQuestion({ sandboxId: "bx_demo1", snapshotAt: null, reasons: ["task t_1 is mid-turn"], detail: null, fork: "unknown", now }).question, /since its last completed snapshot \(boat didn't say when\), files git ignores \(a local \.env, build output\) included\.$/);

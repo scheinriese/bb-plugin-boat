@@ -230,7 +230,7 @@ export function tooLargeQuestion(input: { sandboxId: string; size: DiskTooLarge 
   ];
   return {
     question: `${facts} Bring it back to ${label(type)} with one start on ${label(bigger)}?`,
-    recommendation: `Usually most of it is space from deleted files, which boat.dev still counts until the disk is trimmed. One start on ${label(bigger)} plus a cleanup brings it back to ${label(type)}: resume it on ${label(bigger)}, trim its disk and remove dangling Docker images, stop it, then resume it on ${label(type)} (the commands are below). If that last resume still fails, also remove the Docker images no container uses (\`boat exec ${id} -- sudo -n docker image prune -af\`; they download or build again when needed), then stop and resume it again. Boat doesn't do this on its own: a start on ${label(bigger)} costs more.`,
+    recommendation: `Usually most of it is space from deleted files, which boat.dev still counts until the disk is trimmed. One start on ${label(bigger)} plus a cleanup brings it back to ${label(type)}: resume it on ${label(bigger)}, trim its disk and remove dangling Docker images, stop it, then resume it on ${label(type)} (the commands are below). If that last resume still fails, also remove the Docker images no container uses (\`boat exec ${id} -- sudo -n docker image prune -af\`; they download or build again when needed), then stop and resume it again. Harbormaster doesn't do this on its own: a start on ${label(bigger)} costs more.`,
     options: ["I'll do it", "Leave it for now"],
     context: `${said}\n${steps.join("\n")}`,
     shortLabel: "Sandbox too large for its size",
