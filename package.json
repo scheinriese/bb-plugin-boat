@@ -67,7 +67,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p .",
     "test": "node --test test/*.test.ts",
-    "build": "bb plugin build",
+    "build": "bb plugin build && bb plugin build ./harbor",
     "preview:providers": "node scripts/providers-preview-server.mjs"
   },
   "allowScripts": {

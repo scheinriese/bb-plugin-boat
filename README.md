@@ -1,9 +1,11 @@
 # Harbormaster for bb
 
-Harbormaster coordinates cloud agents across sandbox providers. The planned main
-command is `bb harbor`, with `bb harbormaster` and `bb boat` as permanent aliases.
-For now, use `bb boat`: bb’s public SDK only supports one top-level command per
-plugin. See [the rename status and step 2 checklist](docs/harbormaster-rename.md).
+Harbormaster coordinates cloud agents across sandbox providers. Use `bb harbor`
+with the optional CLI companion below. `bb boat` keeps working with the main
+plugin alone. Both names reach the same handler; `harbor` help and usage errors
+use `bb harbor`, while agent examples still use `bb boat`. JSON stays unchanged.
+`bb harbormaster` awaits native alias support in bb.
+See [the rename status and step 2 checklist](docs/harbormaster-rename.md).
 
 Run Claude Code and Codex in [boat.dev](https://boat.dev) cloud sandboxes
 from [bb](https://getbb.app). Ask any chat to send a task to the cloud,
@@ -62,6 +64,15 @@ agent API key).
    bb shows what it will install and asks you to confirm. A plugin is
    full-trust code, so read [what it runs, reaches and stores](SECURITY.md)
    first.
+
+   **Add the new command** by installing the small CLI companion as well:
+   ```sh
+   bb plugin install git:https://github.com/scheinriese/bb-plugin-boat --subdirectory harbor
+   ```
+   This registers `bb harbor` and forwards to the main plugin. Every `bb boat`
+   example below also works as `bb harbor` after this install. Keep both
+   plugins installed and enabled, and update both when upgrading. Existing
+   installs need no settings or data migration; older hosts retain `bb boat`.
 5. **Check the setup.** Open **Settings → Plugins → Harbormaster**.
    The setup checklist shows a fix for each missing requirement. **Sign in…**
    opens a terminal that runs `boat onboard`; other commands have **Run in

@@ -12,6 +12,11 @@ which runs the user's signed-in `boat` CLI on the bb server's machine, so it
 works from any chat, local or cloud. If you're an orchestrator with `boat_*`
 tools, use the tools instead (see the `boat-orchestrator` skill).
 
+With the optional Harbormaster CLI companion installed, `bb harbor …` forwards
+to the same handler and state. All `bb boat` examples still work; the companion's
+help uses `bb harbor`. `bb harbormaster` is not registered. If another plugin
+owns `bb harbor`, use `bb plugin run harbor …` to reach the companion explicitly.
+
 Projects can also run on Instabox. GitHub tasks there need an org proxy
 Secret named `GH_TOKEN`, scoped to both `github.com` and `api.github.com`.
 `instaboxSecrets` (Advanced settings) defaults to `all`; use `none` or
