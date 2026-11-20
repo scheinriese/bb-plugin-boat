@@ -432,7 +432,7 @@ async function routingFixture(monthly = false, rentalId="fake-rental") {
 test("automatic Mac routing chooses Your Mac before a held rental", async () => {
   const env = await routingFixture();
   env.held();
-  const task = await env.start("fake-rental");
+  const task = await env.start();
   assert.equal(task.sandboxProvider, "ownmac");
   assert.equal(task.status, "running");
   assert.equal(env.store.macLeases.tasks("fake-lease").length, 0);
@@ -787,4 +787,29 @@ test("agent-facing guidance reserves Your Mac tests and settings for the owner",
   for(const file of ["../skills/boat/SKILL.md","../src/tools.ts"])assert.ok(readFileSync(new URL(file,import.meta.url),"utf8").replace(/\n/g," ").includes(rule),file);
   const text=ownMacTargetChangedNotice("2030-01-01T12:34:56.000Z");
   assert.equal(text,"Your Mac's target changed at 2030-01-01T12:34:56.000Z. The owner must run Test connection again in Settings before tasks run there. Agents must not run Test connection or change Your Mac settings.");
+});
+
+test("an explicit task rental choice waits for its selected route when Your Mac returns",async()=>{
+  const env=await routingFixture();env.config.ownMacPaused=true;await assert.rejects(env.start());
+  const task=env.store.list({statuses:["failed"],limit:10})[0]!;const notice=(await env.service.ownMacNotice(task))!;
+  await env.service.selectMacRentalOffer(task.id,notice.offer!.id);
+  env.config.ownMacPaused=false;await env.service.maintainOwnMac();
+  assert.equal(env.store.list({limit:10}).length,1);assert.equal(env.store.get(task.id)!.status,"failed");
+  assert.equal((await env.service.ownMacNotice(task))!.canWaitForOwnMac,true);
+  let creates=0;env.rental.create=async()=>{creates++;throw new Error("fake unknown create outcome");};
+  await assert.rejects(env.service.answerOwnMacRental(task.id,"rent",notice.offer!.id),{code:"creation_unknown"});
+  assert.equal(creates,1);assert.equal(env.store.list({statuses:["running"],limit:10}).length,0);
+});
+
+
+test("an owner can change a task-scoped rental selection back to waiting without changing Runs on",async()=>{
+  const env=await routingFixture();env.config.ownMacPaused=true;await assert.rejects(env.start());
+  const task=env.store.list({statuses:["failed"],limit:10})[0]!;const offer=(await env.service.ownMacNotice(task))!.offer!;
+  await env.service.selectMacRentalOffer(task.id,offer.id);
+  await env.service.answerOwnMacRental(task.id.slice(0,8),"wait");
+  assert.equal(env.store.ownMacEventData(task.id,"ownmac-rental-selection"),null);
+  assert.equal((await env.service.ownMacNotice(task))!.answer,"wait");
+  assert.equal(env.store.list({limit:10}).length,1);
+  env.config.ownMacPaused=false;await env.service.maintainOwnMac();
+  assert.equal(env.store.list({statuses:["running"],limit:10})[0]!.sandboxProvider,"ownmac");
 });

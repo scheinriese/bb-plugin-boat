@@ -32,6 +32,7 @@ async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25, cre
   const order: string[] = [];
   const calls: { method: string; path: string; body: any }[] = [], ssh: SshRequest[] = [];
   let servers: any[] = [], quota = 2, available = true, beta = false, failSetup = false, ambiguousCreate = false, ambiguousAbsent = false, failList = false, failSchedule = false, noAgentLogin = false, noGithubLogin = false, poll = 0;
+  let secondModel = false;
   let createGate: { entered(): void; ready: Promise<void> } | null = null;
   let failKey = false, sshCode = 0, rawFailures = 0;
   let forcedState: string | null = null;
@@ -41,10 +42,10 @@ async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25, cre
     const u = new URL(url), method = init.method!, path = u.pathname, body = init.body ? JSON.parse(String(init.body)) : null;
     calls.push({ method, path, body }); order.push(`${method} ${path}`);
     const json = (value: unknown) => new Response(JSON.stringify(value));
-    if (path.includes("public-catalog")) return json({ products: [product, { ...product, unit_of_measure: { unit: "month", size: 1 } }], total_count: 2 });
-    if (path.endsWith("server-types")) return json({ server_types: [{ ...type, default_os: { ...type.default_os, is_beta: beta }, stock: available ? "high_stock" : "no_stock" }] });
+    if (path.includes("public-catalog")) return json({ products: [product, { ...product, unit_of_measure: { unit: "month", size: 1 } }, ...(secondModel ? [{...product, properties:{apple_silicon:{server_type:"M2-M"}}}] : [])], total_count: secondModel ? 3 : 2 });
+    if (path.endsWith("server-types")) return json({ server_types: [{ ...type, default_os: { ...type.default_os, is_beta: beta }, stock: available ? "high_stock" : "no_stock" }, ...(secondModel ? [{...type,name:"M2-M"}] : [])] });
     if (path.includes("/projects/")) return json({ organization_id: "org" });
-    if (path.endsWith("quota")) return json({ quota: [{ name: "apple_silicon_m1_m", limits: [{ zone: "fr-par-3", limit: quota }] }], total_count: 1 });
+    if (path.endsWith("quota")) return json({ quota: [{ name: "apple_silicon_m1_m", limits: [{ zone: "fr-par-3", limit: quota }] }, ...(secondModel ? [{name:"apple_silicon_m2_m",limits:[{zone:"fr-par-3",limit:quota}]}] : [])], total_count: secondModel ? 2 : 1 });
     if (path.endsWith("ssh-keys") && method === "POST") return failKey ? new Response("unavailable",{status:503}) : json({ id: keyId });
     if (path.includes("ssh-keys/") && method === "DELETE") return new Response(null,{ status: 204 });
     if (path.endsWith("/servers") && method === "POST") {
@@ -80,7 +81,7 @@ async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25, cre
     const waiting=new Promise<void>(resolve=>{entered=resolve;});
     createGate={entered,ready};return {entered:waiting,release};
   };
-  return { failNextServerGets: (count:number) => { rawFailures=count; }, remainingGetFailures: () => rawFailures, makeProvider, sshExit: (code: number) => { sshCode = code; }, status: (state: string) => { forcedState = state; }, onSsh: (hook: typeof sshHook) => { sshHook = hook; }, order, blockCreate, failKey:()=>{failKey=true;}, api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, beta: () => { beta=true; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, ambiguousAbsent:()=>{ambiguousAbsent=true;}, listFailure:(value:boolean)=>{failList=value;}, scheduleFailure:()=>{failSchedule=true;}, noAgentLogin:()=>{noAgentLogin=true;}, noGithubLogin:()=>{noGithubLogin=true;}, servers: () => servers };
+  return { secondModel: () => { secondModel=true; }, failNextServerGets: (count:number) => { rawFailures=count; }, remainingGetFailures: () => rawFailures, makeProvider, sshExit: (code: number) => { sshCode = code; }, status: (state: string) => { forcedState = state; }, onSsh: (hook: typeof sshHook) => { sshHook = hook; }, order, blockCreate, failKey:()=>{failKey=true;}, api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, beta: () => { beta=true; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, ambiguousAbsent:()=>{ambiguousAbsent=true;}, listFailure:(value:boolean)=>{failList=value;}, scheduleFailure:()=>{failSchedule=true;}, noAgentLogin:()=>{noAgentLogin=true;}, noGithubLogin:()=>{noGithubLogin=true;}, servers: () => servers };
 }
 test("Scaleway create waits for delivered and SSH, bootstraps tools, stores a private key and releases it", async t => {
   const f=await fixture(t); const sandbox=await f.create();
@@ -164,10 +165,15 @@ async function routing(preferred:string, options:{disabled?:string; fail?:string
   const seam=service as unknown as {createMacFor(task:import("../src/store.ts").Task,type:"default",signal:AbortSignal):Promise<{id:string}>;heldMacFor(task:import("../src/store.ts").Task,type:"default",parent:null):Promise<string|null>};
   return {store,creates,task,seam,service,chat,providers};
 }
-for(const preferred of ["instabox","scaleway"]) for(const kind of ["fail","disabled"] as const) test(`Mac routing falls back from ${preferred} when ${kind}`,async()=>{
+for(const preferred of ["instabox","scaleway"]) for(const kind of ["fail","disabled"] as const) test(`Mac routing handles ${preferred} ${kind} with provider-bound consent`,async()=>{
   const other=preferred==="instabox"?"scaleway":"instabox";const f=await routing(preferred,{[kind]:preferred});
-  assert.equal((await f.seam.createMacFor(f.task,"default",new AbortController().signal)).id,`${other}_new`);
-  assert.equal(f.store.get(f.task.id)?.sandboxProvider,other);assert.ok(f.store.events(f.task.id).some(e=>/fallback/.test(e.text)));
+  if(kind==="fail") {
+    await assert.rejects(f.seam.createMacFor(f.task,"default",new AbortController().signal),{code:"at_capacity"});
+    assert.deepEqual(f.creates,[preferred],"selected cost consent cannot authorize a different provider after rejection");
+  } else {
+    assert.equal((await f.seam.createMacFor(f.task,"default",new AbortController().signal)).id,`${other}_new`);
+    assert.equal(f.store.get(f.task.id)?.sandboxProvider,other);assert.ok(f.store.events(f.task.id).some(e=>/Unavailable/.test(e.text)));
+  }
 });
 test("Mac routing reuses any held provider before renting the project's preferred provider",async()=>{
   const f=await routing("instabox",{held:"scaleway"});assert.equal(await f.seam.heldMacFor(f.task,"default",null),"scaleway_held");assert.deepEqual(f.creates,[]);assert.equal(f.store.get(f.task.id)?.sandboxProvider,"scaleway");
@@ -183,10 +189,15 @@ test("Scaleway settings, Runs on and task lease lines use existing UI contracts"
   const f=await routing("scaleway",{held:"scaleway"});assert.equal(macRunsOn(f.store.macLeases,"scaleway_held",[])?.label,"Scaleway");
 });
 
-for (const preferred of ["instabox", "scaleway"]) for (const unavailable of ["disabled", "fail"] as const) test(`dispatched Mac task falls back from ${preferred} when ${unavailable} through provider capabilities`,async()=>{
+for (const preferred of ["instabox", "scaleway"]) for (const unavailable of ["disabled", "fail"] as const) test(`dispatched Mac task handles ${preferred} ${unavailable} through provider capabilities`,async()=>{
   const f=await routing(preferred,{[unavailable]:preferred});
   const chosen=preferred==="instabox"?"scaleway":"instabox";
-  const task=await f.service.startTask({title:"Mac task",brief:"Check Xcode",role:"custom",runner:"chat",project:macTaskProject()});
+  const start=()=>f.service.startTask({title:"Mac task",brief:"Check Xcode",role:"custom",runner:"chat",project:macTaskProject()});
+  if(unavailable==="fail") {
+    await assert.rejects(start(),{code:"at_capacity"});
+    assert.deepEqual(f.creates,[preferred]);return;
+  }
+  const task=await start();
   assert.equal(task.status,"running",task.error??""); assert.equal(task.sandboxProvider,chosen);
   assert.equal(task.sandboxSystem,"macos"); assert.equal(task.sandboxId,`${chosen}_new`);
   assert.equal(f.chat.spawns.at(-1)?.where.kind,"machine");
@@ -194,8 +205,8 @@ for (const preferred of ["instabox", "scaleway"]) for (const unavailable of ["di
   const lease=f.store.macLeases.held(task.sandboxId!)[0]!;
   const reservation=f.store.macLeases.tasks(lease.id).find(t=>t.taskId===task.id)!;
   assert.deepEqual([reservation.cpus,reservation.memoryMiB],chosen==="scaleway"?[2,4096]:[4,8192]);
-  assert.ok(f.store.events(task.id).some(e=>/fallback/.test(e.text)));
-  assert.deepEqual(f.creates,unavailable==="disabled"?[chosen]:[preferred,chosen]);
+  assert.ok(f.store.events(task.id).some(e=>/Unavailable/.test(e.text)));
+  assert.deepEqual(f.creates,[chosen]);
 });
 
 test("Scaleway task dispatch refuses to spend without an agent and repository login path",async t=>{
@@ -459,13 +470,12 @@ test("Scaleway classifies IAM failures before allocation without claiming an unk
   assert.deepEqual(await f.keys.records(),[]);
 });
 
-for(const preferred of ["instabox","scaleway"]) test(`a classified ${preferred} pre-allocation error permits fallback`,async()=>{
+for(const preferred of ["instabox","scaleway"]) test(`a classified ${preferred} pre-allocation error requires new owner choice before fallback`,async()=>{
   const f=await routing(preferred);const chosen=preferred==="instabox"?"scaleway":"instabox";
   const provider=f.providers.find(p=>p.id===preferred)!;provider.classifiesCreateErrors=true;
   provider.create=async()=>{f.creates.push(preferred);throw new ProviderError("Pre-allocation request failed",{code:"catalog_failed"});};
-  const task=await f.service.startTask({title:"Mac",brief:"Check tools",role:"custom",runner:"chat",project:macTaskProject()});
-  assert.equal(task.sandboxProvider,chosen);assert.equal(task.status,"running",task.error??"");
-  assert.deepEqual(f.creates,[preferred,chosen]);
+  await assert.rejects(f.service.startTask({title:"Mac",brief:"Check tools",role:"custom",runner:"chat",project:macTaskProject()}),{code:"catalog_failed"});
+  assert.deepEqual(f.creates,[preferred],"another provider still requires its own cost consent");
 });
 
 test("each Mac fallback provider runs its own agent preflight before models or allocation",async()=>{
@@ -478,7 +488,7 @@ test("each Mac fallback provider runs its own agent preflight before models or a
   f.providers[0]!.macModels=async()=>{assert.fail("models must not be queried before preflight succeeds");};
   const task=await f.service.startTask({title:"Mac",brief:"Check tools",role:"custom",provider:"codex",runner:"chat",project:macTaskProject()});
   assert.equal(task.sandboxProvider,"scaleway");assert.deepEqual(f.creates,["scaleway"]);
-  assert.deepEqual(checked,["instabox","scaleway","scaleway","scaleway"]); // Fresh preflight after fake cost consent too.
+  assert.deepEqual(checked,["instabox","scaleway","instabox","scaleway","scaleway"]); // Fresh preflight after fake cost consent too.
   assert.ok(f.store.events(task.id).some(e=>e.text.includes("Instabox isn't ready")));
 });
 
@@ -918,4 +928,24 @@ test("held local logins never create a permanent rented-token reminder and recov
   await absent.provider.assertTaskReady!({agent:"codex",repos:["acme/web"],sandboxId:other.id});
   absent.servers().splice(0);await credentialService(absent).processMacLeases();
   assert.deepEqual(absent.store.macLeases.credentialNotices(),[]);
+});
+
+
+test("rental choices check Scaleway stock and quota separately from presentation models", async t => {
+  const f = await fixture(t);
+  f.stock(false);
+  assert.equal((await f.provider.macModels!()).length, 1, "catalog still describes the model");
+  const rentalModels = await f.provider.macRentalModels!();
+  assert.match(rentalModels[0]!.unavailableReason!, /stock/);
+  f.stock(true); f.setQuota(0);
+  assert.match((await f.provider.macRentalModels!())[0]!.unavailableReason!, /quota/);
+  assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+});
+
+test("Scaleway allocation honors the explicitly approved model instead of the first model", async t => {
+  const f = await fixture(t); f.secondModel();
+  const model = (await f.provider.macModels!()).find(model => model.id === "M2-M")!;
+  await f.provider.allocate!({name:"fake selection",type:"default",system:"macos",ttlSeconds:3600,gitGuard:true,
+    macCostLimit:{...model,modelLabel:model.label,provider:"scaleway",model:model.id,expiresAt:new Date(Date.now()+600000).toISOString()}});
+  assert.equal(f.calls.find(call => call.method === "POST" && call.path.endsWith("/servers"))!.body.type, "M2-M");
 });

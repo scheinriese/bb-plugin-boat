@@ -33,13 +33,15 @@ export function ownMacTaskNotice(
   const quote = macRentalQuoteSchema.safeParse(
     data(store, task.id, "ownmac-rental-offer"),
   );
+  const parsedChoices = ownMacNoticeSchema.pick({offers:true,recommendedQuoteId:true,recommendationReason:true,unavailable:true}).safeParse(data(store,task.id,"ownmac-rental-choices"));
+  const choices=parsedChoices.success ? parsedChoices.data : null;
   const answer = data(store, task.id, "ownmac-rental-answer") as {
     answer?: string;
     replacementId?: string;
   } | null;
   const fallback = data(store, task.id, "ownmac-fallback");
   if (task.status === "cancelled" && !answer?.replacementId) return null;
-  if (!skipped.success && !quote.success) return null;
+  if (!skipped.success && !quote.success && !choices) return null;
   const state = skipped.success ? skipped.data : null;
   return ownMacNoticeSchema.parse(
     Object.fromEntries(
@@ -70,6 +72,10 @@ export function ownMacTaskNotice(
               : undefined,
         fallback: fallback ?? undefined,
         offer: quote.success ? quote.data : undefined,
+        offers: choices?.offers,
+        recommendedQuoteId: choices?.recommendedQuoteId,
+        recommendationReason: choices?.recommendationReason,
+        unavailable: choices?.unavailable,
         answer: answer?.answer,
         replacementId: answer?.replacementId,
       }).filter(([, value]) => value !== undefined),

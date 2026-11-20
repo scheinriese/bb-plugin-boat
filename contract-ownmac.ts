@@ -70,7 +70,7 @@ export const macRentalQuoteSchema = z.object({
   hourPrice: z.number().nonnegative(),
   minimumHours: z.number().positive(),
   currency: z.string(),
-  expiresAt: z.string(),
+  expiresAt: z.string().refine(value=>Number.isFinite(Date.parse(value)),"Invalid quote expiry"),
 });
 export type MacRentalQuote = z.infer<typeof macRentalQuoteSchema>;
 export const ownMacNoticeSchema = z.object({
@@ -90,6 +90,10 @@ export const ownMacNoticeSchema = z.object({
     })
     .optional(),
   offer: macRentalQuoteSchema.optional(),
+  offers: z.array(macRentalQuoteSchema).optional(),
+  recommendedQuoteId: z.string().optional(),
+  recommendationReason: z.string().optional(),
+  unavailable: z.array(z.object({provider:z.string(),label:z.string(),reason:z.string()})).optional(),
   answer: z.enum(["wait", "rent", "auto", "failed"]).optional(),
   replacementId: z.string().optional(),
   cleanup: ownMacFactsSchema.shape.cleanup,
@@ -126,6 +130,14 @@ export const ownMacRpcMethods = {
       threadId: z.string().optional(),
     }),
     output: z.object({ notices: z.array(ownMacNoticeSchema) }),
+  },
+  refreshMacRentalOffers: {
+    input: z.object({taskId:z.string()}),
+    output: z.object({notice:ownMacNoticeSchema}),
+  },
+  selectMacRentalOffer: {
+    input: z.object({taskId:z.string(),quoteId:z.string()}),
+    output: z.object({notice:ownMacNoticeSchema}),
   },
   answerOwnMacRental: {
     input: z.object({
