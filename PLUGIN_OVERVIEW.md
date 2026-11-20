@@ -29,5 +29,9 @@ Run `bb boat doctor` for read-only setup checks. A test task uses a real sandbox
 and agent usage. Existing users should export a private settings backup and
 reload once more after upgrading to finish the grouped-settings migration.
 
+The optional CLI companion in this repository's `harbor` directory adds
+`bb harbor` with the same commands and state. Keep the main plugin installed;
+`bb boat` remains supported and help examples keep that spelling.
+
 Source and guide: https://github.com/scheinriese/bb-plugin-boat.
 Optional companion: https://github.com/scheinriese/bb-plugin-workbench-sidebar.

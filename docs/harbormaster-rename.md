@@ -6,27 +6,67 @@ Settings uses the manifest's name and description; the plugin controls the
 sidebar entry through `navPanel.title` and the page descriptor through
 `experimental_usePageTitle`. No host DOM patch is needed for the rename.
 
-## CLI: needs bb
+## CLI: companion plugin (rename step 2)
 
-The intended primary command is `bb harbor`, with `bb harbormaster` and
-`bb boat` as permanent aliases. **Only `bb boat` is available in this draft.**
-Commands, help, protocol hints and skill examples continue to use that working
-namespace until bb supports the other names.
+**`bb harbor` is available through the optional `harbor/` companion plugin.**
+The main plugin still registers `bb boat` exactly as before. Install both:
+
+```sh
+bb plugin install https://github.com/scheinriese/bb-plugin-boat
+bb plugin install git:https://github.com/scheinriese/bb-plugin-boat --subdirectory harbor
+```
+
+The companion registers one command, `harbor`, and forwards argv and the
+invoking cwd, thread id and project id to the main plugin's existing CLI
+endpoint over `bb.server.loopbackBaseUrl`. It passes cancellation through,
+preserves stdout, stderr and exit codes, and never retries a command. It has
+no runtime dependencies, settings, database, services or duplicate task
+runtime. Help and protocol/agent examples retain `bb boat`; both names run
+those exact commands. This deliberately leaves user output untouched.
+
+Keep both plugins enabled and update both when upgrading. A missing or disabled
+main plugin returns bb's existing CLI error through `harbor`; a transport or
+invalid-response failure returns `harbor_unavailable` with `--json`. Installing
+only the main plugin, including on older supported hosts, keeps `bb boat`
+working. Removing the companion has no effect on the main plugin's data.
+
+The bridge uses bb's CLI HTTP endpoint rather than `sdk.plugins.callRpc`:
+the SDK imposes a 75-second deadline, whereas commands such as `task wait`
+can run for 30 minutes. Node's HTTP client adds no request deadline and accepts
+bb's whitespace keepalives. The ordinary host CLI boundary still enforces
+output limits, handler lifecycle and cancellation on both sides.
+
+### Native aliases checked first
 
 The pinned public Plugin SDK 0.6.104 allows exactly one `bb.cli.register` call
 per plugin factory. `PluginCliRegistration` and `PluginCliSpec` have a single
 `name` and no top-level aliases. The same restriction was verified in public
-SDK packages 0.6.157 and 0.6.164 on 2026-11-20. `cliCommand.aliases` only aliases
-subcommands, below the one registered name. Registering thin top-level aliases
-is rejected by the host, and changing the one name to `harbor` would break
-existing `bb boat` scripts.
+SDK packages 0.6.157 and 0.6.164 on 2026-11-20. npm's latest bb is 0.50.1 and
+its latest SDK is 0.6.164; the published bb 0.50.1 runtime bundles SDK 0.6.157.
+The host normalizer copies only `name`, `summary`, `commands`, `rendersHelp`
+and `run`. The strict `bb` manifest schema also has no CLI aliases field.
+`cliCommand.aliases` only aliases subcommands, below the one registered name.
+Registering thin top-level aliases is rejected by the host, and changing the
+one name to `harbor` would break existing `bb boat` scripts.
 
 Required upstream change: expose top-level CLI aliases in registration and
 carry them through discovery, dispatch, collision checks and the CLI proxy.
-Then register `harbor` with `harbormaster` and `boat` as aliases to the same
-handler; help and examples can switch to `bb harbor`. Add host-level tests
+Then the main plugin can register `harbor` with `harbormaster` and `boat` as
+aliases to the same handler and retain its single `boat` registration on
+older hosts; help and examples can switch to `bb harbor`. The companion can
+then be retired without dropping `bb boat`. Add host-level tests
 that all three names resolve identically, including nested help, errors, JSON
 output and mutating commands. No standalone `harbor` binary is proposed.
+
+### Verification
+
+See [real-host verification](harbor-host-verification.md) for bb 0.50.1
+transcripts of both command names. `node scripts/check-harbor-host.mjs` repeats
+read-only checks against the bb selected by `BB_CLI` and `BB_SERVER_URL`, with
+both plugins already installed. Unit tests additionally exercise context,
+shared state, safety refusals, failed-command non-retry, malformed responses,
+keepalives and request cancellation. CI builds both plugins on bb 0.48.1,
+0.49.0 and 0.50.1.
 
 The [name check in PR #20](https://github.com/scheinriese/bb-plugin-boat/pull/20)
 concludes “go with caveats.” Its recommendation to lead with `bb harbormaster`
