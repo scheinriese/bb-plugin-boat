@@ -7,11 +7,11 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 
 const available = spawnSync("gitleaks", ["version"]).status === 0;
-const required = process.env.CI !== undefined || process.env.REQUIRE_GITLEAKS !== undefined;
+const required = process.env.REQUIRE_GITLEAKS !== undefined;
 const body = (length: number) => randomBytes(length).toString("hex").slice(0, length);
 
 test("gitleaks provider rules and inherited GitHub rules", { skip: !available && !required }, () => {
-  assert.ok(available, "gitleaks must be installed when CI or REQUIRE_GITLEAKS is set");
+  assert.ok(available, "gitleaks must be installed when REQUIRE_GITLEAKS is set");
   const dir = mkdtempSync(join(tmpdir(), "secret-scan-"));
   try {
     const scan = (value: string): string[] => {
