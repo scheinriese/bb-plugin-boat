@@ -838,8 +838,9 @@ test("a long wake: the call returns after its wait with the progress so far, --s
   assert.equal(running.outcome, "running");
   assert.equal(running.tellsThreadId, "thr_orch");
   assert.ok(running.steps.some((step) => step.text === "It's stopped."), "the progress so far");
-  assert.match(wakeText(running, T0), /^Waking sandbox bx_demo1 \(still running; started 09:00 UTC\)\./);
-  assert.match(wakeText(running), /Still running\. Check on it with `bb boat sandbox wake bx_demo1 --status`; this chat gets a \[boat\] message when it's done\.$/);
+  assert.match(wakeText(running, w.now()), /^Waking sandbox bx_demo1 \(still running; started 09:00 UTC\)\./);
+  assert.match(wakeText(running, w.now()), /Still running\. Check on it with `bb boat sandbox wake bx_demo1 --status`; this chat gets a \[boat\] message when it's done\.$/);
+  assert.match(wakeText(running, T0 + 24 * 60 * 60_000), /^Waking sandbox bx_demo1 \(still running; started 2026-11-19 09:00 UTC\)\./);
   assert.equal((await w.waker.status("bx_demo1")).outcome, "running");
   assert.equal(w.notices.length, 0, "not told before it ends");
   open();
