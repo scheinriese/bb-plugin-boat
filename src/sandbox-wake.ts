@@ -1536,7 +1536,7 @@ export function createSandboxWaker(deps: SandboxWakeDeps): SandboxWaker {
       job.done,
       new Promise<null>((resolve) => {
         timer = setTimeout(() => resolve(null), waitMs);
-        (timer as { unref?: () => void }).unref?.();
+        // The foreground caller awaits this timeout, so keep the event loop alive.
       }),
     ]);
     if (timer !== null) clearTimeout(timer);

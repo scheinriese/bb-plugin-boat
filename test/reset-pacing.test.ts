@@ -98,6 +98,14 @@ test("after a decline provider retry recorded, Boat queues the stopped turn for 
   assert.deepEqual(fresh.consent(consent("thr_task", "Rate limited", RESET + 5 * 3_600_000, "req_3")), { kind: "allow" });
 });
 
+test("the default consent polling sleep keeps an awaited failure alive", async () => {
+  // No injected sleep: the timer must keep Node alive until the next poll.
+  let clockReads = 0;
+  const env = pacing({ sleep: undefined, now: () => clockReads++ < 2 ? NOW : NOW + 60_000 });
+  assert.equal(await env.resets.failed(limitFailure("thr_task")), "skipped");
+  assert.deepEqual(env.reads, [], "without consent no provider decision is read");
+});
+
 test("Boat never retries what provider retry kept, or what it can't confirm", async () => {
   // bb 0.50: no consent question, so nothing of Boat's to resume, and decision.get is never polled.
   const kept = pacing({ decisions: [{ requestId: "req_1", observedAt: NOW, availability: { kind: "not-routed" }, decision: { kind: "retry", reason: "Rate limited", sendAt: RESET + 20_000 } }] });
