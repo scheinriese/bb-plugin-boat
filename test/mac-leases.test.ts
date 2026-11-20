@@ -160,3 +160,27 @@ test("upgrading the main lease schema preserves existing Instabox billing",()=>{
   near(ledger.cost(lease,at+25*hour+30*1000),10.8+0.45*(1+1/120));
   assert.equal(lease.provider,"instabox");assert.equal(lease.kept,false);
 });
+
+test("token reminders survive lease end, reconciliation, database reopen and unrelated notice clearing",async t=>{
+  const {mkdtemp,rm}=await import("node:fs/promises");const {tmpdir}=await import("node:os");const {join}=await import("node:path");
+  const dir=await mkdtemp(join(tmpdir(),"credential-reminder-test-"));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const path=join(dir,"leases.sqlite");let db=new DatabaseSync(path);
+  const migrations=TaskStore.migrations();for(const sql of migrations.slice(0,-1))db.exec(sql);
+  // An existing lease must upgrade without changing its historical migration indexes.
+  db.prepare(`INSERT INTO mac_leases (id,provider,machine_id,size,started_at,paid_until,minimum_cost,hour_price,currency,cpus,memory_mib) VALUES ('scaleway:test','scaleway','example_mac','m1',?,?,10,0.5,'EUR',8,8192)`).run(new Date(at).toISOString(),new Date(at+LEASE_DAY_MS).toISOString());
+  db.exec(migrations.at(-1)!);let ledger=new MacLeaseLedger(()=>db as unknown as Database.Database);
+  ledger.recordCredentialNotice("scaleway:test","example reminder: revoke or rotate the token",at);
+  const first=ledger.credentialNotices()[0]!;
+  ledger.end("scaleway:test","deleted",at+LEASE_DAY_MS);ledger.clearNotice("scaleway:test");ledger.reconcile("scaleway",new Set());
+  db.close();db=new DatabaseSync(path);t.after(()=>db.close());ledger=new MacLeaseLedger(()=>db as unknown as Database.Database);
+  assert.equal(ledger.held().length,0);assert.deepEqual(ledger.credentialNotices(),[first]);
+  ledger.recordGithubDelivery("scaleway:test",new Date(at+2*LEASE_DAY_MS).toISOString());
+  ledger.recordGithubDelivery("scaleway:test",new Date(at+LEASE_DAY_MS).toISOString());
+  assert.equal(ledger.credentialNotices(at+2*LEASE_DAY_MS-1).length,1,"rotation must not shorten an older token's expiry");
+  assert.deepEqual(ledger.credentialNotices(at+2*LEASE_DAY_MS),[],"only expiry clears the reminder");
+  ledger.recordUnknownGithubExpiry("scaleway:test");
+  assert.equal(ledger.credentialNotices(at+1000*LEASE_DAY_MS).length,1,"unknown historical expiry remains unknown after redelivery");
+  db.prepare(`UPDATE mac_credential_notices SET dismissed_at=?`).run(new Date(at).toISOString());
+  db.close();db=new DatabaseSync(path);ledger=new MacLeaseLedger(()=>db as unknown as Database.Database);
+  assert.equal(ledger.credentialNotices(at+1000*LEASE_DAY_MS).length,1,"legacy dismissal cannot clear a token reminder");
+});

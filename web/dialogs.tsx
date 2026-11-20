@@ -2077,6 +2077,7 @@ export function ConfirmDialog({
   confirmLabel,
   pending = false,
   destructive = false,
+  confirmDisabled = false,
   onConfirm,
 }: DialogControl & {
   title: string;
@@ -2084,6 +2085,7 @@ export function ConfirmDialog({
   confirmLabel: string;
   pending?: boolean;
   destructive?: boolean;
+  confirmDisabled?: boolean;
   onConfirm: () => void;
 }) {
   return (
@@ -2100,7 +2102,7 @@ export function ConfirmDialog({
           <Button
             type="button"
             variant={destructive ? "destructive" : "default"}
-            disabled={pending}
+            disabled={pending || confirmDisabled}
             onClick={onConfirm}
           >
             {pending ? <Icon name="Loading" className="animate-spin" /> : null}

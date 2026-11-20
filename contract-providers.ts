@@ -59,6 +59,9 @@ export type ProviderSystemDto = z.infer<typeof providerSystemSchema>;
 export const providerStepSchema = z.object({
   id: z.string(), label: z.string(), done: z.boolean(), detail: z.string(),
   possible: z.boolean().default(true),
+  /** Optional setup (for example GitHub for repo-less tasks) does not block readiness. */
+  required: z.boolean().optional(),
+  docsUrl: z.string().url().optional(),
 });
 export type ProviderStepDto = z.infer<typeof providerStepSchema>;
 export const linuxUsageSchema = z.object({
@@ -100,6 +103,7 @@ export const sandboxProviderSchema = z.object({
   /** Status words when the connection alone doesn't say it ("Awake · on power", "Not available yet"); null: the connection's own. */
   status: z.string().nullable(),
   steps: z.array(providerStepSchema).optional(),
+  releaseNotice: z.string().optional(),
   linuxUsage: linuxUsageSchema.optional(),
   waitingTasks: z.number().optional(),
 });
@@ -143,7 +147,7 @@ export const macUsageSchema = z.object({
   byProvider: z.array(z.object({ id: z.string(), label: z.string(), month: macUsageWindowSchema, rolling30: macUsageWindowSchema })).optional(),
   today: z.record(z.string(),z.number()).optional(),
   providers: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
-  notices: z.array(z.object({ id: z.string(), provider: z.string(), label: z.string(), machineId: z.string(), at: z.string(), text: z.string() })).optional(),
+  notices: z.array(z.object({ id: z.string(), provider: z.string(), label: z.string(), machineId: z.string(), at: z.string(), text: z.string(), tokenRevocation: z.boolean().optional(), expiresAt: z.string().nullable().optional() })).optional(),
   held: z.array(z.object({ provider: z.string().optional(), billingIncrementSeconds: z.number().optional(), machineId: z.string(), size: z.string(), paidUntil: z.string(), minimumCost: z.number(), hourPrice: z.number(), kept: z.boolean(), releaseAt: z.string().nullable(), currency: z.string() })),
 });
 export type MacUsageDto = z.infer<typeof macUsageSchema>;

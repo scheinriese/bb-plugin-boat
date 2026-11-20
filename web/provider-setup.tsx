@@ -32,7 +32,8 @@ export function ProviderSetup({
   busy?: boolean;
 }) {
   const steps = provider.steps ?? [],
-    next = steps.findIndex((s) => s.possible && !s.done),
+    nextRequired = steps.findIndex((s) => s.possible && s.required !== false && !s.done),
+    next = nextRequired >= 0 ? nextRequired : steps.findIndex((s) => s.possible && !s.done),
     waiting = (provider.waitingTasks ?? 0) > 0;
   return (
     <ol
@@ -75,7 +76,7 @@ export function ProviderSetup({
                 >
                   {needs
                     ? `${provider.waitingTasks} task${provider.waitingTasks === 1 ? "" : "s"} waiting`
-                    : "Next"}
+                    : s.required === false ? "Optional" : "Next"}
                 </span>
               )}
             </div>
@@ -85,6 +86,7 @@ export function ProviderSetup({
                   {s.id === "github"
                     ? "Agents push branches from Instabox, so it needs its own GitHub token. Add it in Instabox; Harbormaster only checks that it exists."
                     : s.detail}
+                  {s.docsUrl && <a className="ml-1 text-[#7AA7FF] hover:underline" href={s.docsUrl} target="_blank" rel="noreferrer">Credential risks ↗</a>}
                 </p>
                 {s.id === "github" && (
                   <>
@@ -111,7 +113,7 @@ export function ProviderSetup({
                     Add or replace key in bb secrets
                   </button>
                 )}
-                {s.id === "enabled" && (
+                {s.id === "enabled" && provider.id === "instabox" && (
                   <button
                     type="button"
                     disabled={busy}
@@ -135,6 +137,7 @@ export function ProviderSetup({
             ) : (
               <span className="text-xs text-[#6E6E6E]">
                 {s.detail}
+                {s.docsUrl && <a className="ml-1 text-[#7AA7FF] hover:underline" href={s.docsUrl} target="_blank" rel="noreferrer">Credential risks ↗</a>}
                 {s.id === "key" && s.done && (
                   <button className={`ml-1 ${link}`} onClick={onKey}>
                     Change

@@ -493,6 +493,8 @@ export interface RepoWords {
 
 /** Steps a provider adds around bb's setup and planned stops of its bb machines (./machine.ts). */
 export interface MachineHooks {
+  /** Remove delivered credentials after bb installation/enrollment fails. */
+  bootstrapFailed?(sandboxId: string): Promise<void>;
   /** On a sandbox that is up, before bb's setup there (each create and resume); never fails it. */
   beforeBootstrap?(sandboxId: string, signal?: AbortSignal): Promise<unknown>;
   /** Before a planned stop of a sandbox that is up (state: what the provider said, if known); never fails it. */
@@ -639,11 +641,15 @@ export interface LaterMembers {
   classifiesCreateErrors?: boolean;
   /** Servers with Boat names but no local ownership record. Read-only; never adopted automatically. */
   orphans?(signal?: AbortSignal): Promise<{ id: string; name: string }[]>;
+  /** Current persistent owner warning about credential cleanup during release. */
+  releaseNotice?(): string | null;
   /** Allocate and record a lease quickly; readiness/bootstrap is a separate step outside the placement lock. */
   allocate?(options: CreateSandboxOptions): Promise<SandboxInfo>;
   waitReady?(sandboxId: string, signal?: AbortSignal): Promise<SandboxInfo>;
   /** Verify credentials before allocation, or on an existing machine before reuse. */
   assertTaskReady?(input: { agent: Provider; repos: readonly string[]; sandboxId?: string; signal?: AbortSignal; onWarning?: (message: string) => void }): Promise<void>;
+  /** Re-deliver this provider's configured GitHub source before expiry. */
+  refreshGithubLogin?(sandboxId: string, signal?: AbortSignal): Promise<string | null>;
   /** Reconcile ambiguous creates against complete provider lists, clearing only absent recovery records. */
   recoverCreations?(signal?: AbortSignal): Promise<{ recovered: number; cleared: number }>;
 

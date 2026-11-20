@@ -43,6 +43,9 @@ function NamePreview() {
 const allScenes = [
   "name",
   "usage",
+  "credential-settings-ready",
+  "credential-cleanup",
+  "credential-revocation",
   "sandbox-actions",
   "running-only",
   "multi-lease-footer",
