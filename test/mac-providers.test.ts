@@ -74,3 +74,16 @@ test("Mac usage includes the provider's display name",async()=>{
   const view=await providerHandlers({service:env.service,bb:{}} as unknown as Runtime).macUsage();
   assert.deepEqual(view.providers,[{id:"orchard",label:"Orchard"}]);
 });
+
+test("Mac usage keeps a provider-current lease discrepancy visible after an ambiguous local end",async()=>{
+  const env=fixture();
+  const start=Date.now(),paidUntil=new Date(start+24*3600000).toISOString();
+  const lease=env.store.macLeases.record({id:"instabox:fake-lease",provider:"instabox",machineId:"m_fake",size:"m2",startedAt:new Date(start).toISOString(),paidUntil,minimumCost:10.8,hourPrice:0.45,currency:"USD",cpus:8,memoryMiB:12288});
+  env.store.macLeases.end(lease.id,"deleted",start+1000);
+  const warning=`Instabox still reports this physical lease. USD 10.80 minimum, paid until ${paidUntil}; release scheduled at ${paidUntil}. Local end is uncertain; billing may continue.`;
+  env.store.macLeases.observeDiscrepancy(lease.id,warning,start+2000);
+  const view=await providerHandlers({service:env.service,bb:{}} as unknown as Runtime).macUsage();
+  assert.equal(view.held.length,0,"a visibility read does not reopen a confirmed end");
+  assert.equal(view.month.costs.USD,10.8,"minimum is retained exactly once");
+  assert.deepEqual(view.notices?.map(notice=>({machineId:notice.machineId,text:notice.text})),[{machineId:"m_fake",text:warning}]);
+});

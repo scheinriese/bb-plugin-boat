@@ -368,6 +368,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const notices=await Promise.all(tasks.map(task=>service.ownMacNotice(task)));
       return {notices:notices.filter((notice):notice is NonNullable<typeof notice>=>notice!==null)};
     },
+    recoverAllocatedMac:async({taskId,machineId,userApproved}:{taskId:string;machineId:string;userApproved:boolean})=>{try{const task=await service.recoverAllocatedMac(taskId,machineId,userApproved);return {taskId:task.id,machineId:task.sandboxId!};}finally{ownChanged();}},
     answerOwnMacRental:async({taskId,answer,quoteId}:{taskId:string;answer:"rent"|"wait"|"queue";quoteId?:string})=>{try{return {replacementId:await service.answerOwnMacRental(taskId,answer,quoteId)};}finally{ownChanged();}},
     refreshMacRentalOffers:async({taskId}:{taskId:string})=>{try{return {notice:await service.refreshMacRentalOffers(taskId)};}finally{ownChanged();}},
     selectMacRentalOffer:async({taskId,quoteId}:{taskId:string;quoteId:string})=>{try{return {notice:await service.selectMacRentalOffer(taskId,quoteId)};}finally{ownChanged();}},
@@ -392,7 +393,9 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const now = Date.now(), date = new Date(now);
       const monthStart = Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1), monthEnd = Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1);
       const label = (id: string) => providerLabel(id, service.sandboxProviders.all.find(provider=>provider.id===id));
-      const notices: NonNullable<MacUsageDto["notices"]> = [...summary.held.flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []), ...service.store.macLeases.credentialNotices().map(notice=>({...notice,label:label(notice.provider),tokenRevocation:true}))];
+      // A fresh provider read can contradict an old local end. Keep that
+      // warning visible even when the ambiguous row cannot safely be reopened.
+      const notices: NonNullable<MacUsageDto["notices"]> = [...service.store.macLeases.list().flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []), ...service.store.macLeases.credentialNotices().map(notice=>({...notice,label:label(notice.provider),tokenRevocation:true}))];
       const ownMac = await service.sandboxProviders.all.find(p=>p.id==="ownmac")?.ownMacStatus?.();
       return { ...summary,
         ...(ownMac ? {ownMac:{...ownMac,rent:0 as const,tasksThisMonth:service.store.countOwnMacTasksSince(new Date(monthStart).toISOString())}} : {}),
