@@ -800,6 +800,8 @@ test("idle open tasks get recurring paid-time heads-ups across restarts; running
   const {start,service,store,notices,box}=await macEnv(t);
   const task=await start({orchestratorThreadId:"thread_1"});
   const lease=store.macLeases.held()[0]!;const until=Date.parse(lease.paidUntil);
+  // Task updates and the simulated sweeps must use the CLI lease's timeline.
+  t.mock.timers.enable({apis:["Date"],now:Date.parse(lease.startedAt)});
   await service.processMacLeases(until-29*60000);
   assert.equal(notices.length,0,"active work continues silently");
   store.update(task.id,{status:"idle",unshipped:4});
