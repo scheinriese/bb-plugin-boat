@@ -32,7 +32,7 @@ test("explicit legacy adoption preserves raw history and accounts one physical m
   assert.equal(reopened.credentialNotices().length,1);assert.equal(reopened.tasks(f.input.id).length,1);
 });
 
-for(const scenario of ["confirmed end","handed back","before failure","late end","wrong lease","changed terms","changed schedule","changed microseconds","stale read","owner release","missing attestation","kept work"] as const)test(`explicit adoption refuses ${scenario} without changing original or accounting`,()=>{
+for(const scenario of ["confirmed end","handed back","before failure","late end","wrong lease","changed terms","changed schedule","changed microseconds","stale read","owner release","missing attestation","kept work","existing release plan"] as const)test(`explicit adoption refuses ${scenario} without changing original or accounting`,()=>{
   const f=fixture();let current=f.current,evidence=f.evidence;
   if(scenario==="confirmed end")f.db.prepare("UPDATE mac_leases SET end_evidence='confirmed'").run();
   if(scenario==="handed back")f.db.prepare("UPDATE mac_leases SET end_reason='handed back'").run();
@@ -44,6 +44,7 @@ for(const scenario of ["confirmed end","handed back","before failure","late end"
   if(scenario==="changed microseconds")current={...current,startedAt:current.startedAt.replace("Z","999Z")};
   if(scenario==="stale read")evidence={...evidence,revision:evidence.revision-1};
   if(scenario==="missing attestation")evidence={...evidence,operatorProof:{...evidence.operatorProof,noReleaseRequested:false as unknown as true}};
+  if(scenario==="existing release plan")f.db.prepare("UPDATE mac_leases SET release_at=?").run(f.input.paidUntil);
   if(scenario==="kept work")f.db.prepare("UPDATE mac_leases SET kept=1").run();
   if(scenario==="owner release"){f.ledger.recordReleaseIntent(f.input.machineId,"delete");evidence={...evidence,revision:f.ledger.revision()};}
   evidence={...evidence,operatorProof:{...evidence.operatorProof,failedAt:evidence.failedAt,endedAt:evidence.expectedEndedAt}};
@@ -62,4 +63,20 @@ test("a new raw active row cannot overlap the adopted same-machine physical leas
   const f=fixture();assert.ok(f.ledger.adoptLegacyDeleted(f.input.id,f.current,f.evidence));
   assert.throws(()=>f.ledger.record({...f.input,id:"instabox:new-lease"}),/active physical lease/);
   assert.equal(f.ledger.list().length,1);assert.deepEqual(f.ledger.rawList(),[f.original]);
+});
+
+
+test("real adapter authoritative reads preserve the entire legacy tombstone before and after adoption",async()=>{
+  const f=fixture();
+  const {createInstaboxProvider}=await import("../src/providers/instabox/provider.ts");
+  const raw={id:f.input.machineId,name:"bb-example",state:"running",template:{id:"macos"},model:"m2",metadata:{"created-by":"bb-boat","boat-mac-model":"m2"},runtime:{ready:true},spec:{vcpus:8,memMiB:12288},lease:{id:"example-lease",startedAt:f.input.startedAt,chargeUntil:f.input.paidUntil,hourUSD:0.45},deleteAt:f.input.paidUntil};
+  const cli={json:async()=>({machine:raw})} as unknown as import("../src/providers/instabox/cli.ts").InstaboxCli;
+  const provider=createInstaboxProvider(cli,{} as import("../src/providers/instabox/api.ts").InstaboxRest,{ledger:f.ledger});
+  await provider.info(f.input.machineId);
+  assert.deepEqual(f.ledger.rawList(),[f.original]);assert.match(f.ledger.list()[0]!.noticeText!,/currently reports/);
+  assert.ok(f.ledger.adoptLegacyDeleted(f.input.id,f.current,{...f.evidence,revision:f.ledger.revision()}));
+  await provider.info(f.input.machineId);
+  assert.deepEqual(f.ledger.rawList(),[f.original]);assert.match(f.ledger.list()[0]!.noticeText!,/Explicit recovery adopted/);
+  f.ledger.end(f.input.id,"deleted");await provider.info(f.input.machineId);
+  assert.equal(f.ledger.held().length,0);assert.deepEqual(f.ledger.rawList(),[f.original]);
 });

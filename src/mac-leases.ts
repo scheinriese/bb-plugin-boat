@@ -17,6 +17,7 @@ export const MAC_CREDENTIAL_EXPIRIES_MIGRATION = `CREATE TABLE mac_credential_ex
 export const MAC_LEASE_END_EVIDENCE_MIGRATION = `ALTER TABLE mac_leases ADD COLUMN end_evidence TEXT NOT NULL DEFAULT 'legacy'`;
 export const MAC_LEASE_ADOPTIONS_MIGRATION = `CREATE TABLE mac_lease_adoptions (lease_id TEXT PRIMARY KEY REFERENCES mac_leases(id), original TEXT NOT NULL, observed TEXT NOT NULL, evidence TEXT NOT NULL, adopted_at TEXT NOT NULL, current_ended_at TEXT, current_end_reason TEXT, current_end_evidence TEXT NOT NULL DEFAULT 'confirmed', current_notice_at TEXT, current_notice_text TEXT, current_kept INTEGER NOT NULL DEFAULT 0, current_release_at TEXT)`;
 export const MAC_RELEASE_INTENTS_MIGRATION = `CREATE TABLE mac_release_intents (id INTEGER PRIMARY KEY AUTOINCREMENT, machine_id TEXT NOT NULL, action TEXT NOT NULL, at TEXT NOT NULL)`;
+export const MAC_LEASE_OBSERVATIONS_MIGRATION = `CREATE TABLE mac_lease_observations (lease_id TEXT PRIMARY KEY REFERENCES mac_leases(id), terminal_notice_at TEXT, terminal_notice_text TEXT)`;
 export interface LegacyDeletedAdoptionProof { ledgerId:string; leaseId:string; sourceTaskId:string; startedAt:string; paidUntil:string; endedAt:string; failedAt:string; noReleaseRequested:true }
 export interface LegacyDeletedAdoptionEvidence { revision: number; taskId: string; sourceTaskId: string; failureCause: "lease_unknown"; failedAt: string; observedAt: string; expectedEndedAt: string; operatorProof:LegacyDeletedAdoptionProof }
 export interface MacLeaseAdoption { leaseId: string; original: MacLease; current: LeaseInput & {scheduledReleaseAt:string|null;physicalLeaseId:string}; evidence: LegacyDeletedAdoptionEvidence; adoptedAt: string; endedAt: string | null }
@@ -34,8 +35,11 @@ export interface LeaseTask { leaseId: string; taskId: string; attachedAt: string
 export interface MacLeaseSnapshot { leases: MacLease[]; tasks: LeaseTask[] }
 const iso = (at: number) => new Date(at).toISOString();
 const RAW_LEASE_COLUMNS = `id, provider, machine_id AS machineId, size, started_at AS startedAt, paid_until AS paidUntil, minimum_cost AS minimumCost, hour_price AS hourPrice, currency, cpus, memory_mib AS memoryMiB, ended_at AS endedAt, end_reason AS endReason, notice_at AS noticeAt, notice_text AS noticeText, kept, release_at AS releaseAt, billing_increment_seconds AS billingIncrementSeconds, end_evidence AS endEvidence`;
-const EFFECTIVE_FROM = `mac_leases LEFT JOIN mac_lease_adoptions adoption ON adoption.lease_id=mac_leases.id`;
-const effective = (column: string) => `CASE WHEN adoption.lease_id IS NULL THEN ${column} ELSE adoption.current_${column} END`;
+const EFFECTIVE_FROM = `mac_leases LEFT JOIN mac_lease_adoptions adoption ON adoption.lease_id=mac_leases.id LEFT JOIN mac_lease_observations observation ON observation.lease_id=mac_leases.id`;
+const effective = (column: string) => {
+  const original=(column==="notice_at" || column==="notice_text") ? `CASE WHEN observation.lease_id IS NULL OR mac_leases.ended_at IS NULL THEN ${column} ELSE observation.terminal_${column} END` : column;
+  return `CASE WHEN adoption.lease_id IS NULL THEN ${original} ELSE adoption.current_${column} END`;
+};
 const LEASE_COLUMNS = RAW_LEASE_COLUMNS.replace(/\b(ended_at|end_reason|end_evidence|notice_at|notice_text|kept|release_at)\b/g, column => `${effective(column)}${column==="kept" ? " AS kept" : ""}`);
 const EFFECTIVE_END = effective("ended_at");
 const TASK_COLUMNS = `lease_id AS leaseId, task_id AS taskId, attached_at AS attachedAt, cpus, memory_mib AS memoryMiB, work_outcome AS workOutcome, work_turns AS workTurns`;
@@ -77,7 +81,7 @@ export class MacLeaseLedger {
     if (evidence.revision !== this.observationRevision || evidence.failureCause !== "lease_unknown" || !evidence.taskId || !evidence.sourceTaskId || this.adoptions().some(row=>row.leaseId===id)) return null;
     validateMacLeaseTerms(current);
     const original = this.rawList().find(row=>row.id===id);
-    if (!original || this.releaseIntent(original.machineId) || original.endEvidence!=="legacy" || original.endReason!=="deleted" || original.kept || !original.endedAt || original.endedAt!==evidence.expectedEndedAt || original.provider!=="instabox") return null;
+    if (!original || this.releaseIntent(original.machineId) || original.endEvidence!=="legacy" || original.endReason!=="deleted" || original.releaseAt!==null || original.kept || !original.endedAt || original.endedAt!==evidence.expectedEndedAt || original.provider!=="instabox") return null;
     const proof=evidence.operatorProof;
     if (!proof || proof.noReleaseRequested!==true || proof.ledgerId!==id || proof.leaseId!==current.physicalLeaseId || proof.sourceTaskId!==evidence.sourceTaskId || proof.startedAt!==original.startedAt || proof.paidUntil!==original.paidUntil || proof.endedAt!==original.endedAt || proof.failedAt!==evidence.failedAt) return null;
     const start=Date.parse(original.startedAt), end=Date.parse(original.endedAt), paid=Date.parse(original.paidUntil), failed=Date.parse(evidence.failedAt), observed=Date.parse(evidence.observedAt);
@@ -155,6 +159,10 @@ export class MacLeaseLedger {
    * discrepancy without claiming either billing stopped or a safe revival. */
   observeDiscrepancy(id: string, text: string, now = Date.now()): void {
     const {table,key,prefix:p}=this.state(id);
+    if (table==="mac_leases" && this.rawList().find(row=>row.id===id)?.endedAt) {
+      this.db().prepare(`INSERT INTO mac_lease_observations (lease_id,terminal_notice_at,terminal_notice_text) VALUES (?,?,?) ON CONFLICT(lease_id) DO UPDATE SET terminal_notice_at=excluded.terminal_notice_at,terminal_notice_text=excluded.terminal_notice_text`).run(id,iso(now),text);
+      return;
+    }
     this.db().prepare(`UPDATE ${table} SET ${p}notice_at=?,${p}notice_text=? WHERE ${key}=?`).run(iso(now),text,id);
   }
   tasks(id: string): LeaseTask[] { return this.db().prepare(`SELECT ${TASK_COLUMNS} FROM mac_lease_tasks WHERE lease_id=? ORDER BY attached_at,task_id`).all(id) as LeaseTask[]; }
@@ -170,9 +178,20 @@ export class MacLeaseLedger {
   }
   end(id: string, reason: NonNullable<MacLease["endReason"]>, now = Date.now(), evidence: "confirmed" | "inferred" = "confirmed"): void {
     const {table,key,prefix:p}=this.state(id);
-    if (this.db().prepare(`UPDATE ${table} SET ${p}ended_at=?,${p}end_reason=?,${p}end_evidence=?,${p}notice_text=NULL WHERE ${key}=? AND (${p}ended_at IS NULL OR (${p}end_evidence='inferred' AND ?='confirmed'))`).run(iso(now), reason, evidence, id, evidence).changes) this.observationRevision++;
+    if (this.db().prepare(`UPDATE ${table} SET ${p}ended_at=?,${p}end_reason=?,${p}end_evidence=?,${p}notice_text=NULL WHERE ${key}=? AND (${p}ended_at IS NULL OR (${p}end_evidence='inferred' AND ?='confirmed'))`).run(iso(now), reason, evidence, id, evidence).changes) {
+      if (table==="mac_leases") this.db().prepare(`UPDATE mac_lease_observations SET terminal_notice_text=NULL WHERE lease_id=?`).run(id);
+      this.observationRevision++;
+    }
   }
-  clearNotice(id: string): boolean { const {table,key,prefix:p}=this.state(id);return this.db().prepare(`UPDATE ${table} SET ${p}notice_text=NULL WHERE ${key}=? AND ${p}notice_text IS NOT NULL`).run(id).changes>0; }
+  clearNotice(id: string): boolean {
+    const {table,key,prefix:p}=this.state(id);
+    if (table==="mac_leases" && this.rawList().find(row=>row.id===id)?.endedAt) {
+      const hadNotice=Boolean(this.list().find(row=>row.id===id)?.noticeText);
+      this.db().prepare(`INSERT INTO mac_lease_observations (lease_id,terminal_notice_text) VALUES (?,NULL) ON CONFLICT(lease_id) DO UPDATE SET terminal_notice_text=NULL`).run(id);
+      return hadNotice;
+    }
+    return this.db().prepare(`UPDATE ${table} SET ${p}notice_text=NULL WHERE ${key}=? AND ${p}notice_text IS NOT NULL`).run(id).changes>0;
+  }
   keep(id: string): void { const {table,key,prefix:p}=this.state(id);this.db().prepare(`UPDATE ${table} SET ${p}kept=1 WHERE ${key}=? AND ${p}ended_at IS NULL`).run(id); }
   schedule(id: string, at: string | null): void { const {table,key,prefix:p}=this.state(id);this.db().prepare(`UPDATE ${table} SET ${p}release_at=? WHERE ${key}=? AND ${p}ended_at IS NULL`).run(at,id); }
   /** A minimum-end heads-up, then at most one reminder per 24 h. Persist
