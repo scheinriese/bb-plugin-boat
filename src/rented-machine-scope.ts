@@ -58,7 +58,8 @@ export function createRentedMachineScope(options: { kv: PluginKvStorage; read():
   return {
     assertAllowed: () => serial(() => check()),
     // Capture the empty/nonempty transition at the secret-setting event, even
-    // when clear and re-entry happen before the next task or across a restart.
+    // when clear and re-entry happen before the next task. Changes made while
+    // the plugin is stopped are not observed; reset again while it is running.
     tokenPresenceChanged: (enabled: boolean) => serial(() => check(enabled)),
     configurationChanged: (field: "key" | "project") => serial(async () => {
       const raw = await options.kv.get<unknown>(RENTED_GITHUB_SCOPE_KEY);

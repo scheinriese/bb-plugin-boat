@@ -898,3 +898,22 @@ test("expiry is durable before SSH, including failed delivery; a database failur
   other.store.macLeases.recordGithubDelivery=()=>{throw new Error("test database unavailable");};
   await assert.rejects(other.provider.beforeRepo!(mac.id));assert.equal(other.ssh.length,before);
 });
+
+test("held local logins never create a permanent rented-token reminder and recover after cleanup",async t=>{
+  const f=await fixture(t,26);const mac=await f.create();
+  await f.provider.assertTaskReady!({agent:"codex",repos:["acme/web"],sandboxId:mac.id});
+  f.sshExit(255);
+  await assert.rejects(f.provider.delete(mac.id));
+  assert.deepEqual(f.store.macLeases.credentialNotices(),[]);
+  assert.match(f.store.macLeases.held()[0]!.noticeText!,/Local logins.*Keychain/);
+  await credentialService(f).processMacLeases();
+  assert.deepEqual(f.store.macLeases.credentialNotices(),[]);
+  assert.match(f.provider.releaseNotice!()!,/Local logins/);
+  f.sshExit(0);await f.provider.scheduleLeaseRelease!(mac.id,f.store.macLeases.held()[0]!.paidUntil);
+  assert.equal(f.store.macLeases.held().length,1);assert.equal(f.provider.releaseNotice!(),null);
+  await f.provider.delete(mac.id);
+  const absent=await fixture(t,26);const other=await absent.create();
+  await absent.provider.assertTaskReady!({agent:"codex",repos:["acme/web"],sandboxId:other.id});
+  absent.servers().splice(0);await credentialService(absent).processMacLeases();
+  assert.deepEqual(absent.store.macLeases.credentialNotices(),[]);
+});

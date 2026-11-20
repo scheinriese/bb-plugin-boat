@@ -101,9 +101,13 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       if (pluginOnly) await credentials.cleanupGithub(id, executor(id), signal);
       else await credentials.cleanup(id, executor(id), signal);
     } catch (error) {
-      for (const lease of ledger.held(id)) ledger.recordCredentialNotice(lease.id, tokenExposureNotice(id));
+      for (const lease of ledger.held(id)) {
+        if (ledger.hasGithubDeliveryRecord(lease.id) || record?.pluginGithubAttempted === true) ledger.recordCredentialNotice(lease.id, tokenExposureNotice(id));
+        else ledger.warn(lease.id, Date.now(), false, `${CLEANUP_NOTICE_PREFIX} Local logins on ${id} could not be cleaned up. Restore SSH and check local GitHub and agent logins, including macOS Keychain. The plugin will retry cleanup; this warning clears after verified cleanup.`, true);
+      }
       throw error;
     }
+    for (const lease of ledger.held(id)) if (lease.noticeText?.includes("Local logins")) ledger.clearNotice(lease.id);
     if (record) await keys.save({ ...record, pluginGithubAttempted: false, credentialDeliveryAttempted: pluginOnly ? record.localLoginsObserved === true : false });
   }
   async function deleteMachine(id: string, signal?: AbortSignal, endOptions?: { leaseEndReason?: "handed back" | "deleted" | "failed"; leaseEndAt?: number }) {
@@ -217,8 +221,8 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       }
       if (found) { if (!record.serverId && reconcile) { await keyFor(found); recovered++; } }
       else {
-        if (record.serverId && (record.credentialDeliveryAttempted !== false || record.localLoginsObserved)) for (const lease of ledger.held()) {
-          if (lease.provider === "scaleway" && lease.machineId.endsWith(`_${record.serverId}`)) ledger.recordCredentialNotice(lease.id, tokenExposureNotice(lease.machineId));
+        if (record.serverId) for (const lease of ledger.held()) {
+          if (lease.provider === "scaleway" && lease.machineId.endsWith(`_${record.serverId}`) && (record.pluginGithubAttempted === true || ledger.hasGithubDeliveryRecord(lease.id))) ledger.recordCredentialNotice(lease.id, tokenExposureNotice(lease.machineId));
         }
         if (reconcile) { await forgetKey(record,signal); cleared++; }
       }

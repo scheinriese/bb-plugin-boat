@@ -2670,10 +2670,11 @@ export class BoatService {
   }
 
   private async credentialCleanupNotice(lease: MacLease, now: number): Promise<void> {
-    this.store.macLeases.recordCredentialNotice(lease.id, tokenExposureNotice(lease.machineId), now);
+    const delivered = this.store.macLeases.hasGithubDeliveryRecord(lease.id);
+    if (delivered) this.store.macLeases.recordCredentialNotice(lease.id, tokenExposureNotice(lease.machineId), now);
     const rate = new Intl.NumberFormat("en-US", { style: "currency", currency: lease.currency }).format(lease.hourPrice);
     const parts = lease.machineId.split("_");
-    const text = `${CLEANUP_NOTICE_PREFIX} Scaleway Mac ${lease.machineId} keeps billing at ${rate}/hour (the 24 h minimum still applies). Restore SSH access; the plugin will retry cleanup once SSH works. To delete manually: open https://console.scaleway.com → Apple silicon → ${parts[1] ?? "the recorded zone"} → server ${parts[2] ?? lease.machineId} → Delete after the minimum. Revoke or rotate the GitHub token in GitHub because it may still be on this Mac. Ask the owner to review the Cloud agents page and decide how to recover this Mac.`;
+    const text = `${CLEANUP_NOTICE_PREFIX} Scaleway Mac ${lease.machineId} keeps billing at ${rate}/hour (the 24 h minimum still applies). Restore SSH access; the plugin will retry cleanup once SSH works. To delete manually: open https://console.scaleway.com → Apple silicon → ${parts[1] ?? "the recorded zone"} → server ${parts[2] ?? lease.machineId} → Delete after the minimum. ${delivered ? "Revoke or rotate the GitHub token in GitHub because it may still be on this Mac." : "Local logins need checking: inspect local GitHub and agent logins, including macOS Keychain. This warning clears after verified cleanup."} Ask the owner to review the Cloud agents page and decide how to recover this Mac.`;
     const changed = lease.noticeText !== text;
     const notify = this.store.macLeases.warn(lease.id, now, true, text, changed);
     if (changed || notify) this.hooks.changed([]);
