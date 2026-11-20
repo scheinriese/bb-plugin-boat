@@ -20,10 +20,10 @@ import type { Provider } from "../store.ts";
 export const DEFAULT_PROVIDER_ID = "boat";
 
 /** Every provider this plugin has an adapter for: where a project's work can run. */
-export const PROVIDER_IDS = ["boat", "instabox"] as const;
+export const PROVIDER_IDS = ["boat", "instabox", "scaleway"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 /** Their names in the plugin's words (a provider that isn't enabled is named too). */
-export const PROVIDER_NAMES: Record<ProviderId, string> = { boat: "boat.dev", instabox: "Instabox" };
+export const PROVIDER_NAMES: Record<ProviderId, string> = { boat: "boat.dev", instabox: "Instabox", scaleway: "Scaleway" };
 
 // ------------------------------------------------------------------ sizes and states
 
@@ -131,6 +131,8 @@ export interface SandboxCapabilities {
   previews: "token-link";
   /** bb can run its daemon there (task chats and cloud orchestrators). */
   bbEnrollment: boolean;
+  /** False when agents run only through enrolled bb task chats. Default: true. */
+  headlessAgentRunner?: boolean;
   /**
    * What the account's limit on sandboxes counts: "sandboxes" the ones up
    * (a stop frees a slot: the plugin may make room by stopping an idle one);
@@ -628,6 +630,18 @@ export interface AgentRunner {
 /** For later providers: not called yet. */
 export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string }
 export interface LaterMembers {
+  /** Classifies uncertain/allocated create outcomes itself; ordinary errors mean no machine was allocated. */
+  classifiesCreateErrors?: boolean;
+  /** Servers with Boat names but no local ownership record. Read-only; never adopted automatically. */
+  orphans?(signal?: AbortSignal): Promise<{ id: string; name: string }[]>;
+  /** Allocate and record a lease quickly; readiness/bootstrap is a separate step outside the placement lock. */
+  allocate?(options: CreateSandboxOptions): Promise<SandboxInfo>;
+  waitReady?(sandboxId: string, signal?: AbortSignal): Promise<SandboxInfo>;
+  /** Verify credentials before allocation, or on an existing machine before reuse. */
+  assertTaskReady?(input: { agent: Provider; repos: readonly string[]; sandboxId?: string; signal?: AbortSignal }): Promise<void>;
+  /** Reconcile ambiguous creates against complete provider lists, clearing only absent recovery records. */
+  recoverCreations?(signal?: AbortSignal): Promise<{ recovered: number; cleared: number }>;
+
   macModels?(signal?: AbortSignal): Promise<MacModel[]>;
   /** Release an empty lease exactly when its paid minimum ends. Omit if the provider cannot schedule; Boat waits until the minimum ends instead. */
   scheduleLeaseRelease?(sandboxId: string, at: string, signal?: AbortSignal): Promise<void>;

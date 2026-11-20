@@ -65,6 +65,12 @@ export const INSTABOX_NOT_CONNECTED: SandboxProviderDto = {
   apiKey: { setting: null },
 };
 
+export const SCALEWAY_NOT_CONNECTED: SandboxProviderDto = {
+  id: "scaleway", label: "Scaleway", kind: "cloud", isDefault: false, available: true, enabled: false,
+  connection: "key-missing", meta: null, summary: "Paris Apple silicon · 24 h minimum, then hourly. New task rentals are blocked until credentials can be provisioned.",
+  pricing: null, systems: [{ os: "macos", label: "Mac", note: null, ready: false }], apiKey: { setting: null }, status: null,
+};
+
 export const YOUR_MAC_DISABLED: SandboxProviderDto = {
   id: "your-mac",
   label: "Your Mac",
@@ -111,13 +117,14 @@ function options(instabox: string | null): RunsOnOptionDto[] {
   return [
     { provider: "boat", label: "boat.dev", disabledReason: null },
     { provider: "instabox", label: "Instabox", disabledReason: instabox },
+    { provider: "scaleway", label: "Scaleway", disabledReason: "Add its API key first" },
     { provider: "your-mac", label: "Your Mac", disabledReason: "Not available yet" },
   ];
 }
 
 /** boat.dev and Instabox connected; the Mac rows greyed out. */
 export const PROVIDERS_CONNECTED: SandboxProvidersResultDto = {
-  providers: [BOAT_CONNECTED, INSTABOX_CONNECTED, YOUR_MAC_DISABLED, MONTHLY_MAC_DISABLED],
+  providers: [BOAT_CONNECTED, INSTABOX_CONNECTED, SCALEWAY_NOT_CONNECTED, YOUR_MAC_DISABLED, MONTHLY_MAC_DISABLED],
   routing: BOAT_ROUTING,
   options: options(null),
   projects: PROJECTS,
@@ -125,7 +132,7 @@ export const PROVIDERS_CONNECTED: SandboxProvidersResultDto = {
 
 /** What main shows with only boat.dev: Instabox without a key, every project on boat.dev. */
 export const PROVIDERS_BOAT_ONLY: SandboxProvidersResultDto = {
-  providers: [BOAT_CONNECTED, INSTABOX_NOT_CONNECTED, YOUR_MAC_DISABLED, MONTHLY_MAC_DISABLED],
+  providers: [BOAT_CONNECTED, INSTABOX_NOT_CONNECTED, SCALEWAY_NOT_CONNECTED, YOUR_MAC_DISABLED, MONTHLY_MAC_DISABLED],
   routing: BOAT_ROUTING,
   options: options("Add its API key first"),
   projects: PROJECTS.map((project) => ({ ...project, provider: "boat", chosen: false })),
@@ -134,7 +141,7 @@ export const PROVIDERS_BOAT_ONLY: SandboxProvidersResultDto = {
 /** Signed out of boat.dev. */
 export const PROVIDERS_SIGNED_OUT: SandboxProvidersResultDto = {
   ...PROVIDERS_BOAT_ONLY,
-  providers: [{ ...BOAT_CONNECTED, connection: "not-connected", summary: "Linux · not signed in" }, INSTABOX_NOT_CONNECTED, YOUR_MAC_DISABLED, MONTHLY_MAC_DISABLED],
+  providers: [{ ...BOAT_CONNECTED, connection: "not-connected", summary: "Linux · not signed in" }, INSTABOX_NOT_CONNECTED, SCALEWAY_NOT_CONNECTED, YOUR_MAC_DISABLED, MONTHLY_MAC_DISABLED],
 };
 
 // ------------------------------------------------------------------ where each task and sandbox runs

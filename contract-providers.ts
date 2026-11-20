@@ -125,7 +125,7 @@ export const macUsageSchema = z.object({
   month: macUsageWindowSchema, rolling30: macUsageWindowSchema,
   providers: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
   notices: z.array(z.object({ id: z.string(), provider: z.string(), label: z.string(), machineId: z.string(), at: z.string(), text: z.string() })).optional(),
-  held: z.array(z.object({ machineId: z.string(), size: z.string(), paidUntil: z.string(), minimumCost: z.number(), hourPrice: z.number(), kept: z.boolean(), releaseAt: z.string().nullable(), currency: z.string() })),
+  held: z.array(z.object({ provider: z.string().optional(), billingIncrementSeconds: z.number().optional(), machineId: z.string(), size: z.string(), paidUntil: z.string(), minimumCost: z.number(), hourPrice: z.number(), kept: z.boolean(), releaseAt: z.string().nullable(), currency: z.string() })),
 });
 export type MacUsageDto = z.infer<typeof macUsageSchema>;
 export const providerRpcMethods = {

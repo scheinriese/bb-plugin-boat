@@ -57,6 +57,7 @@ export const PROVIDER_CATALOG: readonly CatalogEntry[] = [
     ],
     apiKey: true,
   },
+  { id: "scaleway", label: "Scaleway", kind: "cloud", summary: "Paris Apple silicon · 24 h minimum, then hourly. New task rentals are blocked until credentials can be provisioned.", systems: [{ os: "macos", label: "Mac", note: null }], apiKey: true },
   { id: "your-mac", label: "Your Mac", kind: "own-mac", summary: `Agents on your own Mac, enrolled in bb. ${NO_MACS}`, systems: [], apiKey: false, unsupported: NO_MACS },
   {
     id: "monthly-mac",
@@ -161,7 +162,7 @@ function catalogRow(entry: CatalogEntry, provider: SandboxProvider | null, conne
       return { ...system, note, ready: connection === "connected" && provider !== null && offered && note === null };
     }),
     // No setting holds the key until this version has the provider: the row says so instead of pointing at nothing.
-    apiKey: entry.apiKey ? { setting: here === null ? null : `${entry.label} API key` } : null,
+    apiKey: entry.apiKey ? { setting: here === null ? null : entry.id === "scaleway" ? "Scaleway secret key" : `${entry.label} API key` } : null,
     status: available ? null : "Not available yet",
   };
 }
@@ -178,7 +179,7 @@ function pickProblem(row: SandboxProviderDto): string | null {
 /** The line under the providers: where work goes first. */
 function routingLine(rows: readonly SandboxProviderDto[], defaultLabel: string): string {
   const macs = rows.some((row) => row.kind !== "cloud" && row.available);
-  if (macs) return "Mac tasks go to your Mac first, then a monthly Mac, then an Instabox day lease. Boat never rents or cancels anything for you.";
+  if (macs) return "Mac tasks go to your Mac first, then a monthly Mac, then an enabled Mac day-lease provider. Boat rents only for dispatched tasks.";
   return `New work runs on ${defaultLabel} unless a project picks another provider below.`;
 }
 
@@ -197,6 +198,7 @@ export function providersView(input: {
   prices?: Prices;
   keys?: Keys;
   macReady?: ReadonlySet<string>;
+  statuses?: ReadonlyMap<string, string>;
   projects: readonly BoatProject[];
 }): SandboxProvidersResultDto {
   const { registry } = input;
@@ -223,15 +225,16 @@ export function providersView(input: {
     rows.push(catalogRow(entry, provider, input.connections?.get(provider.id) ?? "not-connected", defaultId === provider.id, input.prices?.get(provider.id) ?? null));
   }
   rows.sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+  for (const row of rows) row.status = input.statuses?.get(row.id) ?? row.status;
 
   const options: RunsOnOptionDto[] = rows
     // A monthly Mac is a choice once one is enrolled.
     .filter((row) => row.kind !== "monthly-mac" || (row.available && row.connection === "connected"))
-    .map((row) => ({ provider: row.id, label: row.label, disabledReason: pickProblem(row) }));
+    .map((row) => { const macOnly=registry.all.find(provider=>provider.id===row.id)?.caps.os==="macos"; return {provider:macOnly?`${row.id}-macos`:row.id,label:macOnly?`${row.label} · Mac`:row.label,disabledReason:pickProblem(row)}; });
   for (const provider of registry.enabled) {
     const row = rows.find(row => row.id === provider.id);
     const ready = input.macReady?.has(provider.id) ?? (provider.caps.systems ?? [provider.caps.os]).includes("macos");
-    if (row?.available && row.connection === "connected" && ready) options.push({ provider: `${provider.id}-macos`, label: `${providerLabel(provider.id,provider)} · Mac`, disabledReason: null });
+    if (row?.available && row.connection === "connected" && ready && !options.some(option=>option.provider===`${provider.id}-macos`)) options.push({ provider: `${provider.id}-macos`, label: `${providerLabel(provider.id,provider)} · Mac`, disabledReason: null });
   }
   const projects = input.projects.map((project) => projectRow(project, registry));
   // A pick this version doesn't know (a backup from a newer one) still shows, greyed out.
@@ -248,10 +251,10 @@ const CONNECTION_TTL_MS = 60_000;
 
 export function providerHandlers(runtime: Runtime) {
   const { service, bb } = runtime;
-  let checked: { at: number; connections: Connections; prices: Prices; macReady: ReadonlySet<string> } | null = null;
+  let checked: { at: number; connections: Connections; prices: Prices; macReady: ReadonlySet<string>; statuses: ReadonlyMap<string,string> } | null = null;
 
   /** Ask each enabled provider other than boat.dev for its plan (an answer means connected) and its prices. */
-  async function others(): Promise<{ connections: Connections; prices: Prices; macReady: ReadonlySet<string> }> {
+  async function others(): Promise<{ connections: Connections; prices: Prices; macReady: ReadonlySet<string>; statuses: ReadonlyMap<string,string> }> {
     if (checked !== null && Date.now() - checked.at < CONNECTION_TTL_MS) return checked;
     const providers = service.sandboxProviders.enabled.filter((provider) => provider.id !== "boat");
     const results = await Promise.all(
@@ -267,7 +270,9 @@ export function providerHandlers(runtime: Runtime) {
         }
         const pricing = connection === "connected" && provider.pricing ? await provider.pricing(signal).catch(() => null) : null;
         const macReady = connection === "connected" && (provider.macModels ? (await provider.macModels(signal).catch(() => [])).length > 0 : (provider.caps.systems ?? [provider.caps.os]).includes("macos"));
-        return { id: provider.id, connection, pricing, macReady };
+        const orphans = connection === "connected" && provider.orphans ? await provider.orphans(signal).catch(() => null) : [];
+        const status = orphans === null ? "Orphan check unavailable" : orphans.length ? `${orphans.length} orphan server(s) · not managed; inspect with bb boat providers` : null;
+        return { id: provider.id, connection, pricing, macReady, status };
       }),
     );
     checked = {
@@ -275,18 +280,19 @@ export function providerHandlers(runtime: Runtime) {
       macReady: new Set(results.filter(entry=>entry.macReady).map(entry=>entry.id)),
       connections: new Map(results.map((entry) => [entry.id, entry.connection])),
       prices: new Map(results.flatMap((entry) => (entry.pricing ? [[entry.id, entry.pricing] as const] : []))),
+      statuses: new Map(results.flatMap(entry=>entry.status ? [[entry.id,entry.status] as const] : [])),
     };
     return checked;
   }
 
   async function view(): Promise<SandboxProvidersResultDto> {
     const reading = runtime.setup ? (runtime.setup.peek()?.facts ?? (await runtime.setup.reading().catch(() => null))) : null;
-    const { connections, prices, macReady } = await others();
+    const { connections, prices, macReady, statuses } = await others();
     const keys = new Map(service.sandboxProviders.all.flatMap((provider) => {
       const stored = runtime.providers?.keyPresent(provider.id) ?? null;
       return stored === null ? [] : [[provider.id, stored] as const];
     }));
-    return providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, keys, macReady, projects: runtime.projects.list() });
+    return providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, keys, macReady, statuses, projects: runtime.projects.list() });
   }
 
   return {
@@ -312,7 +318,7 @@ export function providerHandlers(runtime: Runtime) {
       if (option.disabledReason !== null && provider !== projectRow(project,service.sandboxProviders).provider) {
         throw new experimental_PluginRpcRefusal({ code: "conflict", message: `${option.label} can't take new work: ${option.disabledReason.charAt(0).toLowerCase()}${option.disabledReason.slice(1)}.` });
       }
-      const macProvider = service.sandboxProviders.all.find(candidate => `${candidate.id}-macos` === provider);
+      const macProvider = service.sandboxProviders.all.find(candidate => `${candidate.id}-macos` === provider || (candidate.id === provider && candidate.caps.os === "macos"));
       const providerId = macProvider?.id ?? provider;
       const saved = runtime.projects.save({ ...project, sandboxProvider: providerId === service.sandboxProviders.default.id ? null : providerId, sandboxSystem: macProvider ? "macos" : "linux" });
       runtime.changed();

@@ -23,6 +23,7 @@ export interface ProviderState {
   os: "linux" | "macos";
   machineProviderId: string | null;
   projectIds: string[];
+  orphans?: { id: string; name: string }[];
   checks: { id: string; label: string; state: CheckState; required: boolean; detail: string; fix: { text: string; command: string | null } | null }[];
 }
 
@@ -78,6 +79,15 @@ export async function providerStates(deps: ProviderStatusDeps, options: { force?
           problem: failing === null ? null : `${failing.label}: ${failing.detail}${failing.fix ? `. ${failing.fix.text}` : ""}`,
           checks: status?.checks.map(check) ?? [],
         };
+      }
+      if (enabled.has(provider.id) && provider.orphans) {
+        try {
+          const orphans = await provider.orphans(AbortSignal.timeout(10_000));
+          return { ...base(provider), turnedOn: true, keyPresent: null, status: "ready", checks: [], orphans,
+            problem: orphans.length ? `${orphans.length} orphan server(s) have no local ownership record. They are not managed; inspect them in the provider console.` : null };
+        } catch {
+          return { ...base(provider), turnedOn: true, keyPresent: null, status: "unknown", problem: "Could not check provider ownership records.", checks: [] };
+        }
       }
       return { ...base(provider), turnedOn: false, keyPresent: null, status: "off", problem: null, checks: [] };
     }),

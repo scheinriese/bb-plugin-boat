@@ -2,7 +2,7 @@ import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidel
 // `bb boat …` — the agent- and human-facing command line.
 import { PluginCliError, cliCommand, defineCli, type PluginCliContext } from "@get-bb/plugin-sdk";
 import { dashboardUrl } from "./providers/boat/api.ts";
-import { DEFAULT_PROVIDER_ID, MACHINE_TYPES, PROVIDER_IDS, PROVIDER_NAMES, ProviderError, autoStopHours, type MachineType, type ProviderId } from "./providers/types.ts";
+import { DEFAULT_PROVIDER_ID, MACHINE_TYPES, PROVIDER_IDS, PROVIDER_NAMES, ProviderError, autoStopHours, canHostMac, type MachineType, type ProviderId } from "./providers/types.ts";
 import { instaboxDoctorText } from "./providers/instabox/setup.ts";
 import { describeClose } from "./close-outcome.ts";
 import {
@@ -152,6 +152,12 @@ function launchMessage(task: Task, pending: boolean): string {
 
 export function buildCli(runtime: Runtime) {
   const { service } = runtime;
+  const projectSystem = (providerId: string, current: "linux" | "macos" = "linux") => {
+    const provider = service.sandboxProviders.all.find(candidate => candidate.id === providerId);
+    if (!provider) return current;
+    if (provider.caps.os === "macos" && !provider.caps.systems?.includes("linux")) return "macos";
+    return canHostMac(provider) ? current : "linux";
+  };
 
   return defineCli({
     name: "boat",
@@ -206,9 +212,10 @@ export function buildCli(runtime: Runtime) {
                 .map(async (provider) => {
                   try {
                     const room = await service.capacity(ctx.signal, undefined, provider);
-                    return { provider: provider.id, name: provider.displayName, limits: room.limits, active: room.active.length, cap: room.cap, free: room.free, error: null };
+                    const orphans = provider.orphans ? await provider.orphans(ctx.signal).catch(() => null) : undefined;
+                    return { provider: provider.id, name: provider.displayName, limits: room.limits, active: room.active.length, cap: room.cap, free: room.free, error: null, orphans };
                   } catch (error) {
-                    return { provider: provider.id, name: provider.displayName, limits: null, active: 0, cap: null, free: null, error: error instanceof ProviderError ? error.explain().message : String(error) };
+                    return { provider: provider.id, name: provider.displayName, limits: null, active: 0, cap: null, free: null, error: error instanceof ProviderError ? error.explain().message : String(error), orphans: undefined };
                   }
                 }),
             );
@@ -237,7 +244,10 @@ export function buildCli(runtime: Runtime) {
                 setup?.summary ?? null,
                 capacity ? `boat: ${limitsLine(capacity.limits, capacity.active.length, capacity.cap)}` : `boat: ${boatProblem ?? "not reachable"}`,
                 capacity?.limits?.summary ? `plan: ${capacity.limits.summary}` : null,
-                ...others.map((entry) => `${entry.name}: ${entry.error ?? limitsLine(entry.limits, entry.active, entry.cap)}`),
+                ...others.flatMap((entry) => [
+                  `${entry.name}: ${entry.error ?? limitsLine(entry.limits, entry.active, entry.cap)}`,
+                  ...(entry.orphans === null ? ["  Orphan check unavailable"] : (entry.orphans ?? []).map(server=>`  orphan: ${server.id} (${server.name}) · not managed`)),
+                ]),
                 tasksAtOnceLine(tasksBeforeAsking),
                 ctx.threadId ? `this thread: ${orchestrator ? "orchestrator" : "not an orchestrator"}` : null,
                 project ? `project: ${project.name} (${project.repos.map((r) => `${r.repo}@${r.baseBranch}`).join(", ")}; environment ${project.environment ?? "default"})` : null,
@@ -255,6 +265,17 @@ export function buildCli(runtime: Runtime) {
       }),
 
       // ---------------------------------------------------------------- sandboxes
+      "providers recover": cliCommand({
+        summary: "Reconcile unresolved provider creates against a complete machine list",
+        description: "Scaleway: recover matching server names and IDs, or clear absent recovery records and their unused SSH keys. A failed list never clears a record.",
+        positionals: [{name:"provider",description:"Provider id (scaleway)",required:true}], options:{json},
+        async run({positionals,options},ctx) { return guard(async()=>{
+          const provider=service.sandboxProviders.all.find(provider=>provider.id===positionals.provider);
+          if (!provider?.recoverCreations) throw new PluginCliError("This provider has no create recovery command.",{code:"unsupported"});
+          const result=await provider.recoverCreations(ctx.signal);runtime.changed();
+          return out(result,options.json,()=>`Recovered ${result.recovered} allocation(s); cleared ${result.cleared} absent recovery record(s).`);
+        }); },
+      }),
       "sandbox list": cliCommand({
         summary: "List sandboxes on every enabled provider (running by default)",
         options: { all: { type: "boolean", description: "Include stopped and failed sandboxes" }, json },
@@ -1545,7 +1566,7 @@ export function buildCli(runtime: Runtime) {
               "never: Never continue on paid Claude. Its chats stopped at a usage limit wait for included usage. allow: they continue when paid Claude is available (default)",
           },
           "user-approved": { type: "boolean", description: "The user approved XLarge sandboxes for this project" },
-          "runs-on": { type: "enum", values: [...PROVIDER_IDS], description: "Where its new tasks' sandboxes run: boat (boat.dev, the default) or instabox (needs Instabox turned on)" },
+          "runs-on": { type: "enum", values: [...PROVIDER_IDS], description: "Where its new tasks' sandboxes run: boat (boat.dev, the default) instabox or scaleway (Mac task chats)" },
           json,
         },
         async run({ positionals, options }, ctx) {
@@ -1572,7 +1593,7 @@ export function buildCli(runtime: Runtime) {
                 ...(instructions !== undefined ? { instructions: instructions.trim() === "none" ? "" : instructions } : {}),
                 ...(options.size !== undefined ? { machineType: options.size === "none" ? null : (options.size as MachineType) } : {}),
                 ...(options["paid-claude"] !== undefined ? { neverPaidClaude: options["paid-claude"] === "never" } : {}),
-                ...(options["runs-on"] !== undefined ? { sandboxProvider: options["runs-on"] as ProviderId } : {}),
+                ...(options["runs-on"] !== undefined ? { sandboxProvider: options["runs-on"] as ProviderId, sandboxSystem: projectSystem(options["runs-on"], existing.sandboxSystem) } : {}),
               });
             } catch (error) {
               throw new PluginCliError(error instanceof Error ? error.message : String(error), { code: "invalid_value" });
@@ -1630,12 +1651,12 @@ export function buildCli(runtime: Runtime) {
         },
       }),
       "config runs-on": cliCommand({
-        summary: "Show where each project's tasks run, or set one project's: boat (boat.dev, the default) or instabox",
+        summary: "Show where each project's tasks run, or set one project's: boat (boat.dev, the default) instabox or scaleway",
         description:
           "Without arguments: every project with its provider. With a project and a provider: its new tasks' sandboxes run there (tasks already started stay where they are). Instabox needs `bb boat config set instaboxEnabled true` and its API key in bb's settings for this plugin; `bb boat doctor` checks it.",
         positionals: [
           { name: "project", description: "Project id or name", required: false },
-          { name: "provider", description: "boat or instabox", required: false },
+          { name: "provider", description: "boat instabox or scaleway", required: false },
         ],
         options: { json },
         async run({ positionals, options }) {
@@ -1655,13 +1676,13 @@ export function buildCli(runtime: Runtime) {
             if (!(PROVIDER_IDS as readonly string[]).includes(provider)) {
               throw new PluginCliError(`"${positionals.provider}" isn't a sandbox provider.`, { code: "invalid_value", hint: `Use one of: ${PROVIDER_IDS.join(", ")}.` });
             }
-            const saved = runtime.projects.save({ ...project, sandboxProvider: provider as ProviderId });
+            const saved = runtime.projects.save({ ...project, sandboxProvider: provider as ProviderId, sandboxSystem: projectSystem(provider, project.sandboxSystem) });
             runtime.changed();
             const off = service.sandboxProviders.get(provider) === null;
             return out({ project: saved.id, runsOn: saved.sandboxProvider ?? DEFAULT_PROVIDER_ID, enabled: !off }, options.json, () =>
               [
                 `${saved.id} now runs on ${name(provider)}.`,
-                off ? `${name(provider)} isn't on yet, so its new tasks won't start: turn it on (\`bb boat config set ${provider}Enabled true\`), add its API key in bb's settings for this plugin, then run \`bb boat doctor\`.` : null,
+                off && provider === "scaleway" ? "Add the Scaleway secret key in bb secrets and set scalewayProjectId in Boat settings." : off ? `${name(provider)} isn't on yet, so its new tasks won't start: turn it on (\`bb boat config set ${provider}Enabled true\`), add its API key in bb's settings for this plugin, then run \`bb boat doctor\`.` : null,
               ]
                 .filter(Boolean)
                 .join("\n"),
@@ -1685,6 +1706,7 @@ export function buildCli(runtime: Runtime) {
                     state.keyPresent === null ? null : `  API key: ${state.keyPresent ? "stored" : "none"}`,
                     state.projectIds.length > 0 ? `  projects: ${state.projectIds.join(", ")}` : null,
                     state.problem ? `  ${state.problem}` : null,
+                    ...(state.orphans ?? []).map(server=>`  orphan: ${server.id} (${server.name}) · not managed`),
                   ]
                     .filter(Boolean)
                     .join("\n"),

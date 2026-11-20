@@ -335,6 +335,7 @@ test("the plugin answers with providers, Runs on, and where its tasks and sandbo
   assert.deepEqual(view.providers.map((row) => [row.id, row.connection, row.available]), [
     ["boat", "connected", true],
     ["instabox", "key-missing", true],
+    ["scaleway", "key-missing", true],
     ["your-mac", "not-connected", false],
     ["monthly-mac", "not-connected", false],
   ]);

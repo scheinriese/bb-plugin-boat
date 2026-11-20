@@ -116,6 +116,8 @@ const EVERY_SETTING = {
   macIdleNoticeMinutes: 90,
   instaboxEnabled: true,
   instaboxPath: "~/bin/instabox",
+  scalewayProjectId: "10000000-0000-4000-8000-000000000001",
+  scalewayZone: "fr-par-1",
 };
 
 /**
@@ -331,7 +333,7 @@ test("a version 1 backup with every old setting imports into today's settings", 
   assert.match(dry.stdout, /From an older backup: workers from workerMode "chat" and adhocWorkerMode "boat": "projects"/);
   assert.match(dry.stdout, /Ignored, no longer settings: pollIntervalSeconds/);
   // The settings newer than the file are named, with the values they keep (the defaults here).
-  assert.match(dry.stdout, /Not in the file, stay as they are: experimentalUiTweaks = false, notifyNeedsYou = true, notifyReady = true, notifyProgress = false, paidClaudeFallback = false, paidClaudeHeadless = false, resumeStoppedChats = true, orchestratorEffort = "high" and 7 more settings\n/);
+  assert.match(dry.stdout, /Not in the file, stay as they are: experimentalUiTweaks = false, notifyNeedsYou = true, notifyReady = true, notifyProgress = false, paidClaudeFallback = false, paidClaudeHeadless = false, resumeStoppedChats = true, orchestratorEffort = "high" and 9 more settings\n/);
   assert.doesNotMatch(dry.stdout, /Skipped, not settings of this version/);
 
   const result = await importFile(file);
@@ -351,7 +353,7 @@ test("a version 1 backup with every old setting imports into today's settings", 
 
   // The effective settings are the intended ones: the file's values by today's keys, defaults for the rest.
   const { workerMode: _w, adhocWorkerMode: _a, pollIntervalSeconds: _p, ...rest } = V1_SETTINGS;
-  const intended = { ...rest, workers: "projects", experimentalUiTweaks: false, notifyNeedsYou: true, notifyReady: true, notifyProgress: false, paidClaudeFallback: false, paidClaudeHeadless: false, resumeStoppedChats: true, orchestratorEffort: "high", tasksBeforeAsking: 5, cloudOrchestratorFullAccess: true, recoverChatsAfterSteer: true, macHandBackMarginMinutes: 30, macIdleNoticeMinutes: 60, instaboxEnabled: false, instaboxPath: "" };
+  const intended = { ...rest, workers: "projects", experimentalUiTweaks: false, notifyNeedsYou: true, notifyReady: true, notifyProgress: false, paidClaudeFallback: false, paidClaudeHeadless: false, resumeStoppedChats: true, orchestratorEffort: "high", tasksBeforeAsking: 5, cloudOrchestratorFullAccess: true, recoverChatsAfterSteer: true, macHandBackMarginMinutes: 30, macIdleNoticeMinutes: 60, instaboxEnabled: false, instaboxPath: "", scalewayProjectId: "", scalewayZone: "fr-par-3" };
   const after = await exported();
   assert.deepEqual(after.settings, Object.fromEntries(Object.keys(ALL_SETTINGS).map((key) => [key, intended[key as keyof typeof intended]])));
   assert.equal(after.version, 2);
@@ -671,4 +673,19 @@ test("local bb project links survive backup roundtrip and unrelated legacy impor
   const unchanged = await importFile({ ...file, projects: [legacy] });
   assert.equal(unchanged.exitCode, 0, unchanged.stderr);
   assert.equal((await exported()).projects[0].localBbProjectId, "proj_demo");
+});
+
+for (const command of ["config runs-on", "project set"]) test(`${command} keeps a mixed provider's project system and changes it only for a single-system provider`, async t => {
+  const {harness,cli,exported,importFile}=await setup();
+  t.after(()=>harness.lifecycle.dispose());
+  const backup=await exported();
+  const seeded=await importFile({...backup,projects:[{...PROJECTS[0],id:"ios-app",name:"iOS app",sandboxProvider:"instabox",sandboxSystem:"macos"}]});
+  assert.equal(seeded.exitCode,0,seeded.stderr);
+  for (const [provider,system] of [["instabox","macos"],["scaleway","macos"],["instabox","macos"],["boat","linux"],["instabox","linux"],["scaleway","macos"]]) {
+    const args=command==="config runs-on"?["config","runs-on","ios-app",provider!]:["project","set","ios-app","--runs-on",provider!];
+    const result=await cli(args);assert.equal(result.exitCode,0,result.stderr);
+    const project=(await exported()).projects[0]!;
+    assert.equal(project.sandboxSystem ?? "linux",system,`${command} ${provider}`);
+    assert.equal(project.sandboxProvider ?? "boat",provider);
+  }
 });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import type Database from "better-sqlite3";
-import { MacLeaseLedger, LEASE_DAY_MS } from "../src/mac-leases.ts";
+import { MacLeaseLedger, LEASE_DAY_MS, MAC_LEASE_MIGRATIONS } from "../src/mac-leases.ts";
 import { TaskStore } from "../src/store.ts";
 import { macRunsOnBatch } from "../src/mac-lease-view.ts";
 import { runsOnNote } from "../web/providers-logic.ts";
@@ -74,12 +74,12 @@ test("scheduled release is durable and missing machines end at the scheduled ins
   assert.equal(ledger.list()[0]!.endedAt,lease.paidUntil);
   near(ledger.between(at,Infinity,at+2*LEASE_DAY_MS).costs.USD!,10.8);
 });
-test("unpublished lease schema creates billing, keep, reminder and attachment indexes directly", () => {
+test("base lease schema creates billing, keep, reminder and attachment indexes directly", () => {
   const {db}=fixture();
   const columns=(db.prepare("PRAGMA table_info(mac_leases)").all() as {name:string}[]).map(row=>row.name);
   for(const name of ["minimum_cost","hour_price","kept","release_at","notice_at","notice_text"])assert.ok(columns.includes(name));
   assert.ok(!columns.includes("day_price"));
-  assert.ok(!TaskStore.migrations().some(sql=>/ALTER TABLE mac_leases|UPDATE mac_leases/.test(sql)));
+  assert.ok(!MAC_LEASE_MIGRATIONS.some(sql=>/ALTER TABLE mac_leases|UPDATE mac_leases/.test(sql)));
   assert.equal((db.prepare("PRAGMA index_info(mac_lease_tasks_task)").get() as {name:string}).name,"task_id");
 });
 test("close outcomes and page notices persist together with the reminder throttle", () => {
@@ -125,4 +125,37 @@ test("hand-back uses each held lease's provider and its own minimum, with a wait
   await service.processMacLeases(at+11.75*hour);assert.equal(deleted,0);
   await service.processMacLeases(at+12*hour+1);assert.equal(deleted,1);
   assert.equal(store.macLeases.list()[0]!.endReason,"handed back");
+});
+
+test("Scaleway bills its minimum plus begun hours, split across UTC months with no new day charge",()=>{
+  const {ledger}=fixture();const start=Date.UTC(2026,10,30,12),minimumEnd=start+LEASE_DAY_MS;
+  const lease=ledger.record({id:"scaleway:1",provider:"scaleway",machineId:"scw_1",size:"M1-M",startedAt:new Date(start).toISOString(),paidUntil:new Date(minimumEnd).toISOString(),minimumCost:2.64,hourPrice:0.11,billingIncrementSeconds:3600,currency:"EUR",cpus:8,memoryMiB:8192});
+  near(ledger.between(start,Infinity,start+hour).costs.EUR!,2.64);
+  near(ledger.between(start,Infinity,minimumEnd).costs.EUR!,2.64);
+  near(ledger.between(start,Infinity,minimumEnd+1).costs.EUR!,2.75);
+  near(ledger.cost(lease,minimumEnd+1),2.75);
+  near(ledger.between(start,Infinity,minimumEnd+hour).costs.EUR!,2.75);
+  near(ledger.between(start,Infinity,minimumEnd+hour+1).costs.EUR!,2.86);
+  const boundary=Date.UTC(2026,11,1);
+  near(ledger.between(start,boundary,minimumEnd+hour/2).costs.EUR!,1.32);
+  near(ledger.between(boundary,Infinity,minimumEnd+hour/2).costs.EUR!,1.43);
+  near(ledger.between(boundary,Infinity,minimumEnd+hour/2).leaseDays,13/24);
+  ledger.end(lease.id,"handed back",minimumEnd+hour/2);
+  near(ledger.between(start,Infinity,minimumEnd+20*LEASE_DAY_MS).costs.EUR!,2.75);
+  assert.equal(ledger.list()[0]!.paidUntil,lease.paidUntil);
+});
+
+test("upgrading the main lease schema preserves existing Instabox billing",()=>{
+  const db=new DatabaseSync(":memory:");
+  const migrations=TaskStore.migrations();
+  for(const sql of migrations.slice(0,-1))db.exec(sql);
+  db.prepare(`INSERT INTO mac_leases (id,provider,machine_id,size,started_at,paid_until,minimum_cost,hour_price,currency,cpus,memory_mib)
+    VALUES ('instabox:existing','instabox','existing','m2',?,?,10.8,0.45,'USD',8,16384)`)
+    .run(new Date(at).toISOString(),new Date(at+LEASE_DAY_MS).toISOString());
+  db.exec(migrations.at(-1)!);
+  const ledger=new MacLeaseLedger(()=>db as unknown as Database.Database);
+  const lease=ledger.held()[0]!;
+  assert.equal(lease.billingIncrementSeconds,1);
+  near(ledger.cost(lease,at+25*hour+30*1000),10.8+0.45*(1+1/120));
+  assert.equal(lease.provider,"instabox");assert.equal(lease.kept,false);
 });

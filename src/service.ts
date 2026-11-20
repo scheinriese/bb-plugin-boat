@@ -881,7 +881,10 @@ export class BoatService {
     if (parent !== null) return this.sandboxProvider(parent);
     const project = governingProject(this.hooks.projects?.() ?? [], projectId, repo);
     let provider = this.sandboxProviders.forProject(project);
-    if (this.sandboxProviders.get(provider.id) === null) {
+    const known = this.sandboxProviders.all.find(candidate => candidate.id === provider.id);
+    const macIntent = input.sandboxSystem === "macos" || (input.sandboxSystem == null && (project?.sandboxSystem === "macos" || known?.caps.os === "macos"));
+    if (macIntent && known && canHostMac(known)) provider = known;
+    if (this.sandboxProviders.get(provider.id) === null && !macIntent) {
       throw new TaskError(
         `${project?.name ?? "This project"} runs on ${provider.displayName}, which isn't turned on, so its task can't start.`,
         "provider_unavailable",
@@ -1094,6 +1097,7 @@ export class BoatService {
     /** Where it goes (default: the default provider). */
     sandboxProvider?: SandboxProvider;
     system?: "linux" | "macos";
+    allocateOnly?: boolean;
     signal?: AbortSignal;
   }): Promise<Sandbox> {
     const settings = await this.settings();
@@ -1108,7 +1112,8 @@ export class BoatService {
       // Snapshot errors in plain words, only when a snapshot was asked for.
       const plain = (error: unknown) => (options.snapshot ? snapshotError(error, options.snapshot) : null) ?? error;
       try {
-        return await sandboxProvider.create({
+        const create = options.allocateOnly && sandboxProvider.allocate ? sandboxProvider.allocate.bind(sandboxProvider) : sandboxProvider.create.bind(sandboxProvider);
+        return await create({
           name: options.name,
           ...(options.system ? { system: options.system } : {}),
           type: options.type ?? settings.machineType,
@@ -1121,6 +1126,9 @@ export class BoatService {
           signal: options.signal,
         });
       } catch (error) {
+        const code = (error as {code?:string}).code;
+        const rejected = ["creation_rejected","no_capacity","at_capacity","quota_exceeded","key_missing","unauthorized","unauthenticated","template_not_allowed","spec_not_allowed","unsupported","size_unavailable","instabox_not_found","instabox_spawn_failed"].includes(code ?? "");
+        if (options.system === "macos" && !sandboxProvider.classifiesCreateErrors && !rejected && code !== "creation_unknown" && code !== "creation_allocated") throw new ProviderError(`${sandboxProvider.displayName} create outcome is unknown. Check its machines before retrying; Boat will not rent another Mac.`,{code:"creation_unknown"});
         throw plain(error);
       }
     });
@@ -1337,9 +1345,8 @@ export class BoatService {
     // Where its sandbox runs: a named sandbox's provider, its parent's, else its project's (Runs on).
     const sandboxProvider = this.providerForNewTask(input, parent, boatProject, repo);
     const storedProject = governingProject(this.hooks.projects?.() ?? [], boatProject, repo);
-    const sandboxSystem = parent !== null ? parent.sandboxSystem ?? "linux" : input.sandboxSystem ?? storedProject?.sandboxSystem ?? "linux";
+    const sandboxSystem = parent !== null ? parent.sandboxSystem ?? "linux" : input.sandboxSystem ?? storedProject?.sandboxSystem ?? sandboxProvider.caps.os;
     if (sandboxSystem === "macos" && !canHostMac(sandboxProvider)) throw new TaskError(`${sandboxProvider.displayName} cannot host Mac tasks. Choose a Mac provider in Runs on.`, "provider_unavailable");
-    if (sandboxSystem === "macos" && sandboxProvider.macModels && !(await sandboxProvider.macModels(this.hooks.lifecycle)).length) throw new TaskError(`${sandboxProvider.displayName} cannot create Macs on this account. Check its plan and Mac models.`, "provider_unavailable");
     const protect = protectedBranches(
       project,
       [baseBranch, ...extraRepos.map((entry) => entry.baseBranch), ...this.projectBaseBranches([repo, ...extraRepos.map((entry) => entry.repo)])],
@@ -1454,8 +1461,8 @@ export class BoatService {
     // anything is created (a sandbox the setup can't use would cost a start).
     // A review that reuses its task's sandbox needs no start; when it may
     // still get a new one, createSandbox checks the plan right before.
-    if (this.hooks.preflight) {
-      await this.hooks.preflight({ agent: provider, runner, environment, newSandbox: sandboxSystem === "macos" ? false : surelyNewSandbox(input, parent, settings), ...(sandboxProvider.id === DEFAULT_PROVIDER_ID ? {} : { provider: sandboxProvider.id }) });
+    if (this.hooks.preflight && sandboxSystem !== "macos") {
+      await this.hooks.preflight({ agent: provider, runner, environment, newSandbox: surelyNewSandbox(input, parent, settings), ...(sandboxProvider.id === DEFAULT_PROVIDER_ID ? {} : { provider: sandboxProvider.id }) });
     }
     // Headless because the rules don't trust the repo (asked for or not): the Untrusted repo badge.
     const ruled = runner === "boat" && ruleRunner === "boat" && this.hooks.chat !== undefined && settings.workerMode === "chat";
@@ -1907,9 +1914,13 @@ export class BoatService {
       // 1. Sandbox: reuse or create.
       let reuse: string | null = null;
       let sandbox!: Sandbox;
+      const unlistedMacProviders = new Set<string>();
       const place = async () => {
         reuse = await this.pickSandbox(input, parent, settings, signal);
-        if (task.sandboxSystem === "macos" && reuse === null) reuse = await this.heldMacFor(task, sizing.type, parent, signal);
+        if (task.sandboxSystem === "macos" && reuse === null) {
+          reuse = await this.heldMacFor(task, sizing.type, parent, signal, unlistedMacProviders);
+          task = this.store.get(id) ?? task;
+        }
         stillWanted();
         this.sizes.assertSandboxNotResizing(reuse, "Start the task once the move is done, or in a new sandbox."); // sizes
         if (reuse !== null) {
@@ -1936,22 +1947,24 @@ export class BoatService {
               this.store.macLeases.schedule(lease.id, null);
             }
           }
+          await this.sandboxProvider(task).assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:reuse,signal});
           release = this.claim(reuse);
           sandbox = await this.ensureRunning(reuse, signal);
           task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: false }) ?? task;
           this.store.addEvent(id, "sandbox", `Reusing sandbox ${sandbox.id}`);
         } else {
-          sandbox = await this.createSandbox({
+          sandbox = task.sandboxSystem === "macos" ? await this.createMacFor(task, sizing.type, signal, unlistedMacProviders) : await this.createSandbox({
             name: `bb ${id} ${slug(task.title)}`,
             type: sizing.type,
             environment: task.environment,
             snapshot: task.snapshot,
             sandboxProvider: this.sandboxProvider(task),
-            ...(task.sandboxSystem === "macos" ? { system: "macos" as const } : {}),
             signal,
           });
+          task = this.store.get(id) ?? task;
           if ((sandbox.system === "macos") !== (task.sandboxSystem === "macos")) throw new TaskError("The created sandbox system does not match this task.", "invalid_task");
           createdSandbox = sandbox.id;
+          if (task.sandboxSystem === "macos" && this.sandboxProvider(task).allocate && this.sandboxProvider(task).waitReady) this.macPreparing.add(sandbox.id);
           release = this.claim(sandbox.id);
           task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: true }) ?? task;
           this.store.addEvent(id, "sandbox", `Created sandbox ${sandbox.id}${task.snapshot ? ` from snapshot ${task.snapshot}` : ""}`);
@@ -1967,6 +1980,13 @@ export class BoatService {
       if (task.sandboxSystem === "macos") await this.withMacLock(place); else await place();
       this.hooks.changed([id]);
       stillWanted();
+      // Allocation, ledger recording and task reservation were serialized.
+      // SSH readiness and tooling installation must not block other placements
+      // or the monitor's idle hand-back pass.
+      if (createdSandbox && this.macPreparing.has(createdSandbox)) {
+        try { sandbox = await this.sandboxProvider(task).waitReady!(createdSandbox,signal); stillWanted(); }
+        finally { this.macPreparing.delete(createdSandbox); }
+      }
 
       // 2. Repository checkout. A reviewer sharing the implementer's sandbox
       // reads the implementer's checkout as is; checking out again could
@@ -2051,7 +2071,7 @@ export class BoatService {
       const briefProtect = [...new Set([...protect, ...(task.baseBranch ? [task.baseBranch] : [])])];
 
       // A sandbox with no bb machine (a boat conversation's) can't host a chat.
-      if (task.runner === "chat" && reuse !== null && !(sharesParentCheckout && parent?.environmentId) && this.store.hostForSandbox(reuse) === null) {
+      if (task.runner === "chat" && task.sandboxSystem !== "macos" && reuse !== null && !(sharesParentCheckout && parent?.environmentId) && this.store.hostForSandbox(reuse) === null) {
         if (input.runner === "chat") {
           throw new TaskError(`Sandbox ${reuse} doesn't run bb, so a task chat can't start there.`, "sandbox_not_chat", "Use a new sandbox, or start it headless.");
         }
@@ -2171,6 +2191,7 @@ export class BoatService {
       await this.discardNew(id, createdSandbox, createdHost);
       throw failure;
     } finally {
+      if (createdSandbox) this.macPreparing.delete(createdSandbox);
       release();
       input.signal?.removeEventListener("abort", onOuterAbort);
       if (this.dispatches.get(id) === controller) this.dispatches.delete(id);
@@ -2456,6 +2477,7 @@ export class BoatService {
 
   // Future routing stages: eligible own Mac, then an enrolled monthly Mac.
   // Both must return null before held day leases and a dispatched new lease.
+  private readonly macPreparing = new Set<string>();
   private macLock: Promise<unknown> = Promise.resolve();
   private withMacLock<T>(run: () => Promise<T>): Promise<T> {
     const next = this.macLock.then(run, run);
@@ -2463,25 +2485,70 @@ export class BoatService {
     return next;
   }
 
-  private async heldMacFor(task: Task, type: MachineType, parent: Task | null, signal?: AbortSignal): Promise<string | null> {
-    const provider = this.sandboxProvider(task);
-    // Only this provider's successful list reconciles its leases. A failed
-    // list never marks machines gone and never authorizes a new rental.
-    const machines = await provider.list({ all: true, signal });
-    this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
-    const need = macTaskResources(provider, type);
-    for (const lease of this.store.macLeases.held()) {
-      if (lease.provider !== provider.id || this.isMovingSandbox(lease.machineId) || this.sizes.isResizing(lease.machineId)) continue;
-      if (!machines.some(m => m.id === lease.machineId && (ACTIVE_STATES.has(m.state) || m.state === "stopped"))) continue;
-      if (parent?.sandboxId === lease.machineId && await this.sandboxWorkRuns(lease.machineId)) continue;
-      const open = new Set(this.store.liveSandboxTasks(lease.machineId).map(t => t.id));
-      const reservations = this.store.macLeases.tasks(lease.id).filter(t => open.has(t.taskId));
-      // Unknown attached tasks consume the whole machine until reconciled.
-      if (open.size > reservations.length) continue;
-      if (reservations.reduce((n,t) => n+t.cpus,0)+need.vcpus > lease.cpus || reservations.reduce((n,t) => n+t.memoryMiB,0)+need.memMiB > lease.memoryMiB) continue;
-      return lease.machineId;
+  private async heldMacFor(task: Task, type: MachineType, parent: Task | null, signal?: AbortSignal, unlisted = new Set<string>()): Promise<string | null> {
+    for (const provider of this.macProviders(task.sandboxProvider ?? DEFAULT_PROVIDER_ID)) {
+      if (!this.sandboxProviders.get(provider.id) || (provider.caps.headlessAgentRunner === false && task.runner !== "chat")) continue;
+      let machines: Sandbox[];
+      try { machines = await provider.list({ all: true, signal }); }
+      catch (error) {
+        // An unconfirmed held lease prevents a second rental. An unavailable
+        // empty provider may give way to the other provider.
+        if (this.store.macLeases.held().some(l => l.provider === provider.id)) throw error;
+        unlisted.add(provider.id);
+        continue;
+      }
+      this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
+      const need = macTaskResources(provider, type);
+      for (const lease of this.store.macLeases.held()) {
+        if (lease.provider !== provider.id || this.macPreparing.has(lease.machineId) || this.isMovingSandbox(lease.machineId) || this.sizes.isResizing(lease.machineId)) continue;
+        if (!machines.some(m => m.id === lease.machineId && (ACTIVE_STATES.has(m.state) || m.state === "stopped"))) continue;
+        if (parent?.sandboxId === lease.machineId && await this.sandboxWorkRuns(lease.machineId)) continue;
+        const open = new Set(this.store.liveSandboxTasks(lease.machineId).map(t => t.id));
+        const reservations = this.store.macLeases.tasks(lease.id).filter(t => open.has(t.taskId));
+        // Unknown attached tasks consume the whole machine until reconciled.
+        if (open.size > reservations.length) continue;
+        if (reservations.reduce((n,t) => n+t.cpus,0)+need.vcpus > lease.cpus || reservations.reduce((n,t) => n+t.memoryMiB,0)+need.memMiB > lease.memoryMiB) continue;
+        try { await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:lease.machineId,signal}); }
+        catch (error) { this.store.addEvent(task.id,"sandbox-provider",`${provider.displayName} held Mac cannot run this task: ${errorText(error)}`); continue; }
+        if (provider.id !== task.sandboxProvider) {
+          this.store.update(task.id, { sandboxProvider: provider.id });
+          this.store.addEvent(task.id, "sandbox-provider", `Using a held ${provider.displayName} Mac lease before renting another.`);
+        }
+        return lease.machineId;
+      }
     }
     return null;
+  }
+
+  private macProviders(preferred: string): SandboxProvider[] {
+    const first = this.sandboxProviders.all.find(provider => provider.id === preferred) ?? this.sandboxProviders.forTask({ sandboxProvider: preferred });
+    return [first, ...this.sandboxProviders.enabled.filter(provider => provider.id !== preferred && canHostMac(provider))];
+  }
+
+  private async createMacFor(task: Task, type: MachineType, signal: AbortSignal, unlisted = new Set<string>()): Promise<Sandbox> {
+    const failures: string[] = [];
+    for (const provider of this.macProviders(task.sandboxProvider ?? DEFAULT_PROVIDER_ID)) {
+      signal.throwIfAborted();
+      try {
+        if (!this.sandboxProviders.get(provider.id)) throw new TaskError(`${provider.displayName} is not configured.`, "provider_unavailable");
+        if (!canHostMac(provider)) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
+        if (provider.caps.headlessAgentRunner === false && task.runner !== "chat") throw new TaskError(`${provider.displayName} needs task chats and bb Connect. Enable Run tasks as chats for this project.`, "chat_required");
+        await this.hooks.preflight?.({ agent: task.provider, runner: task.runner, environment: provider.caps.environments ? task.environment : null, newSandbox: true, ...(provider.id === DEFAULT_PROVIDER_ID ? {} : { provider: provider.id }) });
+        if (unlisted.has(provider.id)) throw new TaskError(`${provider.displayName} machine list could not be confirmed.`, "provider_unavailable");
+        await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),signal});
+        if (provider.macModels && !(await provider.macModels(signal)).length) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
+        const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", environment: task.environment, snapshot: task.snapshot, sandboxProvider: provider, allocateOnly: Boolean(provider.allocate && provider.waitReady), signal });
+        this.store.update(task.id, { sandboxProvider: provider.id });
+        if (failures.length) this.store.addEvent(task.id, "sandbox-provider", `Mac provider fallback: ${failures.join("; ")} Using ${provider.displayName}.`);
+        return sandbox;
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (signal.aborted || code === "creation_unknown" || code === "creation_allocated") throw error;
+        failures.push(`${provider.displayName}: ${errorText(error)}`);
+        this.store.addEvent(task.id, "sandbox-provider", `${provider.displayName} Mac unavailable; trying the other day-lease provider. ${errorText(error)}`);
+      }
+    }
+    throw new TaskError(`No Mac day-lease provider is available. ${failures.join(" ")}`, "provider_unavailable");
   }
 
   private async keepMacLease(lease: MacLease, signal?: AbortSignal): Promise<void> {
@@ -2529,11 +2596,12 @@ export class BoatService {
     const cost = money(this.store.macLeases.cost(lease,now));
     const rate = money(lease.hourPrice);
     const time = new Intl.DateTimeFormat(undefined,{hour:"2-digit",minute:"2-digit",timeZoneName:"short"}).format(new Date(lease.paidUntil));
+    const billing = lease.billingIncrementSeconds === 3600 ? "hourly" : "per second";
     const text = kept === "unknown"
       ? `[boat] Mac unshipped work could not be checked; compute cost ${cost} so far; ${rate}/h after the minimum. Resume it to check its work before hand-back.`
       : kept
-      ? `[boat] Mac lease is kept; compute cost ${cost} so far; ${rate}/h billed per second after the minimum. Automatic hand-back is off; delete it manually when its work is safe.`
-      : `[boat] Mac lease's paid time ${pastMinimum ? "ended" : "ends"} at ${time}; after that it bills per second while tasks ${tasks.map(t=>t.id).join(", ")} sit idle; compute cost ${cost} so far; close them to hand it back`;
+      ? `[boat] Mac lease is kept; compute cost ${cost} so far; ${rate}/h billed ${billing} after the minimum. Automatic hand-back is off; delete it manually when its work is safe.`
+      : `[boat] Mac lease's paid time ${pastMinimum ? "ended" : "ends"} at ${time}; after that it bills ${billing} while tasks ${tasks.map(t=>t.id).join(", ")} sit idle; compute cost ${cost} so far; close them to hand it back`;
     if (!this.store.macLeases.warn(lease.id,now,pastMinimum,pageNotice ? text : null)) return;
     this.hooks.changed([]);
     if (this.hooks.tell) for (const thread of threads) await this.hooks.tell(thread,text);
