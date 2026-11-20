@@ -1464,6 +1464,10 @@ export class BoatService {
     if (this.hooks.preflight && sandboxSystem !== "macos") {
       await this.hooks.preflight({ agent: provider, runner, environment, newSandbox: surelyNewSandbox(input, parent, settings), ...(sandboxProvider.id === DEFAULT_PROVIDER_ID ? {} : { provider: sandboxProvider.id }) });
     }
+    const credentialWarnings: string[] = [];
+    if (sandboxSystem !== "macos" && sandboxProvider.id === "instabox") {
+      await sandboxProvider.assertTaskReady?.({ agent: provider, repos: [repo, ...extraRepos.map(entry => entry.repo)].filter((value): value is string => value !== null), signal: input.signal, onWarning: message => credentialWarnings.push(message) });
+    }
     // Headless because the rules don't trust the repo (asked for or not): the Untrusted repo badge.
     const ruled = runner === "boat" && ruleRunner === "boat" && this.hooks.chat !== undefined && settings.workerMode === "chat";
     const untrusted = ruled && repo !== null && projectMode === null && (parent === null || this.store.latestEvent(parent.id, "trust") !== null);
@@ -1597,6 +1601,7 @@ export class BoatService {
     if (paidFallback) this.store.addEvent(task.id, "paid-fallback-authorized", "Automatic Claude extra usage authorized by the saved fallback policy after included allowances reached the cutoff. Claude's billing controls apply; no euro balance is available to Boat.");
     if (input.nativeReview) this.store.addEvent(id, "native-review-source", JSON.stringify(input.nativeReview.source));
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
+    for (const warning of credentialWarnings) this.store.addEvent(id, "preflight-warning", warning);
     if (input.measureMemory) this.sizes.watch(id); // sizes
     if (agentNote !== null) this.store.addEvent(id, "agent", agentNote);
     if (relayNote !== null) this.store.addEvent(id, "relay", relayNote);
@@ -1947,12 +1952,15 @@ export class BoatService {
               this.store.macLeases.schedule(lease.id, null);
             }
           }
-          await this.sandboxProvider(task).assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:reuse,signal});
+          await this.sandboxProvider(task).assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:reuse,signal,onWarning:message=>{this.store.addEvent(task.id,"preflight-warning",message);}});
           release = this.claim(reuse);
           sandbox = await this.ensureRunning(reuse, signal);
           task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: false }) ?? task;
           this.store.addEvent(id, "sandbox", `Reusing sandbox ${sandbox.id}`);
         } else {
+          if (task.sandboxSystem !== "macos" && this.sandboxProvider(task).id === "instabox") {
+            await this.sandboxProvider(task).assertTaskReady?.({ agent: task.provider, repos: [task.repo, ...task.extraRepos.map(repo => repo.repo)].filter((repo): repo is string => repo !== null), signal, onWarning: message => { if (this.store.latestEvent(task.id, "preflight-warning")?.text !== message) this.store.addEvent(task.id, "preflight-warning", message); } });
+          }
           sandbox = task.sandboxSystem === "macos" ? await this.createMacFor(task, sizing.type, signal, unlistedMacProviders) : await this.createSandbox({
             name: `bb ${id} ${slug(task.title)}`,
             type: sizing.type,
@@ -2508,7 +2516,7 @@ export class BoatService {
         // Unknown attached tasks consume the whole machine until reconciled.
         if (open.size > reservations.length) continue;
         if (reservations.reduce((n,t) => n+t.cpus,0)+need.vcpus > lease.cpus || reservations.reduce((n,t) => n+t.memoryMiB,0)+need.memMiB > lease.memoryMiB) continue;
-        try { await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:lease.machineId,signal}); }
+        try { await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:lease.machineId,signal,onWarning:message=>{this.store.addEvent(task.id,"preflight-warning",message);}}); }
         catch (error) { this.store.addEvent(task.id,"sandbox-provider",`${provider.displayName} held Mac cannot run this task: ${errorText(error)}`); continue; }
         if (provider.id !== task.sandboxProvider) {
           this.store.update(task.id, { sandboxProvider: provider.id });
@@ -2535,7 +2543,7 @@ export class BoatService {
         if (provider.caps.headlessAgentRunner === false && task.runner !== "chat") throw new TaskError(`${provider.displayName} needs task chats and bb Connect. Enable Run tasks as chats for this project.`, "chat_required");
         await this.hooks.preflight?.({ agent: task.provider, runner: task.runner, environment: provider.caps.environments ? task.environment : null, newSandbox: true, ...(provider.id === DEFAULT_PROVIDER_ID ? {} : { provider: provider.id }) });
         if (unlisted.has(provider.id)) throw new TaskError(`${provider.displayName} machine list could not be confirmed.`, "provider_unavailable");
-        await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),signal});
+        await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),signal,onWarning:message=>{this.store.addEvent(task.id,"preflight-warning",message);}});
         if (provider.macModels && !(await provider.macModels(signal)).length) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
         const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", environment: task.environment, snapshot: task.snapshot, sandboxProvider: provider, allocateOnly: Boolean(provider.allocate && provider.waitReady), signal });
         this.store.update(task.id, { sandboxProvider: provider.id });

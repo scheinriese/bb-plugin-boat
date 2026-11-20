@@ -435,6 +435,14 @@ export const PLUGIN_SETTINGS = {
       "Lets projects run on Instabox Linux machines instead of boat.dev (a project's Runs on). Needs the instabox CLI and your Instabox API key, stored in bb's settings for this plugin (Instabox API key). Task chats on Instabox are offered once the plugin reloads. Hard stop after doesn't apply there (Instabox pauses idle machines instead), and Instabox's own machine limit counts stopped machines too.",
     default: false,
   },
+  instaboxSecrets: {
+    section: "advanced",
+    type: "string",
+    label: "Instabox Secrets",
+    description: "Proxy Secrets for new machines: all, none, or comma-separated names. GitHub tasks need GH_TOKEN, scoped to github.com and api.github.com.",
+    experimental_schema: z.string().max(4000).regex(/^(?:all|none|[A-Za-z_][A-Za-z0-9_]*(?:,[A-Za-z_][A-Za-z0-9_]*)*)$/, "Use all, none, or comma-separated Secret names."),
+    default: "all",
+  },
   scalewayProjectId: {
     section: "advanced", type: "string", label: "Scaleway project ID",
     description: "Project for hourly Mac task leases. Add the Scaleway secret key in bb secrets. Task chats need bb Connect and agent logins.",

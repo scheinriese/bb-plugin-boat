@@ -1,7 +1,7 @@
 import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidelity.ts";
 // `bb boat …` — the agent- and human-facing command line.
 import { PluginCliError, cliCommand, defineCli, type PluginCliContext } from "@get-bb/plugin-sdk";
-import { dashboardUrl } from "./providers/boat/api.ts";
+import { sandboxDashboardUrl } from "./providers/dashboard.ts";
 import { DEFAULT_PROVIDER_ID, MACHINE_TYPES, PROVIDER_IDS, PROVIDER_NAMES, ProviderError, autoStopHours, canHostMac, type MachineType, type ProviderId } from "./providers/types.ts";
 import { instaboxDoctorText } from "./providers/instabox/setup.ts";
 import { describeClose } from "./close-outcome.ts";
@@ -137,11 +137,12 @@ async function setupStatus(runtime: Runtime, force: boolean): Promise<SetupStatu
 }
 
 function launchMessage(task: Task, pending: boolean): string {
+  const dashboard = task.sandboxId ? sandboxDashboardUrl(task.sandboxId, task.sandboxProvider) : null;
   const lines = [
     pending
       ? `Task ${task.id} is starting (sandbox setup is still running). You will be notified if dispatch fails.`
       : `Task ${task.id} dispatched: ${task.role} with ${agentLine(task)}${task.reason ? ` — ${task.reason}` : ""}${task.runner === "chat" && task.threadId ? `, as the task chat @thread:${task.threadId}` : ""}.`,
-    task.sandboxId ? `Sandbox: ${task.sandboxId}  ${dashboardUrl(task.sandboxId)}` : null,
+    task.sandboxId ? `Sandbox: ${task.sandboxId}${dashboard ? `  ${dashboard}` : ""}` : null,
     task.branch ? `Branch: ${task.branch}` : null,
     task.orchestratorThreadId
       ? "This thread gets a [boat] message when the turn finishes. End your turn instead of polling."
@@ -348,7 +349,7 @@ export function buildCli(runtime: Runtime) {
                 `Created sandbox ${sandbox.id} (${sandbox.state}).`,
                 checkout ? `Checked out ${checkout.branch ?? "default branch"} at ${checkout.path}` : null,
                 `Shell:     boat ssh ${sandbox.id}`,
-                `Dashboard: ${dashboardUrl(sandbox.id)}`,
+                sandboxDashboardUrl(sandbox.id, service.sandboxProvider(sandbox.id).id) ? `Dashboard: ${sandboxDashboardUrl(sandbox.id, service.sandboxProvider(sandbox.id).id)}` : null,
                 `Run an agent in it: bb boat task start --sandbox ${sandbox.id} --title "…" --brief "…"`,
               ]
                 .filter(Boolean)

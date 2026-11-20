@@ -39,7 +39,7 @@ process.on("exit", () => {
     // Already gone.
   }
 });
-const initial = () => ({ machines: {}, next: 1, nextLease: 1, ports: {}, snapshots: [], convos: {}, calls: [], jobs: 0, maxMachines: 5, tier: "pro", fail: null, autoReply: null, execs: [] });
+const initial = () => ({ machines: {}, next: 1, nextLease: 1, ports: {}, snapshots: [], convos: {}, calls: [], jobs: 0, maxMachines: 5, tier: "pro", fail: null, autoReply: null, execs: [], secrets: [{ name: "GH_TOKEN", delivery: "proxy", hosts: ["github.com", "api.github.com"] }] });
 const state = existsSync(statePath) ? { ...initial(), ...JSON.parse(readFileSync(statePath, "utf8")) } : initial();
 // Whole-file writes (the service runs two commands at once): never a half-written file.
 const save = () => {
@@ -73,7 +73,7 @@ const flag = (name) => {
 const flags = (name) => args.flatMap((arg, index) => (arg === name ? [args[index + 1]] : []));
 const has = (name) => args.includes(name);
 /** Positionals after the command words (flags and their values left out). */
-const VALUED = new Set(["--name", "--timeout", "--vcpus", "--mem-mib", "--snapshot", "--env", "--meta", "--ready-timeout", "--provider", "--model", "--resume", "--conversation", "--cwd"]);
+const VALUED = new Set(["--secrets", "--name", "--timeout", "--vcpus", "--mem-mib", "--snapshot", "--env", "--meta", "--ready-timeout", "--provider", "--model", "--resume", "--conversation", "--cwd"]);
 const positionals = (skip) => {
   const out = [];
   const end = dash === -1 ? args.length : dash;
@@ -95,6 +95,11 @@ const machine = (id) => {
 const running = (entry) => {
   if (entry.state !== "running") fail(1, { code: "machine_not_running", message: `${entry.name} is ${entry.state}`, status: 409 });
 };
+const deliver = entry => {
+  const names = state.secrets.filter(secret => secret.delivery === "proxy" && (entry.secretSelection === "all" || (entry.secretSelection ?? "none").split(",").includes(secret.name))).map(secret => secret.name);
+  entry.envNames = [...new Set([...(entry.envNames ?? []).filter(name => !(entry.deliveredSecretNames ?? []).includes(name)), ...names])].sort();
+  entry.deliveredSecretNames = names;
+};
 
 const [command, sub] = args;
 switch (command) {
@@ -104,6 +109,19 @@ switch (command) {
   case "templates":
     print({ templates: state.templates ?? [] });
     break;
+  case "secrets": {
+    if (sub === "ls") {
+      if (state.secretsFail) fail(state.secretsFail === "transient" ? 75 : 3, { code: state.secretsFail === "transient" ? "host_unavailable" : "missing_scope", message: "fake metadata read failure", status: state.secretsFail === "transient" ? 503 : 403 });
+      print({ items: state.secrets.map(({name, delivery, hosts}) => ({name, delivery, hosts})) });
+    } else {
+      const entry = machine(positionals(2)[0]);
+      if (sub === "select") entry.secretSelection = flag("--secrets");
+      else if (sub === "push") { running(entry); deliver(entry); }
+      else fail(2, { code: "usage", message: "unknown secrets command" });
+      print({ selection: entry.secretSelection });
+    }
+    break;
+  }
   case "usage": {
     const count = Object.values(state.machines).filter((entry) => entry.state !== "deleted").length;
     print({ machines: count, snapshots: state.snapshots.length, limits: { maxMachines: state.maxMachines, maxSnapshots: 0, unlimited: state.maxMachines === 0 ? ["maxMachines", "maxSnapshots"] : ["maxSnapshots"], ...(state.machineSpecs ? { machineSpecs: state.machineSpecs } : {}) }, org: { id: "org_1", name: "acme", tier: state.tier }, cost: { costUSD: 3.21, creditRemainingUSD: 16.79 } });
@@ -143,9 +161,11 @@ switch (command) {
       memMiB,
       metadata: Object.fromEntries(flags("--meta").map((pair) => pair.split("="))),
       envNames: flags("--env").map((pair) => pair.split("=")[0]).sort(),
+      secretSelection: flag("--secrets") ?? "none",
       snapshot: flag("--snapshot") ? { name: flag("--snapshot") } : null,
       autoSuspendAfterSeconds: 1800,
     };
+    deliver(state.machines[id]);
     print(state.machines[id]);
     break;
   }
@@ -167,6 +187,7 @@ switch (command) {
       entry.lease = {id:state.nextLease++,startedAt:now(),chargeUntil:new Date((state.nowMs ?? Date.now())+86400000).toISOString(),hourUSD:0.45};
     }
     entry.state = "running";
+    deliver(entry);
     entry.updatedAt = now();
     print(entry);
     break;
@@ -194,6 +215,7 @@ switch (command) {
     const source = machine(positionals(1)[0]);
     const id = `m_${String(state.next++).padStart(6, "0")}`;
     state.machines[id] = { ...source, id, name: `${source.name}-fork`, createdAt: now() };
+    deliver(state.machines[id]);
     print({ source: source.id, machines: [state.machines[id]], native: true });
     break;
   }
@@ -210,10 +232,14 @@ switch (command) {
     const script = args.slice(dash + 1).join(" ");
     state.execs.push({ machine: entry.id, timeout: Number(flag("--timeout")), marker: (script.match(/BOAT_[A-Z_]+/) ?? ["plain"])[0] });
     let stdout = "";
-    if (script.includes("BOAT_SETUP")) {
+    if (script.includes("BOAT_GH_SECRET_")) {
+      // The fake placeholder exists only when GH_TOKEN has been delivered.
+      const placeholder = entry.envNames?.includes("GH_TOKEN") ? "ibsec_obviously_fake_placeholder" : "";
+      stdout = placeholder ? "BOAT_GH_SECRET_present\n" : "BOAT_GH_SECRET_missing\n";
+    } else if (script.includes("BOAT_SETUP")) {
       const repo = /REPO='([^']+)'/.exec(script)?.[1] ?? "acme/web";
       const branch = /BRANCH='([^']+)'/.exec(script)?.[1] ?? "main";
-      stdout = `BOAT_ACCESS ok push=true\nBOAT_GH_EXPIRES unknown\nBOAT_SETUP path=/data/home/work/${repo.split("/")[1]} branch=${branch} base=main\n`;
+      stdout = entry.envNames?.includes("GH_TOKEN") ? `BOAT_ACCESS ok push=true\nBOAT_GH_EXPIRES unknown\nBOAT_SETUP path=/data/home/work/${repo.split("/")[1]} branch=${branch} base=main\n` : "BOAT_ACCESS nologin\n";
     } else if (script.includes("BOAT_IBX")) {
       stdout = "BOAT_IBX linger on\nBOAT_IBX ca none\nBOAT_IBX node v22.23.3\n";
     } else if (script.includes("BOAT_LOGIN")) {
@@ -223,7 +249,7 @@ switch (command) {
     } else if (script.includes("BOAT_MEM_PROBE")) {
       stdout = "";
     }
-    print({ stdout, stderr: "", exitCode: 0, timedOut: false, truncated: false, durationMs: 12 });
+    print({ stdout: state.execOutput ?? stdout, stderr: "", exitCode: 0, timedOut: false, truncated: false, durationMs: 12 });
     break;
   }
   case "ps":

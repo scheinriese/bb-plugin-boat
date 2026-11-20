@@ -7,10 +7,10 @@ import { shipPresentation } from "./ship-presentation.ts";
 import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import { TAGS, rpcContract, type PreviewDto, type RunsOnDto, type SandboxDto, type TaskDetailDto, type TaskDto, type TaskSourceDto, type ThreadRoleDto } from "../contract.ts";
 import type { PreviewView } from "./previews.ts";
-import { assertBranch, dashboardUrl, normalizeRepo } from "./providers/boat/api.ts";
+import { assertBranch, normalizeRepo } from "./providers/boat/api.ts";
+import { sandboxDashboardUrl } from "./providers/dashboard.ts";
 import { resolveBoatBinary } from "./providers/boat/cli.ts";
 import { MACHINE_TYPES, PROVIDER_NAMES, ProviderError, autoStopHours, type ExplainedError, type MachineType, type SandboxInfo as Sandbox } from "./providers/types.ts";
-import { DASHBOARD_URL as INSTABOX_DASHBOARD_URL } from "./providers/instabox/words.ts";
 import { describeClose } from "./close-outcome.ts";
 import { uiStateHandlers } from "./ui-state.ts";
 import { orchestratorChoiceHandlers } from "./orchestrator-agent.ts";
@@ -170,7 +170,7 @@ function toSandboxDto(sandbox: Sandbox & { provider?: string }, taskIds: string[
     createdAt: sandbox.createdAt,
     archiveAfter: sandbox.archiveAfter,
     machineType: sandbox.machineType ?? null,
-    dashboardUrl: onInstabox ? INSTABOX_DASHBOARD_URL : dashboardUrl(sandbox.id),
+    dashboardUrl: sandboxDashboardUrl(sandbox.id, sandbox.provider),
     sshCommand: onInstabox ? `instabox ssh ${sandbox.id}` : `boat ssh ${sandbox.id}`,
     taskIds,
     uses,
@@ -506,7 +506,7 @@ export function registerRpc(runtime: Runtime): void {
           .filter((event) => !HIDDEN_EVENT_KINDS.has(event.kind))
           .slice(-100)
           .map(({ at, kind, text }) => ({ at, kind, text })),
-        dashboardUrl: task.sandboxId ? dashboardUrl(task.sandboxId) : null,
+        dashboardUrl: task.sandboxId ? sandboxDashboardUrl(task.sandboxId, task.sandboxProvider) : null,
         memory: await service.sizes.view(task),
         shipApproval: shipApprovalDto(task),
       };

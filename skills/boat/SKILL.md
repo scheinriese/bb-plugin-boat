@@ -12,6 +12,15 @@ which runs the user's signed-in `boat` CLI on the bb server's machine, so it
 works from any chat, local or cloud. If you're an orchestrator with `boat_*`
 tools, use the tools instead (see the `boat-orchestrator` skill).
 
+Projects can also run on Instabox. GitHub tasks there need an org proxy
+Secret named `GH_TOKEN`, scoped to both `github.com` and `api.github.com`.
+`instaboxSecrets` (Advanced settings) defaults to `all`; use `none` or
+comma-separated names to change the selection. GitHub work requires
+`GH_TOKEN` in that selection. The plugin checks metadata before renting
+and refreshes older machines missing the placeholder before repo prep.
+Enter token values only in Instabox's dashboard or its secure CLI prompt,
+never in chat. Setup and permissions: [settings](../../docs/settings.md#sandbox-providers).
+
 ## Words to use with the user
 
 One word per idea:

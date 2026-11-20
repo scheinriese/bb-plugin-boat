@@ -1,4 +1,6 @@
 import { macModels as readMacModels } from "./mac.ts";
+import { createInstaboxSecrets } from "./secrets.ts";
+import { GITHUB_LOGIN_HINT } from "./words.ts";
 import type { MacLeaseLedger } from "../../mac-leases.ts";
 // Instabox (https://instabox.sh) as a sandbox provider: Linux and plan-gated Macs.
 // Its members go through the instabox CLI (./cli.ts) like boat's go
@@ -41,7 +43,7 @@ import {
   type SizeOption,
 } from "../types.ts";
 import { EXEC_MAX_SECONDS, type InstaboxRest } from "./api.ts";
-import { InstaboxError, errorFromOutput, num, rec, safePositional, str, type InstaboxCli } from "./cli.ts";
+import { InstaboxError, errorFromOutput, num, rec, redactKeys, safePositional, str, type InstaboxCli } from "./cli.ts";
 import {
   MACHINE_ID_PATTERN,
   SPECS,
@@ -141,8 +143,7 @@ export const INSTABOX_REPO_WORDS: RepoWords = {
   cantSee: (repo) =>
     `The machine's GitHub login can't see ${repo}. Give the token in your Instabox GitHub Secret access to ${repo} (a fine-grained token's Repository access, on ${repo.split("/")[0] ?? repo}), or check the repo name. Then try again.`,
   denied: (repo, detail) => `GitHub refused the Instabox machine's access to ${repo}: ${detail}.`,
-  noLogin: () =>
-    "The Instabox machine has no GitHub login. Save a GitHub token as an Instabox Secret for github.com and api.github.com (`instabox secrets set GH_TOKEN --host github.com --host api.github.com`), then try again.",
+  noLogin: () => GITHUB_LOGIN_HINT,
   expired: () => "The Instabox machine's GitHub token has expired. Replace the GitHub Secret (`instabox secrets set GH_TOKEN …`), or start the work in a new machine.",
   error: (message, options) => new InstaboxError(message, options),
 };
@@ -219,6 +220,8 @@ export function restExecutor(rest: Pick<InstaboxRest, "execStream">, machineId: 
 }
 
 export interface InstaboxProviderOptions {
+  secrets?: () => Promise<string>;
+  now?: () => number;
   /** The private links this plugin got from Instabox (shown once), by machine and port. */
   links?: Map<string, string>;
   ledger?: MacLeaseLedger;
@@ -226,6 +229,7 @@ export interface InstaboxProviderOptions {
 
 /** Instabox as a SandboxProvider: the CLI for its members, the REST API where the CLI can't. */
 export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, options: InstaboxProviderOptions = {}): SandboxProvider {
+  const secrets = createInstaboxSecrets(cli, options.secrets ?? (async () => "all"), options.now);
   const caps = { ...INSTABOX_CAPABILITIES };
   const remember = (sandbox: SandboxInfo) => {
     if (sandbox.mac && options.ledger) {
@@ -274,9 +278,9 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     const record = result.records.at(-1);
     if (record !== undefined && (rec(record.error) !== null || typeof record.error === "string")) throw errorFromOutput([record], result.stderr, result.exitCode);
     if (record === undefined || num(record.exitCode) === null) {
-      throw new InstaboxError(result.stderr.trim() || "instabox exec printed no result", { code: "instabox_bad_output", exitCode: result.exitCode });
+      throw new InstaboxError(redactKeys(result.stderr.trim()) || "instabox exec printed no result", { code: "instabox_bad_output", exitCode: result.exitCode });
     }
-    return { exitCode: num(record.exitCode) ?? result.exitCode, stdout: str(record.stdout) ?? "", stderr: str(record.stderr) ?? "" };
+    return { exitCode: num(record.exitCode) ?? result.exitCode, stdout: redactKeys(str(record.stdout) ?? ""), stderr: redactKeys(str(record.stderr) ?? "") };
   }
 
   const provider: SandboxProvider = {
@@ -289,6 +293,16 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     sizes: INSTABOX_SIZES,
     machine: INSTABOX_MACHINE,
     repoWords: INSTABOX_REPO_WORDS,
+    async assertTaskReady({ repos, signal, onWarning }) {
+      if (repos.length) await secrets.check(signal, onWarning);
+    },
+    async beforeRepo(sandboxId, signal) {
+      // Print presence only, never the placeholder. A fresh login shell after
+      // push reads /etc/profile.d/zz-instabox-secrets.sh before repo prep.
+      const result = await exec(sandboxId, 'case "${GH_TOKEN:-}" in ibsec_*) echo BOAT_GH_SECRET_present ;; *) echo BOAT_GH_SECRET_missing ;; esac', { signal });
+      if (result.exitCode !== 0) throw new InstaboxError("Could not check the Instabox machine's GitHub Secret.", { code: "repo_access" });
+      if (!result.stdout.includes("BOAT_GH_SECRET_present")) await secrets.apply(sandboxId, signal);
+    },
 
     async capacity(signal) {
       return toCapacity(await cli.json(["usage", "--json"], { signal }));
@@ -352,6 +366,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         args.push("--accept-24h-minimum", "--meta", `boat-mac-model=${model.id}`);
       }
       if (create.snapshot) args.push("--snapshot", create.snapshot);
+      args.push("--secrets", await secrets.selected());
       if (create.system === "macos") args.push("--env", "BOAT_HOOKS_DIR=/var/tmp/boat-hooks");
       if (create.gitGuard) for (const [key, value] of Object.entries(create.system === "macos" ? { ...INSTABOX_GIT_ENV, GIT_CONFIG_VALUE_0: "/var/tmp/boat-hooks" } : INSTABOX_GIT_ENV)) args.push("--env", `${key}=${value}`);
       let record;
@@ -389,10 +404,18 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     },
     stopStatus: async (_sandboxId, stopId) => ({ status: "completed", stopId, forced: null, error: null }),
     async fork(sandboxId, forkOptions = {}) {
+      await secrets.selected();
       const record = await cli.json(["fork", sandboxId, "--json", "--meta", CREATED_BY], { signal: forkOptions.signal, timeoutMs: 5 * 60_000 });
       const machines = Array.isArray(record.machines) ? record.machines.map(rec) : [];
       const id = str(machines[0]?.id) ?? str(rec(record.machine)?.id) ?? str(record.id);
       if (id === null) throw new InstaboxError("instabox fork did not report a machine id", { code: "instabox_bad_output" });
+      // fork has no --secrets flag; it copies the source selection. Replace
+      // that selection and refresh the running copy before returning it.
+      try { await secrets.apply(id, forkOptions.signal); }
+      catch (error) {
+        await provider.delete(id).catch(() => undefined);
+        throw error;
+      }
       return { id };
     },
     async lastSnapshotAt(sandboxId, signal) {

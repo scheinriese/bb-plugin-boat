@@ -9,6 +9,8 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync, spawnSync } from "node:child_process";
+import { sandboxDashboardUrl } from "../src/providers/dashboard.ts";
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { InstaboxCli, InstaboxError, redactKeys } from "../src/providers/instabox/cli.ts";
 import { InstaboxRest } from "../src/providers/instabox/api.ts";
@@ -43,7 +45,7 @@ interface FakeApi {
 }
 
 /** The fake CLI and API on one state file, and an Instabox provider on them. */
-async function instabox(t: { after(fn: () => unknown): void }, options: { key?: string | null; state?: Record<string, unknown>; ledger?: import("../src/mac-leases.ts").MacLeaseLedger } = {}) {
+async function instabox(t: { after(fn: () => unknown): void }, options: { key?: string | null; state?: Record<string, unknown>; ledger?: import("../src/mac-leases.ts").MacLeaseLedger; secrets?: () => Promise<string>; now?: () => number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "instabox-"));
   const statePath = join(dir, "state.json");
   if (options.state) writeFileSync(statePath, JSON.stringify(options.state));
@@ -54,7 +56,7 @@ async function instabox(t: { after(fn: () => unknown): void }, options: { key?: 
   const key = options.key === undefined ? KEY : options.key;
   const cli = new InstaboxCli(async () => FAKE_CLI, async () => key);
   const rest = new InstaboxRest({ key: async () => key, baseUrl: () => api.url });
-  const provider = createInstaboxProvider(cli, rest, { ledger: options.ledger });
+  const provider = createInstaboxProvider(cli, rest, { ledger: options.ledger, secrets: options.secrets, now: options.now });
   const state = () => (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {}) as Record<string, any>;
   const setState = (patch: Record<string, unknown>) => writeFileSync(statePath, JSON.stringify({ ...state(), ...patch }));
   return { cli, rest, provider, api, state, setState, statePath };
@@ -81,7 +83,7 @@ function hooks(overrides: Record<string, unknown> = {}) {
   };
 }
 
-const WEB = { id: "web", name: "Web app", repos: [{ repo: "acme/web" }], machineType: null, sandboxProvider: "instabox" };
+const WEB = { id: "web", name: "Web app", repos: [{ repo: "acme/web", baseBranch: "main" }], machineType: null, sandboxProvider: "instabox" };
 
 test("an Instabox machine's life: create, exec, preview, stop, resume, delete", async (t) => {
   const { provider, state, api } = await instabox(t);
@@ -91,7 +93,8 @@ test("an Instabox machine's life: create, exec, preview, stop, resume, delete", 
   assert.equal(sandbox.machineType, "large");
   assert.equal(sandbox.environment, null);
   const created = state().machines[sandbox.id];
-  assert.deepEqual(created.envNames, Object.keys(INSTABOX_GIT_ENV).sort(), "the push guard's git env is fixed at create");
+  assert.deepEqual(created.envNames, [...Object.keys(INSTABOX_GIT_ENV), "GH_TOKEN"].sort(), "git env plus the selected proxy Secret");
+  assert.equal(created.secretSelection, "all");
   assert.equal(created.metadata["created-by"], "bb-boat");
   assert.ok(state().calls.some((call: string) => call.startsWith("create --name bb-t-1-fix-the-login --json --fail-fast --ready-timeout 10m --meta created-by=bb-boat --vcpus 8 --mem-mib 16384")));
   assert.equal(sandbox.name, "bb-t-1-fix-the-login", "a valid Instabox name: lowercase letters, digits and hyphens");
@@ -470,17 +473,24 @@ test("the plugin with Instabox on and a key in bb's secret settings: providers, 
   assert.equal((await harness.callRpc("setProjectRunsOn", { projectId: "web-app", provider: "instabox" }) as { provider: string }).provider, "instabox");
 
   // A task of the project: on an Instabox machine, headless, finished by the sweep.
-  const started = await cli(["task", "start", "--title", "Add a health route", "--brief", "Add /healthz.", "--project", "web-app", "--headless", "--json"]);
+  const started = await cli(["task", "start", "--title", "Add a health route", "--brief", "Add /healthz.", "--project", "web-app", "--headless"]);
   assert.equal(started.exitCode, 0, started.stderr);
-  const taskId = (JSON.parse(started.stdout) as { task?: { id: string }; id?: string }).task?.id ?? (JSON.parse(started.stdout) as { id: string }).id;
+  const taskId = started.stdout.match(/Task (t_[a-z0-9]+)/)![1]!;
+  assert.doesNotMatch(started.stdout, /boat\.dev\/dashboard/);
   const tasks = (await harness.callRpc("tasks", { statuses: null, threadId: null, limit: 10 })) as { tasks: { id: string; sandboxId: string | null; runsOn?: RunsOnDto }[] };
   const task = tasks.tasks.find((entry) => entry.id === taskId)!;
   assert.match(task.sandboxId ?? "", /^m_/);
   assert.deepEqual([task.runsOn?.provider, task.runsOn?.label, task.runsOn?.os], ["instabox", "Instabox", "linux"]);
   // Its sandbox in the lists, with its provider.
-  const sandboxes = (await harness.callRpc("sandboxes", { all: true })) as { sandboxes: { id: string; runsOn?: RunsOnDto; sshCommand: string }[] };
+  const sandboxes = (await harness.callRpc("sandboxes", { all: true })) as { sandboxes: { id: string; runsOn?: RunsOnDto; sshCommand: string; dashboardUrl: string | null }[] };
   const sandbox = sandboxes.sandboxes.find((entry) => entry.id === task.sandboxId)!;
   assert.deepEqual([sandbox.runsOn?.provider, sandbox.sshCommand], ["instabox", `instabox ssh ${task.sandboxId}`]);
+  assert.equal(sandbox.dashboardUrl, null);
+  const detail = await harness.callRpc("task", { id: taskId }) as { task: { dashboardUrl: string | null } };
+  assert.equal(detail.task.dashboardUrl, null);
+  const shown = await cli(["task", "show", taskId]);
+  const tool = await harness.callAgentTool("boat_task", { task_id: taskId });
+  assert.doesNotMatch(JSON.stringify([shown, tool]), /boat\.dev\/dashboard/);
   assert.match((await cli(["sandbox", "list", "--all"])).stdout, new RegExp(`Instabox {2}${task.sandboxId}`));
 
   // boat.dev's wake procedure isn't for an Instabox machine: refused, with what brings it back.
@@ -505,6 +515,7 @@ test("the plugin with Instabox on and a key in bb's secret settings: providers, 
     box.api.received,
   ]);
   assert.ok(!everything.includes(KEY), "the key shows nowhere");
+  assert.ok(!everything.includes("ibsec_"), "the placeholder shows nowhere");
   assert.ok(!everything.includes("instaboxApiKey\":\"ibk"), "not even as a setting value");
 });
 
@@ -1168,4 +1179,123 @@ test("Instabox reports a confirmed allocation when local ledger registration fai
   assert.equal(f.box.provider.classifiesCreateErrors,true);
   await assert.rejects(f.box.provider.create({name:"mac",type:"default",system:"macos",ttlSeconds:3600,gitGuard:true}),{code:"creation_allocated"});
   assert.equal(Object.keys(f.box.state().machines).length,1);
+});
+
+test("create, snapshot and fork use the configured proxy Secret selection", async t => {
+  let choice = "GH_TOKEN";
+  const box = await instabox(t, { secrets: async () => choice });
+  const first = await box.provider.create({ name: "selected", type: "small", snapshot: "fake-snapshot", ttlSeconds: 3600, gitGuard: false });
+  assert.equal(box.state().machines[first.id].secretSelection, "GH_TOKEN");
+  assert.ok(box.state().calls.some((call: string) => call.includes("--snapshot fake-snapshot --secrets GH_TOKEN")));
+  choice = "none";
+  const fork = await box.provider.fork(first.id);
+  assert.equal(box.state().machines[fork.id].secretSelection, "none");
+  assert.ok(!box.state().machines[fork.id].envNames.includes("GH_TOKEN"));
+  assert.ok(box.state().calls.includes(`secrets push ${fork.id} --json`));
+  choice = "bad selection";
+  await assert.rejects(box.provider.create({ name: "invalid", type: "small", ttlSeconds: 3600, gitGuard: false }), /comma-separated Secret names/);
+  assert.equal(Object.keys(box.state().machines).length, 2);
+});
+
+test("GitHub preflight refuses missing, mis-scoped, direct or unselected Secrets before creating a machine", async t => {
+  for (const scenario of [
+    { secrets: [], choice: "all", message: /has no GitHub login/ },
+    { secrets: [{ name: "GH_TOKEN", delivery: "proxy", hosts: ["api.github.com"] }], choice: "all", message: /both github.com and api.github.com/ },
+    { secrets: [{ name: "GH_TOKEN", delivery: "env", hosts: [] }], choice: "all", message: /proxy Secret/ },
+    { choice: "none", message: /Include GH_TOKEN/ },
+    { choice: "MODEL_KEY", message: /Include GH_TOKEN/ },
+  ]) {
+    const box = await instabox(t, { secrets: async () => scenario.choice, state: scenario.secrets ? { secrets: scenario.secrets } : {} });
+    const registry = createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi), box.provider]);
+    const service = new BoatService(registry, memoryStore(), hooks({ projects: () => [WEB] }).hooks);
+    const project = toOrchestratorProject(normalizeProject(WEB));
+    await assert.rejects(service.launchTask({ title: "Check", role: "implement", brief: "Check repo", project }, 5000), scenario.message);
+    assert.equal(Object.keys(box.state().machines ?? {}).length, 0);
+    assert.ok(!(box.state().calls ?? []).some((call: string) => call.startsWith("create ")));
+  }
+});
+
+test("GitHub metadata is cached for a minute; selection changes apply immediately", async t => {
+  let now = 1000, choice = "all";
+  const box = await instabox(t, { now: () => now, secrets: async () => choice });
+  const check = () => box.provider.assertTaskReady!({ agent: "codex", repos: ["acme/web"] });
+  await check();
+  box.setState({ secrets: [] });
+  await check();
+  assert.equal(box.state().calls.filter((call: string) => call === "secrets ls --json").length, 1);
+  choice = "MODEL_KEY";
+  await assert.rejects(check(), /Include GH_TOKEN/);
+  choice = "GH_TOKEN";
+  now += 60_001;
+  await assert.rejects(check(), /has no GitHub login/);
+  assert.equal(box.state().calls.filter((call: string) => call === "secrets ls --json").length, 2);
+});
+
+test("only transient Secret read errors fail open, with a note in task history", async t => {
+  const box = await instabox(t, { state: { secretsFail: "transient" } });
+  const registry = createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi), box.provider]);
+  const store = memoryStore();
+  const { hooks: serviceHooks, warnings } = hooks({ projects: () => [WEB] });
+  const service = new BoatService(registry, store, serviceHooks);
+  const project = toOrchestratorProject(normalizeProject(WEB));
+  const { task } = await service.launchTask({ title: "Check", role: "implement", brief: "Check repo", project }, 10000);
+  assert.equal(task.status, "running", task.error ?? "");
+  assert.match(store.latestEvent(task.id, "preflight-warning")?.text ?? "", /could not be checked temporarily/);
+  box.setState({ secretsFail: "permission" });
+  await assert.rejects(service.launchTask({ title: "Check again", role: "implement", brief: "Check repo", project }, 5000), /machines:read permission/);
+  assert.equal(Object.keys(box.state().machines).length, 1);
+  const outputs = JSON.stringify([warnings, store.events(task.id, 100)]);
+  assert.ok(!outputs.includes(KEY));
+  assert.ok(!outputs.includes("ibsec_"));
+});
+
+test("an older resumed machine gets Secrets selected and pushed before repo prep", async t => {
+  const box = await instabox(t, { secrets: async () => "GH_TOKEN" });
+  const old = await box.cli.json(["create", "--name", "old", "--json"]);
+  assert.ok(!box.state().machines[old.id as string].envNames.includes("GH_TOKEN"));
+  await box.provider.stop(old.id as string);
+  await box.provider.resume(old.id as string, { ttlSeconds: 3600 });
+  const prepared = await prepareRepo(box.provider, old.id as string, "acme/web", { kind: "default-branch", base: "main" });
+  assert.equal(prepared.canPush, true);
+  const calls: string[] = box.state().calls;
+  const select = calls.indexOf(`secrets select ${old.id} --secrets GH_TOKEN --json`);
+  const push = calls.indexOf(`secrets push ${old.id} --json`);
+  const lastExec = calls.map((call, index) => call.startsWith("exec ") ? index : -1).filter(index => index !== -1);
+  assert.ok(select > lastExec[0]! && push > select && lastExec.at(-1)! > push);
+  await prepareRepo(box.provider, old.id as string, "acme/web", { kind: "default-branch", base: "main" });
+  assert.equal(box.state().calls.filter((call: string) => call.startsWith("secrets select ")).length, 1);
+});
+
+test("Instabox placeholders are removed from exec results and checkout errors", async t => {
+  const box = await instabox(t);
+  const machine = await box.provider.create({ name: "redact", type: "small", ttlSeconds: 3600, gitGuard: false });
+  box.setState({ execOutput: "BOAT_GH_SECRET_present\nBOAT_ACCESS denied\nBOAT_ACCESS_DETAIL refused ibsec_obviously_fake_placeholder\n" });
+  const result = await box.provider.exec(machine.id, "echo fake");
+  assert.ok(!JSON.stringify(result).includes("ibsec_"));
+  await assert.rejects(prepareRepo(box.provider, machine.id, "acme/web", { kind: "default-branch" }), error => {
+    assert.match(String(error), /GitHub refused/);
+    assert.doesNotMatch(String(error), /ibsec_/);
+    return true;
+  });
+  const failure = new InstaboxError(redactKeys("refused ibsec_obviously_fake_placeholder"));
+  assert.doesNotMatch(failure.explain().message, /ibsec_/);
+});
+
+test("only Instabox omits dashboard URLs; boat and Scaleway keep their existing links", () => {
+  assert.equal(sandboxDashboardUrl("bx_1"), "https://boat.dev/dashboard?sandbox=bx_1");
+  assert.equal(sandboxDashboardUrl("m_fake", "instabox"), null);
+  assert.equal(sandboxDashboardUrl("fake-mac", "scaleway"), "https://boat.dev/dashboard?sandbox=fake-mac");
+});
+
+test("gh auth setup-git gives git the proxy placeholder for HTTPS clone and push", t => {
+  if (spawnSync("gh", ["--version"]).status !== 0) return t.skip("gh CLI is not installed");
+  const dir = mkdtempSync(join(tmpdir(), "instabox-git-auth-"));
+  const placeholder = "ibsec_obviously_fake_placeholder";
+  const env = { ...process.env, HOME: dir, XDG_CONFIG_HOME: dir, GH_CONFIG_DIR: join(dir, "gh"), GH_TOKEN: placeholder, GIT_CONFIG_GLOBAL: join(dir, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0", GIT_TERMINAL_PROMPT: "0" };
+  execFileSync("gh", ["auth", "setup-git", "--hostname", "github.com"], { env, stdio: "pipe" });
+  // credential fill is the same helper handshake git uses for both HTTPS
+  // operations. No requests to GitHub and no credentials printed by the test.
+  const credentials = execFileSync("git", ["credential", "fill"], { env, input: "protocol=https\nhost=github.com\n\n", encoding: "utf8" });
+  assert.ok(credentials.includes(`password=${placeholder}\n`));
+  assert.ok(!readFileSync(join(dir, "gitconfig"), "utf8").includes(placeholder), "the helper config must not store the credential");
 });

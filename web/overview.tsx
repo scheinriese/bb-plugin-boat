@@ -563,7 +563,7 @@ function SandboxRow({ sandbox, now }: { sandbox: SandboxDto; now: number }) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
-        <IconButton label="Open in boat" icon="ExternalLink" onClick={() => navigate.openUrl(sandbox.dashboardUrl)} />
+        {sandbox.dashboardUrl ? <IconButton label="Open dashboard" icon="ExternalLink" onClick={() => sandbox.dashboardUrl && navigate.openUrl(sandbox.dashboardUrl)} /> : null}
         {canStopSandbox(sandbox.state) ? (
           <IconButton label="Stop" icon="Square" busy={pendingAction === "stop"} onClick={() => void run("stop")} />
         ) : canResumeSandbox(sandbox.state) ? (

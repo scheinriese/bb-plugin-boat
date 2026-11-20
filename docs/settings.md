@@ -92,6 +92,7 @@ inherits the global setting; an explicit native task drawer choice wins.
 | Advanced | Extra protected branches | `extraProtectedBranches` | empty |
 | Advanced | boat CLI location | `boatPath` | empty (finds `~/.ascii/bin/boat`, then `PATH`) |
 | Advanced | Instabox | `instaboxEnabled` | off (every project runs on boat.dev) |
+| Advanced | Instabox Secrets | `instaboxSecrets` | `all`; `none` or comma-separated Secret names |
 | Advanced | Instabox CLI location | `instaboxPath` | empty (finds `instabox` on `PATH`) |
 
 Each row in the plugin's settings has a short description. For example:
@@ -116,8 +117,22 @@ provider, off until you turn it on:
    Only the server reads it, to hand it to the CLI (`INSTABOX_API_KEY`) and
    the API (`X-API-Key`).
 4. Turn Instabox on: `bb boat config set instaboxEnabled true`.
-5. Check it: `bb boat doctor` (or `bb boat providers`).
-6. Pick where each project runs: `bb boat config runs-on <project> instabox`
+5. In your Instabox org, save a **proxy Secret** named `GH_TOKEN` with both
+   `github.com` and `api.github.com` as hosts. Use a fine-grained GitHub token
+   for selected repositories, with **Contents**, **Pull requests** and
+   **Workflows** read/write permissions. Enter its value in the Instabox
+   dashboard, or use `instabox secrets set GH_TOKEN --host github.com --host api.github.com`
+   (the CLI prompts without echo). Never paste a token into chat or plugin settings.
+6. New machines select every current and future proxy Secret by default,
+   matching Instabox's dashboard. To select names instead, set
+   `bb boat config set instaboxSecrets GH_TOKEN,MODEL_KEY`. `none` disables
+   proxy Secrets; GitHub tasks require a selection that includes `GH_TOKEN`.
+   The plugin checks Secret metadata before renting for repo work and refreshes
+   older machines missing the GitHub placeholder before repo prep. Git uses
+   `gh auth setup-git` with the placeholder for HTTPS clone and push, as described
+   in [Instabox Org Secrets](https://instabox.sh/docs/security/secrets.md).
+7. Check it: `bb boat doctor` (or `bb boat providers`).
+8. Pick where each project runs: `bb boat config runs-on <project> instabox`
    (or `bb boat project set <project> --runs-on instabox`). New tasks of that
    project start there; tasks already started stay where they are.
 

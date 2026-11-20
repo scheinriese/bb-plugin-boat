@@ -101,7 +101,7 @@ function isRecord(value: unknown): value is JsonRecord {
 
 /** Never a key in a message: anything shaped like one is cut out. */
 export function redactKeys(text: string): string {
-  return text.replace(/\bib[kp]v?_[A-Za-z0-9_-]{6,}/g, "ib…_[hidden]");
+  return text.replace(/\b(?:ib[kp]v?|ibsec)_[A-Za-z0-9_-]{6,}/g, "ib…_[hidden]");
 }
 
 /** The error an instabox failure printed, else its stderr's last lines. */

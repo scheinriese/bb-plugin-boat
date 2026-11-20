@@ -422,3 +422,11 @@ test("Stop idle sandboxes after: an hour by default, a plain description, and th
     assert.doesNotMatch(readFileSync(new URL(file, import.meta.url), "utf8"), /more than 3 tasks/, file);
   }
 });
+
+test("Instabox Secrets defaults to all and validates selection names", () => {
+  const field = PLUGIN_SETTINGS.instaboxSecrets;
+  assert.equal(field.default, "all");
+  assert.equal(field.section, "advanced");
+  for (const value of ["all", "none", "GH_TOKEN", "GH_TOKEN,MODEL_KEY"]) assert.equal(settingProblem("instaboxSecrets", field, value), null);
+  for (const value of ["", "GH_TOKEN,", " GH_TOKEN", "GH_TOKEN, MODEL_KEY", "--all", "1TOKEN", "GH_TOKEN;echo bad"]) assert.notEqual(settingProblem("instaboxSecrets", field, value), null);
+});

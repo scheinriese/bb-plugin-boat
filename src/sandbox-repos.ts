@@ -19,7 +19,7 @@ import {
 } from "./providers/types.ts";
 
 /** What the repo steps need from a provider: its exec, and its words for what goes wrong. */
-export type RepoProvider = Pick<SandboxProvider, "exec" | "repoWords">;
+export type RepoProvider = Pick<SandboxProvider, "exec" | "repoWords" | "beforeRepo">;
 
 /** Branches no worker may push to anywhere (plus each project's base and the extra-branches setting). */
 export const DEFAULT_PROTECTED_BRANCHES: readonly string[] = ["main", "master"];
@@ -320,6 +320,7 @@ export function conflictReason(baseBranch: string, conflict: ShipConflict, shipp
  * credential helper and a commit identity.
  */
 export async function prepareRepo(provider: RepoProvider, id: string, repo: string, checkout: CheckoutMode, options: PrepareOptions = {}): Promise<PreparedRepo> {
+  await provider.beforeRepo?.(id, options.signal);
   const { signal, workDir } = options;
   const name = repo.split("/")[1] ?? "repo";
   const repoPattern = repo.replace(/[.]/g, "\\.");

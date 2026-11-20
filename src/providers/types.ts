@@ -638,7 +638,7 @@ export interface LaterMembers {
   allocate?(options: CreateSandboxOptions): Promise<SandboxInfo>;
   waitReady?(sandboxId: string, signal?: AbortSignal): Promise<SandboxInfo>;
   /** Verify credentials before allocation, or on an existing machine before reuse. */
-  assertTaskReady?(input: { agent: Provider; repos: readonly string[]; sandboxId?: string; signal?: AbortSignal }): Promise<void>;
+  assertTaskReady?(input: { agent: Provider; repos: readonly string[]; sandboxId?: string; signal?: AbortSignal; onWarning?: (message: string) => void }): Promise<void>;
   /** Reconcile ambiguous creates against complete provider lists, clearing only absent recovery records. */
   recoverCreations?(signal?: AbortSignal): Promise<{ recovered: number; cleared: number }>;
 
@@ -667,6 +667,8 @@ export interface SandboxProvider extends ProviderAccount, SandboxLifecycle, Sand
   machineHooks?(context: MachineHookContext): MachineHooks;
   /** Its words for the plugin's repo steps (absent: neutral words, ProviderError). */
   readonly repoWords?: RepoWords;
+  /** Refresh provider credentials before the checkout's login shell starts. */
+  beforeRepo?(sandboxId: string, signal?: AbortSignal): Promise<void>;
 }
 
 /** Implemented Mac hosting, with live model checks performed before dispatch. */
