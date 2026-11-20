@@ -117,14 +117,14 @@ provider, off until you turn it on:
    Only the server reads it, to hand it to the CLI (`INSTABOX_API_KEY`) and
    the API (`X-API-Key`).
 4. Turn Instabox on: `bb boat config set instaboxEnabled true`.
-5. In your Instabox org, save a **proxy Secret** named `GH_TOKEN` with both
+5. For Linux, in your Instabox org, save a **proxy Secret** named `GH_TOKEN` with both
    `github.com` and `api.github.com` as hosts. Use a fine-grained GitHub token
    for selected repositories, with **Contents**, **Pull requests** and
    **Workflows** read/write permissions. Enter its value in the Instabox
    dashboard, or use `instabox secrets set GH_TOKEN --host github.com --host api.github.com`
    (the CLI prompts without echo). For a team org, add `--org <org>` to
    save the Secret in the same org as the API key, rather than your personal org. Never paste a token into chat or plugin settings.
-6. New machines select every current and future proxy Secret by default,
+6. New Linux machines select every current and future proxy Secret by default,
    matching Instabox's dashboard. To select names instead, set
    `bb boat config set instaboxSecrets GH_TOKEN,MODEL_KEY`. `none` disables
    proxy Secrets; GitHub tasks require a selection that includes `GH_TOKEN`.
@@ -139,6 +139,23 @@ provider, off until you turn it on:
 8. Pick where each project runs: `bb boat config runs-on <project> instabox`
    (or `bb boat project set <project> --runs-on instabox`). New tasks of that
    project start there; tasks already started stay where they are.
+
+Instabox **macOS** does not support Org Secrets. Repository tasks use the
+existing **GitHub token for rented machines** in bb secret settings, with the
+repository permissions and expiry checks described below. No Scaleway account
+is required. A separate account guard pins fingerprints of the Instabox
+API key and API endpoint; changing either latches GitHub delivery off across restarts and
+restoring it. After verifying the intended account, the owner can clear/save
+and re-enter/save the rented-machine token while the plugin runs. These are
+the same guard limitations as the Scaleway account fingerprint below.
+
+Mac preparation installs Node, GitHub CLI and the agent CLIs in the machine
+user's home before repository checkout. GitHub login uses private stdin over
+Instabox's `noHistory` exec API and forces file storage, with no Keychain login.
+The chosen agent must have a ready Account Pooler route and bb Connect; the
+plugin reads their status and leaves accounts and routing settings alone.
+Linux keeps its proxy Secret behavior. See the
+[same-machine setup runbook](allocated-mac-recovery.md#continue-preserved-setup-on-the-same-task).
 
 What works differently on Instabox:
 

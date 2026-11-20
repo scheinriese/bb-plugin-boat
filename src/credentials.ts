@@ -121,7 +121,7 @@ export function createCredentialSource(options: {
     async githubConfigured() { try { await token(); return true; } catch { return false; } },
     async githubDeliveryProblem() {
       try { await options.assertDeliveryAllowed?.(); return null; }
-      catch (error) { return (error as {code?:string} | null)?.code === "task_credentials_missing" ? (error as Error).message : "GitHub delivery is blocked because the Scaleway account fingerprint could not be verified."; }
+      catch (error) { return (error as {code?:string} | null)?.code === "task_credentials_missing" ? (error as Error).message : "GitHub delivery is blocked because the rented-machine account fingerprint could not be verified."; }
     },
     agentAvailable: options.agentAvailable,
     async assertGithubAccess(repos, signal) { await options.assertDeliveryAllowed?.(); await access(await token(), repos, signal); },
@@ -139,6 +139,9 @@ export function createCredentialSource(options: {
       const expiry = await access(value, [], signal);
       await options.assertDeliveryAllowed?.();
       await beforeDelivery?.(expiry);
+      // The provider may await a fresh physical-lease read before recording
+      // delivery. Recheck the account after that boundary, before stdin.
+      await options.assertDeliveryAllowed?.();
       if (!(await execute(executor, ["bash", "-c", GITHUB_LOGIN_SCRIPT], `${value}\n`, signal))) {
         // A shared machine may still serve other tasks. Its lifecycle owner
         // records the attempt and cleans up once no live task needs its logins.

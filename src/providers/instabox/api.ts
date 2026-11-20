@@ -47,10 +47,11 @@ export class InstaboxRest {
     this.options = options;
   }
 
-  private async send(method: string, path: string, init: { body?: unknown; signal?: AbortSignal; accept?: string } = {}): Promise<Response> {
+  private async send(method: string, path: string, init: { body?: unknown; signal?: AbortSignal; accept?: string; assertIdentity?: (key: string, baseUrl: string) => Promise<void> } = {}): Promise<Response> {
     const key = (await this.options.key())?.trim() ?? "";
     if (key === "") throw new InstaboxError("No Instabox API key is stored.", { code: "key_missing" });
     const base = this.options.baseUrl?.() ?? apiUrl();
+    await init.assertIdentity?.(key, base);
     const doFetch: FetchLike = this.options.fetch ?? ((url, request) => fetch(url, request));
     const headers: Record<string, string> = { "X-API-Key": key, Accept: init.accept ?? "application/json" };
     if (init.body !== undefined) headers["Content-Type"] = "application/json";
@@ -104,7 +105,7 @@ export class InstaboxRest {
    */
   async execStream(
     machineId: string,
-    request: { cmd: string; stdin?: string; timeoutSeconds: number; envs?: Record<string, string> },
+    request: { cmd: string; stdin?: string; timeoutSeconds: number; envs?: Record<string, string>; assertIdentity?: (key: string, baseUrl: string) => Promise<void> },
     onOutput: (chunk: string) => void,
     signal?: AbortSignal,
   ): Promise<ExecResult & { timedOut: boolean }> {
@@ -115,7 +116,7 @@ export class InstaboxRest {
       timeoutSeconds: Math.max(1, Math.min(EXEC_MAX_SECONDS, Math.round(request.timeoutSeconds))),
       noHistory: true,
     };
-    const response = await this.send("POST", `/v1/machines/${encodeURIComponent(machineId)}/exec`, { body, signal, accept: "text/event-stream" });
+    const response = await this.send("POST", `/v1/machines/${encodeURIComponent(machineId)}/exec`, { body, signal, accept: "text/event-stream", assertIdentity: request.assertIdentity });
     const type = response.headers.get("content-type") ?? "";
     if (!type.includes("text/event-stream")) {
       // A server that answered without streaming: one result.

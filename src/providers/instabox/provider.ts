@@ -1,3 +1,6 @@
+import { MAC_BOOTSTRAP } from "../mac-bootstrap.ts";
+import { createCredentialSource, type CredentialSource } from "../../credentials.ts";
+import { CLEANUP_NOTICE_PREFIX } from "../../../credential-warnings.ts";
 import { macModels as readMacModels } from "./mac.ts";
 import { createInstaboxSecrets } from "./secrets.ts";
 import { GITHUB_LOGIN_HINT } from "./words.ts";
@@ -141,10 +144,10 @@ export const INSTABOX_MACHINE: MachineSpec = {
 /** GitHub in Instabox machines: an org Secret for github.com, then `gh auth setup-git` (src/sandbox-repos.ts). */
 export const INSTABOX_REPO_WORDS: RepoWords = {
   cantSee: (repo) =>
-    `The machine's GitHub login can't see ${repo}. Give the token in your Instabox GitHub Secret access to ${repo} (a fine-grained token's Repository access, on ${repo.split("/")[0] ?? repo}), or check the repo name. Then try again.`,
+    `The machine's GitHub login can't see ${repo}. Give the Mac task's rented-machine GitHub token in bb secrets, or the Linux machine's Instabox GitHub Secret, access to ${repo} (a fine-grained token's Repository access, on ${repo.split("/")[0] ?? repo}), or check the repo name. Then try again.`,
   denied: (repo, detail) => `GitHub refused the Instabox machine's access to ${repo}: ${detail}.`,
-  noLogin: () => GITHUB_LOGIN_HINT,
-  expired: () => "The Instabox machine's GitHub token has expired. Replace the GitHub Secret (`instabox secrets set GH_TOKEN …`), or start the work in a new machine.",
+  noLogin: () => `For Mac task chats, check the rented-machine GitHub token in bb secret settings. For Linux: ${GITHUB_LOGIN_HINT}`,
+  expired: () => "The Instabox machine's GitHub token has expired. For Mac task chats, replace the rented-machine GitHub token in bb secrets. For Linux, replace the Instabox GitHub Secret (`instabox secrets set GH_TOKEN …`).",
   error: (message, options) => new InstaboxError(message, options),
 };
 
@@ -203,13 +206,14 @@ export const BOOTSTRAP_PREP_SCRIPT = [
  * address never land in the machine's exec history). One command runs at
  * most 600 s: a setup that needs longer fails with what happened.
  */
-export function restExecutor(rest: Pick<InstaboxRest, "execStream">, machineId: string): MachineExecutor {
+export function restExecutor(rest: Pick<InstaboxRest, "execStream">, machineId: string, macos = false, assertIdentity?: (key: string, baseUrl: string) => Promise<void>): MachineExecutor {
   return {
     async exec({ command, stdin, timeoutMs, signal, onOutput }) {
       signal.throwIfAborted();
       const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
       // The API runs it with `bash -lc`, so the machine's node is on PATH.
-      const result = await rest.execStream(machineId, { cmd: command.map(shellQuote).join(" "), stdin, timeoutSeconds: Math.min(seconds, EXEC_MAX_SECONDS) }, onOutput, signal);
+      const cmd = command.map(shellQuote).join(" ");
+      const result = await rest.execStream(machineId, { cmd: macos ? `export PATH="$HOME/.local/bin:$PATH"; exec ${cmd}` : cmd, stdin, timeoutSeconds: Math.min(seconds, EXEC_MAX_SECONDS), assertIdentity }, onOutput, signal);
       if (result.timedOut) {
         throw new Error(
           seconds > EXEC_MAX_SECONDS
@@ -224,6 +228,10 @@ export function restExecutor(rest: Pick<InstaboxRest, "execStream">, machineId: 
 
 export interface InstaboxProviderOptions {
   secrets?: () => Promise<string>;
+  /** Scoped rented-machine GitHub token and the owner server's native agent route. */
+  credentials?: CredentialSource;
+  /** Validates the exact API identity resolved immediately before token transport. */
+  assertCredentialTransport?: (key: string, baseUrl: string) => Promise<void>;
   enabled?: () => boolean;
   keyPresent?: () => boolean;
   now?: () => number;
@@ -247,6 +255,7 @@ export function instaboxLeaseInput(ledger: MacLeaseLedger, sandbox: SandboxInfo)
 export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, options: InstaboxProviderOptions = {}): SandboxProvider {
   const secrets = createInstaboxSecrets(cli, options.secrets ?? (async () => "all"), options.now);
   const caps = { ...INSTABOX_CAPABILITIES };
+  const credentials = options.credentials ?? createCredentialSource({ githubToken: async () => null, agentAvailable: async () => false });
   const remember = (sandbox: SandboxInfo, authoritativeRevision?: number) => {
     const ledger = options.ledger;
     if (sandbox.mac && ledger) {
@@ -318,7 +327,8 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
   async function exec(sandboxId: string, script: string, execOptions: { timeoutMs?: number; signal?: AbortSignal; login?: boolean } = {}): Promise<ExecResult> {
     const remoteSeconds = Math.max(5, Math.min(EXEC_MAX_SECONDS, Math.round((execOptions.timeoutMs ?? 120_000) / 1000)));
     // One argument: Instabox runs it with `bash -lc`. login false: the exact argv `bash -c <script>`.
-    const command = execOptions.login === false ? ["bash", "-c", script] : [script];
+    const macos = (await info(sandboxId, execOptions.signal)).system === "macos";
+    const command = execOptions.login === false ? ["bash", "-c", script] : macos ? ["bash", "-lc", `export PATH="$HOME/.local/bin:$PATH"\n${script}`] : [script];
     const result = await cli.run(["exec", sandboxId, "--timeout", String(remoteSeconds), "--json", "--", ...command], {
       timeoutMs: remoteSeconds * 1000 + 30_000,
       signal: execOptions.signal,
@@ -330,6 +340,63 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       throw new InstaboxError(redactKeys(result.stderr.trim()) || "instabox exec printed no result", { code: "instabox_bad_output", exitCode: result.exitCode });
     }
     return { exitCode: num(record.exitCode) ?? result.exitCode, stdout: redactKeys(str(record.stdout) ?? ""), stderr: redactKeys(str(record.stderr) ?? "") };
+  }
+
+  // Delivery and explicit hand-back share a lock. A failed same-lease setup
+  // keeps credentials for its supported continuation; release still verifies cleanup.
+  const credentialLocks = new Map<string, Promise<unknown>>();
+  async function withCredentialsLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const next = (credentialLocks.get(id) ?? Promise.resolve()).then(operation, operation);
+    credentialLocks.set(id, next);
+    try { return await next; }
+    finally { if (credentialLocks.get(id) === next) credentialLocks.delete(id); }
+  }
+  function sameLease(lease: MacLease, input: ReturnType<typeof instaboxLeaseInput>): boolean {
+    return Boolean(input && input.id === lease.id && input.provider === lease.provider && input.machineId === lease.machineId && input.startedAt === lease.startedAt && input.paidUntil === lease.paidUntil && input.size === lease.size && input.currency === lease.currency && input.minimumCost === lease.minimumCost && input.hourPrice === lease.hourPrice && input.cpus === lease.cpus && input.memoryMiB === lease.memoryMiB);
+  }
+  async function prepareMac(id: string, signal?: AbortSignal) {
+    return withCredentialsLock(id, async () => {
+      const current = await info(id, signal);
+      const input = options.ledger && instaboxLeaseInput(options.ledger, current);
+      const lease = input && options.ledger!.held(id).find(row => row.provider === "instabox" && row.id === input.id);
+      const now = options.now?.() ?? Date.now();
+      if (!lease || !sameLease(lease, input) || current.native !== "running" || Date.parse(lease.paidUntil) <= now || (current.scheduledReleaseAt && Date.parse(current.scheduledReleaseAt) <= now)) throw new InstaboxError("A current tracked prepaid Instabox Mac lease is required for setup.", { code: "lease_unknown" });
+      const result = await restExecutor(rest, id, true).exec({ command: ["bash", "-c", MAC_BOOTSTRAP], stdin: "", timeoutMs: 600_000, signal: signal ?? AbortSignal.timeout(600_000), onOutput: () => undefined });
+      if (result.exitCode !== 0) throw new InstaboxError("Instabox Mac tooling setup failed. Check Node 22.19 or newer, GitHub CLI and the agent tools on the same Mac before continuing.", { code: "bootstrap_failed" });
+    });
+  }
+  async function ensureMacGithub(id: string, signal?: AbortSignal) {
+    return withCredentialsLock(id, async () => {
+      const current = await info(id, signal);
+      const ledger = options.ledger;
+      const input = ledger && instaboxLeaseInput(ledger, current);
+      const lease = input && ledger!.held(id).find(row => row.provider === "instabox" && row.id === input.id);
+      if (!lease || !sameLease(lease, input) || !current.mac || current.native !== "running" || Date.parse(lease.paidUntil) <= (options.now?.() ?? Date.now()) || (current.scheduledReleaseAt && Date.parse(current.scheduledReleaseAt) <= (options.now?.() ?? Date.now()))) throw new InstaboxError("A current tracked prepaid Instabox Mac lease is required for GitHub delivery.", { code: "lease_unknown" });
+      return credentials.ensureGithub(id, restExecutor(rest, id, true, options.assertCredentialTransport), signal, false, async expiresAt => {
+        // Recheck after credential validation and immediately before private
+        // stdin. Never cancel the existing physical lease's release schedule.
+        const latest = await info(id, signal);
+        const latestInput = instaboxLeaseInput(ledger!, latest);
+        const held = ledger!.held(id).find(row => row.id === lease.id && row.provider === "instabox");
+        const now = options.now?.() ?? Date.now();
+        if (!held || !sameLease(held, latestInput) || latest.native !== "running" || latest.scheduledReleaseAt !== current.scheduledReleaseAt || Date.parse(lease.paidUntil) <= now || (latest.scheduledReleaseAt && Date.parse(latest.scheduledReleaseAt) <= now)) throw new InstaboxError("The Instabox Mac lease changed before GitHub delivery. Inspect the same task before continuing.", { code: "lease_unknown" });
+        ledger!.recordGithubDelivery(lease.id, expiresAt);
+      });
+    });
+  }
+  async function cleanupMacGithub(id: string, signal?: AbortSignal) {
+    const ledger = options.ledger;
+    const delivered = ledger?.list().filter(row => row.provider === "instabox" && row.machineId === id && ledger.hasGithubDeliveryRecord(row.id)) ?? [];
+    if (!delivered.length) return;
+    try { await credentials.cleanupGithub(id, restExecutor(rest, id, true), signal); }
+    catch (error) {
+      for (const lease of delivered) {
+        ledger!.recordCredentialNotice(lease.id, `GitHub token revocation required: Revoke or rotate the rented-machine token in GitHub settings; it may remain on Instabox Mac ${id}. Restore exec access and retry cleanup before releasing the Mac. This reminder remains until the recorded token expiry passes.`);
+        if (!lease.endedAt) ledger!.warn(lease.id, options.now?.() ?? Date.now(), false, `${CLEANUP_NOTICE_PREFIX} Instabox Mac ${id} GitHub credential removal could not be verified. Its existing release schedule is unchanged. Revoke or rotate the rented-machine token, restore exec access and retry cleanup.`, true);
+      }
+      throw error;
+    }
+    for (const lease of delivered) if (lease.noticeText?.startsWith(CLEANUP_NOTICE_PREFIX)) ledger!.clearNotice(lease.id);
   }
 
   const provider: SandboxProvider = {
@@ -384,10 +451,20 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     machine: INSTABOX_MACHINE,
     repoWords: INSTABOX_REPO_WORDS,
     retryGithubAccess: true,
-    async assertTaskReady({ repos, signal, onWarning }) {
+    async assertTaskReady({ agent, repos, sandboxId, system, runner, signal, onWarning }) {
+      if (system === "macos" || (sandboxId && (await info(sandboxId, signal)).system === "macos")) {
+        if (runner && runner !== "chat") throw new InstaboxError("Instabox Mac tasks need native task chats and bb Connect.", { code: "chat_required" });
+        await credentials.assertReady(agent, repos, signal);
+        return;
+      }
       if (repos.length) await secrets.check(signal, onWarning);
     },
     async beforeRepo(sandboxId, signal) {
+      if ((await info(sandboxId, signal)).system === "macos") {
+        await prepareMac(sandboxId, signal);
+        await ensureMacGithub(sandboxId, signal);
+        return;
+      }
       // Print presence only, never the placeholder. A fresh login shell after
       // push reads /etc/profile.d/zz-instabox-secrets.sh before repo prep.
       const result = await exec(sandboxId, GITHUB_SECRET_PROBE_SCRIPT, { signal });
@@ -470,7 +547,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         args.push("--accept-24h-minimum", "--meta", `boat-mac-model=${model.id}`);
       }
       if (create.snapshot) args.push("--snapshot", create.snapshot);
-      args.push("--secrets", await secrets.selected());
+      args.push("--secrets", create.system === "macos" ? "none" : await secrets.selected());
       if (create.system === "macos") args.push("--env", "BOAT_HOOKS_DIR=/var/tmp/boat-hooks");
       if (create.gitGuard) for (const [key, value] of Object.entries(create.system === "macos" ? { ...INSTABOX_GIT_ENV, GIT_CONFIG_VALUE_0: "/var/tmp/boat-hooks" } : INSTABOX_GIT_ENV)) args.push("--env", `${key}=${value}`);
       let record;
@@ -505,22 +582,25 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         throw failure;
       }
     },
-    async delete(sandboxId, signal, deleteOptions) {
+    delete: (sandboxId, signal, deleteOptions) => withCredentialsLock(sandboxId, async () => {
+      await cleanupMacGithub(sandboxId, signal);
       await cli.run(["rm", sandboxId, "--yes", "--json", ...(options.ledger?.held(sandboxId).length ? ["--now"] : [])], { signal, timeoutMs: 120_000 });
       for (const lease of options.ledger?.held(sandboxId) ?? []) options.ledger?.end(lease.id, deleteOptions?.leaseEndReason ?? "deleted", deleteOptions?.leaseEndAt);
       for (const key of [...links.keys()]) if (key.startsWith(`${sandboxId}:`)) links.delete(key);
-    },
-    async scheduleLeaseRelease(sandboxId, _at, signal) {
+    }),
+    scheduleLeaseRelease: (sandboxId, _at, signal) => withCredentialsLock(sandboxId, async () => {
+      await cleanupMacGithub(sandboxId, signal);
       await cli.run(["rm", sandboxId, "--yes", "--json"], { signal, timeoutMs: 120_000 });
-    },
+    }),
     async cancelLeaseRelease(sandboxId, signal) {
       await cli.run(["rm", sandboxId, "--cancel", "--json"], { signal, timeoutMs: 120_000 });
     },
-    async stop(sandboxId, signal) {
+    stop: (sandboxId, signal) => withCredentialsLock(sandboxId, async () => {
+      await cleanupMacGithub(sandboxId, signal);
       // Waits until it's down; the disk is kept.
       await cli.run(["stop", sandboxId, "--json"], { signal, timeoutMs: 180_000 });
-      return { status: "completed", stopId: null, forced: null, error: null };
-    },
+      return { status: "completed" as const, stopId: null, forced: null, error: null };
+    }),
     stopStatus: async (_sandboxId, stopId) => ({ status: "completed", stopId, forced: null, error: null }),
     async fork(sandboxId, forkOptions = {}) {
       await secrets.selected();
@@ -630,6 +710,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     aiProxy: async () => ({ enabled: null, dailyDollars: null, dollarsPer1000Requests: null }),
 
     async prompt(promptOptions) {
+      if ((await info(promptOptions.sandboxId, promptOptions.signal)).system === "macos") throw new InstaboxError("Instabox Mac tasks need native task chats and bb Connect.", { code: "chat_required" });
       const resume = promptOptions.conversationId && !PLUGIN_CONVERSATION.test(promptOptions.conversationId) ? promptOptions.conversationId : null;
       const args = ["agent", "prompt", promptOptions.sandboxId, "--provider", promptOptions.provider, "--json"];
       if (promptOptions.model) args.push("--model", promptOptions.model);
@@ -656,8 +737,18 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       await cli.run(["agent", "interrupt", sandboxId, ...(conversationId === null ? [] : ["--conversation", conversationId]), "--json"], { signal });
     },
 
-    executor: (sandboxId) => restExecutor(rest, sandboxId),
-    machineHooks: (context) => instaboxMachineHooks(provider, context),
+    refreshGithubLogin: async (sandboxId, signal) => (await info(sandboxId, signal)).system === "macos" ? ensureMacGithub(sandboxId, signal) : null,
+    executor: (sandboxId) => ({ async exec(request) { return restExecutor(rest, sandboxId, (await info(sandboxId, request.signal)).system === "macos").exec(request); } }),
+    machineHooks: (context) => ({
+      ...instaboxMachineHooks(provider, context),
+      async beforeBootstrap(sandboxId, signal) {
+        if ((await info(sandboxId, signal)).system === "macos") return prepareMac(sandboxId, signal);
+        return instaboxMachineHooks(provider, context).beforeBootstrap!(sandboxId, signal);
+      },
+      // Recovered starts retain their lease and credentials. Generic failed
+      // bootstrap cleanup is guarded by the machine lifecycle owner.
+      bootstrapFailed: sandboxId => withCredentialsLock(sandboxId, () => cleanupMacGithub(sandboxId)),
+    }),
   };
   return provider;
 }
