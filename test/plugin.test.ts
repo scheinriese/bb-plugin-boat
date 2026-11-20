@@ -1105,3 +1105,11 @@ test("a running orchestrator receives monthly guidance once through tools, never
  assert.equal(new TaskStore(()=>bb.storage.database()).monthlyMacs.takeForTool("thr_orch").length,0,"delivery survives reloads");
  assert.equal(store.monthlyMacs.get(suggestion.id)?.answer,null,"delivery is not an answer");
 });
+
+test("status and task tools omit absent monthly guidance without trailing newlines",async t=>{
+ const {harness}=await setup();t.after(()=>harness.lifecycle.dispose());
+ for(const name of ["boat_status","boat_tasks"]){
+ const text=toolText(await harness.callAgentTool(name,{},{threadId:"thr_orch"}));
+ assert.equal(text,text.trimEnd());assert.doesNotMatch(text,/boat-monthly-mac/);
+ }
+});

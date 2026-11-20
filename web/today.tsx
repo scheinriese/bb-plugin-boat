@@ -210,7 +210,7 @@ export function Today() {
       {!hasWork ? (
         <section className="space-y-3">
           <h2 className={HEADING}>Start here</h2>
-          {monthly.data?.suggestions.map(s=><LiveMonthlyMacCard key={s.id} suggestion={s}/>)}
+          {monthly.data?.suggestions.map(s=><LiveMonthlyMacCard key={s.id} suggestion={s} project={[...new Set(recent.filter(task=>task.runsOn?.provider===s.dayProvider && task.runsOn.os==="macos").map(projectName).filter(Boolean))].join(", ") || "All projects"}/>)}
           <p className="text-sm text-muted-foreground">
             Give a cloud agent one task, or let an orchestrator coordinate a
             project.
@@ -244,7 +244,7 @@ export function Today() {
             {(needsCount > 0 || Boolean(monthly.data?.suggestions.length)) && (
               <section className="space-y-2 sm:space-y-[10px]">
                 <h2 className={HEADING}>Start here</h2>
-                {monthly.data?.suggestions.map(s=><LiveMonthlyMacCard key={s.id} suggestion={s}/>)}
+                {monthly.data?.suggestions.map(s=><LiveMonthlyMacCard key={s.id} suggestion={s} project={[...new Set(recent.filter(task=>task.runsOn?.provider===s.dayProvider && task.runsOn.os==="macos").map(projectName).filter(Boolean))].join(", ") || "All projects"}/>)}
                 <TodayStartHereActions>
                   {data.needsYou.map((decision) => (
                     <StartDecision

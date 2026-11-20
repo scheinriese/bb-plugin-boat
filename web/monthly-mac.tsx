@@ -31,11 +31,13 @@ export function MonthlyMacCard({
   onChoose,
   onAnswer,
   receipt = false,
+  project,
 }: {
   suggestion: MonthlyMacSuggestion;
   onChoose?: (answer: NonNullable<MonthlyMacSuggestion["answer"]>) => void;
   onAnswer?: () => void;
   receipt?: boolean;
+  project?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const closed = Boolean(s.answer);
@@ -87,7 +89,7 @@ export function MonthlyMacCard({
           <span className="size-1.5 rounded-full bg-current" />
           Suggestion
         </span>
-        <span className="text-[#6E6E6E]">from Harbormaster · Mac costs · today</span>
+        <span className="text-[#6E6E6E]">from Harbormaster · Mac costs{project ? ` · ${project}` : ""} · today</span>
       </header>
       <div className="pt-2.5 sm:px-3.5 sm:pt-3.5">
         <h3 className="text-base font-medium leading-[22px] text-[#EDEDED] sm:text-[15px]">
@@ -289,9 +291,11 @@ export function MonthlyMacCard({
 export function LiveMonthlyMacCard({
   suggestion,
   threadId,
+  project,
 }: {
   suggestion: MonthlyMacSuggestion;
   threadId?: string;
+  project?: string;
 }) {
   const navigate = useBbNavigate();
   const fill = useFillComposer(threadId ?? "");
@@ -307,6 +311,7 @@ export function LiveMonthlyMacCard({
     <>
       <MonthlyMacCard
         suggestion={saved}
+        project={project}
         onChoose={async (answer) => {
           if (busy || saved.answer) return;
           setBusy(true);

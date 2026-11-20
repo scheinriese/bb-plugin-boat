@@ -159,7 +159,9 @@ export const monthlySuggestion: MonthlyMacSuggestion = {
   candidate:MONTHLY_MAC_PRICES[1]!,alternatives:[MONTHLY_MAC_PRICES[5]!],dayProvider:"instabox",chip:"M2",ramGB:16,currency:"USD",days:16,cost:172.8,dayRate:10.8,breakEven:119.99/10.8,forecast:{low:15,base:18,high:22},savings:74.41,answer:null,answeredAt:null,
 };
 export function scene(name: string) {
-  if(name==="monthly-today-alone")return <div className="max-w-[720px]"><p className="mb-6 text-[13px] text-[#A8A8A8]">0 need you · 1 in progress</p><h3 className="text-sm font-medium">Start here</h3><MonthlyMacCard suggestion={monthlySuggestion}/><TodayStartHereActions>{[]}{[]}</TodayStartHereActions></div>;
+  if(name==="monthly-zero")return <ThisMonthUsage plan={plan} mac={{...mac,byProvider:undefined,month:{leaseDays:1,costs:{USD:10.8}},rolling30:{leaseDays:0,costs:{}},monthlyComparisons:[{dayProvider:"instabox",currency:"USD",candidate:monthlySuggestion.candidate,breakEven:monthlySuggestion.breakEven}],monthlySuggestions:[]}}/>;
+
+  if(name==="monthly-today-alone")return <div className="max-w-[720px]"><p className="mb-6 text-[13px] text-[#A8A8A8]">0 need you · 1 in progress</p><h3 className="text-sm font-medium">Start here</h3><MonthlyMacCard suggestion={monthlySuggestion} project="iOS app"/><TodayStartHereActions>{[]}{[]}</TodayStartHereActions></div>;
   if(name==="today-actions")return <TodayStartHereActions><p>Choose a sign-in flow</p></TodayStartHereActions>;
   if(name==="today-actions-empty")return <TodayStartHereActions>{[]}{null}{false}</TodayStartHereActions>;
 

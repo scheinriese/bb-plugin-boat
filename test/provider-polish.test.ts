@@ -231,3 +231,8 @@ test("Today has no empty action box when guidance is the only Start here item",(
  const html=renderScene("monthly-today-alone");assert.match(html,/0 need you/);assert.doesNotMatch(html,/divide-y divide-border/);
  const card=renderScene("monthly-chat");assert.match(card,/Mac costs · today/);assert.match(card,/>0<\/span>/);assert.doesNotMatch(card,/\$0\.00/);
 });
+
+test("zero rolling use retains the matching price target and Today names the project",()=>{
+ const zero=renderScene("monthly-zero");assert.match(zero,/Break-even ≈ 11 days/);assert.doesNotMatch(zero,/Monthly M4:/);
+ assert.match(renderScene("monthly-today-alone"),/Mac costs · iOS app · today/);
+});

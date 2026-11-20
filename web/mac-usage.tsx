@@ -282,7 +282,7 @@ export function ThisMonthUsage({
                     ) ?? [],
                   lease = held[0],
                   state = lease ? leaseState(lease) : null;
-                const comparison = mac?.monthlyComparisons?.find(item => item.dayProvider===p.id && Object.keys(p.rolling30.costs).length===1 && Object.hasOwn(p.rolling30.costs,item.currency));
+                const comparison = mac?.monthlyComparisons?.find(item => item.dayProvider===p.id && (Object.keys(p.rolling30.costs).length===0 || (Object.keys(p.rolling30.costs).length===1 && Object.hasOwn(p.rolling30.costs,item.currency))));
                 const suggestion = mac?.monthlySuggestions?.find(s => s.dayProvider===p.id && s.kind==="rent" && !s.answer && p.rolling30.leaseDays>s.breakEven);
                 return (
                   <Row

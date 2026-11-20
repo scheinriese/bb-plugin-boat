@@ -91,7 +91,7 @@ const approvedParam = z
 export function registerTools(runtime: Runtime): void {
   const { bb, service } = runtime;
   const monthlyCards = (threadId: string) => service.store.monthlyMacs.takeForTool(threadId)
-    .map(item => `Show this returned cost suggestion once after your reply; it blocks no task:\n::boat-monthly-mac{id="${item.id}"}`).join("\n");
+    .map(item => `Show this returned cost suggestion once after your reply; it blocks no task:\n::boat-monthly-mac{id="${item.id}"}`).join("\n") || null;
 
   bb.agents.registerTool({
     name: "boat_protocol",
