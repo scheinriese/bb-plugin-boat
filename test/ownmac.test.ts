@@ -327,7 +327,7 @@ test("Your Mac reports zero rent without any lease or lease-days", async () => {
   assert.equal(await env.provider.pricing!(), "$0 rent");
   assert.equal(
     runsOnLine(runsOnOf(env.provider, "small", "boat")),
-    "on Your Mac · $0 rent",
+    "Your Mac · fake-mac · $0",
   );
 });
 

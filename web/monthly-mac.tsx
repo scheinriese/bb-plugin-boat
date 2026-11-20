@@ -325,9 +325,10 @@ export function LiveMonthlyMacCard({
               throw new Error("Could not open the provider page. Try again.");
             if (answer === "own") {
               setOwn(true);
-              toast("Your Mac setup is coming", {
+              navigate.openUrl("https://github.com/scheinriese/bb-plugin-boat/blob/main/docs/settings.md#your-mac");
+              toast("Set up Your Mac in Settings", {
                 description:
-                  "You will enroll a dedicated Mac in bb and keep it awake and on power.",
+                  "Use an isolated VM or a separate standard user, then add its SSH alias in Settings.",
               });
             }
             setSaved(
@@ -348,8 +349,7 @@ export function LiveMonthlyMacCard({
       />
       {own && (
         <p role="status" className="px-3.5 text-sm text-[#A8A8A8]">
-          Your Mac setup is coming. You will enroll a dedicated Mac in bb and
-          keep it awake and on power.
+          Use an isolated VM or a separate standard user. Add its SSH alias in Settings → Your Mac and keep the execution account logged in on mains power.
         </p>
       )}
     </>

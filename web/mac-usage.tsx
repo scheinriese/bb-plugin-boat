@@ -78,7 +78,7 @@ function Row({
         <div className="flex min-w-0 items-start gap-2.5">
           <ProviderGlyphIcon
             glyph={
-              name.startsWith("Mac")
+              (name.startsWith("Mac") || name === "Your Mac")
                 ? "laptop"
                 : name === "boat.dev"
                   ? "boat"
@@ -269,6 +269,7 @@ export function ThisMonthUsage({
                 }
               />
             )}
+            {mac?.ownMac && <Row name="Your Mac" sub="Mac · $0 rent" used="$0" usedSub="No lease-days" now={`${mac.ownMac.running} of ${mac.ownMac.max} tasks running`} nowSub={mac.ownMac.status} />}
             {macRows
               .filter(
                 (p) =>

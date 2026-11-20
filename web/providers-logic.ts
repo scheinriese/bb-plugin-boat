@@ -9,7 +9,6 @@ export type ProviderGlyph = "boat" | "box" | "laptop" | "laptop-dashed";
 
 /** "boat.dev · Default", "Instabox · Mac M2 · lease ends Thu 14:00": a task's line and its chip's tooltip. */
 export function runsOnLine(runsOn: RunsOnDto, fallbackMachine: string | null = null): string {
-  if (runsOn.provider === "ownmac") return "on Your Mac · $0 rent";
   return [runsOn.label, runsOn.provider === "instabox" && runsOn.os === "linux" ? "Linux" : runsOn.machine ?? fallbackMachine, runsOnNote(runsOn)].filter(Boolean).join(" · ");
 }
 

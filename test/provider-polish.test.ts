@@ -257,3 +257,17 @@ test("post-deletion token reminder shows expiry without a dismissal action",()=>
   assert.match(html,/recorded token expiry/);assert.match(html,/2030-04-01/);
   assert.doesNotMatch(html,/Dismiss|Delete without|Owner approval/);
 });
+
+for (const [scene,status] of [["ownmac-paused","Paused"],["ownmac-battery","On battery"],["ownmac-refused-personal-login","Refused: this is your personal login"],["ownmac-refused-admin","Refused: this account is an administrator"],["ownmac-memory","Not enough free memory"],["ownmac-fallback","checking the next approved rental route"],["ownmac-not-set-up","Not set up"]]) test(`Your Mac placeholder: ${scene}`,()=>{
+  const html=renderScene(scene!);assert.ok(html.includes(status!));assert.match(html,/Your Mac/);
+  assert.doesNotMatch(html,/role="switch"|role="radiogroup"|<form|role="alert"/);
+});
+test("Your Mac awake row follows the supplied design with SSH metadata",()=>{
+  const html=renderScene("ownmac-available");for(const text of ["fake-mac-vm · SSH","Awake · on power","$0. Needs to be awake and on power.","Use for Mac tasks","Runs in","Agents never run in your own login.","macOS VM (recommended)","Separate macOS user","$0 rent","1 of 2 tasks running"])assert.ok(html.includes(text),text);
+  assert.match(html,/role="switch"[^>]*aria-checked="true"/);
+  assert.match(html,/role="radiogroup"/);assert.doesNotMatch(html,/Save Your Mac|Enable Your Mac|bb machine/);
+});
+test("Your Mac asleep row offers Keep Awake as plain advice",()=>{
+  const html=renderScene("ownmac-asleep");assert.match(html,/Asleep or unreachable/);assert.match(html,/Turn on Keep Awake to stop this/);
+  assert.doesNotMatch(html,/<button[^>]*>Turn on Keep Awake/);
+});

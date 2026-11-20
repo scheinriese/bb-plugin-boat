@@ -12,7 +12,7 @@ import { ThisMonthUsage } from "../../web/mac-usage";
 import { FooterUsage } from "../../web/footer-usage";
 import { ProviderSetup } from "../../web/provider-setup";
 import { ProviderFailureCard } from "../../web/provider-failure";
-import { ProviderRow, RunsOnLine } from "../../web/providers";
+import { ProviderRow, RunsOnLine, ChipProvider } from "../../web/providers";
 import type {
   MacUsageDto,
   SandboxProviderDto,
@@ -164,6 +164,16 @@ export const monthlySuggestion: MonthlyMacSuggestion = {
   candidate:MONTHLY_MAC_PRICES[1]!,alternatives:[MONTHLY_MAC_PRICES[5]!],dayProvider:"instabox",chip:"M2",ramGB:16,currency:"USD",days:16,cost:172.8,dayRate:10.8,breakEven:119.99/10.8,forecast:{low:15,base:18,high:22},savings:74.41,answer:null,answeredAt:null,
 };
 export function scene(name: string) {
+  if (name.startsWith("ownmac-")) {
+    const status: Record<string,string> = {"ownmac-available":"Available","ownmac-user":"Available","ownmac-asleep":"Asleep or unreachable","ownmac-refused-admin":"Refused: this account is an administrator. Use a standard user or a VM with a standard user.","ownmac-memory":"Not enough free memory","ownmac-fallback":"Your Mac is unavailable; checking the next approved rental route.","ownmac-paused":"Paused","ownmac-battery":"On battery","ownmac-refused-personal-login":"Refused: this is your personal login on the bb server. Use a separate standard user or a VM.","ownmac-not-set-up":"Not set up"};
+    const ownMac={ownMacIsolation:name==="ownmac-user"?"user" as const:"vm" as const,ownMacAlias:name==="ownmac-not-set-up"?"":"fake-mac-vm",ownMacEnabled:name!=="ownmac-not-set-up",ownMacPaused:name==="ownmac-paused",ownMacMaxTasks:2,running:name==="ownmac-available"?1:0,max:2};
+    const provider:SandboxProviderDto={id:"ownmac",label:"Your Mac",kind:"own-mac",isDefault:false,available:true,enabled:ownMac.ownMacEnabled,connection:name==="ownmac-available"?"connected":"not-connected",meta:`${ownMac.running} of 2 tasks running`,summary:"Tasks in your isolated Mac account or VM",pricing:"$0 rent",systems:[{os:"macos",label:"Mac",ready:name==="ownmac-available",note:null}],apiKey:null,status:status[name] ?? "Available",ownMac};
+    const usage={...mac,ownMac:{running:ownMac.running,max:2,status:provider.status!,rent:0 as const}};
+    const taskRunsOn={provider:"ownmac",label:"Your Mac",os:"macos" as const,machine:"fake-mac-vm",note:"$0",detail:"$0 · keep it awake and on power"};
+    const row=<div className="max-w-[760px] overflow-hidden rounded-[10px] border border-border bg-card"><ProviderRow provider={provider} onOwnMacSave={()=>{}}/></div>;
+    if (!["ownmac-available","ownmac-user","ownmac-asleep"].includes(name)) return row;
+    return <div className="space-y-6">{row}<div className="max-w-[720px] divide-y divide-[#222222] rounded-[10px] border border-[#2A2A2A] bg-card text-[13px]"><p className="px-3.5 py-2.5">1 task · fake sample</p><div className="px-3.5 py-[9px]"><p className="mb-0.5 text-[#E2E2E2]">Check the fake Mac workspace</p><RunsOnLine runsOn={taskRunsOn}/></div></div><span className="inline-flex items-center gap-1.5 rounded-md border border-[#2E2E2E] bg-[#222222] px-2 py-px text-xs">Check the fake Mac workspace <ChipProvider runsOn={taskRunsOn}/><span className="size-1.5 rounded-full bg-[#6E6E6E]"/></span><div className="flex min-h-9 max-w-[720px] flex-wrap items-center justify-between gap-2 border-y border-[#262626] py-2"><RunsOnLine runsOn={{...taskRunsOn,note:null}}/><span className="text-xs text-[#6E6E6E]">{taskRunsOn.detail}</span></div>{name==="ownmac-available" && <><ThisMonthUsage mac={usage}/><div className="max-w-[298px] space-y-3 rounded-xl border border-[#303030] bg-[#202020] p-3.5"><FooterUsage providers={[provider]} mac={{...usage,held:[]}} boatOn={0} cap={null}/></div></>}</div>;
+  }
   if(name==="monthly-zero")return <ThisMonthUsage plan={plan} mac={{...mac,byProvider:undefined,month:{leaseDays:1,costs:{USD:10.8}},rolling30:{leaseDays:0,costs:{}},monthlyComparisons:[{dayProvider:"instabox",currency:"USD",candidate:monthlySuggestion.candidate,breakEven:monthlySuggestion.breakEven}],monthlySuggestions:[]}}/>;
 
   if(name==="monthly-today-alone")return <div className="max-w-[720px]"><p className="mb-6 text-[13px] text-[#A8A8A8]">0 need you · 1 in progress</p><h3 className="text-sm font-medium">Start here</h3><MonthlyMacCard suggestion={monthlySuggestion} project="iOS app"/><TodayStartHereActions>{[]}{[]}</TodayStartHereActions></div>;

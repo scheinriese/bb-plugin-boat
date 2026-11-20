@@ -342,6 +342,7 @@ export function registerRpc(runtime: Runtime): void {
       service.sandboxProvider(task),
       task.sandboxId !== null && OPEN_STATUSES.includes(task.status) ? sizeOf(task.sandboxId, task) : null,
       service.sandboxProviders.default.id,
+      task.sandboxId,
     );
 
   function providerFailure(task: Task): TaskDto["providerFailure"] {
@@ -487,7 +488,7 @@ export function registerRpc(runtime: Runtime): void {
               sandbox,
               own.map((task) => task.id),
               sandboxUses(sandbox.id, tasks, chats, orchestrators),
-              macView(sandbox.id) ?? runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id),
+              macView(sandbox.id) ?? runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id, sandbox.id),
             );
             if (result.runsOn?.os === "macos") {
               const now = Date.now();

@@ -292,7 +292,7 @@ test("the task line, the sandbox cell and the chip say where work runs", () => {
   assert.equal(runsOnLine(RUNS_ON.boatUnknown, "Small"), "boat.dev · Small");
   assert.equal(runsOnLine(RUNS_ON.instaboxLinux), "Instabox · Linux · per second");
   assert.equal(runsOnLine(RUNS_ON.instaboxMac), "Instabox · Mac M2 · lease ends Thu 14:00");
-  assert.equal(runsOnLine(RUNS_ON.yourMac), "on Your Mac · $0 rent");
+  assert.equal(runsOnLine(RUNS_ON.yourMac), "Your Mac · MacBook Pro · $0");
   assert.equal(runsOnMachine(RUNS_ON.instaboxMacSandbox), "Instabox · Mac M2");
   assert.equal(chipProvider(RUNS_ON.boatDefault), null, "nothing on a boat.dev chip");
   assert.equal(chipProvider(undefined), null);

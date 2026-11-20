@@ -403,3 +403,77 @@ On macOS, Claude Code stores local logins in the **Keychain**. File-based cleanu
 Usage and the footer read boat.dev's reset from its provider plan, and Instabox's allowance and reset from `usage.cost.allowanceUSD` and `usage.cost.periodEnd`. Older Instabox responses show usage so far without inventing a credit allowance or period. Its credit is account-wide: when Mac charges are present, the UI says that credit includes them. Linux hours include deleted machines when usage identifies their operating system; otherwise the value is labelled **running machines only**. Unavailable usage is omitted. Mac estimates remain separate per provider and currency; **Today** excludes Mac time from Linux dollars and shows Scaleway euros separately, without conversion. Times use a 24-hour clock.
 
 Stopped sandboxes started by a task have hover **Delete** beside **Resume**, with Delete also visible on touch screens and keyboard focus. Stopped sandboxes with no task or chat have **Delete** with confirmation; running ones have **Stop**. There is no bulk stop: an external review or plugin may still use an unowned sandbox. Key actions lead to bb's existing secret settings; the plugin SDK does not expose a separate secure-entry dialog.
+
+## Your Mac
+
+Your Mac runs macOS tasks at **$0 incremental rent** on a Mac you already own.
+Electricity, network and wear still cost you. It is off by default. A checkout
+folder alone does not isolate a task from your files: use a VM (preferred) or a
+separate **standard** user. Never use your personal login. Administrator accounts
+are refused, even inside a VM.
+
+For a VM, use an Apple Virtualization framework macOS guest, for example with
+UTM or Tart on supported Apple hardware. Create a standard execution user in the
+guest, install macOS updates and enable Remote Login for that user only. Keep the
+guest user logged in. The plugin does not create or manage VMs.
+
+For a separate account, create a standard macOS user in System Settings → Users
+& Groups. Log in to it once and leave its session logged in (fast user switching
+is fine). In Sharing → Remote Login, allow only that execution user. This shares
+the Mac's kernel and is weaker isolation than a VM. Use a VM for untrusted work.
+
+In either case, authorize a public SSH key for the execution user and keep the
+private key in your own SSH agent. Verify the guest/account's host key yourself
+with an initial SSH connection, then add a host alias in your SSH config:
+
+```sshconfig
+Host task-mac
+  HostName mac-guest.local
+  User taskworker
+  ForwardAgent no
+```
+
+Use the real guest or Mac address and standard user's name. No agent forwarding
+is needed. In Harbormaster Settings → Sandbox providers → Your Mac, enter only
+`task-mac`, set the task limit (default 1), and choose “Use for Mac tasks”. The “Runs in” control records whether you prepared a VM or a separate user; it never creates either. While the first-time setup design is pending, the alias, task limit and pause fields use the existing settings fields above the provider rows. The plugin never
+reads private keys or stores key paths. OpenSSH uses your config and agent;
+unknown host keys and interactive password prompts are refused.
+
+Never share personal home folders, cloud account sync, personal keychains,
+clipboard sharing or signing keys into the execution account or VM. Do not give
+it administrator privileges. Each task gets a separate credential home within
+the execution account; those folders are not security boundaries between tasks
+running as the same user. Tasks in this account can read each other's files and
+use their GitHub access and pooled AI quota. Run only mutually trusted work.
+
+Before first use and every task, Harbormaster compares the target's hashed
+hardware UUID and user name/uid with the bb server and refuses the server's own
+login on the same Mac. A second standard user or VM passes. When bb runs on a
+different machine, it cannot identify that remote Mac's personal login: **you
+must choose the dedicated execution account**, never a personal standard user.
+
+Availability requires a fresh read-only SSH heartbeat, mains power, a logged-in
+execution session, free RAM and CPU, and room below the task limit. At least
+4 GiB or 25% of memory (whichever is larger) and one CPU are reserved as headroom.
+A task session reserves its slot until it closes. The status is cached for 45 seconds; task admission checks again. Pause stops
+new tasks. Sleep, lid closure, reboot or loss of network makes it unavailable.
+Harbormaster never wakes the Mac or changes power, sleep, login or disk-protection
+settings. Those remain your choices.
+
+Mac tasks check Your Mac first, then existing rented capacity and held day
+leases, then an approved new day lease. A project already set to a rental
+provider retains that approved rental route when Your Mac is unavailable. A
+project set to Your Mac gets the next rental's price estimate and must select
+that provider in Runs on before starting a new rental; it never silently rents.
+No monthly machine enrollment UI is provided here; monthly Macs remain the
+existing suggestion/enrollment seam. Linux routing is unchanged.
+
+Repository tasks reuse **GitHub token for rented machines** from bb secrets;
+use selected repositories, Contents/Pull requests/Workflows read and write, and
+90-day expiry. Agent traffic uses Account Pooler's existing proxy via bb Connect;
+no personal AI login is copied. Each task's close or cancel removes and verifies
+its provisioned logins and removes its bb machine to revoke proxy access, while
+keeping the Mac and checkout. Cleanup failures remain visible in Settings; restore
+SSH and close the task again to retry. There is no cleanup bypass or destructive
+recovery action. A disconnected task is not automatically replayed; inspect its
+work before starting another task.

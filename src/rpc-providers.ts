@@ -86,8 +86,8 @@ export function providerLabel(id: string, provider?: Pick<SandboxProvider, "disp
  * ("Default"); another provider names the system too ("Linux · Default"),
  * since it may offer more than one.
  */
-export function runsOnOf(provider: Pick<SandboxProvider, "id" | "displayName" | "caps">, size: MachineType | null, defaultId: string): RunsOnDto {
-  if (provider.id === "ownmac") return {provider:provider.id,label:"Your Mac",os:"macos",machine:null,note:"$0 rent",detail:null};
+export function runsOnOf(provider: Pick<SandboxProvider, "id" | "displayName" | "caps" | "runsOnMachine">, size: MachineType | null, defaultId: string, sandboxId?: string | null): RunsOnDto {
+  if (provider.id === "ownmac") return {provider:provider.id,label:"Your Mac",os:"macos",machine:provider.runsOnMachine?.(sandboxId) ?? null,note:"$0",detail:"$0 · keep it awake and on power"};
   const sizeLabel = size === null ? null : SIZE_SPECS[size].label;
   const system = provider.caps.os === "macos" ? "Mac" : "Linux";
   const machine = provider.id === defaultId ? sizeLabel : [system, sizeLabel].filter(Boolean).join(" · ");
@@ -192,7 +192,7 @@ function projectRow(project: BoatProject, registry: ProviderRegistry): ProjectRu
   const provider = project.sandboxProvider ?? registry.default.id;
   const os = project.sandboxSystem ?? registry.get(provider)?.caps.os ?? "linux";
   const repo = project.repos[0]?.repo ?? project.name;
-  return { projectId: project.id, name: project.name, detail: `${repo} · ${os === "macos" ? "Mac" : "Linux"}`, provider: os === "macos" ? `${provider}-macos` : provider, chosen: project.sandboxProvider !== undefined };
+  return { projectId: project.id, name: project.name, detail: provider === "ownmac" ? "Needs a Mac · falls back to a monthly Mac, then an enabled day lease" : `${repo} · ${os === "macos" ? "Mac" : "Linux"}`, provider: os === "macos" ? `${provider}-macos` : provider, chosen: project.sandboxProvider !== undefined };
 }
 
 /** Settings › Sandbox providers and Runs on, from the registry, boat.dev's reading and the projects. */
@@ -235,7 +235,7 @@ export function providersView(input: {
   const options: RunsOnOptionDto[] = rows
     // A monthly Mac is a choice once one is enrolled.
     .filter((row) => row.kind !== "monthly-mac" || (row.available && row.connection === "connected"))
-    .map((row) => { const macOnly=registry.all.find(provider=>provider.id===row.id)?.caps.os==="macos"; return {provider:macOnly?`${row.id}-macos`:row.id,label:macOnly?`${row.label} · Mac`:row.label,disabledReason:pickProblem(row)}; });
+    .map((row) => { const macOnly=registry.all.find(provider=>provider.id===row.id)?.caps.os==="macos"; return {provider:macOnly?`${row.id}-macos`:row.id,label:macOnly && row.id!=="ownmac"?`${row.label} · Mac`:row.label,disabledReason:pickProblem(row)}; });
   for (const provider of registry.enabled) {
     const row = rows.find(row => row.id === provider.id);
     const ready = input.macReady?.has(provider.id) ?? (provider.caps.systems ?? [provider.caps.os]).includes("macos");

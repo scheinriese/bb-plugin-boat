@@ -108,6 +108,7 @@ export function FooterUsage({
           Instabox account credit includes Mac charges.
         </p>
       )}
+      {mac?.ownMac && <FooterMeter label="Your Mac" value="$0 rent" detail={`${mac.ownMac.running} of ${mac.ownMac.max} tasks running · ${mac.ownMac.status}`}/> }
       {[...macGroups].map(([provider,leases]) => {
         const states = [...new Set(leases.map(lease=>leaseState(lease).text))];
         const terms = [...new Set(leases.map(lease=>`${lease.size.toUpperCase()} · ${money(lease.minimumCost,lease.currency)} minimum, then ${money(lease.hourPrice,lease.currency)} / h`))];
