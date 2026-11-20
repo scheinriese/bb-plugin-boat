@@ -283,6 +283,7 @@ export function OwnMacRentalCard({
           <ul className="mt-2 space-y-1">{notice.unavailable!.map((option, index) => <li key={`${option.provider}:${index}`} className="break-words"><span className="text-[#D0D0D0]">{option.label}:</span> {option.reason}</li>)}</ul>
         </details>}
         {q && <p className="text-xs leading-[18px] text-[#8A8A8A] max-sm:text-[13px] max-sm:leading-5">{q.checkedAt ? `Selected quote checked ${new Date(q.checkedAt).toLocaleTimeString("en-US", {hour:"2-digit",minute:"2-digit",hourCycle:"h23"})}. ` : ""}Price and availability are checked again before any rental.</p>}
+        {q && <p className="text-[13px] leading-5 text-[#A8A8A8]">Remote computer use is not confirmed by these quotes.</p>}
         {q && <div className="space-y-2.5">
           <button className="min-h-[52px] w-full rounded-lg bg-[#E6E6E6] px-3 py-2 text-center text-sm font-medium leading-5 text-[#141414] disabled:opacity-50 sm:min-h-8 sm:w-auto sm:rounded-md sm:py-1.5 sm:text-[13px]" disabled={busy || expired || !onAnswer} onClick={() => onAnswer?.("rent")}>
             <span className="block">{approving ? "Starting rental…" : `Rent ${q.label} Mac · ${price} ${q.currency}`}</span>

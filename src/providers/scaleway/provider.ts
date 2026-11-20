@@ -132,18 +132,24 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
   }
   const caps: SandboxProvider["caps"] = { os: "macos", systems: [], shell: "bash", homeDir: "~", execMaxSeconds: 3600, stopKeepsDisk: true, retentionAfterStopSeconds: null, environments: false, autoStop: null, agentBusyState: false, previews: "token-link", bbEnrollment: true, headlessAgentRunner: false, concurrencyUnit: "kept-sandboxes" };
   const unsupported = async (): Promise<never> => { throw fail("Scaleway Macs run tasks as bb chats. This operation is not available.", "unsupported"); };
-  async function models(signal?: AbortSignal, stockOnly = false): Promise<MacModel[]> {
+  async function models(signal?: AbortSignal, stockOnly = false, explainEmpty = false): Promise<MacModel[]> {
     caps.systems = [];
     const { zone } = await api.config();
     const types = await api.parse(z.object({ server_types: z.array(typeSchema) }), "GET", `${await api.base()}/server-types`, undefined, signal);
     const products = await api.pages(`/product-catalog/v2alpha1/public-catalog/products?product_types=apple_silicon&zone=${zone}`, "products", productSchema, signal);
-    const result = types.server_types.flatMap(type => {
-      if (type.default_os.is_beta || /asahi|linux/i.test(type.name + type.default_os.name) || (stockOnly && !["low_stock", "high_stock"].includes(type.stock))) return [];
+    const stable = types.server_types.filter(type => !type.default_os.is_beta && !/asahi|linux/i.test(type.name + type.default_os.name));
+    const result = stable.flatMap(type => {
+      if (stockOnly && !["low_stock", "high_stock"].includes(type.stock)) return [];
       const price = products.find(p => p.locality.zone === zone && ["general_availability", "public_beta"].includes(p.status) && p.properties.apple_silicon?.server_type === type.name && p.unit_of_measure.unit === "hour" && p.unit_of_measure.size === 1 && p.price.retail_price.currency_code === "EUR")?.price.retail_price;
       if (!price || price.units + price.nanos / 1e9 <= 0) return [];
       return [{ id: type.name, label: type.name, cpus: type.cpu.core_count, memoryMiB: type.memory.capacity / 1048576, minimumCost: (price.units + price.nanos / 1e9) * 24, minimumHours: 24, hourPrice: price.units + price.nanos / 1e9, currency: "EUR", region: zone }];
     }).sort((a,b) => a.minimumCost-b.minimumCost);
     if (result.length) caps.systems = ["macos"];
+    if (explainEmpty && !result.length) {
+      if (!types.server_types.length) throw fail(`Scaleway returned no Apple silicon server types in ${zone}.`, "mac_models_unavailable");
+      if (!stable.length) throw fail(`Scaleway returned no supported stable macOS default OS in ${zone}. Beta and Linux defaults are not eligible.`, "mac_os_unavailable");
+      throw fail(`Scaleway returned no matching positive hourly EUR price for eligible Mac models in ${zone}.`, "mac_pricing_unavailable");
+    }
     return result;
   }
   async function servers(signal?: AbortSignal, organization = false) {
@@ -154,7 +160,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
   }
   async function available(signal?: AbortSignal, includeUnavailable = false) {
     const { zone } = await api.config();
-    const catalog = await models(signal, !includeUnavailable);
+    const catalog = await models(signal, !includeUnavailable, includeUnavailable);
     const stock = includeUnavailable ? await api.parse(z.object({ server_types: z.array(typeSchema) }), "GET", `${await api.base()}/server-types`, undefined, signal) : null;
     const listed = await servers(signal, true);
     const quota = await api.pages(`/iam/v1alpha1/quota?organization_id=${encodeURIComponent(listed.project.organization_id)}`, "quota", quotaSchema, signal);

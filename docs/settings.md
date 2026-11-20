@@ -650,6 +650,11 @@ usage checks can block the start.
 Quotes also carry optional live `cpus`, `memoryMiB`, `region` and `checkedAt`
 facts. Older quotes remain valid without them; missing facts display as not
 listed. Catalog or hardware facts do not establish GUI automation readiness.
+The approval card states that these quotes do not confirm remote computer use.
+If Scaleway cannot quote, the rental lookup distinguishes an empty server-type
+list, unsupported default operating systems and missing matching positive hourly
+EUR pricing in the configured zone. A connected account or presentation-ready
+provider does not establish a rentable, priced model.
 
 **Keep it queued** records a task-only deferral, without rental consent or a
 project setting change. It prevents automatic placement when Your Mac returns;

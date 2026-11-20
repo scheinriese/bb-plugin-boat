@@ -11,6 +11,7 @@ No unresolved P0, P1 or P2 findings within this scope. Comparison fixes included
 - Tokens: selected surface/border, blue recommendation chip/radio, orange total, amber attention state and neutral surfaces use the supplied palette. Meaningful secondary instructions use the readable secondary gray.
 - Assets: no raster or decorative assets are needed. Existing host icons and native radio controls are retained; device and application chrome are not recreated.
 - Content: totals, minimum duration, ongoing rate and currency are explicit. Hardware and region come from quote facts or say Not listed. Preference-based recommendations are identified; cross-currency boundaries are conditional calculations, not exchange-rate assumptions. GUI readiness and automatic hand-back are not promised by a quote.
+- Remote-use priority: the quote's inability to confirm remote computer use is visible before confirmation, outside collapsed rental details.
 - Interaction: keyboard selection updates the exact provider/price confirmation and keeps radio focus in the fake interactive preview. Keep it queued remains on the same request; subsequent approval reaches a fake receipt. Expired offers disable confirmation; no-offer state has no confirmation. Browser console reports no errors.
 - Pending page: choice precedes details, status says Waiting for your choice, and queued/not-started metadata replaces finished/turn-count placeholders. Brief remains available; cancellation uses the existing native action.
 

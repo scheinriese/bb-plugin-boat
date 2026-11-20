@@ -308,6 +308,10 @@ test("Mac rental choices use responsive controls and bind visible consent to one
   assert.equal((html.match(/>Rent (?:Scaleway|Instabox) Mac · /g) ?? []).length, 1, "one visible approve action");
   for (const text of ["$10.80", "USD total for the first 24 h", "€5.28", "EUR total for the first 24 h", "24 h, paid even if handed back sooner", "then €0.22 / h", "Recommended", "Project preference: Scaleway", "No exchange rate is assumed", "Approve one Scaleway Mac mini M4 rental for this task", "paid Claude usage", "Unavailable choices", "No compatible model", "Refresh offers"]) assert.ok(html.includes(text), text);
   assert.match(html, /Rent Scaleway Mac · €5.28 EUR/);
+  const remoteNotice = html.indexOf("Remote computer use is not confirmed by these quotes.");
+  assert.ok(remoteNotice >= 0 && remoteNotice < html.indexOf("Rent Scaleway Mac ·"), "remote-use uncertainty is visible before spending consent");
+  const beforeNotice = html.slice(0, remoteNotice);
+  assert.ok(beforeNotice.lastIndexOf("<details") <= beforeNotice.lastIndexOf("</details>"), "remote-use notice is outside collapsed details");
   assert.match(html, /type="radio"[^>]*checked=""[^>]*\/>/);
 });
 

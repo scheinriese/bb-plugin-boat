@@ -33,6 +33,7 @@ async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25, cre
   const calls: { method: string; path: string; body: any }[] = [], ssh: SshRequest[] = [];
   let servers: any[] = [], quota = 2, available = true, beta = false, failSetup = false, ambiguousCreate = false, ambiguousAbsent = false, failList = false, failSchedule = false, noAgentLogin = false, noGithubLogin = false, poll = 0;
   let secondModel = false;
+  let catalogProducts:unknown[]|null=null, listedTypes:unknown[]|null=null;
   let createGate: { entered(): void; ready: Promise<void> } | null = null;
   let failKey = false, sshCode = 0, rawFailures = 0;
   let forcedState: string | null = null;
@@ -42,7 +43,9 @@ async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25, cre
     const u = new URL(url), method = init.method!, path = u.pathname, body = init.body ? JSON.parse(String(init.body)) : null;
     calls.push({ method, path, body }); order.push(`${method} ${path}`);
     const json = (value: unknown) => new Response(JSON.stringify(value));
+    if (path.includes("public-catalog") && catalogProducts) return json({products:catalogProducts,total_count:catalogProducts.length});
     if (path.includes("public-catalog")) return json({ products: [product, { ...product, unit_of_measure: { unit: "month", size: 1 } }, ...(secondModel ? [{...product, properties:{apple_silicon:{server_type:"M2-M"}}}] : [])], total_count: secondModel ? 3 : 2 });
+    if (path.endsWith("server-types") && listedTypes) return json({server_types:listedTypes});
     if (path.endsWith("server-types")) return json({ server_types: [{ ...type, default_os: { ...type.default_os, is_beta: beta }, stock: available ? "high_stock" : "no_stock" }, ...(secondModel ? [{...type,name:"M2-M"}] : [])] });
     if (path.includes("/projects/")) return json({ organization_id: "org" });
     if (path.endsWith("quota")) return json({ quota: [{ name: "apple_silicon_m1_m", limits: [{ zone: "fr-par-3", limit: quota }] }, ...(secondModel ? [{name:"apple_silicon_m2_m",limits:[{zone:"fr-par-3",limit:quota}]}] : [])], total_count: secondModel ? 2 : 1 });
@@ -81,7 +84,7 @@ async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25, cre
     const waiting=new Promise<void>(resolve=>{entered=resolve;});
     createGate={entered,ready};return {entered:waiting,release};
   };
-  return { secondModel: () => { secondModel=true; }, failNextServerGets: (count:number) => { rawFailures=count; }, remainingGetFailures: () => rawFailures, makeProvider, sshExit: (code: number) => { sshCode = code; }, status: (state: string) => { forcedState = state; }, onSsh: (hook: typeof sshHook) => { sshHook = hook; }, order, blockCreate, failKey:()=>{failKey=true;}, api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, beta: () => { beta=true; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, ambiguousAbsent:()=>{ambiguousAbsent=true;}, listFailure:(value:boolean)=>{failList=value;}, scheduleFailure:()=>{failSchedule=true;}, noAgentLogin:()=>{noAgentLogin=true;}, noGithubLogin:()=>{noGithubLogin=true;}, servers: () => servers };
+  return { catalogProducts:(products:unknown[])=>{catalogProducts=products;}, listedTypes:(types:unknown[])=>{listedTypes=types;}, secondModel: () => { secondModel=true; }, failNextServerGets: (count:number) => { rawFailures=count; }, remainingGetFailures: () => rawFailures, makeProvider, sshExit: (code: number) => { sshCode = code; }, status: (state: string) => { forcedState = state; }, onSsh: (hook: typeof sshHook) => { sshHook = hook; }, order, blockCreate, failKey:()=>{failKey=true;}, api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, beta: () => { beta=true; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, ambiguousAbsent:()=>{ambiguousAbsent=true;}, listFailure:(value:boolean)=>{failList=value;}, scheduleFailure:()=>{failSchedule=true;}, noAgentLogin:()=>{noAgentLogin=true;}, noGithubLogin:()=>{noGithubLogin=true;}, servers: () => servers };
 }
 test("Scaleway create waits for delivered and SSH, bootstraps tools, stores a private key and releases it", async t => {
   const f=await fixture(t); const sandbox=await f.create();
@@ -948,4 +951,23 @@ test("Scaleway allocation honors the explicitly approved model instead of the fi
   await f.provider.allocate!({name:"fake selection",type:"default",system:"macos",ttlSeconds:3600,gitGuard:true,
     macCostLimit:{...model,modelLabel:model.label,provider:"scaleway",model:model.id,expiresAt:new Date(Date.now()+600000).toISOString()}});
   assert.equal(f.calls.find(call => call.method === "POST" && call.path.endsWith("/servers"))!.body.type, "M2-M");
+});
+
+
+for(const scenario of [
+  {label:"empty server-type list",types:[],products:[product],reason:/no Apple silicon server types.*fr-par-3/i},
+  {label:"beta-only default OS",types:[{...type,default_os:{...type.default_os,is_beta:true}}],products:[product],reason:/no supported stable macOS.*fr-par-3/i},
+  {label:"Linux default OS",types:[{...type,default_os:{...type.default_os,name:"Asahi Linux"}}],products:[product],reason:/no supported stable macOS.*fr-par-3/i},
+  {label:"missing catalog price",types:[type],products:[],reason:/no matching positive hourly EUR price.*fr-par-3/i},
+  {label:"wrong-zone catalog price",types:[type],products:[{...product,locality:{zone:"fr-par-1"}}],reason:/no matching positive hourly EUR price.*fr-par-3/i},
+  {label:"non-hourly catalog price",types:[type],products:[{...product,unit_of_measure:{unit:"month",size:1}}],reason:/no matching positive hourly EUR price.*fr-par-3/i},
+  {label:"non-EUR catalog price",types:[type],products:[{...product,price:{retail_price:{...product.price.retail_price,currency_code:"USD"}}}],reason:/no matching positive hourly EUR price.*fr-par-3/i},
+  {label:"zero catalog price",types:[type],products:[{...product,price:{retail_price:{...product.price.retail_price,units:0,nanos:0}}}],reason:/no matching positive hourly EUR price.*fr-par-3/i},
+])test(`rental diagnostics distinguish ${scenario.label} without claiming stock or allocating`,async t=>{
+  const f=await fixture(t);f.catalogProducts(scenario.products);f.listedTypes(scenario.types);
+  assert.deepEqual(await f.provider.macModels!(),[],"presentation model lookup remains a read-only empty result");
+  await assert.rejects(f.provider.macRentalModels!(),error=>{
+    assert.match(String(error),scenario.reason);assert.doesNotMatch(String(error),/quota.*exhaust|no stock/i);return true;
+  });
+  assert.equal(f.calls.filter(call=>call.method!=="GET").length,0);assert.equal(f.ssh.length,0);assert.equal(f.store.macLeases.held().length,0);
 });
