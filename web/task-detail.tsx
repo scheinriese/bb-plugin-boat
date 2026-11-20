@@ -104,29 +104,33 @@ function useSandboxLink(task: TaskDetailDto): SandboxLinkState {
 
 function TaskView({ task }: { task: TaskDetailDto }) {
   const now = useNow();
-  const [tab, setTab] = useState<TabId>(task.result ? "report" : "transcript");
+  const [tab, setTab] = useState<TabId>(task.macRentalPending ? "brief" : task.result ? "report" : "transcript");
   const baseId = useId();
   const link = useSandboxLink(task);
+  const tabs = task.macRentalPending ? TABS.filter(item => item.id === "brief" || item.id === "history") : TABS;
+  const selectedTab = tabs.some(item => item.id === tab) ? tab : tabs[0]!.id;
 
   return (
     <div className="flex min-h-full flex-col">
       <div className={cn(COLUMN, "flex-1 space-y-5 pb-6 pt-3 md:pt-4")}>
         <BackLink />
         <TaskHeader task={task} now={now} />
-        <TaskActions task={task} link={link} />
+        {task.macRentalPending && <LiveOwnMacNotices showTaskTitle={false} taskId={task.id} />}
+        {!task.macRentalPending && <TaskActions task={task} link={link} />}
         <TaskMeta task={task} link={link} />
-        <TaskDesignControl task={task} />
+        {task.macRentalPending && <TaskActions task={task} link={link} />}
+        {!task.macRentalPending && <><TaskDesignControl task={task} />
         <ShipApprovalPanel task={task} />
         <SandboxSizePanel task={task} />
         <SnapshotOffer task={task} />
         <TestTaskNext task={task} />
-        <PreviewsSection threadId={null} taskId={task.id} showTask={false} />
+        <PreviewsSection threadId={null} taskId={task.id} showTask={false} /></>}
         <div className="space-y-4">
-          <TabBar value={tab} onChange={setTab} baseId={baseId} historyCount={task.events.length} />
-          <div role="tabpanel" id={`${baseId}-panel-${tab}`} aria-labelledby={`${baseId}-tab-${tab}`}>
-            {tab === "report" ? (
+          <TabBar value={selectedTab} onChange={setTab} baseId={baseId} historyCount={task.events.length} tabs={tabs} />
+          <div role="tabpanel" id={`${baseId}-panel-${selectedTab}`} aria-labelledby={`${baseId}-tab-${selectedTab}`}>
+            {selectedTab === "report" ? (
               <ReportPanel task={task} />
-            ) : tab === "transcript" ? (
+            ) : selectedTab === "transcript" ? (
               task.runner === "chat" && task.conversationId !== null ? (
                 // Moved from boat (Continue as a chat): the chat, then the old conversation.
                 <div className="space-y-4">
@@ -140,7 +144,7 @@ function TaskView({ task }: { task: TaskDetailDto }) {
               ) : (
                 <TranscriptPanel task={task} />
               )
-            ) : tab === "brief" ? (
+            ) : selectedTab === "brief" ? (
               <Markdown content={task.brief} className="text-sm" />
             ) : (
               <HistoryPanel task={task} />
@@ -148,7 +152,7 @@ function TaskView({ task }: { task: TaskDetailDto }) {
           </div>
         </div>
       </div>
-      <ReplyBox task={task} />
+      {!task.macRentalPending && <ReplyBox task={task} />}
     </div>
   );
 }
@@ -156,6 +160,14 @@ function TaskView({ task }: { task: TaskDetailDto }) {
 // -------------------------------------------------------------------- header
 
 function TaskHeader({ task, now }: { task: TaskDetailDto; now: number }) {
+  if (task.macRentalPending) return <header className="space-y-2">
+    <h1 className="text-xl font-semibold leading-[26px] text-pretty text-foreground">{task.title}</h1>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-muted-foreground">
+      <PhasePill task={task} />
+      <span className="tabular-nums">Queued {clockTime(task.createdAt)}</span>
+      <span>Not started</span>
+    </div>
+  </header>;
   return (
     <header className="flex items-start gap-3">
       <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-border bg-card">
@@ -166,7 +178,7 @@ function TaskHeader({ task, now }: { task: TaskDetailDto; now: number }) {
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span>{ROLE_LABEL[task.role]}</span>
           <AgentBadge provider={task.provider} model={task.model} />
-          <span className="tabular-nums">{task.macRentalPending ? "Not started" : plural(task.turns, "turn")}</span>
+          <span className="tabular-nums">{plural(task.turns, "turn")}</span>
           <span className="font-mono">{task.id}</span>
           <span className="tabular-nums">updated {relativeTime(task.updatedAt, now)}</span>
         </div>
@@ -195,6 +207,17 @@ function MetaRow({ label, icon, children }: { label: string; icon: string; child
 function TaskMeta({ task, link }: { task: TaskDetailDto; link: SandboxLinkState }) {
   const navigate = useBbNavigate();
   const { openTask, openOrchestrator } = useCloudAgentsNavigation();
+  if (task.macRentalPending) return <section aria-label="Task details" className="space-y-2">
+    <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 rounded-lg border border-border bg-card px-4 py-3">
+      {task.repo && <MetaRow label="Repository" icon="FolderGit"><span className="min-w-0 break-all">{shortRepo(task.repo)}</span></MetaRow>}
+      <MetaRow label="Started by" icon="MessageSquare">
+        {task.source.threadId ? task.source.title ? <button type="button" onClick={() => task.source.threadId && navigate.toThread(task.source.threadId)} className="min-w-0 truncate text-left text-sm hover:underline">{task.source.title}</button> : <ThreadLink threadId={task.source.threadId} label={task.source.kind === "orchestrator" ? "Orchestrator chat" : "Source chat"} className="min-w-0 truncate text-sm" /> : <Muted>you</Muted>}
+      </MetaRow>
+      <MetaRow label="Agent" icon="Bot"><AgentBadge provider={task.provider} model={task.model} /></MetaRow>
+      <MetaRow label="Requested" icon="Clock"><span className="text-xs tabular-nums text-muted-foreground">{dateTime(task.createdAt)}</span></MetaRow>
+    </dl>
+    <p className="text-xs leading-5 text-muted-foreground">The branch, task chat and pull request will appear after the task starts.</p>
+  </section>;
   return (
     <div className="space-y-3">
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-6 gap-y-2 rounded-lg border border-border bg-card px-4 py-3">
@@ -290,7 +313,7 @@ function TaskMeta({ task, link }: { task: TaskDetailDto; link: SandboxLinkState 
         </MetaRow>
       </dl>
       {/* Out of memory: the size panel below says it, with what to do. */}
-      <LiveOwnMacNotices taskId={task.id}/>{task.providerFailure ? <TaskProviderFailure task={task}/> : !task.macRentalPending && task.error && !task.memory?.oom ? <InlineAlert>{task.error}</InlineAlert> : null}
+      <LiveOwnMacNotices showTaskTitle={false} taskId={task.id}/>{task.providerFailure ? <TaskProviderFailure task={task}/> : !task.macRentalPending && task.error && !task.memory?.oom ? <InlineAlert>{task.error}</InlineAlert> : null}
     </div>
   );
 }
@@ -415,6 +438,11 @@ function TaskActions({ task, link }: { task: TaskDetailDto; link: SandboxLinkSta
     }
   };
 
+  if (task.macRentalPending) return <div className="flex flex-wrap items-center gap-2">
+    <Button variant="outline" size="sm" onClick={() => setClosing(true)}><Icon name="Square" /> Cancel task</Button>
+    <CloseTaskDialog task={task} open={closing} onOpenChange={setClosing} />
+  </div>;
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -497,29 +525,31 @@ function TabBar({
   onChange,
   baseId,
   historyCount,
+  tabs = TABS,
 }: {
   value: TabId;
   onChange: (tab: TabId) => void;
   baseId: string;
   historyCount: number;
+  tabs?: readonly { id: TabId; label: string }[];
 }) {
   const refs = useRef<Partial<Record<TabId, HTMLButtonElement | null>>>({});
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const index = TABS.findIndex((tab) => tab.id === value);
+    const index = tabs.findIndex((tab) => tab.id === value);
     let next = index;
-    if (event.key === "ArrowRight") next = (index + 1) % TABS.length;
-    else if (event.key === "ArrowLeft") next = (index - 1 + TABS.length) % TABS.length;
+    if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
     else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = TABS.length - 1;
+    else if (event.key === "End") next = tabs.length - 1;
     else return;
     event.preventDefault();
-    const tab = TABS[next]!.id;
+    const tab = tabs[next]!.id;
     onChange(tab);
     refs.current[tab]?.focus();
   };
   return (
     <div role="tablist" aria-label="Task details" onKeyDown={onKeyDown} className="flex gap-1 border-b border-border">
-      {TABS.map((tab) => {
+      {tabs.map((tab) => {
         const selected = tab.id === value;
         return (
           <button

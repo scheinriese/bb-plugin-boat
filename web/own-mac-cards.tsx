@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from "react";
 import type { OwnMacFacts, OwnMacNotice } from "../contract-ownmac";
 import { OWN_MAC_GUIDE } from "../contract-ownmac";
 import { money, leaseTime } from "./provider-format";
+import { compareRentalOffers } from "./mac-rental-logic";
 import { cn } from "@/lib/utils";
 const primary =
   "rounded-md bg-[#E6E6E6] px-3 py-[5px] text-xs leading-4 font-medium text-[#141414] disabled:opacity-50 max-sm:w-full max-sm:rounded-lg max-sm:py-2 max-sm:text-sm";
@@ -178,6 +179,7 @@ export function OwnMacRefusalCard({
 }
 export function OwnMacRentalCard({
   notice,
+  showTaskTitle = true,
   onAnswer,
   onSelect,
   onRefresh,
@@ -187,7 +189,8 @@ export function OwnMacRentalCard({
   onOwnWords,
 }: {
   notice: OwnMacNotice;
-  onAnswer?: (answer: "rent" | "wait") => void;
+  showTaskTitle?: boolean;
+  onAnswer?: (answer: "rent" | "wait" | "queue") => void;
   onSelect?: (quoteId: string) => void;
   onRefresh?: () => void;
   busy?: boolean;
@@ -211,59 +214,94 @@ export function OwnMacRentalCard({
     return <p className="text-[13px] leading-5 text-[#A8A8A8]">Your Mac is available again, so “{notice.title}” runs on your Mac. No extra cost.</p>;
   if (notice.answer === "rent" && notice.replacementId)
     return <div role="status" className="max-w-[720px] rounded-[10px] border border-[#2A2A2A] bg-[#181818] px-3.5 py-3 text-[13px] leading-5 text-[#A8A8A8]">You approved one {q?.label} {q?.modelLabel} rental for {price} {q?.currency} minimum. Starting the task; check its status below.</div>;
+  const orderedOffers = [...offers].sort((a, b) => Number(b.id === notice.recommendedQuoteId) - Number(a.id === notice.recommendedQuoteId));
+  const comparison = q ? compareRentalOffers(q, offers.find(other => other.id !== q.id)) : undefined;
+  const rationale = [q && q.id === notice.recommendedQuoteId ? notice.recommendationReason : undefined, comparison].filter(Boolean).join(" ");
+  const rentalAction = "min-h-11 rounded-md border border-[#333333] px-3 py-2 text-[13px] leading-5 text-[#D0D0D0] disabled:opacity-50 max-sm:flex-1 max-sm:text-sm";
   return (
-    <section aria-label="Mac rental choice" aria-busy={busy || undefined} className="min-w-0 max-w-[720px] overflow-hidden rounded-[10px] border border-[#3D3420] bg-[#181818]">
-      <div className="flex flex-wrap items-center gap-2 border-b border-[#242424] px-3.5 py-2.5 text-xs leading-4">
+    <section aria-label="Mac rental choice" aria-busy={busy || undefined} className="min-w-0 max-w-[720px] overflow-hidden rounded-[10px] border border-[#3D3420] bg-[#181818] max-sm:rounded-xl">
+      <div className="hidden flex-wrap items-center gap-2 border-b border-[#242424] px-3.5 py-2.5 text-xs leading-4 sm:flex">
         <span className="size-1.5 rounded-full bg-[#F0B135]" />
-        <span role="status" className="font-medium text-[#F0B135]">{approving ? "Starting rental…" : notice.answer === "wait" ? "Waiting for your Mac" : "Waiting for you"}</span>
-        <span className="text-[#6E6E6E]">Mac task</span>
+        <span role="status" className="font-medium text-[#F0B135]">{approving ? "Starting rental…" : notice.answer === "wait" ? "Waiting for your Mac" : notice.answer === "queue" ? "Kept queued" : "Needs you"}</span>
+        <span className="text-[#6E6E6E]">from Harbormaster · Mac task</span>
       </div>
-      <div className="space-y-3 p-3.5">
+      <div className="space-y-3 p-3.5 max-sm:space-y-3.5 max-sm:p-3">
         <div>
-          <h3 className="break-words text-[15px] font-medium leading-[22px] text-[#EDEDED]">Choose a Mac for “{notice.title}”</h3>
-          <p className="mt-1 text-[13px] leading-5 text-[#A8A8A8]">
-            {notice.canWaitForOwnMac === false
-              ? "The project's Runs on selects a rented Mac."
-              : `Your Mac ${notice.reason === "can't be used" ? "can't be used" : `is ${notice.reason}`}.`}{" "}
-            {approving ? "Checking the selected quote and starting one rental." : "The task waits until you choose; nothing is rented yet."}
+          <h3 className="break-words text-[15px] font-medium leading-[22px] text-[#EDEDED] max-sm:text-base">
+            <span className="sm:hidden">{showTaskTitle ? `Choose a Mac for “${notice.title}”` : "Choose a Mac to start this task"}</span>
+            <span className="hidden sm:inline">Rent a Mac for “{notice.title}”?</span>
+          </h3>
+          <p role="status" className="mt-1 text-[13px] leading-5 text-[#A8A8A8] max-sm:mt-1.5 max-sm:text-sm">
+            {approving
+              ? "Checking the selected quote and starting one rental."
+              : notice.answer === "queue"
+                ? "Kept queued. Nothing was rented. You can still choose a rental below."
+              : notice.answer === "wait"
+                ? "Waiting for your Mac. You can still choose a rental below."
+                : "Nothing is rented until you confirm. Your choice applies to this task only."}
           </p>
         </div>
-        {error && <p role="alert" className="break-words rounded-md border border-[#3A2424] px-3 py-2 text-[13px] leading-5 text-[#E06C6C]">{error}</p>}
-        {offers.length > 0 && <fieldset disabled={busy} className="m-0 min-w-0 space-y-2 border-0 p-0">
-          <legend className="mb-2 text-xs leading-4 text-[#8A8A8A]">Choose for this task only</legend>
-          <div className="grid min-w-0 gap-2 sm:grid-cols-2">
-            {offers.map(offer => {
+        {error && <p role="alert" className="break-words rounded-md border border-[#3A2424] px-3 py-2 text-[13px] leading-5 text-[#E06C6C] max-sm:text-sm">{error}</p>}
+        {offers.length > 0 && <fieldset role="radiogroup" aria-label="Mac rental providers" disabled={busy} className="m-0 min-w-0 border-0 p-0">
+          <legend className="sr-only">Choose a Mac rental for this task</legend>
+          <div className="grid min-w-0 items-start gap-2.5 sm:grid-cols-2">
+            {orderedOffers.map(offer => {
               const selected = q?.id === offer.id;
               const recommended = notice.recommendedQuoteId === offer.id;
               const outOfDate = Date.parse(offer.expiresAt) <= now;
-              return <label key={offer.id} className={cn("flex min-w-0 cursor-pointer items-start gap-2.5 rounded-lg border p-3 text-[13px] leading-5", selected ? "border-[#6B5B36] bg-[#211E18]" : "border-[#303030] bg-[#151515]", busy && "opacity-60")}>
-                <input type="radio" name={group} checked={selected} disabled={busy || !onSelect || outOfDate} onChange={() => onSelect?.(offer.id)} className="mt-1 shrink-0 accent-[#F0B135]" />
+              const machine = [offer.cpus ? `${offer.cpus} cores` : null, offer.memoryMiB ? `${new Intl.NumberFormat("en-US", {maximumFractionDigits: 1}).format(offer.memoryMiB / 1024)} GB memory` : null].filter(Boolean).join(" · ");
+              return <label key={offer.id} className={cn("flex min-w-0 cursor-pointer items-start gap-2 rounded-[10px] border-[1.5px] p-3 text-[13px] leading-5 max-sm:gap-2.5 max-sm:p-3.5 max-sm:text-sm", selected ? "border-[#5C82C9] bg-[#1A1F27]" : "border-[#333333] bg-[#1C1C1C]", busy && "opacity-60")}>
+                <input type="radio" name={group} checked={selected} disabled={busy || !onSelect || outOfDate} onChange={() => onSelect?.(offer.id)} className="m-0 mt-1 size-3.5 shrink-0 accent-[#7AA7FF] [color-scheme:dark] max-sm:size-[18px]" />
                 <span className="min-w-0 flex-1 break-words">
-                  <span className="block font-medium text-[#EDEDED]">{offer.label} · {offer.modelLabel}</span>
-                  {recommended && <span className="mt-1 block text-xs text-[#5BD08A]">Recommended</span>}
-                  <span className="mt-2 block text-base font-medium tabular-nums text-[#EDEDED]">{money(offer.minimumCost, offer.currency)} {offer.currency} total minimum</span>
-                  <span className="block text-xs text-[#A8A8A8]">{offer.minimumHours} h minimum · then {money(offer.hourPrice, offer.currency)} / h</span>
-                  {outOfDate && <span className="mt-1 block text-xs text-[#FC8C45]">Quote expired</span>}
+                  <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-medium text-[#EDEDED] max-sm:text-base max-sm:leading-[22px]">{offer.label} · {offer.modelLabel}</span>
+                    {recommended && <span className="rounded bg-[#22314A] px-1.5 py-px text-[11px] font-medium leading-4 text-[#9CBCFF] max-sm:text-xs">Recommended</span>}
+                  </span>
+                  <span className="mt-2 block text-[#D0D0D0]">
+                    <span className="text-[18px] font-semibold leading-6 tabular-nums text-[#FC8C45] max-sm:text-[20px] max-sm:leading-7">{money(offer.minimumCost, offer.currency)}</span>{" "}
+                    <span>{offer.currency} total for the first {offer.minimumHours} h</span>
+                  </span>
+                  <span className="mt-0.5 block text-xs leading-[18px] text-[#A8A8A8] max-sm:text-sm max-sm:leading-5">then {money(offer.hourPrice, offer.currency)} / h until released</span>
+                  <dl className={cn("mt-2.5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-[#303744] pt-2 text-xs leading-[18px] max-sm:gap-x-4 max-sm:gap-y-1.5 max-sm:text-sm max-sm:leading-5", !selected && "max-sm:hidden")}>
+                    <dt className="text-[#8A8A8A]">Minimum</dt><dd className="m-0 text-[#D0D0D0]">{offer.minimumHours} h, paid even if handed back sooner</dd>
+                    <dt className="text-[#8A8A8A]">Machine</dt><dd className="m-0 text-[#D0D0D0]">{machine || "Not listed"}</dd>
+                    <dt className="text-[#8A8A8A]">Region</dt><dd className="m-0 text-[#D0D0D0]">{offer.region || "Not listed"}</dd>
+                  </dl>
+                  {selected && rationale && <span className="mt-2.5 block text-sm leading-5 text-[#A8A8A8] sm:hidden"><span className="text-[#D0D0D0]">{recommended ? "Why this one: " : "Compared: "}</span>{rationale}</span>}
+                  {!selected && <span className="mt-2 block text-sm leading-5 text-[#A8A8A8] sm:hidden"><span className="text-[#D0D0D0]">Compared: </span>{q && offer.currency !== q.currency ? `Quoted in ${offer.currency}; no currency conversion.` : compareRentalOffers(offer, q)}</span>}
+                  {outOfDate && <span className="mt-1 block text-xs text-[#FC8C45] max-sm:text-sm">Quote expired</span>}
                 </span>
               </label>;
             })}
           </div>
         </fieldset>}
-        {notice.recommendationReason && <p className="text-xs leading-[18px] text-[#A8A8A8]">{notice.recommendationReason}</p>}
-        {!offers.length && <p role="status" className="text-[13px] leading-5 text-[#FC8C45]">No rental offer is available. Refresh to check again.</p>}
-        {expired && offers.length > 0 && <p role="status" className="text-[13px] leading-5 text-[#FC8C45]">This quote expired. Refresh offers to see the current cost before approving.</p>}
-        {(notice.unavailable?.length ?? 0) > 0 && <details className="text-xs leading-[18px] text-[#8A8A8A]">
-          <summary className="cursor-pointer">Unavailable choices ({notice.unavailable!.length})</summary>
+        {rationale && <p className="hidden text-[13px] leading-5 text-[#A8A8A8] sm:block"><span className="text-[#D0D0D0]">{q && q.id === notice.recommendedQuoteId ? "Why this one: " : "Compared: "}</span>{rationale}</p>}
+        {!offers.length && <p role="status" className="text-[13px] leading-5 text-[#FC8C45] max-sm:text-sm">No rental offer is available. Refresh to check again.</p>}
+        {expired && offers.length > 0 && <p role="status" className="text-[13px] leading-5 text-[#FC8C45] max-sm:text-sm">This quote expired. Refresh offers to see the current cost before approving.</p>}
+        {(notice.unavailable?.length ?? 0) > 0 && <details className="text-xs leading-[18px] text-[#8A8A8A] max-sm:text-sm max-sm:leading-5">
+          <summary className="min-h-6 cursor-pointer max-sm:min-h-11 max-sm:py-3">Unavailable choices ({notice.unavailable!.length})</summary>
           <ul className="mt-2 space-y-1">{notice.unavailable!.map((option, index) => <li key={`${option.provider}:${index}`} className="break-words"><span className="text-[#D0D0D0]">{option.label}:</span> {option.reason}</li>)}</ul>
         </details>}
-        {q && <p className="text-xs leading-[18px] text-[#8A8A8A]">Approve one {q.label} {q.modelLabel} rental for this task: {price} {q.currency} total for at least {q.minimumHours} h, then {money(q.hourPrice, q.currency)} {q.currency} / h until released. This does not approve another provider or paid Claude usage.</p>}
+        {q && <p className="text-xs leading-[18px] text-[#8A8A8A] max-sm:text-[13px] max-sm:leading-5">{q.checkedAt ? `Selected quote checked ${new Date(q.checkedAt).toLocaleTimeString("en-US", {hour:"2-digit",minute:"2-digit",hourCycle:"h23"})}. ` : ""}Price and availability are checked again before any rental.</p>}
+        {q && <div className="space-y-2.5">
+          <button className="min-h-[52px] w-full rounded-lg bg-[#E6E6E6] px-3 py-2 text-center text-sm font-medium leading-5 text-[#141414] disabled:opacity-50 sm:min-h-8 sm:w-auto sm:rounded-md sm:py-1.5 sm:text-[13px]" disabled={busy || expired || !onAnswer} onClick={() => onAnswer?.("rent")}>
+            <span className="block">{approving ? "Starting rental…" : `Rent ${q.label} Mac · ${price} ${q.currency}`}</span>
+            <span className="block text-xs font-normal leading-4 text-[#505050] max-sm:text-[13px] sm:hidden">then {money(q.hourPrice, q.currency)} {q.currency} / h after {q.minimumHours} h</span>
+          </button>
+          <p className="text-xs leading-[18px] text-[#8A8A8A] max-sm:text-center max-sm:text-[13px] max-sm:leading-5">One rental, for this task. Your project's “Runs on” setting doesn't change.</p>
+          <details className="text-xs leading-[18px] text-[#8A8A8A] max-sm:text-sm max-sm:leading-5">
+            <summary className="min-h-6 cursor-pointer max-sm:min-h-11 max-sm:py-3">Rental details</summary>
+            <p className="mt-1">Approve one {q.label} {q.modelLabel} rental for this task: {price} {q.currency} total for at least {q.minimumHours} h, then {money(q.hourPrice, q.currency)} {q.currency} / h until released. This does not approve another provider or paid Claude usage.</p>
+            <p className="mt-2">A rental quote does not confirm GUI automation readiness.</p>
+          </details>
+        </div>}
         <div className="flex flex-wrap items-center gap-2">
-          {q && <button className={primary} disabled={busy || expired || !onAnswer} onClick={() => onAnswer?.("rent")}>{approving ? "Starting rental…" : `Rent for ${price} ${q.currency} · ${q.label}`}</button>}
-          {notice.canWaitForOwnMac !== false && <button className={secondary} disabled={busy || !onAnswer} onClick={() => onAnswer?.("wait")}>Wait for your Mac</button>}
-          {onRefresh && <button className={secondary} disabled={busy} onClick={onRefresh}>{busy && !approving ? "Updating…" : "Refresh offers"}</button>}
+          <button className={rentalAction} disabled={busy || !onAnswer} onClick={() => onAnswer?.("queue")}>{notice.answer === "queue" ? "Kept queued" : "Keep it queued"}</button>
+          {notice.canWaitForOwnMac !== false && <button className={rentalAction} disabled={busy || !onAnswer} onClick={() => onAnswer?.("wait")}>Wait for your Mac</button>}
+          {onRefresh && <button className={rentalAction} disabled={busy} onClick={onRefresh}>{busy && !approving ? "Updating…" : "Refresh offers"}</button>}
+          {onOwnWords && <button className="min-h-11 text-xs leading-5 text-[#8A8A8A] max-sm:flex-1 max-sm:text-sm sm:ml-auto" onClick={onOwnWords}>Ask about this rental</button>}
         </div>
-        {notice.canWaitForOwnMac === false && <p className="text-xs leading-4 text-[#6E6E6E]">Choose Your Mac in Runs on to wait for it.</p>}
-        {onOwnWords && <button className={link} onClick={onOwnWords}>Ask about this rental</button>}
+        {notice.canWaitForOwnMac === false && <p className="text-xs leading-4 text-[#8A8A8A] max-sm:text-[13px] max-sm:leading-5">Choose Your Mac in Runs on to wait for it.</p>}
       </div>
     </section>
   );

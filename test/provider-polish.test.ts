@@ -276,7 +276,7 @@ test("cleanup uses the generic failed-check card and exact command family",()=>{
 });
 test("refusal, fallback and consent cards use the supplied style and real quote fields",()=>{
   const refusal=renderScene("ownmac-refusals");assert.match(refusal,/your own login/);assert.match(refusal,/physical Mac/);assert.match(refusal,/at no extra cost/);
-  const card=renderScene("ownmac-fallback");for(const text of ["Waiting for you","nothing is rented yet","Rent for $10.80","then $0.45 / h","Wait for your Mac","no new cost"])assert.ok(card.includes(text),text);
+  const card=renderScene("ownmac-fallback");for(const text of ["Needs you","Nothing is rented until you confirm","Rent Instabox Mac · $10.80 USD","then $0.45 / h","Wait for your Mac","no new cost"])assert.ok(card.includes(text),text);
 });
 test("footer and usage include task counts, no meter and zero rent",()=>{
   const html=renderScene("ownmac-footer");for(const text of ["7 on","Running 1 of 1","$0 · fake-mac-agents · on power","9 tasks this month","$0 rent","Your Mac · VM"])assert.ok(html.includes(text),text);
@@ -289,7 +289,7 @@ test("Your Mac UI explains guest power cannot prove the host is on mains",()=>{
   const html=renderScene("ownmac-available");assert.match(html,/power is read from the guest/);assert.match(html,/host battery use may not be detected/);
 });
 test("an explicit rental choice does not offer automatic Your Mac waiting",()=>{
-  const html=renderScene("ownmac-explicit-rental");assert.match(html,/Runs on selects a rented Mac/);assert.match(html,/Choose Your Mac in Runs on/);assert.doesNotMatch(html,/Wait for your Mac/);assert.match(html,/Rent for \$10.80/);
+  const html=renderScene("ownmac-explicit-rental");assert.match(html,/Your choice applies to this task only/);assert.match(html,/Choose Your Mac in Runs on/);assert.doesNotMatch(html,/Wait for your Mac/);assert.match(html,/Rent Instabox Mac · \$10.80/);
 });
 
 test("separate-user setup explains how the owner makes the personal home private",()=>{
@@ -305,32 +305,45 @@ test("Mac rental choices use responsive controls and bind visible consent to one
   const html = renderScene("ownmac-rental-choices");
   assert.doesNotMatch(html, /min-w-\[560px\]|<table|overflow-x-auto|Runs now/);
   assert.equal((html.match(/type="radio"/g) ?? []).length, 2);
-  assert.equal((html.match(/>Rent for /g) ?? []).length, 1, "one visible approve action");
-  for (const text of ["$10.80 USD total minimum", "€5.28 EUR total minimum", "24 h minimum", "then €0.22 / h", "Recommended", "Project preference: Scaleway", "no currency conversion", "Approve one Scaleway Mac mini M4 rental for this task", "paid Claude usage", "Unavailable choices", "No compatible model", "Refresh offers"]) assert.ok(html.includes(text), text);
-  assert.match(html, /Rent for €5.28 EUR · Scaleway/);
+  assert.equal((html.match(/>Rent (?:Scaleway|Instabox) Mac · /g) ?? []).length, 1, "one visible approve action");
+  for (const text of ["$10.80", "USD total for the first 24 h", "€5.28", "EUR total for the first 24 h", "24 h, paid even if handed back sooner", "then €0.22 / h", "Recommended", "Project preference: Scaleway", "No exchange rate is assumed", "Approve one Scaleway Mac mini M4 rental for this task", "paid Claude usage", "Unavailable choices", "No compatible model", "Refresh offers"]) assert.ok(html.includes(text), text);
+  assert.match(html, /Rent Scaleway Mac · €5.28 EUR/);
   assert.match(html, /type="radio"[^>]*checked=""[^>]*\/>/);
 });
 
 test("Mac rental expiry, starting, failure and unavailable states stay actionable", () => {
   const expired = renderScene("ownmac-rental-expired");
   assert.match(expired, /This quote expired/);
-  assert.match(expired, /<button[^>]*disabled=""[^>]*>Rent for/);
+  assert.match(expired, /<button[^>]*disabled=""[^>]*><span[^>]*>Rent Scaleway Mac/);
   assert.match(expired, /Refresh offers/);
   const starting = renderScene("ownmac-rental-starting");
   assert.match(starting, /aria-busy="true"/);
   assert.match(starting, /Starting rental…/);
-  assert.match(starting, /<fieldset disabled=""/);
+  assert.match(starting, /<fieldset[^>]*disabled=""/);
   assert.match(renderScene("ownmac-rental-error"), /role="alert"[^>]*>The selected model is no longer available/);
   const unavailable = renderScene("ownmac-rental-unavailable");
   assert.match(unavailable, /No rental offer is available/);
   assert.match(unavailable, /Refresh offers/);
-  assert.doesNotMatch(unavailable, />Rent for /);
-  assert.match(renderScene("ownmac-explicit-rental"), /Rent for \$10.80 USD · Instabox/, "legacy single offer remains readable");
+  assert.doesNotMatch(unavailable, />Rent (?:Scaleway|Instabox) Mac · /);
+  assert.match(renderScene("ownmac-explicit-rental"), /Rent Instabox Mac · \$10.80 USD/, "legacy single offer remains readable");
 });
 
 test("an ambiguous rental start offers inspection without another approval", () => {
   const html = renderScene("ownmac-rental-unknown");
   assert.match(html, /a rental may already exist/);
   assert.match(html, /Inspect the task/);
-  assert.doesNotMatch(html, /nothing is rented|>Rent for |Refresh offers/);
+  assert.doesNotMatch(html, /nothing is rented|>Rent (?:Scaleway|Instabox) Mac · |Refresh offers/);
+});
+
+
+test("designer handoff keeps native radio accessibility and expanded selected machine facts", () => {
+  const html = renderScene("ownmac-rental-choices");
+  assert.match(html, /role="radiogroup" aria-label="Mac rental providers"/);
+  for (const token of ["border-[#5C82C9]", "bg-[#1A1F27]", "border-[1.5px]", "accent-[#7AA7FF]", "text-[#FC8C45]", "min-h-[52px]", "min-h-11", "10 cores · 16 GB memory", "fr-par-1", "One rental, for this task.", "Runs on", "Selected quote checked"]) assert.ok(html.includes(token), token);
+  assert.ok(html.indexOf("Scaleway · Mac mini M4") < html.indexOf("Instabox · Mac M2"), "recommended choice leads the comparison");
+  assert.match(html, /No exchange rate is assumed/);
+  const queued = renderScene("ownmac-rental-queued");
+  assert.match(queued, /Kept queued/);
+  assert.match(queued, /Nothing was rented/);
+  assert.match(queued, /Rent Scaleway Mac/);
 });

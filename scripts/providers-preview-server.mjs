@@ -1,7 +1,8 @@
 // Component preview only: no provider calls or credentials. Build the plugin first.
 import { createServer } from "node:http";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { build } from "esbuild";
 const temporary = mkdtempSync(join(process.cwd(), ".provider-preview-"));
@@ -23,6 +24,17 @@ const rentalScript = await build({
   write: false,
   logLevel: "silent",
 });
+const pendingFile = join(temporary, "pending.mjs");
+const hostShim = resolve("test/fixtures/pending-task-sdk.tsx");
+await build({
+  entryPoints: ["test/fixtures/pending-task-render.tsx"], outfile: pendingFile,
+  bundle: true, platform: "node", format: "esm", packages: "external",
+  logLevel: "silent", loader: {".css":"empty"},
+  plugins: [{name:"fake-preview-host",setup(builder) {
+    builder.onResolve({filter:/^@get-bb\/plugin-sdk\/app$/},args=>args.importer===hostShim?{path:args.path,external:true}:{path:hostShim});
+  }}],
+});
+const { renderPendingTaskScene } = await import(pathToFileURL(pendingFile).href);
 const arg = (name, fallback) => {
   const index = process.argv.indexOf(name);
   return index < 0 ? fallback : process.argv[index + 1];
@@ -54,9 +66,9 @@ const server = createServer((request, response) => {
       response.end();
       return;
     }
-    if (scene === "rental-interactive") {
+    if (scene === "rental-interactive" || scene === "rental-task-pending") {
       response.setHeader("Content-Type", "text/html; charset=utf-8");
-      response.end(`<!doctype html><html lang="en" class="dark"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fake Mac rental choice</title><style>@layer theme,base,components,utilities;</style><link rel="stylesheet" href="/app.css"><style>body{--spacing:.25rem;--font-weight-medium:500;--font-weight-semibold:600;--text-xs:.75rem;--text-xs--line-height:1rem;--text-sm:.875rem;--text-sm--line-height:1.25rem;--text-base:1rem;--text-base--line-height:1.5rem;--default-font-family:Inter,system-ui,sans-serif;--radius:.5rem;margin:0;background:#161616;color:#EDEDED;font-family:Inter,system-ui,sans-serif}@layer base{*{box-sizing:border-box}p,h1,h2,h3,ol,ul,dl,dd{margin:0;padding:0}ol,ul{list-style:none}button,a{font:inherit}a{color:inherit;text-decoration:none}button{cursor:pointer;background:transparent;color:inherit;border:0;padding:0}svg{display:block}}</style></head><body data-bb-plugin="boat"><div id="rental-preview"></div><script type="module" src="/rental-preview.js"></script></body></html>`);
+      response.end(`<!doctype html><html lang="en" class="dark"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fake Mac rental choice</title><style>@layer theme,base,components,utilities;</style><link rel="stylesheet" href="/app.css"><style>body{--border:#262626;--card:#181818;--foreground:#EDEDED;--muted-foreground:#8A8A8A;--background:#161616;--primary:#E6E6E6;--primary-foreground:#141414;--secondary:#262626;--spacing:.25rem;--font-weight-medium:500;--font-weight-semibold:600;--text-xs:.75rem;--text-xs--line-height:1rem;--text-sm:.875rem;--text-sm--line-height:1.25rem;--text-base:1rem;--text-base--line-height:1.5rem;--default-font-family:Inter,system-ui,sans-serif;--radius:.5rem;margin:0;background:#161616;color:#EDEDED;font-family:Inter,system-ui,sans-serif}@layer base{*{box-sizing:border-box}p,h1,h2,h3,ol,ul,dl,dd{margin:0;padding:0}ol,ul{list-style:none}button,a{font:inherit}a{color:inherit;text-decoration:none}button{cursor:pointer;background:transparent;color:inherit;border:0;padding:0}svg{display:block}}</style></head><body data-bb-plugin="boat">${scene === "rental-interactive" ? '<div id="rental-preview"></div><script type="module" src="/rental-preview.js"></script>' : '<main class="boat-ui mx-auto max-w-[992px]"><p class="p-4 text-xs text-[#8A8A8A]">Static task detail · fake data · controls do not rent</p>' + renderPendingTaskScene() + '</main>'}</body></html>`);
       return;
     }
     if (!cache.has(scene))

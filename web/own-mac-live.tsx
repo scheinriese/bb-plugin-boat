@@ -15,9 +15,11 @@ import { toast } from "sonner";
 export function LiveOwnMacNotices({
   taskId,
   threadId,
+  showTaskTitle = true,
 }: {
   taskId?: string;
   threadId?: string;
+  showTaskTitle?: boolean;
 }) {
   const fill = useFillComposer(threadId ?? "");
   const { data } = experimental_useRpcQuery({
@@ -123,6 +125,7 @@ export function LiveOwnMacNotices({
                 )}
               <OwnMacRentalCard
                 notice={notice}
+                showTaskTitle={showTaskTitle}
                 onOwnWords={
                   fill
                     ? () =>
