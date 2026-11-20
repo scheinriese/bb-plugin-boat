@@ -672,7 +672,7 @@ export const ORCHESTRATOR_CARD_RULE = "The Cloud agents page shows it while you 
 export function cardHiddenToast(): { title: string; description: string } {
   return {
     title: "Orchestrator card hidden. New orchestrator stays in the ⋯ menu at the top.",
-    description: "Show the orchestrator card again in Settings → Plugins → Boat Cloud Agents → Orchestrators.",
+    description: "Show the orchestrator card again in Settings → Plugins → Harbormaster → Orchestrators.",
   };
 }
 

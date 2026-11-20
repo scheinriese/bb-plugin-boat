@@ -1,6 +1,6 @@
 # Chat cards
 
-Live cards use authored one-line markers and read their facts from Boat's RPC.
+Live cards use authored one-line markers and read their facts from Harbormaster's RPC.
 Review markers may name a recorded round, for example `::boat-review{id="t_123" round="2"}`.
 A missing round falls back to the latest recorded verdict. Full review and transcript actions open the public Task panel when it is available.
 
@@ -19,7 +19,7 @@ An OOM marker may include a bounded authored stage description:
 ::boat-problem{id="t_123" stage="during the production build"}
 ```
 
-Peak memory, proposed size, relative cost, and stopped events still come from recorded task facts. Larger-size actions use the existing confirmation flow. A native paused-machine banner suppresses only Boat's duplicate banner, using public thread/environment/host lifecycle reads.
+Peak memory, proposed size, relative cost, and stopped events still come from recorded task facts. Larger-size actions use the existing confirmation flow. A native paused-machine banner suppresses only Harbormaster's duplicate banner, using public thread/environment/host lifecycle reads.
 
 The composer distinguishes **Agent stopped** from **Sandbox stopped**. An agent
 failure can leave the sandbox powered on; **Write a follow-up** only focuses the
@@ -27,7 +27,7 @@ composer. Native bb owns paused-machine Resume controls. The power indicator
 refreshes from bb's host state and shows unknown or transitional states honestly.
 Historical chats do not inherit the current chat's recovery banner. Provider
 startup failures, including Codex state-index backfill timeouts, may need provider
-repair before retrying; Boat does not reset or delete provider databases.
+repair before retrying; Harbormaster does not reset or delete provider databases.
 
 `::boat-handoff{}` reads only recorded provider changes. `seq="…"` or an ISO `at="…"` pins a historical switch so a later handoff cannot replace it. Orchestrator notes expand and collapse; task switches stay one event line and link to a recorded previous chat when available. The existing runtime opens a successor chat for a different provider and preserves its environment. The card does not initiate a switch.
 

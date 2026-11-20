@@ -19,8 +19,8 @@
     "bbPluginSdk": ">=0.6.104 <0.7"
   },
   "bb": {
-    "name": "Boat Cloud Agents",
-    "description": "Claude Code and Codex in boat.dev cloud sandboxes: one orchestrator per project, with task chats and reviews.",
+    "name": "Harbormaster",
+    "description": "Claude Code and Codex in cloud sandboxes on boat.dev, Instabox, Scaleway or your own Mac: one orchestrator per project, every task a chat, every change reviewed.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
@@ -63,7 +63,7 @@
     "vaul": "^1.1.2",
     "esbuild": "0.28.2"
   },
-  "description": "Run Claude Code and Codex in boat.dev cloud sandboxes from bb: tasks from any chat, a Cloud agents page, and optional orchestrators.",
+  "description": "Claude Code and Codex in cloud sandboxes on boat.dev, Instabox, Scaleway or your own Mac: one orchestrator per project, every task a chat, every change reviewed.",
   "scripts": {
     "typecheck": "tsc --noEmit -p .",
     "test": "node --test test/*.test.ts",

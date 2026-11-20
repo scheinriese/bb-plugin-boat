@@ -59,8 +59,8 @@ export function keyLine(provider: Pick<SandboxProviderDto, "apiKey" | "connectio
  */
 export function keyHint(provider: Pick<SandboxProviderDto, "label" | "apiKey">): { title: string; description: string } {
   const setting = provider.apiKey?.setting ?? null;
-  if (setting === null) return { title: `This version of Boat can't take a key for ${provider.label} yet`, description: `${provider.label} comes in a later version; its key will go in bb's secrets, never to Boat.` };
-  return { title: `Set “${setting}” in the settings list at the top of this page`, description: "bb keeps the key in its secrets; Boat never sees it." };
+  if (setting === null) return { title: `This version of Harbormaster can't take a key for ${provider.label} yet`, description: `${provider.label} comes in a later version; its key will go in bb's secrets, never to Harbormaster.` };
+  return { title: `Set “${setting}” in the settings list at the top of this page`, description: "bb keeps the key in its secrets; Harbormaster never sees it." };
 }
 
 /** Local browser time; the server sends instants, never preformatted UTC. */

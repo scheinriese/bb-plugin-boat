@@ -42,14 +42,14 @@ export function providerFailureCard(failure: ProviderFailure, message = "") {
       kind: "capacity",
       tone: "neutral",
       title: `${instabox ? "Instabox" : "Scaleway"} has no free ${mac ? "Mac" : "machine"} right now`,
-      body: "Try again later. Nothing was rented. Boat does not retry automatically.",
+      body: "Try again later. Nothing was rented. Harbormaster does not retry automatically.",
     } as const;
   if (provider === "scaleway" && code === "task_credentials_missing")
     return {
       kind: "fresh",
       tone: "neutral",
       title: "Scaleway can't rent a new Mac for agents yet",
-      body: "Boat can't yet sign a fresh Mac in to GitHub and the agents. A Scaleway Mac you already hold works. Nothing was rented.",
+      body: "Harbormaster can't yet sign a fresh Mac in to GitHub and the agents. A Scaleway Mac you already hold works. Nothing was rented.",
     } as const;
   if (
     mac &&
@@ -68,7 +68,7 @@ export function providerFailureCard(failure: ProviderFailure, message = "") {
       tone: "broken",
       title: `The ${instabox ? "Instabox" : "Scaleway"} Mac didn't start`,
       body: released
-        ? "Boat released it. The 24 h minimum may still apply; check the provider's billing before retrying."
+        ? "Harbormaster released it. The 24 h minimum may still apply; check the provider's billing before retrying."
         : "The Mac's state could not be confirmed. Check the log and provider machine list before retrying; a paid lease may still be held.",
     } as const;
   return null;

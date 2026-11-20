@@ -539,7 +539,7 @@ test("public status uses confirmed current unmoved OOM evidence for paid recover
   const calls = env.boat.calls.length;
   assert.deepEqual(env.service.sizes.statusContext(failed), { outOfMemory: true, recoveryCostsMore: true });
   assert.equal(env.service.publicStatus(failed).needsYou, true);
-  assert.equal(env.boat.calls.length, calls, "status rendering makes no Boat calls");
+  assert.equal(env.boat.calls.length, calls, "status rendering makes no Harbormaster calls");
   assert.equal(env.service.publicStatus({ ...failed, error: "Usage limit reached" }).status, "waiting-reset");
   assert.equal(env.service.publicStatus({ ...failed, error: "Usage limit reached" }).needsYou, false);
   assert.deepEqual(env.service.sizes.statusContext({ ...failed, turns: failed.turns + 1 }), { outOfMemory: false, recoveryCostsMore: false });

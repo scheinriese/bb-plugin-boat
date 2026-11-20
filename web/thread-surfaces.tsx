@@ -117,10 +117,10 @@ export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentP
     return <UsageLink className="boat-ui ml-auto hidden text-[12px] text-[#FC8C45] md:inline">{relay?.agents.filter(agent=>agent.usedPercent!==null).map(agent=>`${agent.provider==='claude'?'Claude':'Codex'} ${Math.round(agent.usedPercent!)}%`).join(' · ')||'Running work continues'}</UsageLink>;
   }
   if((own?.provider??currentAgent)==='claude'&&relay?.paidClaudeAvailable)
-    return <UsageLink className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title="Included allowances are near their limits. Automatic Claude extra usage is authorized; Claude's billing controls apply. Boat cannot read your money balance."><AgentLogo provider="claude" className="size-3"/>Claude extra usage available</UsageLink>;
+    return <UsageLink className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title="Included allowances are near their limits. Automatic Claude extra usage is authorized; Claude's billing controls apply. Harbormaster cannot read your money balance."><AgentLogo provider="claude" className="size-3"/>Claude extra usage available</UsageLink>;
   if((own?.provider??currentAgent)==='claude'&&relay?.paidClaudeFallback&&usage?.provider==='claude'&&usage.usedPercent!==null&&usage.usedPercent>=relay.switchAtPercent){
     const line=claudeExtraUsageLine(relay.claudeExtraUsage,false);
-    return <UsageLink className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex" title={`${line}. Boat sees only allowed or blocked, never a balance or spending cap.`}><AgentLogo provider="claude" className="size-3"/>{line.replace(/^Claude extra usage: /,'Claude extra usage ').replace(' by the Account Pooler','')}</UsageLink>;
+    return <UsageLink className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex" title={`${line}. Harbormaster sees only allowed or blocked, never a balance or spending cap.`}><AgentLogo provider="claude" className="size-3"/>{line.replace(/^Claude extra usage: /,'Claude extra usage ').replace(' by the Account Pooler','')}</UsageLink>;
   }
   if(!own&&relay?.enabled&&currentAgent){
     const preferredUsage=relay.agents.find(agent=>agent.provider===relay.preferred);

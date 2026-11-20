@@ -111,8 +111,8 @@ rights of the user who runs bb. In particular, it uses:
   on GitHub. Registering a native chat does not prepare a new checkout or
   retrofit that hook; it keeps bb's existing checkout behavior.
 - **bb machine credentials** in the sandboxes of task chats, chats on a
-  Boat sandbox and cloud orchestrators. Those sandboxes run bb's daemon,
-  connected to your bb through bb Connect. Choosing **Boat sandbox** on the
+  boat.dev sandbox and cloud orchestrators. Those sandboxes run bb's daemon,
+  connected to your bb through bb Connect. Choosing **boat.dev sandbox** on the
   native New thread screen opts that chat into this access, with bb keeping
   its selected provider, permissions and machine lifecycle. For delegated
   work, **How tasks run** and your projects' **Run tasks as chats** decide
@@ -139,7 +139,7 @@ rights of the user who runs bb. In particular, it uses:
   status, when installed.
 - **Messages in bb**, through bb's message hook: bb asks the plugin about
   each message before an agent gets it. The plugin handles its explicit
-  native-start intent, subscription admission for a cold Boat start, and a task chat whose sandbox stopped under background
+  native-start intent, subscription admission for a cold boat.dev start, and a task chat whose sandbox stopped under background
   work. For the latter it holds one message
   to that chat once, for 10 seconds, and puts a note for the agent in
   front of it in bb's queue. It keeps no message text.

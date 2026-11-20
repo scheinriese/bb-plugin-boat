@@ -18,7 +18,7 @@ export class ScalewayApi {
   constructor(options: { key(): Promise<string | null>; config(): Promise<ScalewayConfig>; fetch?: typeof fetch }) { this.options = options; }
   async config() {
     const value = await this.options.config();
-    if (!z.string().uuid().safeParse(value.projectId).success || !["fr-par-1", "fr-par-3"].includes(value.zone)) throw fail("Set a valid Scaleway project ID and Paris zone in Boat settings.", "provider_unavailable");
+    if (!z.string().uuid().safeParse(value.projectId).success || !["fr-par-1", "fr-par-3"].includes(value.zone)) throw fail("Set a valid Scaleway project ID and Paris zone in Harbormaster settings.", "provider_unavailable");
     return value;
   }
   async request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {

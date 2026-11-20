@@ -377,7 +377,7 @@ export function brokenInstall(seen: BbInstall): string | null {
  * from the npm registry; never without a known server version ("latest").
  */
 export function decideBbUpdate(seen: BbInstall, target: string | null): BbUpdatePlan {
-  if (!seen.complete) return { kind: "none", why: "Boat couldn't finish looking at bb's install" };
+  if (!seen.complete) return { kind: "none", why: "Harbormaster couldn't finish looking at bb's install" };
   if (seen.dataDir === null) return { kind: "none", why: "bb isn't installed there yet" };
   if (seen.zombies.length > 0) return { kind: "hung", detail: `npm install left a zombie: pid ${seen.zombies[0]!.split(" ")[0]}` };
   const reading = seen.blocked.map((entry) => entry.split(" ").map(Number)).find(([, age]) => (age ?? 0) >= STUCK_READING_SECONDS);
@@ -396,7 +396,7 @@ export function decideBbUpdate(seen: BbInstall, target: string | null): BbUpdate
     return { kind: "set-aside", why: broken };
   }
   if (seen.installed === "unreadable") return { kind: "none", why: "the installed version isn't readable yet" };
-  if (goal === null) return { kind: "none", why: "Boat couldn't tell which bb the server needs" };
+  if (goal === null) return { kind: "none", why: "Harbormaster couldn't tell which bb the server needs" };
   if (from === goal) return { kind: "none", why: `bb ${goal} is installed` };
   if (from !== null && compareVersions(from, goal) > 0) return { kind: "none", why: `bb ${from} is newer than the server's ${goal}; bb's setup decides` };
   // The goal is the server's version here (a download's own would match it): from the npm registry.
@@ -629,7 +629,7 @@ export function installFailureText(result: Extract<InstallResult, { kind: "fail"
     case "native":
       return "the new install's native add-ons didn't load";
     case "swap":
-      return "Boat couldn't swap the new install in";
+      return "Harbormaster couldn't swap the new install in";
     case "leftover":
       return "a half-made install from an earlier try couldn't be moved aside";
     case "exec":
@@ -847,18 +847,18 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
     switch (result.old) {
       case "set-aside":
         return plan.broken
-          ? "bb's install there was already broken, so Boat moved it aside and bb's own setup installs it again."
-          : "The bb that was there isn't complete any more, so Boat moved it aside and bb's own setup installs it again.";
+          ? "bb's install there was already broken, so Harbormaster moved it aside and bb's own setup installs it again."
+          : "The bb that was there isn't complete any more, so Harbormaster moved it aside and bb's own setup installs it again.";
       case "broken":
         return "The bb that was there isn't complete; bb's own setup installs it again.";
       case "unknown":
-        return "Boat couldn't check the bb that was there (its files aren't readable yet); bb's own setup goes ahead.";
+        return "Harbormaster couldn't check the bb that was there (its files aren't readable yet); bb's own setup goes ahead.";
       case "intact":
         return "It kept the bb that was there, and bb's own setup goes ahead.";
       case "repaired":
-        return "Meanwhile bb's install there became complete again, so Boat kept it; bb's own setup goes ahead.";
+        return "Meanwhile bb's install there became complete again, so Harbormaster kept it; bb's own setup goes ahead.";
       case "busy":
-        return "bb's own update was running there, so Boat left its install alone.";
+        return "bb's own update was running there, so Harbormaster left its install alone.";
       default:
         return "bb's own setup goes ahead and checks the bb that's there.";
     }
@@ -884,7 +884,7 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
     return false;
   }
 
-  const setAsideText = (why: string) => `bb's install on the sandbox was broken (${why}); Boat moved it aside so bb's setup installs it again`;
+  const setAsideText = (why: string) => `bb's install on the sandbox was broken (${why}); Harbormaster moved it aside so bb's setup installs it again`;
 
   /**
    * A broken install goes aside for bb's setup, if it still is (setAsideIfStillBroken). "busy": bb's
@@ -898,7 +898,7 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
         prep.report.log(setAsideText(aside.why));
         return { kind: "set-aside" };
       case "repaired":
-        prep.report.log("bb's install on the sandbox is complete again (bb repaired it meanwhile); Boat left it as it is");
+        prep.report.log("bb's install on the sandbox is complete again (bb repaired it meanwhile); Harbormaster left it as it is");
         info(`bb update ${prep.sandboxId}: the broken install is complete again; left as it is`);
         return { kind: "none", why: "bb's install there is complete again" };
       case "busy":
@@ -934,7 +934,7 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
     // Right before the stop, bb there was the server's version already (bb installed it meanwhile).
     if (result.kind === "current") {
       await saveBackoff(prep.sandboxId, null);
-      prep.report.log(`bb ${plan.to} is already on the sandbox (bb installed it meanwhile); Boat left it as it is`);
+      prep.report.log(`bb ${plan.to} is already on the sandbox (bb installed it meanwhile); Harbormaster left it as it is`);
       info(`bb update ${prep.sandboxId}: bb ${plan.to} installed meanwhile; nothing stopped or installed`);
       return { kind: "none", why: `bb ${plan.to} is installed` };
     }
@@ -966,8 +966,8 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
     // Lost track of the script (boat's exec failed or cut it off): it may have swapped already.
     const unsure = result.reason === "exec" || result.reason === "no-answer";
     const text = unsure
-      ? `Boat couldn't tell whether bb's update on this sandbox to ${plan.to} finished: ${why}. bb's own setup goes ahead and checks it. Boat tries the update again after ${clockTime(retryAt, at)} if it's still needed.`
-      : `Boat couldn't update bb on this sandbox to ${plan.to}: ${why}. ${oldText(result, plan)} Boat tries the update again after ${clockTime(retryAt, at)}.`;
+      ? `Harbormaster couldn't tell whether bb's update on this sandbox to ${plan.to} finished: ${why}. bb's own setup goes ahead and checks it. Harbormaster tries the update again after ${clockTime(retryAt, at)} if it's still needed.`
+      : `Harbormaster couldn't update bb on this sandbox to ${plan.to}: ${why}. ${oldText(result, plan)} Harbormaster tries the update again after ${clockTime(retryAt, at)}.`;
     prep.report.log(text);
     deps.tell?.(prep.sandboxId, text);
     log(`bb update ${prep.sandboxId}: bb-update-failed (${result.reason}${result.detail ? ` ${result.detail}` : ""}, old install ${result.old ?? "unknown"}, failure ${failures})`);
@@ -990,13 +990,13 @@ export function createBbUpdater(deps: BbUpdaterDeps): BbUpdater {
         throw new BbUpdateHung(hungDiagnosis(seen, hung));
       }
       if (round === 0) await prefetch(prep, seen, plan);
-      if (seen === null || plan === null) return { kind: "none", why: "Boat couldn't look at bb's install" };
+      if (seen === null || plan === null) return { kind: "none", why: "Harbormaster couldn't look at bb's install" };
       // A broken install with nothing to install from (the server's version unknown) goes aside,
       // if it still is broken: the prefetch ran since the look.
       if (plan.kind === "update" || plan.kind === "set-aside") {
         const done = plan.kind === "update" ? await install(prep, seen, plan) : await setAsideStep(prep, goal, { kind: "none", why: plan.why });
         if (done !== "busy") return done;
-        const detail = `bb's own update is running: it started while Boat was about to ${plan.kind === "update" ? "install" : "move its broken install aside"}`;
+        const detail = `bb's own update is running: it started while Harbormaster was about to ${plan.kind === "update" ? "install" : "move its broken install aside"}`;
         // Twice in a row: Boat's wake retries take it from here.
         if (round >= 1) throw new BbUpdateHung(hungDiagnosis(seen, { kind: "waiting", detail }));
         plan = { kind: "busy", detail };

@@ -8,7 +8,7 @@ function thread(id: string, parentThreadId: string | null = null, patch: Partial
 }
 const none = new Set<string>();
 
-test("a manually created coordinator is discovered without Boat registration or a title convention", () => {
+test("a manually created coordinator is discovered without Harbormaster registration or a title convention", () => {
   const input = [thread("strategy", null, { displayTitle: "Research strategy" }), thread("scan", "strategy", { runtimeStatus: "active", status: "active" })];
   const original = structuredClone(input);
   const groups = nativeCoordinators(input, none, none);
@@ -31,7 +31,7 @@ test("standalone chats and coordinators with only archived or hidden children st
   assert.deepEqual(nativeCoordinators([thread("root", null, { isArchived: true }), thread("child", "root")], none, none), []);
 });
 
-test("Boat workers and their native subchats are not rediscovered as native task groups", () => {
+test("Harbormaster workers and their native subchats are not rediscovered as native task groups", () => {
   const groups = nativeCoordinators([thread("operator"), thread("boat-worker", "operator"), thread("tool-helper", "boat-worker"), thread("research", "operator")], new Set(["boat-worker"]), new Set(["operator"]));
   assert.deepEqual(groups.map(g => [g.thread.id, g.children.map(t => t.id)]), [["operator", ["research"]]]);
   assert.deepEqual(nativeCoordinators([thread("operator"), thread("boat-worker", "operator")], new Set(["boat-worker"]), new Set(["operator"])), []);

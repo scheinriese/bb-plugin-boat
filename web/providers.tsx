@@ -255,7 +255,7 @@ export function SandboxProvidersSettings({ className }: { className?: string }) 
             <ProviderRow key={provider.id} provider={provider} onCheck={checkAgain} onEnable={enable} onKey={()=>{ const hint=keyHint(provider);toast(hint.title,{description:hint.description}); window.scrollTo({top:0,behavior:"smooth"}); }} busy={check.isPending || save.isPending} />
           ))}
         </div>
-        <p className="px-0.5 text-xs leading-[17px] text-muted-foreground">{data.routing}</p><p className="text-xs leading-[17px] text-[#8A8A8A]">Boat checks each step when this page opens and before every rent. Keys and tokens stay in bb’s secret store or the provider; this page never shows them.</p>
+        <p className="px-0.5 text-xs leading-[17px] text-muted-foreground">{data.routing}</p><p className="text-xs leading-[17px] text-[#8A8A8A]">Harbormaster checks each step when this page opens and before every rent. Keys and tokens stay in bb’s secret store or the provider; this page never shows them.</p>
       </Group>
       <Group title="Runs on" className={className}>
         <div className={BOX}>

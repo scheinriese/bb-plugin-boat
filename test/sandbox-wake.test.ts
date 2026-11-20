@@ -323,7 +323,7 @@ test("each id type leads to the sandbox: a sandbox id, a task id, a chat's threa
   assert.deepEqual(byThread.path, ["chat thr_task", "workspace env_1", "bb machine host_1", "sandbox bx_demo1"]);
 });
 
-test("an id that leads to no Boat sandbox is refused with what's wrong", async () => {
+test("an id that leads to no boat.dev sandbox is refused with what's wrong", async () => {
   const { waker, threads } = world();
   await assert.rejects(waker.resolve("thr_nope"), (error: unknown) => error instanceof TaskError && error.code === "wake_target_not_found");
   threads.set("thr_local", thread("thr_local", { environmentId: "env_local" }));
@@ -591,7 +591,7 @@ test("bb's install isn't touched under a connected machine", async () => {
   assert.equal(report.outcome, "awake");
   assert.ok(!calls.includes("bb install"));
   assert.ok(!calls.includes("restart bb service"));
-  assert.ok(stepTexts(report, "skipped").includes("bb's machine is connected, so Boat leaves bb's install alone (bb updates itself)."));
+  assert.ok(stepTexts(report, "skipped").includes("bb's machine is connected, so Harbormaster leaves bb's install alone (bb updates itself)."));
 });
 
 // ---------------------------------------------------------------- the chat
@@ -636,7 +636,7 @@ test("start check: included starts, used up, paid extra starts with and without 
     const check = startCheck(usedUp, allow);
     assert.equal(check.ok, false);
     assert.equal(check.ok === false && check.code, "no_start");
-    assert.match(check.ok === false ? check.text : "", /^No included boat start is left this hour, and boat's paid extra starts are off \(Boat never turns them on\), so boat can't start it now\. Included starts come back within the hour\.$/);
+    assert.match(check.ok === false ? check.text : "", /^No included boat start is left this hour, and boat's paid extra starts are off \(Harbormaster never turns them on\), so boat can't start it now\. Included starts come back within the hour\.$/);
   }
   // Paid extra starts on: only with the flag.
   const extra = { ...usedUp, extraStartsEnabled: true, nextStartDollars: 0.03 };
@@ -708,7 +708,7 @@ test("reads still stuck after the disk wait: then a stop and a start", async () 
   assert.ok(now() - T0 >= 2 * 60_000, "only after the 2-minute wait");
 });
 
-test("bb's machine Boat can't read counts as connected: a chat mid-turn there means Needs you, not a stop", async () => {
+test("bb's machine Harbormaster can't read counts as connected: a chat mid-turn there means Needs you, not a stop", async () => {
   for (const hostRead of ["throw", "null"] as const) {
     const w = world({ state: "idle", disk: [UNREADABLE_DISK], hostRead });
     w.threads.set("thr_task", thread("thr_task", { status: "active" }));
@@ -716,7 +716,7 @@ test("bb's machine Boat can't read counts as connected: a chat mid-turn there me
     assert.equal(report.outcome, "needs-you", hostRead);
     assert.equal(w.stopsMade(), 0, hostRead);
     assert.match(report.needsYou!.reason, /, but the chat "Fix the login test" is mid-turn, and a stop would interrupt it\./);
-    assert.ok(!w.calls.includes("forget bx_demo1"), "a run that stops before acting keeps Boat's retry plan");
+    assert.ok(!w.calls.includes("forget bx_demo1"), "a run that stops before acting keeps Harbormaster's retry plan");
   }
 });
 
@@ -728,8 +728,8 @@ test("a bb machine lookup that fails isn't \"no machine\": no stop under a chat 
   assert.equal(report.outcome, "needs-you");
   assert.equal(w.stopsMade(), 0, w.calls.join(", "));
   assert.equal(report.target.hostLookupFailed, "bb couldn't read machine host_1");
-  assert.equal(report.steps[0]!.text, "Boat couldn't look up bb's machine on sandbox bx_demo1 (bb couldn't read machine host_1), so it can't tell whether a chat runs there.");
-  assert.match(report.needsYou!.reason, /, but Boat couldn't look up bb's machine there \(bb couldn't read machine host_1\), so it can't see whether a chat is mid-turn\. Nothing was stopped: try again in a minute, or wake it by a chat's id\.$/);
+  assert.equal(report.steps[0]!.text, "Harbormaster couldn't look up bb's machine on sandbox bx_demo1 (bb couldn't read machine host_1), so it can't tell whether a chat runs there.");
+  assert.match(report.needsYou!.reason, /, but Harbormaster couldn't look up bb's machine there \(bb couldn't read machine host_1\), so it can't see whether a chat is mid-turn\. Nothing was stopped: try again in a minute, or wake it by a chat's id\.$/);
   assert.ok(!w.calls.includes("forget bx_demo1"));
 
   // A healthy disk: nothing to stop, but bb's machine and its chats can't be brought back or checked: Needs you, no update, no service restart.
@@ -737,8 +737,8 @@ test("a bb machine lookup that fails isn't \"no machine\": no stop under a chat 
   report = await w.waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "needs-you");
   assert.ok(!w.calls.some((call) => /bb install|restart bb service|bb machine resume|retry /.test(call)), w.calls.join(", "));
-  assert.match(report.needsYou!.reason, /^Boat couldn't look up bb's machine on sandbox bx_demo1 \(bb couldn't read machine host_1\), so it can't bring bb back there or check the chats on it\./);
-  assert.ok(stepTexts(report, "skipped").includes("Boat couldn't read bb's machine, so it leaves bb's install alone (it may be running turns)."));
+  assert.match(report.needsYou!.reason, /^Harbormaster couldn't look up bb's machine on sandbox bx_demo1 \(bb couldn't read machine host_1\), so it can't bring bb back there or check the chats on it\./);
+  assert.ok(stepTexts(report, "skipped").includes("Harbormaster couldn't read bb's machine, so it leaves bb's install alone (it may be running turns)."));
 
   // The dry run says so too.
   w = world({ state: "stopped", hostLookup: "throw" });
@@ -763,7 +763,7 @@ test("before any force, a test fork of the snapshot: unreadable or unknown, and 
   report = await w.waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "needs-you");
   assert.ok(!w.calls.includes("stop --force"));
-  assert.match(report.needsYou!.reason, /Boat couldn't check its snapshot with a test fork, so it won't force the stop: without a clear "it reads fine", nothing is forced\. Forcing the stop keeps only 00:41 UTC/);
+  assert.match(report.needsYou!.reason, /Harbormaster couldn't check its snapshot with a test fork, so it won't force the stop: without a clear "it reads fine", nothing is forced\. Forcing the stop keeps only 00:41 UTC/);
   assert.deepEqual(report.needsYou!.commands, ["boat stop bx_demo1 --force", "bb boat sandbox wake bx_demo1"]);
 
   // A fork and a start need two starts: with one left, nothing is forked or forced.
@@ -875,7 +875,7 @@ test("a wake cut off between its stop and its start leaves a marker, and the nex
   assert.deepEqual(await next.recover(), ["bx_demo1"]);
   assert.equal(w.sandboxes.get("bx_demo1")?.state, "idle");
   assert.equal((w.store.get(WAKE_MARKERS_KEY) as Record<string, WakeMarker>).bx_demo1?.restart, null);
-  assert.match(w.told.at(-1)!, /A wake stopped this sandbox and was cut off before it started it again, so Boat started it again now\./);
+  assert.match(w.told.at(-1)!, /A wake stopped this sandbox and was cut off before it started it again, so Harbormaster started it again now\./);
   assert.deepEqual(await next.recover(), [], "once");
 });
 
@@ -883,14 +883,14 @@ test("a start after the stop that fails leaves the marker; the recovery tries ag
   const w = world({ state: "idle", disk: [UNREADABLE_DISK, HEALTHY_DISK], bringUpFails: (call) => (call === 1 ? new Error("Resume failed: restore error") : null) });
   const report = await w.waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "needs-you");
-  assert.match(report.needsYou!.reason, /Boat stopped it for this wake and keeps trying to start it again \(every few minutes\)/);
+  assert.match(report.needsYou!.reason, /Harbormaster stopped it for this wake and keeps trying to start it again \(every few minutes\)/);
   assert.equal(w.sandboxes.get("bx_demo1")?.state, "stopped");
   w.advance(60_000);
   assert.deepEqual(await w.waker.recover(), ["bx_demo1"]);
   assert.equal(w.sandboxes.get("bx_demo1")?.state, "idle");
 });
 
-test("Boat's retry plan stays when a wake stops before acting (no start left), and goes once it acts", async () => {
+test("Harbormaster's retry plan stays when a wake stops before acting (no start left), and goes once it acts", async () => {
   let w = world({ state: "stopped", limits: { startsLeftThisHour: 0 } });
   let report = await w.waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "needs-you");
@@ -909,7 +909,7 @@ test("a cancelled task's chat is never woken for or retried; --force-wake wakes 
   let report = await w.waker.run({ target: "thr_task" });
   assert.equal(report.outcome, "needs-you");
   assert.deepEqual(w.calls, [], "nothing woken");
-  assert.match(report.needsYou!.reason, /^Chat thr_task belongs to task t_1a2b3c4d, which is cancelled, so Boat doesn't wake it: a chat there could go on with superseded work\. Wake it anyway with --force-wake only if the user wants that\.$/);
+  assert.match(report.needsYou!.reason, /^Chat thr_task belongs to task t_1a2b3c4d, which is cancelled, so Harbormaster doesn't wake it: a chat there could go on with superseded work\. Wake it anyway with --force-wake only if the user wants that\.$/);
   assert.deepEqual(report.needsYou!.commands, ["bb boat sandbox wake thr_task --force-wake"]);
 
   // --force-wake: the sandbox comes back, but its chat isn't retried.
@@ -918,14 +918,14 @@ test("a cancelled task's chat is never woken for or retried; --force-wake wakes 
   assert.equal(report.outcome, "awake", wakeText(report));
   assert.ok(w.calls.includes("resume"));
   assert.ok(!w.calls.some((call) => call.startsWith("retry ") || call.startsWith("send queued ")), w.calls.join(", "));
-  assert.ok(stepTexts(report, "skipped").includes("Chat thr_task (\"Fix the login test\") belongs to task t_1a2b3c4d, which is cancelled: Boat doesn't retry it (it could push superseded work)."));
+  assert.ok(stepTexts(report, "skipped").includes("Chat thr_task (\"Fix the login test\") belongs to task t_1a2b3c4d, which is cancelled: Harbormaster doesn't retry it (it could push superseded work)."));
 
   // A pending provider retry of a closed task's chat isn't sent either.
   w = world({ state: "idle", host: { phase: "active", connected: true }, taskStatus: "done" });
   w.queues.set("thr_task", [{ id: "q_1", threadId: "thr_task", retry: true, sendAt: T0 + 30 * 60_000 }]);
   report = await w.waker.run({ target: "bx_demo1", forceWake: true });
   assert.ok(!w.calls.some((call) => call.startsWith("send queued ")));
-  assert.ok(stepTexts(report, "skipped").some((text) => /which is closed: Boat doesn't retry it/.test(text)));
+  assert.ok(stepTexts(report, "skipped").some((text) => /which is closed: Harbormaster doesn't retry it/.test(text)));
 });
 
 test("a sandbox whose only tasks are over, or a closed task, isn't woken without --force-wake", async () => {
@@ -933,14 +933,14 @@ test("a sandbox whose only tasks are over, or a closed task, isn't woken without
   let report = await w.waker.run({ target: "bx_demo1" });
   assert.equal(report.outcome, "needs-you");
   assert.deepEqual(w.calls, []);
-  assert.match(report.needsYou!.reason, /^Sandbox bx_demo1's only task is over \(t_1a2b3c4d closed\), so Boat doesn't wake it/);
+  assert.match(report.needsYou!.reason, /^Sandbox bx_demo1's only task is over \(t_1a2b3c4d closed\), so Harbormaster doesn't wake it/);
   // The dry run says the same.
   assert.equal((await w.waker.run({ target: "bx_demo1", dryRun: true })).outcome, "needs-you");
 
   w = world({ state: "stopped", taskStatus: "cancelled" });
   report = await w.waker.run({ target: "t_1a2b3c4d" });
   assert.equal(report.outcome, "needs-you");
-  assert.match(report.needsYou!.reason, /^Task t_1a2b3c4d is cancelled, so Boat doesn't wake it/);
+  assert.match(report.needsYou!.reason, /^Task t_1a2b3c4d is cancelled, so Harbormaster doesn't wake it/);
 
   w = world({ state: "stopped", taskStatus: "done" });
   report = await w.waker.run({ target: "bx_demo1", forceWake: true });
@@ -956,7 +956,7 @@ test("a restart marker older than a day isn't acted on: a note on the tasks inst
   assert.ok(!w.calls.includes("resume"));
   assert.equal(w.sandboxes.get("bx_demo1")?.state, "stopped");
   assert.equal((w.store.get(WAKE_MARKERS_KEY) as Record<string, WakeMarker>).bx_demo1?.restart ?? null, null, "no auto-resume left");
-  assert.match(w.told.at(-1)!, /^A wake stopped this sandbox at 2026-11-18 08:00 UTC and couldn't start it again within a day, so Boat no longer starts it on its own\. Start it with `bb boat sandbox wake bx_demo1` when it's needed\.$/);
+  assert.match(w.told.at(-1)!, /^A wake stopped this sandbox at 2026-11-18 08:00 UTC and couldn't start it again within a day, so Harbormaster no longer starts it on its own\. Start it with `bb boat sandbox wake bx_demo1` when it's needed\.$/);
   assert.equal(w.toldClosedToo.at(-1), true, "on the record of every task that ran there, closed ones too");
 
   // Its tasks are over: not started again either.
@@ -965,7 +965,7 @@ test("a restart marker older than a day isn't acted on: a note on the tasks inst
   assert.deepEqual(await closedWorld.waker.recover(), []);
   assert.ok(!closedWorld.calls.includes("resume"));
   // Every task there is closed: the note still lands, on the closed tasks' record.
-  assert.match(closedWorld.told.at(-1)!, /its tasks are over \(t_1a2b3c4d cancelled\), so Boat no longer starts it on its own/);
+  assert.match(closedWorld.told.at(-1)!, /its tasks are over \(t_1a2b3c4d cancelled\), so Harbormaster no longer starts it on its own/);
   assert.equal(closedWorld.toldClosedToo.at(-1), true);
 });
 
@@ -1022,7 +1022,7 @@ test("a pending provider retry that can't be cancelled stops the wake before the
   const report = await w.waker.run({ target: "thr_task", forceWake: true });
   assert.equal(report.outcome, "needs-you");
   assert.deepEqual(w.calls, ["cancel retry thr_task q_retry"], "no resume, no forget");
-  assert.match(report.needsYou!.reason, /^Boat couldn't cancel the pending provider retry of chat thr_task \(task t_1a2b3c4d is closed\), and it would go out once the machine is back\./);
+  assert.match(report.needsYou!.reason, /^Harbormaster couldn't cancel the pending provider retry of chat thr_task \(task t_1a2b3c4d is closed\), and it would go out once the machine is back\./);
   assert.deepEqual(report.needsYou!.commands, ["bb provider-retry cancel thr_task", "bb boat sandbox wake thr_task --force-wake"]);
 });
 

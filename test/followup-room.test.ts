@@ -22,7 +22,7 @@ function usage(): { quotas: Quotas; set(claude: number, codex: number): void } {
   };
 }
 
-/** A boat task on Claude whose turn finished, with usage readings to change. */
+/** A Harbormaster task on Claude whose turn finished, with usage readings to change. */
 async function finishedTask(settings: NonNullable<Parameters<typeof makeService>[0]>["settings"] = {}) {
   const meter = usage();
   // The relay is off: only the follow-up rule decides.

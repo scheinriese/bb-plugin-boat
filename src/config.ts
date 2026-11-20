@@ -142,7 +142,7 @@ export function parseConfigText(text: string): ParsedFile {
   }
   const head = raw as { format?: unknown; version?: unknown } | null;
   if (head === null || typeof head !== "object" || Array.isArray(head) || head.format !== CONFIG_FORMAT) {
-    throw new ConfigError([`This isn't a Boat backup: its "format" should be "${CONFIG_FORMAT}" (make one with \`bb boat config export\`).`]);
+    throw new ConfigError([`This isn't a Harbormaster backup: its "format" should be "${CONFIG_FORMAT}" (make one with \`bb boat config export\`).`]);
   }
   if (typeof head.version === "number" && head.version > CONFIG_VERSION) {
     throw new ConfigError([`This backup has format version ${head.version}, and this plugin reads versions up to ${CONFIG_VERSION}. Update the plugin first.`]);

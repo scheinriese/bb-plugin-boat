@@ -219,7 +219,7 @@ test("included Codex beats authorized paid Claude and does not record a paid app
  const e=setup(true);t.after(()=>e.dispose());e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true}});e.setUsage(paidUsage(100,20));
  const result=await e.queue.launch({...input,repo:null,baseBranch:null},5000);assert.equal(result.kind,"started");if(result.kind!=="started")throw Error("Expected started");assert.equal(result.task.provider,"codex");assert.equal(e.registry.latestEvent(result.task.id,"paid-fallback-authorized"),null);
 });
-test("automatic policy never spends on headless Boat credentials or a named exhausted Codex agent",async t=>{
+test("automatic policy never spends on headless Harbormaster credentials or a named exhausted Codex agent",async t=>{
  for(const asChat of [false,true]){const e=setup(asChat);t.after(()=>e.dispose());e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true}});e.setUsage(paidUsage());await e.queued(asChat?{provider:"codex",repo:null,baseBranch:null}:{});assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);}
 });
 test("a saved waiting receipt starts exactly once after the automatic policy is enabled",async t=>{

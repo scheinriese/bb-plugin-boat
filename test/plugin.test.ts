@@ -69,6 +69,9 @@ test("help, status and an end-to-end task through the CLI", async (t) => {
 
   const help = await harness.runCli(["--help"]);
   assert.equal(help.exitCode, 0);
+  assert.match(help.stdout, /Harbormaster/);
+  assert.match(help.stdout, /bb boat task start/);
+  assert.equal(harness.registrations.cli?.name, "boat");
   assert.match(help.stdout, /task start/);
   assert.match(help.stdout, /orchestrator new/);
 

@@ -7,8 +7,8 @@ test("a failed teardown step holds that sandbox's next ones, doubling up to 15 m
   let at = Date.parse("2026-11-19T00:10:00Z");
   const backoff = new TeardownBackoff(() => at);
   assert.equal(backoff.held("bx_a", "delete"), null);
-  assert.equal(backoff.failed("bx_a", "delete", new Error("Please reduce your request rate.\nmore lines")), "boat.dev failed to delete this sandbox (Please reduce your request rate.). Boat asks it again at 00:10 UTC.");
-  assert.equal(backoff.held("bx_a", "delete"), "boat.dev failed to delete this sandbox a moment ago (Please reduce your request rate.). Boat asks it again at 00:10 UTC.");
+  assert.equal(backoff.failed("bx_a", "delete", new Error("Please reduce your request rate.\nmore lines")), "boat.dev failed to delete this sandbox (Please reduce your request rate.). Harbormaster asks it again at 00:10 UTC.");
+  assert.equal(backoff.held("bx_a", "delete"), "boat.dev failed to delete this sandbox a moment ago (Please reduce your request rate.). Harbormaster asks it again at 00:10 UTC.");
   assert.equal(backoff.held("bx_b", "delete"), null, "other sandboxes aren't held");
   assert.equal(backoff.held("bx_a", "stop"), null, "nor the sandbox's other steps");
   at += 30_000;

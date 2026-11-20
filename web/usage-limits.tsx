@@ -297,7 +297,7 @@ function PoolOff({ view, providers, now }: { view: UsageViewDto; providers: Prov
       </div>
       <div className="space-y-1.5 pl-[14px]">
         <p className="text-xs leading-[17px] text-muted-foreground">
-          Boat can't see your pooled accounts or Claude extra usage, so paid Claude won't start. Chats use this computer's own logins.
+          Harbormaster can't see your pooled accounts or Claude extra usage, so paid Claude won't start. Chats use this computer's own logins.
         </p>
         {providers.map((provider) => (
           <div key={provider} className="flex items-center gap-2">

@@ -120,7 +120,7 @@ export function registerTools(runtime: Runtime): void {
 
   bb.agents.registerTool({
     name: "boat_status",
-    description: "Show boat.dev capacity (plan, active sandboxes, room under your sandbox limit, starts left) and this chat's open boat tasks.",
+    description: "Show boat.dev capacity (plan, active sandboxes, room under your sandbox limit, starts left) and this chat's open Harbormaster tasks.",
     presentation: { label: { pending: "Checking boat capacity", completed: "Checked boat capacity" }, icon: { glyph: "ComputerCloud" } },
     parameters: z.object({}),
     execute: (_params, ctx) =>
@@ -261,7 +261,7 @@ export function registerTools(runtime: Runtime): void {
   bb.agents.registerTool({
     name: "boat_followup",
     description:
-      "Send a follow-up to a task's agent in the same conversation and sandbox (e.g. the review's blocking issues). Optionally switch agent: boat hands the transcript to the other model, useful when one hits usage limits.",
+      "Send a follow-up to a task's agent in the same conversation and sandbox (e.g. the review's blocking issues). Optionally switch agent: Harbormaster hands the transcript to the other model, useful when one hits usage limits.",
     presentation: { label: { pending: "Sending a follow-up", completed: "Sent a follow-up" }, icon: { glyph: "Sent" } },
     parameters: z.object({
       task_id: z.string().min(4).describe("Task id, e.g. t_1a2b3c4d"),
@@ -332,8 +332,8 @@ export function registerTools(runtime: Runtime): void {
 
   bb.agents.registerTool({
     name: "boat_tasks",
-    description: "List boat tasks: this chat's open tasks by default.",
-    presentation: { label: { pending: "Listing boat tasks", completed: "Listed boat tasks" }, icon: { glyph: "ComputerCloud" }, suppress: true },
+    description: "List Harbormaster tasks: this chat's open tasks by default.",
+    presentation: { label: { pending: "Listing Harbormaster tasks", completed: "Listed Harbormaster tasks" }, icon: { glyph: "ComputerCloud" }, suppress: true },
     parameters: z.object({
       scope: z.enum(["mine", "all"]).optional().describe("mine (default): tasks this chat dispatched"),
       statuses: z.array(z.enum(TASK_STATUSES)).optional().describe("Default: open statuses"),
@@ -368,7 +368,7 @@ export function registerTools(runtime: Runtime): void {
   bb.agents.registerTool({
     name: "boat_task",
     description: "Show one task: status, PR, branch, sandbox, the agent's last message (report), and history.",
-    presentation: { label: { pending: "Reading a boat task", completed: "Read a boat task" }, icon: { glyph: "ComputerCloud" }, suppress: true },
+    presentation: { label: { pending: "Reading a Harbormaster task", completed: "Read a Harbormaster task" }, icon: { glyph: "ComputerCloud" }, suppress: true },
     parameters: z.object({
       task_id: z.string().min(4).describe("Task id, e.g. t_1a2b3c4d"),
       include_brief: z.boolean().optional(),
@@ -508,7 +508,7 @@ export function registerTools(runtime: Runtime): void {
     name: "boat_close",
     description:
       "Close a task when its work is accepted (or cancel it). Deletes its sandbox unless another open task shares it or keep_sandbox is set.",
-    presentation: { label: { pending: "Closing a boat task", completed: "Closed a boat task" }, icon: { glyph: "CircleCheck" } },
+    presentation: { label: { pending: "Closing a Harbormaster task", completed: "Closed a Harbormaster task" }, icon: { glyph: "CircleCheck" } },
     parameters: z.object({
       task_id: z.string().min(4).describe("Task id, e.g. t_1a2b3c4d"),
       cancel: z.boolean().optional().describe("Cancel instead of done"),

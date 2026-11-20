@@ -121,30 +121,30 @@ test("the key step's EIO is the disk, with boat.dev's error from the journal; a 
   assert.deepEqual(calls, []);
 });
 
-test("the machine's message says what boat.dev is doing and when Boat retries", () => {
+test("the machine's message says what boat.dev is doing and when Harbormaster retries", () => {
   const now = Date.parse("2026-11-19T01:48:00Z");
   const retryAt = Date.parse("2026-11-19T01:52:00Z");
   assert.equal(
     wakeFailureMessage({ kind: "disk-restoring", detail: "HYDRATOR FAILED attempt 32 …: status code 503", checked: true }, { retryAt, now }, "raw"),
-    "boat.dev is still restoring this sandbox's disk (its storage is returning errors). Boat will retry at 01:52 UTC; pressing Resume earlier won't help.",
+    "boat.dev is still restoring this sandbox's disk (its storage is returning errors). Harbormaster will retry at 01:52 UTC; pressing Resume earlier won't help.",
   );
   assert.equal(
     wakeFailureMessage({ kind: "disk-restoring", detail: "waiting on a file not restored yet: 4242 node (fuse_file_open)", checked: true }, { retryAt, now }, "raw"),
-    "boat.dev is still restoring this sandbox's disk (files bb needs there aren't readable yet). Boat will retry at 01:52 UTC; pressing Resume earlier won't help.",
+    "boat.dev is still restoring this sandbox's disk (files bb needs there aren't readable yet). Harbormaster will retry at 01:52 UTC; pressing Resume earlier won't help.",
   );
   assert.equal(
     wakeFailureMessage({ kind: "restore-rate-limited", detail: RATE, checked: false }, { retryAt, now }, "raw"),
-    "boat.dev is restoring too many sandboxes at once and asked Boat to slow down. Boat will retry at 01:52 UTC; pressing Resume earlier won't help.",
+    "boat.dev is restoring too many sandboxes at once and asked Harbormaster to slow down. Harbormaster will retry at 01:52 UTC; pressing Resume earlier won't help.",
   );
   assert.equal(
     wakeFailureMessage({ kind: "ssh-session-stuck", detail: null, checked: true }, { retryAt, now }, "raw"),
-    "The sandbox took Boat's SSH login, but the session never started: its login message scripts hang while boat.dev restores the disk. Boat turns them off before each try. Boat will retry at 01:52 UTC; pressing Resume earlier won't help.",
+    "The sandbox took Harbormaster's SSH login, but the session never started: its login message scripts hang while boat.dev restores the disk. Harbormaster turns them off before each try. Harbormaster will retry at 01:52 UTC; pressing Resume earlier won't help.",
   );
   assert.equal(
     wakeFailureMessage({ kind: "disk-restoring", detail: "HYDRATOR FAILED …: status code 503", checked: true }, { retryAt: null, gaveUpAfter: 5, resumeAfter: Date.parse("2026-11-19T02:22:00Z"), sandboxId: "bx_demo1", now }, "raw"),
-    "boat.dev still couldn't restore this sandbox's disk after 5 tries (its storage is returning errors), so Boat stopped retrying on its own. It's under Needs you. Press Resume after 02:22 UTC, or try now with `bb boat sandbox resume bx_demo1`.",
+    "boat.dev still couldn't restore this sandbox's disk after 5 tries (its storage is returning errors), so Harbormaster stopped retrying on its own. It's under Needs you. Press Resume after 02:22 UTC, or try now with `bb boat sandbox resume bx_demo1`.",
   );
-  assert.match(wakeFailureMessage({ kind: "ssh-unreachable", detail: "exit status 255", checked: true }, { retryAt: null, now }, "raw"), /^Boat couldn't reach the sandbox over SSH to restart bb there \(exit status 255\)\. Press Resume to try again/);
+  assert.match(wakeFailureMessage({ kind: "ssh-unreachable", detail: "exit status 255", checked: true }, { retryAt: null, now }, "raw"), /^Harbormaster couldn't reach the sandbox over SSH to restart bb there \(exit status 255\)\. Press Resume to try again/);
   assert.equal(wakeFailureMessage({ kind: "other", detail: null, checked: false }, { retryAt: null, now }, "npm error code E404"), "npm error code E404");
 });
 

@@ -88,7 +88,7 @@ function useSignIn() {
           rows: 30,
           scope: { kind: "host_path", hostId: host.id, cwd: null },
           start: { mode: "shell" },
-          title: checkId === "signed-in" ? "Sign in to boat.dev" : "Boat Cloud Agents setup",
+          title: checkId === "signed-in" ? "Sign in to boat.dev" : "Harbormaster setup",
         });
         const shown = await navigate.experimental_openTerminal({ terminalId: terminal.id });
         if (!shown) {
@@ -409,8 +409,8 @@ function LaterFold({ checks }: { checks: readonly SetupCheckDto[] }) {
               title="bb Connect"
               text={
                 connect?.state === "ready"
-                  ? "Ready. Task chats, chats on a Boat sandbox and cloud orchestrators can reach this bb."
-                  : "Only for tasks you can open as bb chats, chats on a Boat sandbox and cloud orchestrators. Set it up in Settings → Plugins → bb connect."
+                  ? "Ready. Task chats, chats on a boat.dev sandbox and cloud orchestrators can reach this bb."
+                  : "Only for tasks you can open as bb chats, chats on a boat.dev sandbox and cloud orchestrators. Set it up in Settings → Plugins → bb connect."
               }
             />
           )}
@@ -561,11 +561,11 @@ export function SetupChecklist() {
     else await actions.run("check-again");
   };
   const completedRow = (check: SetupCheckDto) => {
-    const label = check.id === "signed-in" ? "Signed in to boat" : check.id === "plan" && data.plan ? `${data.plan.name ?? "Boat"} plan${data.plan.vmHoursRemaining === null ? "" : ` · ${data.plan.vmHoursRemaining} h left`}` : check.id === "agents" ? `${data.agents.effective === "both" ? "Claude and ChatGPT" : data.agents.effective === "claude" ? "Claude" : "ChatGPT"} connected` : check.id === "github" ? (/\b\d+ repos?\b/.exec(check.detail)?.[0] ? `GitHub access to ${/\b\d+ repos?\b/.exec(check.detail)![0]}` : "GitHub access checked") : check.detail || check.label;
+    const label = check.id === "signed-in" ? "Signed in to boat" : check.id === "plan" && data.plan ? `${data.plan.name ?? "boat.dev"} plan${data.plan.vmHoursRemaining === null ? "" : ` · ${data.plan.vmHoursRemaining} h left`}` : check.id === "agents" ? `${data.agents.effective === "both" ? "Claude and ChatGPT" : data.agents.effective === "claude" ? "Claude" : "ChatGPT"} connected` : check.id === "github" ? (/\b\d+ repos?\b/.exec(check.detail)?.[0] ? `GitHub access to ${/\b\d+ repos?\b/.exec(check.detail)![0]}` : "GitHub access checked") : check.detail || check.label;
     return <details key={check.id} className="border-t border-[var(--boat-setting-border)]"><summary className="flex cursor-pointer list-none items-center gap-3 px-3.5 py-2.5 text-xs leading-[17px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><Icon name="CircleCheck" className="size-[18px] shrink-0 text-[#5BD08A]" aria-hidden /><span>{label}</span></summary><p className="px-[44px] pb-2 text-xs leading-[17px] text-[var(--boat-faint)]">{check.detail}</p></details>;
   };
   return <div className="space-y-[22px]">
-    {testPassed && !data.ok ? <div role="alert" className="flex items-start gap-2.5 rounded-[10px] border border-[#53312F] bg-[#261918] px-3.5 py-3"><Icon name="AlertTriangle" className="mt-0.5 size-4 shrink-0 text-[#E06C6C]" aria-hidden /><div className="min-w-0 flex-1"><p className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">Cloud agents need a fix</p><p className="mt-0.5 text-xs leading-[17px] text-[#B68C89]">Your saved tasks and changes are still here. {current?.detail}</p></div><CheckAgainButton quiet /></div> : setupNeedsWork(data) ? <div className="flex items-start gap-2.5 rounded-[10px] border border-[#3D3420] bg-[#1E1A12] px-3.5 py-3"><Icon name="AlertTriangle" className="mt-0.5 size-4 shrink-0 text-[#F0B135]" aria-hidden /><div><p className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">Boat Cloud Agents needs setup</p><p className="mt-0.5 text-xs leading-[17px] text-[#A8A090]">{first ? "Shown by bb until the steps below pass. Nothing runs and nothing costs until then." : "One step needs you; one is still checking."}</p></div></div> : null}
+    {testPassed && !data.ok ? <div role="alert" className="flex items-start gap-2.5 rounded-[10px] border border-[#53312F] bg-[#261918] px-3.5 py-3"><Icon name="AlertTriangle" className="mt-0.5 size-4 shrink-0 text-[#E06C6C]" aria-hidden /><div className="min-w-0 flex-1"><p className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">Cloud agents need a fix</p><p className="mt-0.5 text-xs leading-[17px] text-[#B68C89]">Your saved tasks and changes are still here. {current?.detail}</p></div><CheckAgainButton quiet /></div> : setupNeedsWork(data) ? <div className="flex items-start gap-2.5 rounded-[10px] border border-[#3D3420] bg-[#1E1A12] px-3.5 py-3"><Icon name="AlertTriangle" className="mt-0.5 size-4 shrink-0 text-[#F0B135]" aria-hidden /><div><p className="text-[13px] font-medium leading-5 text-[color:var(--boat-heading)]">Harbormaster needs setup</p><p className="mt-0.5 text-xs leading-[17px] text-[#A8A090]">{first ? "Shown by bb until the steps below pass. Nothing runs and nothing costs until then." : "One step needs you; one is still checking."}</p></div></div> : null}
     <div className="overflow-hidden rounded-[10px] border border-border bg-card">
       <header className="space-y-2.5 px-3.5 pb-3 pt-3.5"><div className="flex items-baseline gap-2.5"><h3 className="min-w-0 flex-1 text-[15px] font-semibold leading-5 text-[color:var(--boat-heading)]">Set up cloud agents</h3><span className="text-xs leading-4 text-muted-foreground">{passed.length + (testPassed ? 1 : 0)} of 6</span></div><p className="text-[13px] leading-[19px] text-[var(--boat-secondary)]">{testBusy ? "Last step: a real sandbox, end to end." : first ? "About 5 minutes. Each step checks itself; you can leave and come back." : "Steps that pass fold to one line. Fix the red one; the rest checks itself."}</p><div className="flex gap-1" aria-hidden>{Array.from({length:6},(_,index)=><span key={index} className={cn("h-1 flex-1 rounded-sm", index < passed.length ? "bg-[#5BD08A]" : "bg-[#2E2E2E]")} />)}</div></header>
       {steps.map((step) => {
