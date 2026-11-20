@@ -56,6 +56,13 @@ export function ownMacTaskNotice(
   }
   const allocationStart = typeof allocation?.startedAt === "string" ? Date.parse(allocation.startedAt) : null;
   if (allocationStart !== null) candidates = candidates.filter(entry => Date.parse(entry.startedAt) === allocationStart);
+  if (!exactId && typeof allocation?.leaseId !== "string" && allocationStart === null) {
+    const created = Date.parse(linked?.createdAt ?? "");
+    const finished = Date.parse(linked?.finishedAt ?? "");
+    // Legacy allocation failures may have no original lease row at all. A
+    // single later rental is not evidence about this task's paid minimum.
+    candidates = history.length === 1 ? candidates.filter(entry => Date.parse(entry.startedAt) >= created && Date.parse(entry.startedAt) <= finished) : [];
+  }
   if ((typeof allocation?.machineId === "string" && allocation.machineId !== machineId) || (typeof allocation?.provider === "string" && allocation.provider !== linked?.sandboxProvider)) candidates = [];
   // Older allocations may lack a physical identity. Only a unique historical
   // row is usable then; ambiguous or missing evidence stays unconfirmed.

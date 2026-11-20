@@ -7,7 +7,7 @@ async function fixture() {
   const env=makeService();
   const original=await env.service.startTask({title:"Check the sample native app",role:"custom",brief:"Run fake native checks"});
   const source=env.store.update(original.id,{status:"failed",turns:0,sandboxId:null,hostId:null})!;
-  const linked=env.store.insert({...source,id:"t_fake_linked",sandboxId:"instabox_fake_allocated",sandboxProvider:"instabox",threadId:null,environmentId:null,repoPath:null,error:"Instabox did not report the Mac lease; work cannot safely start."});
+  const linked=env.store.insert({...source,id:"t_fake_linked",createdAt:"2030-01-01T11:59:59.000Z",finishedAt:"2030-01-01T12:01:00.000Z",sandboxId:"instabox_fake_allocated",sandboxProvider:"instabox",threadId:null,environmentId:null,repoPath:null,error:"Instabox did not report the Mac lease; work cannot safely start."});
   const quote={id:"fake-quote",provider:"instabox",label:"Instabox",model:"m2",modelLabel:"Mac M2",minimumCost:10.8,hourPrice:.45,minimumHours:24,currency:"USD",expiresAt:"2099-01-01T00:00:00Z"};
   env.store.addOwnMacEvent(source.id,"ownmac-rental-offer","Fake quote",quote);
   env.store.addOwnMacEvent(source.id,"ownmac-rental-answer","Fake approval consumed",{answer:"rent",replacementId:linked.id});
@@ -49,4 +49,10 @@ test("a failed linked task cannot borrow a later physical lease's billing terms"
   assert.equal(ownMacTaskNotice(store,source)!.linkedTask?.lease,undefined);
   store.addOwnMacEvent(linked.id,"ownmac-allocation","Legacy allocation lacks physical identity",{machineId:linked.sandboxId,provider:"instabox"});
   assert.equal(ownMacTaskNotice(store,source)!.linkedTask?.lease,undefined,"ambiguous history must remain unconfirmed");
+});
+
+test("a sole later lease cannot supply billing facts for a legacy failed allocation",async()=>{
+  const {store,source,linked}=await fixture();
+  store.macLeases.record({id:"instabox:fake-later",provider:"instabox",machineId:linked.sandboxId!,size:"m2",startedAt:"2030-01-03T12:00:00Z",paidUntil:"2030-01-04T12:00:00Z",minimumCost:20,hourPrice:1,currency:"USD",cpus:8,memoryMiB:12288});
+  assert.equal(ownMacTaskNotice(store,source)!.linkedTask?.lease,undefined);
 });
