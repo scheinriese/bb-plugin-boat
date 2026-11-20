@@ -1,3 +1,4 @@
+import { CREDENTIAL_CHECK_SCRIPT } from "../src/providers/ownmac/provider.ts";
 import { AVAILABILITY_SCRIPT, IDENTITY_SCRIPT } from "../src/providers/ownmac/probe.ts";
 import { GITHUB_LOGIN_SCRIPT, GITHUB_CLEANUP_SCRIPT, CREDENTIAL_CLEANUP_SCRIPT } from "../src/credentials.ts";
 import { CODEX_HEALTH_SCRIPT } from "../src/codex-health.ts";
@@ -15,6 +16,7 @@ import type { CheckoutMode } from "../src/providers/types.ts";
 
 async function scripts(): Promise<Map<string, string>> {
   const result = new Map<string, string>([
+    ["Your Mac credential verification", CREDENTIAL_CHECK_SCRIPT],
     ["Your Mac identity", IDENTITY_SCRIPT],
     ["Your Mac availability", AVAILABILITY_SCRIPT],
     ["Scaleway bootstrap", BOOTSTRAP],

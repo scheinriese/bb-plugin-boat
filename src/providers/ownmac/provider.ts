@@ -1,3 +1,9 @@
+import {
+  OWN_MAC_MIN_FREE_GB,
+  ownMacFactsSchema,
+  type OwnMacFacts,
+} from "../../../contract-ownmac.ts";
+import { CREDENTIAL_CLEANUP_SCRIPT } from "../../credentials.ts";
 import { ownMacConfigSchema } from "../../../contract-providers.ts";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
@@ -25,6 +31,11 @@ import {
   type Reading,
 } from "./probe.ts";
 
+export const CREDENTIAL_CHECK_SCRIPT = `set -eu
+for file in "$HOME/.config/gh" "$HOME/.claude/.credentials.json" "$HOME/.codex/auth.json"; do
+  test ! -e "$file" && test ! -L "$file"
+done
+`;
 export interface OwnMacConfig {
   ownMacIsolation?: string;
   ownMacEnabled: boolean;
@@ -37,12 +48,14 @@ const recordSchema = z.object({
   alias: sshAliasSchema.refine(Boolean),
   hardware: z.string().regex(/^[a-f0-9]{64}$/),
   user: z.string().regex(/^[a-z_][a-z0-9_-]*$/i),
-  uid: z.number().int().positive(),
+  uid: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),
   cpus: z.number().positive(),
   memoryMiB: z.number().positive(),
   active: z.boolean(),
+  vm: z.boolean().nullable().optional(),
   notice: z.string().optional(),
+  proxyRemovalFailed: z.boolean().optional(),
 });
 type Record = z.infer<typeof recordSchema>;
 export const OWN_MAC_RECORDS = "ownMacTasksV1";
@@ -55,10 +68,11 @@ export async function createOwnMacProvider(options: {
   ssh?: AliasExec;
   local?: () => Promise<Identity>;
   now?: () => number;
+  taskState?: (id: string) => "running" | "idle" | "closed" | null;
 }) {
   const readConfig = async () =>
     ownMacConfigSchema.parse(await options.config());
-  let configuredAlias = (await readConfig()).ownMacAlias;
+  let configuredIsolation = (await readConfig()).ownMacIsolation;
   const ssh = options.ssh ?? aliasExec,
     now = options.now ?? Date.now,
     credentials = options.credentials;
@@ -90,66 +104,303 @@ export async function createOwnMacProvider(options: {
     reading: Reading;
     local: Identity;
   } | null = null;
+  let failedProbe: { at: number; key: string } | null = null;
   let lock: Promise<unknown> = Promise.resolve();
   function serial<T>(run: () => Promise<T>): Promise<T> {
     const next = lock.then(run, run);
     lock = next.catch(() => undefined);
     return next;
   }
-  const active = () =>
-    [...records.values()].filter((record) => record.active).length;
-  async function probe(force = false, signal?: AbortSignal) {
+  const metaKey = "ownMacSetupV1";
+  const setupSchema = z.object({
+    step: z.number().int().min(0).max(7).default(0),
+    testedAlias: z.string().default(""),
+    since: z.string().nullable().default(null),
+    refusal: z.enum(["personal", "admin"]).optional(),
+    refusedAlias: z.string().optional(),
+    lastCleanupCheck: z.string().nullable().default(null),
+    testResult: z
+      .object({
+        ok: z.boolean(),
+        title: z.string(),
+        detail: z.string(),
+        checkedAt: z.string(),
+      })
+      .optional(),
+  });
+  let setup = setupSchema.parse((await options.kv.get<unknown>(metaKey)) ?? {});
+  const saveSetup = () => options.kv.set(metaKey, setup);
+  const reserves = (value: Record) =>
+    value.active &&
+    (!options.taskState ||
+      ["running", null].includes(options.taskState(value.id)));
+  const active = () => [...records.values()].filter(reserves).length;
+  function cleanupFacts() {
+    const failed = [...records.values()].filter((value) => value.notice);
+    if (!failed.length && !setup.lastCleanupCheck) return undefined;
+    return {
+      failed: failed.length > 0,
+      checkedAt: setup.lastCleanupCheck,
+      taskIds: failed.map((value) => value.id),
+      steps: failed
+        .map(
+          (value) =>
+            `# In the agents account, for task ${value.id}\n(\nexport HOME="$HOME/.bb-ownmac/${value.id}"\nexport PATH="$HOME/.local/bin:$PATH"\n${CREDENTIAL_CLEANUP_SCRIPT})\n`,
+        )
+        .join("\n"),
+    };
+  }
+  function facts(
+    config: Awaited<ReturnType<typeof readConfig>>,
+    status: string,
+    code: OwnMacFacts["code"],
+  ): OwnMacFacts {
+    const value = cached?.reading,
+      clean = cleanupFacts();
+    const result = {
+      status,
+      code,
+      alias: config.ownMacAlias,
+      enabled: config.ownMacEnabled,
+      running: active(),
+      max: config.ownMacMaxTasks,
+      vm: value?.vm ?? null,
+      freeMiB: value?.freeMiB,
+      onPower: value?.ac,
+      loggedIn: value?.session,
+      account: code === "personal" ? undefined : value?.user,
+      checkedAt: new Date(cached?.at ?? failedProbe?.at ?? now()).toISOString(),
+      since: setup.since,
+      tested:
+        setup.testedAlias === config.ownMacAlias && Boolean(config.ownMacAlias),
+      setupSteps: setup.step,
+      testResult: setup.testResult,
+      cleanup: clean,
+    };
+    return ownMacFactsSchema.parse(
+      Object.fromEntries(
+        Object.entries(result).filter(([, value]) => value !== undefined),
+      ),
+    );
+  }
+  async function readHost(
+    config: Awaited<ReturnType<typeof readConfig>>,
+    signal?: AbortSignal,
+  ) {
+    const local = await (options.local ?? localIdentity)();
+    const result = await ssh(config.ownMacAlias, {
+      command: ["/bin/bash", "-c", AVAILABILITY_SCRIPT],
+      timeoutMs: 8000,
+      signal,
+    });
+    if (result.exitCode) {
+      const code = /permission denied|authentication failed/i.test(
+        result.stderr,
+      )
+        ? "ssh_auth"
+        : /could not resolve hostname/i.test(result.stderr)
+          ? "ssh_alias"
+          : "ssh_unreachable";
+      throw fail(code, code);
+    }
+    cached = {
+      at: now(),
+      key: config.ownMacAlias,
+      reading: parseReading(result.stdout),
+      local,
+    };
+    setup.since = null;
+    failedProbe = null;
+    return cached;
+  }
+  async function probe(
+    force = false,
+    signal?: AbortSignal,
+  ): Promise<OwnMacFacts & { reading?: Reading }> {
     const config = await readConfig();
-    configuredAlias = config.ownMacAlias;
-    const running = active();
+    configuredIsolation = config.ownMacIsolation;
     if (
-      !config.ownMacEnabled ||
-      !config.ownMacAlias ||
-      !sshAliasSchema.safeParse(config.ownMacAlias).success
+      setup.step === 5 &&
+      config.ownMacEnabled &&
+      setup.testedAlias === config.ownMacAlias
+    ) {
+      setup.step = 7;
+      await saveSetup();
+    }
+    if ([...records.values()].some((value) => value.notice))
+      return facts(config, "Logins left behind", "cleanup");
+    if (
+      (config.ownMacPaused || !config.ownMacEnabled) &&
+      setup.refusal &&
+      setup.refusedAlias === config.ownMacAlias
     )
-      return { status: "Not set up", running, max: config.ownMacMaxTasks };
-    if (config.ownMacPaused)
-      return { status: "Paused", running, max: config.ownMacMaxTasks };
+      return facts(
+        config,
+        setup.refusal === "personal"
+          ? "Can't use · your own login"
+          : "Can't use · admin user",
+        setup.refusal,
+      );
+    if (config.ownMacPaused) return facts(config, "Paused", "paused");
+    if (
+      !config.ownMacEnabled &&
+      setup.refusal &&
+      setup.refusedAlias === config.ownMacAlias
+    )
+      return facts(
+        config,
+        setup.refusal === "personal"
+          ? "Can't use · your own login"
+          : "Can't use · admin user",
+        setup.refusal,
+      );
+    if (!config.ownMacEnabled)
+      return facts(
+        config,
+        setup.testedAlias === config.ownMacAlias && config.ownMacAlias
+          ? "Off"
+          : "Not set up",
+        setup.testedAlias === config.ownMacAlias && config.ownMacAlias
+          ? "off"
+          : "setup",
+      );
+    if (!config.ownMacAlias) return facts(config, "Not set up", "setup");
+    if (
+      !force &&
+      failedProbe?.key === config.ownMacAlias &&
+      now() - failedProbe.at < 45000
+    )
+      return facts(config, "Asleep or unreachable", "unreachable");
     try {
       if (
         force ||
         !cached ||
         cached.key !== config.ownMacAlias ||
-        now() - cached.at >= 45_000
-      ) {
-        const local = await (options.local ?? localIdentity)();
-        const result = await ssh(config.ownMacAlias, {
-          command: ["/bin/bash", "-c", AVAILABILITY_SCRIPT],
-          timeoutMs: 8000,
-          signal,
-        });
-        if (result.exitCode) throw new Error();
-        cached = {
-          at: now(),
-          key: config.ownMacAlias,
-          reading: parseReading(result.stdout),
-          local,
-        };
-      }
-      return {
-        status: availability(
-          cached.reading,
-          cached.local,
-          running,
-          config.ownMacMaxTasks,
-        ),
-        reading: cached.reading,
-        running,
-        max: config.ownMacMaxTasks,
-      };
+        now() - cached.at >= 45000
+      )
+        await readHost(config, signal);
+      const status = availability(
+        cached!.reading,
+        cached!.local,
+        active(),
+        config.ownMacMaxTasks,
+      );
+      const code: OwnMacFacts["code"] = status.includes("your own login")
+        ? "personal"
+        : status.includes("admin user")
+          ? "admin"
+          : status === "On battery"
+            ? "battery"
+            : status === "No logged-in session"
+              ? "session"
+              : status === "Not enough free memory"
+                ? "memory"
+                : status === "At task limit" || status.includes("CPU")
+                  ? "busy"
+                  : "available";
+      return { ...facts(config, status, code), reading: cached!.reading };
     } catch {
       cached = null;
-      return {
-        status: "Asleep or unreachable",
-        running,
-        max: config.ownMacMaxTasks,
-      };
+      failedProbe = { at: now(), key: config.ownMacAlias };
+      if (!setup.since) {
+        setup.since = new Date(now()).toISOString();
+        await saveSetup();
+      }
+      return facts(config, "Asleep or unreachable", "unreachable");
     }
+  }
+  async function testConnection(): Promise<OwnMacFacts> {
+    const config = await readConfig();
+    configuredIsolation = config.ownMacIsolation;
+    if (config.ownMacAlias !== setup.testedAlias)
+      setup.step = Math.min(setup.step, 4);
+    let code: OwnMacFacts["code"] = "setup",
+      status = "Not set up";
+    try {
+      if (!config.ownMacAlias) throw fail("missing alias", "ssh_alias");
+      const value = await readHost(config),
+        reason = refusal(value.reading, value.local);
+      if (reason) {
+        status = reason;
+        code = reason.includes("your own login") ? "personal" : "admin";
+        throw fail(reason, code);
+      }
+      delete setup.refusal;
+      delete setup.refusedAlias;
+      setup.step = 5;
+      setup.testedAlias = config.ownMacAlias;
+      const r = value.reading;
+      setup.testResult = {
+        ok: true,
+        title: `Connected as ${r.user}`,
+        detail: `${r.admin ? "Admin inside a VM" : "Standard user, not you"} · ${r.vm === true ? "macOS VM" : r.vm === false ? "Separate macOS user" : "Isolation not detected"} · ${Math.floor(r.freeMiB / 1024)} GB free · ${r.ac ? "on power" : "on battery"}${r.session ? "" : " · not logged in"}`,
+        checkedAt: new Date(now()).toISOString(),
+      };
+      await saveSetup();
+      const { reading: _reading, ...current } = await probe(false);
+      return { ...current, tested: true };
+    } catch (error) {
+      const failure = (error as { code?: string }).code;
+      if (failure === "personal" || failure === "admin") {
+        setup.refusal = failure;
+        setup.refusedAlias = config.ownMacAlias;
+        setup.testedAlias = "";
+      }
+      const alias = config.ownMacAlias || "the SSH alias";
+      const title =
+        failure === "personal"
+          ? `${alias} is your own login`
+          : failure === "admin"
+            ? `${cached?.reading.user ?? "The account"} is an admin on your Mac`
+            : failure === "ssh_alias"
+              ? `No alias called ${alias} in ~/.ssh/config`
+              : failure === "ssh_auth"
+                ? `Couldn't sign in as ${alias}`
+                : `Your Mac didn't answer at ${alias}`;
+      const detail =
+        failure === "ssh_auth"
+          ? "The alias was found and the Mac answered, but the agents account didn't accept your SSH key. Add your public key to that account's ~/.ssh/authorized_keys, then test again."
+          : failure === "personal"
+            ? "Create a macOS VM or a separate standard user, then point the alias at it."
+            : failure === "admin"
+              ? "Make this a standard user on the physical Mac, or use a VM."
+              : "Check the SSH alias, Remote Login and network, then test again.";
+      setup.testResult = {
+        ok: false,
+        title,
+        detail,
+        checkedAt: new Date(now()).toISOString(),
+      };
+      await saveSetup();
+      return facts(config, status, code);
+    }
+  }
+  async function checkCleanup(proxyRevoked?: (id: string) => Promise<boolean>) {
+    for (const value of records.values())
+      if (value.notice) {
+        try {
+          await verify(value);
+          const checked = await run(value.id, {
+            command: ["/bin/bash", "-c", CREDENTIAL_CHECK_SCRIPT],
+            timeoutMs: 8000,
+          });
+          if (
+            checked.exitCode ||
+            (value.proxyRemovalFailed && !(await proxyRevoked?.(value.id)))
+          )
+            continue;
+          value.active = false;
+          delete value.notice;
+          delete value.proxyRemovalFailed;
+        } catch {
+          /* A read failure keeps admission paused. */
+        }
+      }
+    setup.lastCleanupCheck = new Date(now()).toISOString();
+    await save();
+    await saveSetup();
+    const { reading: _reading, ...state } = await probe(true);
+    return state;
   }
   function record(id: string) {
     const value = records.get(id);
@@ -218,7 +469,7 @@ export async function createOwnMacProvider(options: {
     locked(id, () => cleanupInner(id, signal));
   async function ensureGithub(id: string, signal?: AbortSignal) {
     return locked(id, async () => {
-      if (!record(id).active)
+      if (!record(id).active || record(id).notice)
         throw fail("This Your Mac task is closed.", "task_closed");
       await verify(record(id), signal);
       return credentials.ensureGithub(id, executor(id), signal);
@@ -238,11 +489,12 @@ export async function createOwnMacProvider(options: {
       if (result.exitCode) throw new Error();
       value.active = false;
       delete value.notice;
+      delete value.proxyRemovalFailed;
       await save();
       cached = null;
     } catch {
       value.notice =
-        "Credential removal could not be verified on Your Mac. Restore SSH access and close the task again to retry cleanup. Revoke or rotate its GitHub token if access cannot be restored.";
+        "Login cleanup could not be verified. Your Mac is automatically paused for new tasks until Check again passes. Running tasks are not moved or stopped.";
       await save();
       throw fail(value.notice, "credential_cleanup_failed");
     }
@@ -314,16 +566,35 @@ export async function createOwnMacProvider(options: {
     },
     classifiesCreateErrors: true,
     configured: async () => Boolean((await readConfig()).ownMacAlias),
-    ownMacStatus: probe,
-    runsOnMachine: (id) =>
-      id ? (records.get(id)?.alias ?? null) : configuredAlias || null,
+    ownMacStatus: async (force, signal) => {
+      const { reading: _reading, ...state } = await probe(force, signal);
+      return state;
+    },
+    ownMacCleanup: cleanupFacts,
+    testOwnMacConnection: testConnection,
+    ownMacSetupStep: async (step) => {
+      setup.step = Math.max(setup.step, step);
+      await saveSetup();
+    },
+    checkOwnMacCleanup: checkCleanup,
+    runsOnMachine: (id) => {
+      const vm = id ? records.get(id)?.vm : cached?.reading.vm;
+      return vm === true
+        ? "VM"
+        : vm === false
+          ? "separate user"
+          : configuredIsolation === "user"
+            ? "separate user"
+            : "VM";
+    },
     async presentation({ force, signal } = {}) {
-      const state = await probe(force, signal);
+      const { reading: _reading, ...state } = await probe(force, signal);
       return {
         steps: [],
         status: state.status,
         ownMac: {
           ...(await readConfig()),
+          facts: state,
           running: state.running,
           max: state.max,
         },
@@ -369,14 +640,12 @@ export async function createOwnMacProvider(options: {
     async assertTaskReady({ agent, repos, sandboxId, signal }) {
       if (sandboxId) {
         const value = record(sandboxId);
-        if (!value.active)
+        if (!value.active || value.notice)
           throw fail(
             "This Your Mac task is closed. Start a new task to use a fresh credential home.",
             "task_closed",
           );
         const reading = await verify(value, signal);
-        if (!reading.ac || !reading.session)
-          throw fail(!reading.ac ? "On battery" : "No logged-in session");
       } else {
         const state = await probe(true, signal);
         if (state.status !== "Available")
@@ -398,13 +667,13 @@ export async function createOwnMacProvider(options: {
           (size) => size.id === input.type,
         )!;
         const reserved = [...records.values()].filter(
-          (value) => value.active && value.hardware === state.reading!.hardware,
+          (value) =>
+            reserves(value) && value.hardware === state.reading!.hardware,
         );
         if (
           state.reading.freeMiB -
-            need.memoryGb * 1024 -
             reserved.reduce((sum, value) => sum + value.memoryMiB, 0) <
-            Math.max(4096, state.reading.memoryMiB / 4) ||
+            OWN_MAC_MIN_FREE_GB * 1024 ||
           need.cpus + reserved.reduce((sum, value) => sum + value.cpus, 0) >=
             state.reading.cpus
         )
@@ -423,6 +692,7 @@ export async function createOwnMacProvider(options: {
             cpus: need.cpus,
             memoryMiB: need.memoryGb * 1024,
             active: true,
+            vm: state.reading.vm,
           };
         records.set(id, value);
         await save();
@@ -472,7 +742,10 @@ export async function createOwnMacProvider(options: {
     closeTaskCredentials: async (id, signal, machineRemoved = true) => {
       if (!machineRemoved) {
         const value = record(id);
-        value.active = true;
+        // Remove reachable task logins even when core could not revoke the
+        // proxy. Retain the failure until the read-only recheck proves both.
+        await cleanup(id, signal).catch(() => undefined);
+        value.proxyRemovalFailed = true;
         value.notice =
           "Your Mac task credentials need attention: bb could not remove its machine and revoke its agent proxy access. Close the task again after restoring access.";
         await save();
@@ -489,14 +762,11 @@ export async function createOwnMacProvider(options: {
     }),
     resume: async (id, input) => {
       const value = record(id);
-      if (!value.active)
+      if (!value.active || value.notice)
         throw fail(
           "Start a new Your Mac task; closed sessions are not resumed.",
           "task_closed",
         );
-      const config = await readConfig();
-      if (!config.ownMacEnabled || config.ownMacPaused)
-        throw fail(config.ownMacPaused ? "Paused" : "Not set up");
       await verify(value, input?.signal);
     },
     exec: (id, script, input) =>

@@ -346,6 +346,7 @@ export function registerRpc(runtime: Runtime): void {
     );
 
   function providerFailure(task: Task): TaskDto["providerFailure"] {
+    if(service.store.latestEvent(task.id,"ownmac-rental-offer"))return undefined;
     if (task.status !== "failed" || task.turns!==0 || (task.sandboxProvider ?? "boat")==="boat") return undefined;
     const code = service.store.history({taskId:task.id,limit:30}).events.find(e=>e.kind==="stopped" && e.cause)?.cause ?? "provider_failed";
     const snapshot=service.store.macLeases.snapshot();

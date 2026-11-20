@@ -1,6 +1,11 @@
+import { footerOnCount } from "../web/own-mac-count.ts";
 import { PLUGIN_SETTINGS, settingProblem } from "../src/settings.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { PluginKvStorage } from "@get-bb/plugin-sdk";
 import {
   createOwnMacProvider,
@@ -37,6 +42,7 @@ const reading: Reading = {
   user: "fake-worker",
   uid: 502,
   admin: false,
+  vm:false,
   ac: true,
   session: true,
   memoryMiB: 32768,
@@ -49,7 +55,7 @@ const output = (value: Reading) =>
   Object.entries(value)
     .map(
       ([key, value]) =>
-        `${key}=${typeof value === "boolean" ? (value ? 1 : 0) : value}`,
+        `${key}=${value===null?"unknown":typeof value === "boolean" ? (value ? 1 : 0) : value}`,
     )
     .join("\n");
 const input = {
@@ -187,7 +193,7 @@ for (const alias of [
   test(`SSH alias rejects ${JSON.stringify(alias)}`, () =>
     assert.equal(sshAliasSchema.safeParse(alias).success, false));
 test("task limits validate at the settings boundary", () => {
-  for (const max of [0, 1.5, 17])
+  for (const max of [0, 1.5, 5, 17])
     assert.equal(
       ownMacConfigSchema.safeParse({
         ownMacEnabled: true,
@@ -209,7 +215,7 @@ test("availability caches one cheap SSH probe for 45 seconds", async () => {
   env.set({ admin: true });
   assert.match(
     (await env.provider.ownMacStatus!(true)).status,
-    /administrator/,
+    /admin user/,
   );
 });
 test("disabled, unset and paused Macs do not use SSH; network failure is unavailable", async () => {
@@ -234,7 +240,7 @@ test("admission checks identity again even with a warm available cache", async (
   const env = await fixture();
   await env.provider.ownMacStatus!();
   env.set({ user: local.user, uid: local.uid });
-  await assert.rejects(env.provider.create(input), /personal login/);
+  await assert.rejects(env.provider.create(input), /your own login/);
   assert.equal(env.calls.length, 2);
 });
 test("per-task homes, persisted targets and capacity survive restart", async () => {
@@ -267,7 +273,7 @@ test("cleanup still works when paused and disabled; failed cleanup stays visible
     env.provider.closeTaskCredentials!(task.id),
     /could not be verified/,
   );
-  assert.match(env.provider.releaseNotice!()!, /Credential removal/);
+  assert.match(env.provider.releaseNotice!()!, /Login cleanup/);
   env.cleanupFail(false);
   await env.provider.closeTaskCredentials!(task.id);
   assert.equal(env.provider.releaseNotice!(), null);
@@ -290,7 +296,10 @@ test("unremoved bb machine keeps a proxy cleanup warning", async () => {
     /revoke its agent proxy/,
   );
   assert.match(env.provider.releaseNotice!()!, /proxy/);
-  assert.equal((await env.provider.ownMacStatus!()).running, 1);
+  const state=await env.provider.ownMacStatus!();
+  assert.equal(state.running, 0);
+  assert.equal(state.code,"cleanup");
+  assert.deepEqual(env.cleaned,[task.id]);
 });
 test("Your Mac uses unchanged stdin delivery and verified cleanup scripts", async () => {
   const fakeToken = "fake_github_token";
@@ -327,7 +336,7 @@ test("Your Mac reports zero rent without any lease or lease-days", async () => {
   assert.equal(await env.provider.pricing!(), "$0 rent");
   assert.equal(
     runsOnLine(runsOnOf(env.provider, "small", "boat")),
-    "Your Mac · fake-mac · $0",
+    "Your Mac · VM · $0",
   );
 });
 
@@ -343,6 +352,7 @@ async function routingFixture(monthly = false) {
     caps: { ...env.provider.caps, headlessAgentRunner: true },
     idPattern: /^fake_rental_/,
     pricing: async () => "USD 10 minimum",
+    macModels:async()=>[{id:"fake-m2",label:"Fake Mac M2",cpus:8,memoryMiB:32768,minimumCost:10,minimumHours:24,hourPrice:0.5,currency:"USD"}],
   };
   // Never allocate in this fixture: held leases must win, or cost consent stops it.
   rental.create = async () => {
@@ -368,9 +378,11 @@ async function routingFixture(monthly = false) {
     sandboxProvider: "ownmac",
     sandboxSystem: "macos",
   });
+  const told:{threadId:string;text:string}[]=[];
   const service = new BoatService(registry, store, {
     settings: async () => defaultSettings({ maxActiveSandboxes: 0 }),
     chat,
+    tell:async(threadId,text)=>{told.push({threadId,text});},
     lifecycle: new AbortController().signal,
     projects: () => [project],
     changed: () => {},
@@ -411,7 +423,7 @@ async function routingFixture(monthly = false) {
       memoryMiB: 32768,
     });
   }
-  return { ...env, store, chat, service, start, held, rental, boat };
+  return { ...env, store, chat, service, start, held, rental, boat, told };
 }
 test("automatic Mac routing chooses Your Mac before a held rental", async () => {
   const env = await routingFixture();
@@ -439,7 +451,7 @@ test("Your Mac fallback offers a rental estimate without silently renting", asyn
   env.config.ownMacPaused = true;
   await assert.rejects(
     env.start(),
-    /USD 10 minimum.*Choose this rental provider/,
+    /USD 10.00 minimum/,
   );
 });
 for (const status of ["done", "cancelled"] as const)
@@ -501,7 +513,7 @@ test("closed task homes cannot receive credentials again", async () => {
 });
 test("CPU and RAM reservations preserve headroom while starts are pending", async () => {
   const env = await fixture();
-  env.config.ownMacMaxTasks = 16;
+  env.config.ownMacMaxTasks = 4;
   env.set({ cpus: 4 });
   await env.provider.allocate!(input);
   await assert.rejects(env.provider.allocate!(input), /headroom/);
@@ -511,4 +523,135 @@ test("settings reject SSH paths, spaces and option-like aliases",()=>{
   for(const alias of ["/tmp/fake-key","fake mac","-fake"])
     assert.ok(settingProblem("ownMacAlias",PLUGIN_SETTINGS.ownMacAlias,alias));
   assert.equal(settingProblem("ownMacAlias",PLUGIN_SETTINGS.ownMacAlias,"fake-mac"),null);
+});
+
+test("VM detection permits admins only inside a VM; server's own login always refuses",async()=>{
+  assert.equal(refusal({...reading,admin:true,vm:true},local),null);
+  assert.match(refusal({...reading,admin:true,vm:false},local)!,/admin user/);
+  assert.match(refusal({...reading,admin:true,vm:null},local)!,/admin user/);
+  assert.match(refusal({...reading,user:local.user,uid:local.uid,admin:true,vm:true},local)!,/your own login/);
+  const env=await fixture();env.set({vm:true,admin:true});assert.equal((await env.provider.ownMacStatus!(true)).code,"available");
+});
+test("6 GB is the admission threshold and session has priority over battery",async()=>{
+  assert.equal(availability({...reading,freeMiB:6144},local,0,1),"Available");
+  assert.equal(availability({...reading,freeMiB:6143},local,0,1),"Not enough free memory");
+  assert.equal(availability({...reading,session:false,ac:false},local,0,1),"No logged-in session");
+});
+for(const patch of [{ac:false},{session:false}])test(`setup can finish while ${JSON.stringify(patch)}`,async()=>{
+  const env=await fixture();env.config.ownMacEnabled=false;env.set(patch);
+  const state=await env.provider.testOwnMacConnection!();assert.equal(state.tested,true);assert.equal(state.testResult!.ok,true);
+  env.config.ownMacEnabled=true;const enabled=await env.provider.ownMacStatus!(true);assert.equal(enabled.code,patch.ac===false?"battery":"session");
+  assert.equal(enabled.setupSteps,7);
+});
+test("battery, low memory and manual pause do not stop an admitted task",async()=>{
+  const env=await fixture();const task=await env.provider.create(input);env.config.ownMacPaused=true;env.set({ac:false,session:false,freeMiB:1024});
+  await env.provider.assertTaskReady!({agent:"claude",repos:[],sandboxId:task.id});await env.provider.resume(task.id,{ttlSeconds:0});
+  assert.equal(env.cleaned.length,0);assert.ok(!(env.calls.some(call=>/shutdown|pmset .*sleep|kill /.test(call.request.command.join(" ")))));
+});
+test("failed cleanup automatically pauses admission; Check again is read-only",async()=>{
+  const env=await fixture();const task=await env.provider.create(input);env.cleanupFail();await assert.rejects(env.provider.closeTaskCredentials!(task.id));
+  assert.equal((await env.provider.ownMacStatus!()).code,"cleanup");await assert.rejects(env.provider.create(input),/Logins left behind/);
+  const count=env.cleaned.length;const before=env.calls.length;const checked=await env.provider.checkOwnMacCleanup!();
+  assert.equal(checked.cleanup!.failed,false);assert.equal(env.cleaned.length,count);
+  assert.ok(env.calls.slice(before).every(call=>!call.request.command.join(" ").includes("rm -")));
+});
+test("a refused Mac is skipped and paid capacity runs the task",async()=>{
+  const env=await routingFixture();env.held();env.set({user:local.user,uid:local.uid});const task=await env.start();
+  assert.equal(task.sandboxProvider,"fake-rental");const notice=await env.service.ownMacNotice(task);assert.equal(notice!.refusal,"personal");assert.equal(notice!.fallback!.provider,"fake-rental");assert.equal(env.service.publicStatus(task).needsYou,false);
+});
+test("waiting for Your Mac resumes only a task with no prior execution",async()=>{
+  const env=await routingFixture();env.config.ownMacPaused=true;await assert.rejects(env.start(),/Rent a Mac/);
+  const task=env.store.list({statuses:["failed"],limit:10})[0]!;const notice=await env.service.ownMacNotice(task);assert.ok(notice!.offer);
+  await env.service.answerOwnMacRental(task.id,"wait");assert.equal(env.service.publicStatus(env.store.get(task.id)!).needsYou,false);
+  env.config.ownMacPaused=false;await env.service.maintainOwnMac();
+  const next=env.store.list({statuses:["running"],limit:10});assert.equal(next.length,1);assert.equal(next[0]!.sandboxProvider,"ownmac");
+  assert.equal(env.store.get(task.id)!.status,"cancelled");await env.service.maintainOwnMac();assert.equal(env.store.list({statuses:["running"],limit:10}).length,1);
+});
+test("rental consent is bound to the displayed quote and is consumed once",async()=>{
+  const env=await routingFixture();env.config.ownMacPaused=true;await assert.rejects(env.start());const task=env.store.list({statuses:["failed"],limit:10})[0]!;
+  const notice=await env.service.ownMacNotice(task);await assert.rejects(env.service.answerOwnMacRental(task.id,"rent","fake-wrong-quote"),/quote changed/);
+  env.rental.create=async()=>{const at=Date.now();env.boat.addSandbox("fake_rental_new","default","idle");env.store.macLeases.record({id:"fake-new-lease",provider:env.rental.id,machineId:"fake_rental_new",size:"fake-m2",startedAt:new Date(at).toISOString(),paidUntil:new Date(at+86400000).toISOString(),minimumCost:10,hourPrice:0.5,currency:"USD",cpus:8,memoryMiB:32768});return {...(await env.rental.info("fake_rental_new")),system:"macos"};};
+  const replacement=await env.service.answerOwnMacRental(task.id,"rent",notice!.offer!.id);assert.ok(replacement);assert.equal(env.store.get(replacement!)!.sandboxProvider,"fake-rental");
+  await assert.rejects(env.service.answerOwnMacRental(task.id,"rent",notice!.offer!.id),/cannot be replayed/);assert.equal(env.store.macLeases.held().length,1);
+});
+
+test("footer counts running Your Mac tasks once, including with admission off",()=>{
+  const sandboxes=[{state:"idle",runsOn:{provider:"boat"}},{state:"idle",runsOn:{provider:"ownmac"}},{state:"idle",runsOn:{provider:"ownmac"}}];
+  assert.equal(footerOnCount(sandboxes,1),2);assert.equal(footerOnCount(sandboxes,0),1);
+});
+test("an idle task releases its admission slot while retaining credentials until close",async()=>{
+  const env=await fixture();let idle=false;
+  const own=await createOwnMacProvider({...env.options,taskState:()=>idle?"idle":"running"});const first=await own.create(input);idle=true;
+  assert.equal((await own.ownMacStatus!()).running,0);await own.create(input);assert.equal(env.cleaned.length,0);
+  await own.closeTaskCredentials!(first.id);assert.deepEqual(env.cleaned,[first.id]);
+});
+test("a failed SSH reading is cached for Settings, and a forced test bypasses it",async()=>{
+  const env=await fixture();env.offline();await env.provider.ownMacStatus!();await env.provider.ownMacStatus!();assert.equal(env.calls.length,1);
+  env.offline(false);const result=await env.provider.testOwnMacConnection!();assert.equal(result.testResult!.ok,true);
+});
+test("a changed rental price creates a fresh offer without renting",async()=>{
+  const env=await routingFixture();env.config.ownMacPaused=true;await assert.rejects(env.start());const task=env.store.list({statuses:["failed"],limit:10})[0]!;const offer=(await env.service.ownMacNotice(task))!.offer!;
+  const models=await env.rental.macModels!();env.rental.macModels=async()=>models.map(model=>({...model,minimumCost:20,hourPrice:1}));
+  await assert.rejects(env.service.answerOwnMacRental(task.id,"rent",offer.id),/Nothing was rented/);assert.equal(env.store.macLeases.held().length,0);
+});
+
+test("expired quotes are refreshed in place and never rent",async()=>{
+  const env=await routingFixture();env.config.ownMacPaused=true;await assert.rejects(env.start());const task=env.store.list({statuses:["failed"],limit:10})[0]!;const offer=(await env.service.ownMacNotice(task))!.offer!;
+  env.store.addOwnMacEvent(task.id,"ownmac-rental-offer","fake expired quote",{...offer,expiresAt:"2000-01-01T00:00:00Z"});
+  await assert.rejects(env.service.answerOwnMacRental(task.id,"rent",offer.id),/quote changed/);
+  const refreshed=(await env.service.ownMacNotice(task))!.offer!;assert.notEqual(refreshed.id,offer.id);assert.ok(Date.parse(refreshed.expiresAt)>Date.now());assert.equal(env.store.macLeases.held().length,0);assert.equal(env.store.list({limit:10}).length,1);
+});
+
+test("two simultaneous rental approvals cannot allocate twice",async()=>{
+  const env=await routingFixture();env.config.ownMacPaused=true;await assert.rejects(env.start());const task=env.store.list({statuses:["failed"],limit:10})[0]!;const offer=(await env.service.ownMacNotice(task))!.offer!;
+  let creates=0;env.rental.create=async()=>{creates++;throw new Error("fake allocation rejected before any machine existed");};
+  const result=await Promise.allSettled([env.service.answerOwnMacRental(task.id,"rent",offer.id),env.service.answerOwnMacRental(task.id,"rent",offer.id)]);
+  assert.equal(result.filter(r=>r.status==="rejected").length,2);assert.equal(creates,1);assert.equal(env.store.macLeases.held().length,0);
+});
+test("a host disconnect produces a chat notice and never replays the worker",async()=>{
+  const env=await routingFixture();const task=await env.start();env.chat.finish(task.threadId!,"fake host disconnected","error");
+  await env.service.syncChatThread(task.threadId!,{kind:"failed",error:"fake host disconnected"});
+  assert.equal(env.chat.sends.length,0);assert.ok(env.told.every(item=>item.threadId!==task.threadId));assert.match((await env.service.ownMacNotice(env.store.get(task.id)!))!.disconnect!,/not moved or replayed/);
+  await env.service.maintainOwnMac();assert.equal(env.store.list({statuses:["running"],limit:10}).length,0);
+});
+
+test("cleanup rechecks retain the automatic pause until proxy revocation is verified",async()=>{
+  const env=await fixture();const task=await env.provider.create(input);await assert.rejects(env.provider.closeTaskCredentials!(task.id,undefined,false));
+  assert.equal((await env.provider.checkOwnMacCleanup!()).code,"cleanup");assert.equal((await env.provider.checkOwnMacCleanup!(async()=>false)).code,"cleanup");
+  const checked=await env.provider.checkOwnMacCleanup!(async()=>true);assert.equal(checked.cleanup!.failed,false);
+});
+
+test("copied cleanup steps use each original task home without nesting them",async()=>{
+  const env=await fixture();env.config.ownMacMaxTasks=2;
+  const tasks=[await env.provider.create(input),await env.provider.create(input)];
+  env.cleanupFail();for(const task of tasks)await assert.rejects(env.provider.closeTaskCredentials!(task.id));
+  const root=mkdtempSync(join(tmpdir(),"fake-ownmac-cleanup-"));
+  try {
+    const bin=join(root,"fake-bin");mkdirSync(bin);
+    for(const tool of ["gh","claude","codex"])writeFileSync(join(bin,tool),"#!/bin/sh\nexit 0\n",{mode:0o700});
+    for(const task of tasks){const home=join(root,".bb-ownmac",task.id);for(const path of [".config/gh/hosts.yml",".claude/.credentials.json",".codex/auth.json"]){const file=join(home,path);mkdirSync(join(file,".."),{recursive:true});writeFileSync(file,"fake credential placeholder");}}
+    const untouched=join(root,"fake-owner-file");writeFileSync(untouched,"fake owner file");
+    const steps=env.provider.ownMacCleanup!()!.steps;
+    execFileSync("/bin/bash",["-c",steps],{env:{HOME:root,PATH:`${bin}:/bin:/usr/bin`},stdio:"pipe"});
+    for(const task of tasks)for(const path of [".config/gh",".claude/.credentials.json",".codex/auth.json"])assert.equal(existsSync(join(root,".bb-ownmac",task.id,path)),false);
+    assert.ok(existsSync(untouched));
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("a failed chat archive pauses Your Mac until proxy removal is proven",async()=>{
+  const env=await routingFixture();const task=await env.start();env.chat.archive=async()=>{throw Error("fake archive failed");};
+  await assert.rejects(env.service.closeTask(task.id,{status:"done",discard:true}),/proxy/);
+  assert.deepEqual(env.cleaned,[task.sandboxId]);
+  await assert.rejects(env.provider.refreshGithubLogin!(task.sandboxId!),/closed/);
+  assert.equal((await env.provider.ownMacStatus!()).code,"cleanup");
+  assert.equal((await env.service.checkOwnMacCleanup())!.code,"cleanup");
+});
+
+test("a rental click after Your Mac returns records its actual zero-rent route",async()=>{
+  const env=await routingFixture();env.config.ownMacPaused=true;await assert.rejects(env.start());const task=env.store.list({statuses:["failed"],limit:10})[0]!;const offer=(await env.service.ownMacNotice(task))!.offer!;
+  env.config.ownMacPaused=false;
+  const next=await env.service.answerOwnMacRental(task.id,"rent",offer.id);
+  assert.equal(env.store.get(next!)!.sandboxProvider,"ownmac");
+  assert.equal((await env.service.ownMacNotice(env.store.get(task.id)!))!.answer,"auto");
+  assert.equal(env.store.macLeases.held().length,0);
 });

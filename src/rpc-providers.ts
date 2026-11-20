@@ -1,3 +1,4 @@
+import { OWN_MAC_TAG } from "../contract-ownmac.ts";
 import { monthlyMacPrices } from "./monthly-macs.ts";
 import { MONTHLY_MACS_TAG } from "../contract-monthly-macs.ts";
 import { usageWindows } from "./usage.ts";
@@ -184,7 +185,7 @@ function pickProblem(row: SandboxProviderDto): string | null {
 /** The line under the providers: where work goes first. */
 function routingLine(rows: readonly SandboxProviderDto[], defaultLabel: string): string {
   const macs = rows.some((row) => row.kind !== "cloud" && row.available && row.enabled);
-  if (macs) return "Mac tasks go to your Mac first, then a monthly Mac, then an enabled Mac day-lease provider. Harbormaster rents only for dispatched tasks.";
+  if (macs) return "Mac tasks go to your Mac first, then a monthly Mac, then a Mac you already rented, then a new rental. A new rental always shows its cost and asks first. Harbormaster checks your Mac every 30–60 s and never changes its sleep, power or login settings.";
   return `New work runs on ${defaultLabel} unless a project picks another provider below.`;
 }
 
@@ -310,6 +311,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       if (!provider?.presentation) return;
       const metadata = await provider.presentation({force, signal: AbortSignal.timeout(15_000)}).catch(() => null);
       if (metadata) Object.assign(row, metadata);
+      if(row.ownMac?.facts) row.ownMac.facts.runningTitles=service.store.list({statuses:["starting","running"],limit:500}).filter(task=>task.sandboxProvider==="ownmac").map(task=>task.title).slice(0,4);
       if (row.id === "ownmac") { row.connection = row.status === "Available" ? "connected" : "not-connected"; }
       if (row.steps && row.id !== "ownmac") {
         const required = row.steps.filter(s => s.possible && s.required !== false);
@@ -348,13 +350,25 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       projects: runtime.projects.list().map(project => projectRow(project, service.sandboxProviders)),
       providers: result.providers.map(row => ({
         ...row,
-        ...(service.sandboxProviders.all.find(provider => provider.id === row.id)?.releaseNotice?.() ? { releaseNotice: service.sandboxProviders.all.find(provider => provider.id === row.id)!.releaseNotice!()!, status: "Credential action required" } : {}),
+        ...(service.sandboxProviders.all.find(provider => provider.id === row.id)?.releaseNotice?.() ? { releaseNotice: service.sandboxProviders.all.find(provider => provider.id === row.id)!.releaseNotice!()!, status: row.id==="ownmac"?"Logins left behind":"Credential action required" } : {}),
         ...(row.steps ? { waitingTasks: waiting.filter(task => task.sandboxProvider === row.id && /GitHub|API key|setup|credentials|Account Pooler/i.test(task.error ?? "")).length } : {}),
       })),
     };
   }
 
+  const own=()=>service.sandboxProviders.all.find(p=>p.id==="ownmac");
+  const ownChanged=()=>{clearPresentation();runtime.changed?.();bb.rpc?.experimental_invalidate?.([OWN_MAC_TAG,PROVIDERS_TAG,"boat:tasks","boat:sandboxes"]);};
+  const emptyOwn={status:"Not set up",running:0,max:1,code:"setup" as const};
   return {
+    ownMacTestConnection:async()=>{const result=await own()?.testOwnMacConnection?.() ?? emptyOwn;ownChanged();return result;},
+    ownMacSetupStep:async({step}:{step:number})=>{await own()?.ownMacSetupStep?.(step);ownChanged();return null;},
+    ownMacCheckCleanup:async()=>{const result=await service.checkOwnMacCleanup() ?? emptyOwn;ownChanged();return result;},
+    ownMacNotices:async(input:{taskId?:string;threadId?:string})=>{
+      const tasks=input.taskId?[service.store.get(input.taskId)].filter((task):task is NonNullable<typeof task>=>task!==null):service.store.list({limit:1000}).filter(task=>!input.threadId || task.threadId===input.threadId || task.orchestratorThreadId===input.threadId);
+      const notices=await Promise.all(tasks.map(task=>service.ownMacNotice(task)));
+      return {notices:notices.filter((notice):notice is NonNullable<typeof notice>=>notice!==null)};
+    },
+    answerOwnMacRental:async({taskId,answer,quoteId}:{taskId:string;answer:"rent"|"wait";quoteId?:string})=>{const replacementId=await service.answerOwnMacRental(taskId,answer,quoteId);ownChanged();return {replacementId};},
     monthlyMacSuggestions: () => ({ suggestions: service.store.monthlyMacs.active() }),
     monthlyMacSuggestion: ({id}: {id:string}) => ({ suggestion: service.store.monthlyMacs.get(id) }),
     answerMonthlyMacSuggestion: ({id,answer}: {id:string;answer:"rent"|"keep"|"own"|"cancel"}) => {
@@ -379,7 +393,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const notices: NonNullable<MacUsageDto["notices"]> = [...summary.held.flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []), ...service.store.macLeases.credentialNotices().map(notice=>({...notice,label:label(notice.provider),tokenRevocation:true}))];
       const ownMac = await service.sandboxProviders.all.find(p=>p.id==="ownmac")?.ownMacStatus?.();
       return { ...summary,
-        ...(ownMac ? {ownMac:{...ownMac,rent:0 as const}} : {}),
+        ...(ownMac ? {ownMac:{...ownMac,rent:0 as const,tasksThisMonth:service.store.countOwnMacTasksSince(new Date(monthStart).toISOString())}} : {}),
         monthlySuggestions: service.store.monthlyMacs.active(),
         monthlyComparisons: service.store.monthlyMacs.comparisons(prices, now),
         byProvider: summary.providers.map(id => ({id,label:label(id),month:service.store.macLeases.between(monthStart,monthEnd,now,undefined,id),rolling30:service.store.macLeases.between(now-30*86400000,now,now,undefined,id)})),

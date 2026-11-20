@@ -395,7 +395,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       const args = ["create", "--name", machineName(create.name), "--json", "--fail-fast", "--ready-timeout", "10m", "--meta", CREATED_BY, ...sizeArgs(create.type)];
       if (create.system === "macos") {
         const models = await macModels(create.signal);
-        const preferred = create.type === "large" ? "m4" : create.type === "xlarge" ? "m4pro" : "m2";
+        const preferred = create.macCostLimit?.model ?? (create.type === "large" ? "m4" : create.type === "xlarge" ? "m4pro" : "m2");
         let model = models.find(m => m.id === preferred);
         if (create.snapshot) {
           const result = await cli.run(["snapshot", "ls", "--json"], { signal: create.signal });
@@ -408,6 +408,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         if (!model) throw new InstaboxError("This account cannot create the requested Mac model. Check its plan and templates.", { code: "template_not_allowed" });
         const need = SPECS[create.type];
         if (model.cpus < need.vcpus || model.memoryMiB < need.memMiB) throw new InstaboxError("The Mac model is too small for this task.", { code: "spec_not_allowed" });
+        if(create.macCostLimit && (create.macCostLimit.provider!=="instabox" || create.macCostLimit.model!==model.id || create.macCostLimit.currency!==model.currency || create.macCostLimit.minimumCost<model.minimumCost || create.macCostLimit.hourPrice<model.hourPrice || create.macCostLimit.minimumHours<model.minimumHours || Date.parse(create.macCostLimit.expiresAt)<Date.now()))throw new InstaboxError("The rental price or model changed. Review a new quote before renting.",{code:"mac_price_changed"});
         // A Mac takes the model's whole size, not Linux size flags.
         args.splice(args.indexOf("--meta") + 2);
         if (!create.snapshot) args.push("--template", "macos", "--model", model.id);

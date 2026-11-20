@@ -1,3 +1,4 @@
+import { ownMacFactsSchema, ownMacRpcMethods } from "./contract-ownmac.ts";
 import { monthlyMacRpcMethods, monthlyMacSuggestionSchema, monthlyMacComparisonSchema } from "./contract-monthly-macs.ts";
 // Sandbox providers in the RPC contract (contract.ts spreads
 // providerRpcMethods into it and puts runsOn on tasks and sandboxes):
@@ -75,8 +76,8 @@ export const linuxUsageSchema = z.object({
 export type LinuxUsageDto = z.infer<typeof linuxUsageSchema>;
 
 export const sshAliasSchema = z.string().max(128).refine(value => value === "" || /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value), "Use an SSH host alias only: letters, numbers, underscores or hyphens; no paths, spaces or options.");
-export const ownMacConfigSchema = z.object({ownMacEnabled:z.boolean(),ownMacPaused:z.boolean(),ownMacAlias:sshAliasSchema,ownMacMaxTasks:z.number().int().min(1).max(16),ownMacIsolation:z.enum(["vm","user"]).default("vm")});
-export const ownMacSchema = ownMacConfigSchema.extend({running:z.number().int().nonnegative(),max:z.number().int().positive()});
+export const ownMacConfigSchema = z.object({ownMacEnabled:z.boolean(),ownMacPaused:z.boolean(),ownMacAlias:sshAliasSchema,ownMacMaxTasks:z.number().int().min(1).max(4),ownMacIsolation:z.enum(["vm","user"]).default("vm")});
+export const ownMacSchema = ownMacConfigSchema.extend({running:z.number().int().nonnegative(),max:z.number().int().positive(),facts:ownMacFactsSchema.optional()});
 export type OwnMacDto = z.infer<typeof ownMacSchema>;
 /** One row of Settings › Sandbox providers. */
 export const sandboxProviderSchema = z.object({
@@ -149,7 +150,7 @@ export type SandboxProvidersResultDto = z.infer<typeof sandboxProvidersResultSch
 
 export const macUsageWindowSchema = z.object({ leaseDays: z.number(), costs: z.record(z.string(),z.number()) });
 export const macUsageSchema = z.object({
-  ownMac: z.object({running:z.number(),max:z.number(),status:z.string(),rent:z.literal(0)}).optional(),
+  ownMac: ownMacFactsSchema.extend({rent:z.literal(0)}).optional(),
   monthlySuggestions: z.array(monthlyMacSuggestionSchema).optional(),
   monthlyComparisons: z.array(monthlyMacComparisonSchema).optional(),
   month: macUsageWindowSchema, rolling30: macUsageWindowSchema,
@@ -162,6 +163,7 @@ export const macUsageSchema = z.object({
 export type MacUsageDto = z.infer<typeof macUsageSchema>;
 export const providerRpcMethods = {
   ...monthlyMacRpcMethods,
+  ...ownMacRpcMethods,
   macUsage: { input: z.object({timezoneOffsetMinutes:z.number().int().min(-840).max(840)}).nullable(), output: macUsageSchema, tags: () => ["boat:sandboxes", "boat:tasks", "boat:monthly-macs"] },
   /** Settings › Sandbox providers and Runs on. */
   sandboxProviders: {

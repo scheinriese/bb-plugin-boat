@@ -1,3 +1,5 @@
+import { ownMacEvent, ownMacTaskNotice } from "./ownmac-notices.ts";
+import { macRentalQuoteSchema, type MacRentalQuote, type OwnMacNotice } from "../contract-ownmac.ts";
 import { CLEANUP_NOTICE_PREFIX, tokenExposureNotice } from "../credential-warnings.ts";
 import { createCodexHealthCheck } from "./codex-health.ts";
 import { providerFailureCard } from "../provider-failure.ts";
@@ -37,7 +39,7 @@ import { checkPreview, previewLink, previewView, type PreviewView } from "./prev
 import { KEEP_LIMIT_MS, describeWork, hasWork } from "./activity.ts";
 import { aiProxyPrice, type AiProxyState } from "./providers/boat/api.ts";
 import { bootstrapFailureMessage, retryableBootstrap } from "./bootstrap.ts";
-import { alwaysProtectedBranches, protectedBranches, type OrchestratorProject, type ProjectRepo } from "./projects.ts";
+import { alwaysProtectedBranches, protectedBranches, normalizeProject, toOrchestratorProject, type OrchestratorProject, type ProjectRepo } from "./projects.ts";
 import {
   composeEvidencePrompt,
   composeFollowupPrompt,
@@ -288,6 +290,7 @@ export interface ServiceHooks {
 }
 
 export interface StartTaskInput {
+  macRentalApproval?: MacRentalQuote;
   sandboxSystem?: "linux" | "macos";
   title: string;
   compactTitle?: string | null;
@@ -691,6 +694,10 @@ export class BoatService {
   private readonly settlingReviews = new Set<string>();
 
   publicStatus(task: Task, context: StatusContext = {}): TaskPublicStatus {
+    const notice=ownMacTaskNotice(this.store,task);
+    const cleanup=this.sandboxProviders.all.find(p=>p.id==="ownmac")?.ownMacCleanup?.();
+    if(task.sandboxId && cleanup?.taskIds.includes(task.sandboxId))return {status:"needs-you",label:"Logins left behind",tone:"danger",reason:"Your Mac is automatically paused for new tasks until Check again passes.",needsYou:true,moving:false};
+    if(task.status==="failed" && notice?.offer && !notice.replacementId && notice.answer!=="failed")return {status:notice.answer==="wait"?"stopped":"needs-you",label:notice.answer==="wait"?"Waiting for your Mac":"Rent a Mac?",tone:notice.answer==="wait"?"neutral":"attention",reason:"Nothing was rented. Choose a route for this Mac task.",needsYou:notice.answer!=="wait",moving:false};
     if (task.status==="failed" && task.turns===0 && ["instabox","scaleway","ownmac"].includes(task.sandboxProvider ?? "")) {
       const code=this.store.history({taskId:task.id,limit:30}).events.find(e=>e.kind==="stopped" && e.cause)?.cause ?? "provider_failed";
       const card=providerFailureCard({code,provider:task.sandboxProvider!,mac:task.sandboxSystem==="macos",released:false,canRetry:false},task.error ?? "");
@@ -1107,6 +1114,7 @@ export class BoatService {
     /** Where it goes (default: the default provider). */
     sandboxProvider?: SandboxProvider;
     system?: "linux" | "macos";
+    macCostLimit?: MacRentalQuote;
     allocateOnly?: boolean;
     signal?: AbortSignal;
   }): Promise<Sandbox> {
@@ -1125,6 +1133,7 @@ export class BoatService {
         const create = options.allocateOnly && sandboxProvider.allocate ? sandboxProvider.allocate.bind(sandboxProvider) : sandboxProvider.create.bind(sandboxProvider);
         return await create({
           name: options.name,
+          macCostLimit:options.macCostLimit,
           ...(options.system ? { system: options.system } : {}),
           type: options.type ?? settings.machineType,
           environment,
@@ -1943,6 +1952,8 @@ export class BoatService {
         if (reuse?.startsWith("ownmac_")) reuse = null;
         if (task.sandboxSystem === "macos" && reuse === null) {
           const own = this.sandboxProviders.get("ownmac");
+          const ownKnown=this.sandboxProviders.all.find(p=>p.id==="ownmac");
+          if(!own && ownKnown?.ownMacStatus)ownMacEvent(this.store,id,"ownmac-skipped",await ownKnown.ownMacStatus(),"Your Mac is off or not set up; checking the next Mac.");
           if (own && task.runner === "chat") {
             try {
               await own.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(r=>r.repo)].filter((r):r is string=>r!==null),signal});
@@ -1951,7 +1962,7 @@ export class BoatService {
               reuse = owned.id;
               createdSandbox = owned.id;
               if (own.waitReady) this.macPreparing.add(owned.id);
-            } catch (error) { if(signal.aborted || ["creation_unknown","creation_allocated"].includes((error as {code?:string}).code ?? ""))throw error; this.store.addEvent(id,"sandbox-provider",`Your Mac unavailable: ${errorText(error)}. Checking approved rental routes.`); }
+            } catch (error) { if(signal.aborted || ["creation_unknown","creation_allocated"].includes((error as {code?:string}).code ?? ""))throw error; ownMacEvent(this.store,id,"ownmac-skipped",{...(await own.ownMacStatus?.()),status:errorText(error)},"Your Mac skipped for this start."); this.store.addEvent(id,"sandbox-provider",`Your Mac unavailable: ${errorText(error)}. Checking approved rental routes.`); }
           }
           if (!reuse) reuse = await this.heldMacFor(task, sizing.type, parent, signal, unlistedMacProviders);
           task = this.store.get(id) ?? task;
@@ -1992,7 +2003,7 @@ export class BoatService {
           if (task.sandboxSystem !== "macos" && this.sandboxProvider(task).id === "instabox") {
             await this.sandboxProvider(task).assertTaskReady?.({ agent: task.provider, repos: [task.repo, ...task.extraRepos.map(repo => repo.repo)].filter((repo): repo is string => repo !== null), signal, onWarning: message => { if (this.store.latestEvent(task.id, "preflight-warning")?.text !== message) this.store.addEvent(task.id, "preflight-warning", message); } });
           }
-          sandbox = task.sandboxSystem === "macos" ? await this.createMacFor(task, sizing.type, signal, unlistedMacProviders) : await this.createSandbox({
+          sandbox = task.sandboxSystem === "macos" ? await this.createMacFor(task, sizing.type, signal, unlistedMacProviders,input.macRentalApproval) : await this.createSandbox({
             name: `bb ${id} ${slug(task.title)}`,
             type: sizing.type,
             environment: task.environment,
@@ -2222,7 +2233,7 @@ export class BoatService {
       const failure = transient ? new TaskError(bootstrapFailureMessage(transient), "bootstrap_retryable", "Retry starting this task after npm's registry recovers; no agent turn ran.") : error;
       const message = errorText(failure);
       if (task.runner === "boat" && settings.relay.paidClaudeFallback && settings.relay.paidClaudeHeadless && USAGE_LIMIT_PATTERN.test(message)) await this.hooks.usageRefused?.(provider);
-      this.store.transition(id, ["starting"], { status: "failed", error: clip(message, 4000), finishedAt: new Date().toISOString() });
+      this.store.transition(id, ["starting"], { status: "failed", error: (failure as {code?:string}).code==="mac_rental_confirmation_required"?null:clip(message, 4000), finishedAt: new Date().toISOString() });
       this.store.addEvent(id, "failed", message, transient ? { source: "system", cause: "bootstrap_retryable", detail: `npm ${transient.code}; ${transient.attempts} installation attempts; no agent started` } : task.sandboxProvider && task.sandboxProvider!==DEFAULT_PROVIDER_ID ? {source:"system",cause:(failure as {code?:string}).code ?? "provider_failed"} : {});
       this.hooks.changed([id]);
       // Do not leave a fresh sandbox behind when setup failed.
@@ -2558,6 +2569,7 @@ export class BoatService {
         if (reservations.reduce((n,t) => n+t.cpus,0)+need.vcpus > lease.cpus || reservations.reduce((n,t) => n+t.memoryMiB,0)+need.memMiB > lease.memoryMiB) continue;
         try { await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:lease.machineId,signal,onWarning:message=>{this.store.addEvent(task.id,"preflight-warning",message);}}); }
         catch (error) { this.store.addEvent(task.id,"sandbox-provider",`${provider.displayName} held Mac cannot run this task: ${errorText(error)}`); continue; }
+        if(this.store.latestEvent(task.id,"ownmac-skipped") || task.sandboxProvider==="ownmac") ownMacEvent(this.store,task.id,"ownmac-fallback",{provider:provider.id,label:provider.displayName,monthly:provider.macLeaseKind==="monthly",paidUntil:lease.paidUntil},"Using existing Mac capacity; no new rental.");
         if (provider.id !== task.sandboxProvider) {
           this.store.update(task.id, { sandboxProvider: provider.id });
           this.store.addEvent(task.id, "sandbox-provider", `Using a held ${provider.displayName} Mac lease before renting another.`);
@@ -2573,16 +2585,27 @@ export class BoatService {
     return [first, ...this.sandboxProviders.enabled.filter(provider => provider.id !== preferred && canHostMac(provider))].filter(provider=>provider.id !== "ownmac").sort((a,b)=>Number(b.macLeaseKind === "monthly")-Number(a.macLeaseKind === "monthly"));
   }
 
-  private async createMacFor(task: Task, type: MachineType, signal: AbortSignal, unlisted = new Set<string>()): Promise<Sandbox> {
+  private async createMacFor(task: Task, type: MachineType, signal: AbortSignal, unlisted = new Set<string>(), approval?:MacRentalQuote): Promise<Sandbox> {
     const failures: string[] = [];
     let primaryCode: string | undefined;
     for (const provider of this.macProviders(task.sandboxProvider ?? DEFAULT_PROVIDER_ID)) {
       signal.throwIfAborted();
       if (provider.macLeaseKind === "monthly") continue;
       try {
-        if (task.sandboxProvider === "ownmac") {
-          const estimate = await provider.pricing?.(signal).catch(()=>null);
-          throw new TaskError(`Your Mac is unavailable. Next route: ${provider.displayName}. ${estimate ?? "Confirm current pricing in Settings."} Choose this rental provider in Runs on before starting a new task to approve its cost.`,"mac_rental_confirmation_required");
+        if(approval && provider.id!==approval.provider)continue;
+        if (!this.sandboxProviders.get(provider.id)) throw new TaskError(`${provider.displayName} is not configured.`,"provider_unavailable");
+        const gated=this.sandboxProviders.all.some(p=>p.id==="ownmac") || task.sandboxProvider==="ownmac" || this.store.latestEvent(task.id,"ownmac-skipped")!==null;
+        if(gated) {
+          const need=macTaskResources(provider,type);
+          const models=await provider.macModels?.(signal) ?? [];
+          const model=approval ? models.find(m=>m.id===approval.model) : models.filter(m=>m.cpus>=need.vcpus && m.memoryMiB>=need.memMiB).sort((a,b)=>a.minimumCost-b.minimumCost)[0];
+          if(!model)throw new TaskError(`${provider.displayName} has no usable Mac model with confirmed pricing.`,"at_capacity");
+          const quote:MacRentalQuote={id:randomUUID(),provider:provider.id,label:provider.displayName,model:model.id,modelLabel:model.label,minimumCost:model.minimumCost,hourPrice:model.hourPrice,minimumHours:model.minimumHours,currency:model.currency,expiresAt:new Date(Date.now()+10*60000).toISOString()};
+          if(!approval || Date.parse(approval.expiresAt)<Date.now() || approval.minimumCost<model.minimumCost || approval.hourPrice<model.hourPrice || approval.minimumHours<model.minimumHours || approval.currency!==model.currency) {
+            ownMacEvent(this.store,task.id,"ownmac-rental-offer",quote,"A new rental needs approval; nothing was rented.");
+            if(task.orchestratorThreadId)await this.hooks.tell?.(task.orchestratorThreadId,taskMarker("task",task.id));
+            throw new TaskError(`Rent a Mac for “${task.title}”? ${provider.displayName}: ${model.currency} ${model.minimumCost.toFixed(2)} minimum, then ${model.hourPrice.toFixed(2)} / h. Nothing was rented.`,"mac_rental_confirmation_required");
+          }
         }
         if (!this.sandboxProviders.get(provider.id)) throw new TaskError(`${provider.displayName} is not configured.`, "provider_unavailable");
         if (!canHostMac(provider)) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
@@ -2591,19 +2614,103 @@ export class BoatService {
         if (unlisted.has(provider.id)) throw new TaskError(`${provider.displayName} machine list could not be confirmed.`, "provider_unavailable");
         await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),signal,onWarning:message=>{this.store.addEvent(task.id,"preflight-warning",message);}});
         if (provider.macModels && !(await provider.macModels(signal)).length) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
-        const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", environment: task.environment, snapshot: task.snapshot, sandboxProvider: provider, allocateOnly: Boolean(provider.allocate && provider.waitReady), signal });
+        const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", environment: task.environment, snapshot: task.snapshot, sandboxProvider: provider, macCostLimit:approval, allocateOnly: Boolean(provider.allocate && provider.waitReady), signal });
         this.store.update(task.id, { sandboxProvider: provider.id });
         if (failures.length) this.store.addEvent(task.id, "sandbox-provider", `Mac provider fallback: ${failures.join("; ")} Using ${provider.displayName}.`);
         return sandbox;
       } catch (error) {
         const code = (error as { code?: string }).code;
-        if (signal.aborted || code === "creation_unknown" || code === "creation_allocated") throw error;
+        if (signal.aborted || code === "creation_unknown" || code === "creation_allocated" || code === "mac_rental_confirmation_required") throw error;
         if (!primaryCode || primaryCode==="provider_unavailable") primaryCode=code;
         failures.push(`${provider.displayName}: ${errorText(error)}`);
         this.store.addEvent(task.id, "sandbox-provider", `${provider.displayName} Mac unavailable; trying the other day-lease provider. ${errorText(error)}`);
       }
     }
     throw new TaskError(`No Mac day-lease provider is available. ${failures.join(" ")}`, primaryCode ?? "provider_unavailable");
+  }
+
+  private async tellOwnMacDisconnect(task:Task) {
+    const previous=this.store.ownMacEventData(task.id,"ownmac-disconnect") as {promptId?:string}|null;
+    if(previous && previous.promptId===task.promptId)return;
+    ownMacEvent(this.store,task.id,"ownmac-disconnect",{promptId:task.promptId},"Your Mac stopped answering during this task. The work was not moved or replayed.");
+    // A send to the worker would enqueue another agent turn. Publish a live
+    // chat notice instead; only the orchestrator receives a normal task card.
+    this.hooks.changed([task.id]);
+    if(task.orchestratorThreadId && task.orchestratorThreadId!==task.threadId)await this.hooks.tell?.(task.orchestratorThreadId,taskMarker("task",task.id)).catch(()=>undefined);
+  }
+  async ownMacNotice(task:Task):Promise<OwnMacNotice|null> {
+    const own=this.sandboxProviders.all.find(p=>p.id==="ownmac");
+    const cleanup=own?.ownMacCleanup?.();
+    const notice=ownMacTaskNotice(this.store,task);
+    if(notice?.refusal) {const state=await own?.ownMacStatus?.();if(state?.code!==notice.refusal)delete notice.refusal;}
+    if(task.sandboxId && cleanup?.taskIds.includes(task.sandboxId)) {
+      const state=await own?.ownMacStatus?.();
+      return {...(notice ?? {taskId:task.id,title:task.title,alias:state?.alias ?? "",reason:"cleanup"}),cleanup};
+    }
+    const disconnected=this.store.latestEvent(task.id,"ownmac-disconnect");
+    if(disconnected)return {...(notice ?? {taskId:task.id,title:task.title,alias:(await own?.ownMacStatus?.())?.alias ?? "",reason:"disconnected"}),disconnect:"Your Mac stopped answering during this task. Harbormaster has not moved or replayed the work. Restore access and inspect this task before retrying."};
+    if(task.sandboxId && cleanup && !cleanup.failed && this.store.latestEvent(task.id,"credential-cleanup-failed"))return {...(notice ?? {taskId:task.id,title:task.title,alias:"",reason:"cleanup"}),cleanup};
+    return notice;
+  }
+  private readonly ownMacRestarts=new Set<string>();
+  private readonly ownMacAnswers=new Set<string>();
+  async answerOwnMacRental(id:string,answer:"rent"|"wait",quoteId?:string):Promise<string|null> {
+    const task=this.mustGet(id),notice=ownMacTaskNotice(this.store,task);
+    if(task.status!=="failed" || task.turns!==0 || task.sandboxId || task.hostId || !notice?.offer || notice.replacementId || this.ownMacRestarts.has(task.id) || this.ownMacAnswers.has(task.id))throw new TaskError("This task cannot be replayed. Inspect its existing work before starting another task.","task_busy");
+    this.ownMacAnswers.add(task.id);
+    try {
+    if(answer==="wait") {ownMacEvent(this.store,id,"ownmac-rental-answer",{answer},"Waiting for your Mac.");this.hooks.changed([id]);return null;}
+    if(quoteId!==notice.offer.id)throw new TaskError("The rental quote changed. Review its current cost first.","mac_price_changed");
+    const provider=this.sandboxProviders.get(notice.offer.provider);
+    const models=await provider?.macModels?.(this.hooks.lifecycle) ?? [];
+    const model=models.find(model=>model.id===notice.offer!.model);
+    if(!model)throw new TaskError("That Mac is unavailable. Wait for your Mac or review current rental options.","at_capacity");
+    if(Date.parse(notice.offer.expiresAt)<Date.now() || model.minimumCost>notice.offer.minimumCost || model.hourPrice>notice.offer.hourPrice || model.minimumHours>notice.offer.minimumHours || model.currency!==notice.offer.currency) {
+      ownMacEvent(this.store,task.id,"ownmac-rental-offer",{...notice.offer,id:randomUUID(),minimumCost:model.minimumCost,hourPrice:model.hourPrice,minimumHours:model.minimumHours,currency:model.currency,expiresAt:new Date(Date.now()+600000).toISOString()},"The rental quote changed. Nothing was rented.");
+      this.hooks.changed([task.id]);throw new TaskError("The rental price or quote changed. Review its current cost first. Nothing was rented.","mac_price_changed");
+    }
+    return await this.restartOwnMacTask(task,notice.offer,"rent");
+    } finally {this.ownMacAnswers.delete(task.id);}
+  }
+  private async restartOwnMacTask(task:Task,approval:MacRentalQuote|undefined,answer:"rent"|"auto"):Promise<string|null> {
+    if(this.ownMacRestarts.has(task.id) || this.store.get(task.id)?.status!=="failed")throw new TaskError("This task start is already being handled.","task_busy");
+    this.ownMacRestarts.add(task.id);
+    try {
+      const project=governingProject(this.hooks.projects?.() ?? [],task.boatProject,task.repo);
+      const replacement=await this.startTask({title:task.title,brief:task.brief,role:task.role,parentTaskId:task.parentTaskId,repo:task.repo,branch:task.branch,baseBranch:task.baseBranch,provider:task.provider,model:task.model,tier:task.tier as Tier|null,reasoningEffort:task.reasoningEffort,userApproved:true,runner:task.runner,project:project ? {...toOrchestratorProject(normalizeProject({...project,repos:project.repos.map(r=>({...r,baseBranch:(r as ProjectRepo).baseBranch ?? task.baseBranch ?? "main"}))})),...(!task.repo?{repos:[]}: {})} : undefined,orchestratorThreadId:task.orchestratorThreadId,sandboxSystem:"macos",machineType:task.startOptions?.machineType,confirmUntrustedChat:task.startOptions?.confirmUntrustedChat,macRentalApproval:approval});
+      const actualAnswer=replacement.sandboxProvider==="ownmac"?"auto":answer;
+      ownMacEvent(this.store,task.id,"ownmac-rental-answer",{answer:actualAnswer,replacementId:replacement.id},actualAnswer==="auto"?"Your Mac is back; the task starts there.":"Rental choice accepted.");
+      this.store.transition(task.id,["failed"],{status:"cancelled"});this.hooks.changed([task.id,replacement.id]);return replacement.id;
+    } catch(error) {
+      const replacementId=typeof (error as {taskId?:unknown}).taskId==="string"?(error as {taskId:string}).taskId:undefined;
+      ownMacEvent(this.store,task.id,"ownmac-rental-answer",{answer:"failed",replacementId},"The start failed; inspect the replacement before retrying.");
+      if(replacementId)this.store.transition(task.id,["failed"],{status:"cancelled"});
+      this.hooks.changed([task.id]);throw error;
+    } finally {this.ownMacRestarts.delete(task.id);}
+  }
+  private lastOwnMacCleanupCheck=0;
+  async maintainOwnMac() {
+    const own=this.sandboxProviders.all.find(p=>p.id==="ownmac");if(!own)return;
+    if(own.ownMacCleanup?.()?.failed && Date.now()-this.lastOwnMacCleanupCheck>=3600000){this.lastOwnMacCleanupCheck=Date.now();await this.checkOwnMacCleanup();}
+    const state=await own.ownMacStatus?.();if(state?.code!=="available")return;
+    for(const task of this.store.list({statuses:["failed"],limit:500})) {
+      const notice=ownMacTaskNotice(this.store,task);
+      if(notice?.offer && !notice.replacementId && notice.answer!=="failed" && task.turns===0 && !task.sandboxId && !this.ownMacRestarts.has(task.id) && !this.ownMacAnswers.has(task.id)) {
+        await this.restartOwnMacTask(task,undefined,"auto").catch(()=>undefined);
+        break;
+      }
+    }
+  }
+  async checkOwnMacCleanup() {
+    const own=this.sandboxProviders.all.find(p=>p.id==="ownmac");
+    const result=await own?.checkOwnMacCleanup?.(async id=>{
+      const task=this.store.sandboxTasks(id).find(task=>task.hostId!==null);
+      if(!task?.hostId)return false;
+      if(!this.hooks.chat)return false;
+      const state=await this.hooks.chat.machineState(task.hostId).catch(()=>undefined);
+      return state===null || state?.phase==="destroyed";
+    });
+    this.hooks.changed([]);return result;
   }
 
   private async keepMacLease(lease: MacLease, signal?: AbortSignal): Promise<void> {
@@ -5077,14 +5184,16 @@ export class BoatService {
     const sandboxId = current.sandboxId;
     if (sandboxId !== null && current.sandboxProvider === "ownmac") {
       try {
-        let removed = true;
+        let removed = current.hostId === null;
         if (current.hostId && this.hooks.chat) {
-          for (const threadId of this.store.chatThreads(task.id)) await this.hooks.chat.archive(threadId);
-          removed = (await this.removeMachineIfUnused(current)) === "deleted";
+          try {
+            for (const threadId of this.store.chatThreads(task.id)) await this.hooks.chat.archive(threadId);
+            removed = (await this.removeMachineIfUnused(current)) === "deleted";
+          } catch { removed = false; }
         }
         await this.sandboxProviders.all.find(p=>p.id==="ownmac")?.closeTaskCredentials?.(sandboxId,options.signal,removed);
       }
-      catch(error) { this.store.addEvent(task.id,"credential-cleanup-failed",errorText(error)); this.hooks.changed([task.id]); throw error; }
+      catch(error) { this.store.addEvent(task.id,"credential-cleanup-failed",errorText(error)); this.hooks.changed([task.id]); if(task.orchestratorThreadId && task.orchestratorThreadId!==task.threadId)await this.hooks.tell?.(task.orchestratorThreadId,taskMarker("task",task.id)).catch(()=>undefined); throw error; }
       sandbox = "kept";
       this.store.addEvent(task.id,"sandbox","Kept Your Mac and its work; task credentials removed and verified.");
     } else if (sandboxId !== null && this.store.macLeases.held(sandboxId).length > 0) {
@@ -5475,6 +5584,7 @@ export class BoatService {
     try {
       state = await chat.state(task.threadId!);
     } catch (error) {
+      if(task.sandboxProvider==="ownmac" && /disconnect|offline|unreachable|connection|host/i.test(errorText(error)))await this.tellOwnMacDisconnect(task);
       this.hooks.log.warn(`sweep: chat ${task.threadId}: ${errorText(error)}`);
       return false;
     }
@@ -5570,9 +5680,11 @@ export class BoatService {
     const guard = { promptId: task.promptId };
     if (state.status === "error" || hint?.kind === "failed") {
       const reason = hint?.error?.trim() || (fresh ? text.trim().split("\n").at(-1) ?? "" : "");
-      if (USAGE_LIMIT_PATTERN.test(`${hint?.error ?? ""}\n${fresh ? text : ""}`) && (await this.chatFailover(task, reason || "usage limit"))) return true;
+      const disconnected=task.sandboxProvider==="ownmac" && /disconnect|offline|unreachable|connection (?:lost|closed)|host.*(?:lost|gone)/i.test(reason);
+      if (disconnected) await this.tellOwnMacDisconnect(task);
+      if (!disconnected && USAGE_LIMIT_PATTERN.test(`${hint?.error ?? ""}\n${fresh ? text : ""}`) && (await this.chatFailover(task, reason || "usage limit"))) return true;
       // A provider Bad Request right after a steer: one automatic retry, and no notice while it runs.
-      const retry = await this.retryAfterSteer(task, now);
+      const retry = disconnected ? "none" : await this.retryAfterSteer(task, now);
       if (retry === "retried") return true;
       if (retry === "wait") return false;
       const retryNote = retry === "tried" ? " An automatic retry was already tried." : retry === "unsent" ? " The automatic retry couldn't be sent." : "";

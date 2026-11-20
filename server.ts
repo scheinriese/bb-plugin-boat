@@ -132,7 +132,7 @@ export default async function plugin(bb: BbPluginApi) {
   settings.onChange(keys => { if (keys.includes("scalewayProjectId")) void githubScope.configurationChanged("project").catch(scopeNotice); });
   await githubScope.assertAllowed().catch(scopeNotice);
   const machineCredentials = createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), assertDeliveryAllowed: githubScope.assertAllowed, agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) });
-  const ownmac = await createOwnMacProvider({ config: () => settings.get(), kv: bb.storage.kv, credentials: createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) }) });
+  const ownmac = await createOwnMacProvider({ config: () => settings.get(), kv: bb.storage.kv, taskState:id=>{const tasks=store.liveSandboxTasks(id);if(tasks.some(task=>["starting","running"].includes(task.status)))return "running";if(tasks.length)return "idle";return store.sandboxTasks(id).length?"closed":null;}, credentials: createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) }) });
   let ownMacOn = (await settings.get()).ownMacEnabled;
   settings.onChange(() => { void settings.get().then(values => { ownMacOn = values.ownMacEnabled; }); });
   const scaleway = createScalewayProvider({ credentials: machineCredentials, api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(dirname(bb.storage.database().name), "scaleway-keys")), ledger: store.macLeases });
@@ -1014,6 +1014,7 @@ export default async function plugin(bb: BbPluginApi) {
           if (before !== after) changed();
         }
         catch (error) { bb.log.warn(`monthly Mac forecast failed: ${String(error)}`); }
+        await service.maintainOwnMac().catch(error=>bb.log.warn(`Your Mac check failed: ${String(error)}`));
         await recoverProviders();
         await maintainLeasesAndKeepAwake({
           hasMacLeases: () => store.macLeases.held().length > 0,

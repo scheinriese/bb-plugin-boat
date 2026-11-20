@@ -348,6 +348,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       const need = SCALEWAY_TASK_SIZES.find(size => size.id === (input.type ?? "default"))!;
       const choice = choices.find(c => c.ready && c.model.cpus >= need.cpus && c.model.memoryMiB >= need.memoryGb*1024);
       if (!choice) throw fail("Scaleway has no Mac with enough stock, quota and room.", "at_capacity");
+      if(input.macCostLimit && (input.macCostLimit.provider!=="scaleway" || input.macCostLimit.model!==choice.model.id || input.macCostLimit.currency!==choice.model.currency || input.macCostLimit.minimumCost<choice.model.minimumCost || input.macCostLimit.hourPrice<choice.model.hourPrice || input.macCostLimit.minimumHours<choice.model.minimumHours || Date.parse(input.macCostLimit.expiresAt)<Date.now()))throw fail("The rental price or model changed. Review a new quote before renting.","mac_price_changed");
       const generated = await keys.generate();
       let sshKeyId: string | null = null;
       let allocated = false;

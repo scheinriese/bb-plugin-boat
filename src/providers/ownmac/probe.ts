@@ -1,3 +1,4 @@
+import { OWN_MAC_MIN_FREE_GB } from "../../../contract-ownmac.ts";
 import { spawn } from "node:child_process";
 import { platform, userInfo } from "node:os";
 import { z } from "zod";
@@ -14,6 +15,7 @@ export interface Identity {
 }
 export interface Reading extends Identity {
   admin: boolean;
+  vm: boolean | null;
   ac: boolean;
   session: boolean;
   memoryMiB: number;
@@ -28,6 +30,7 @@ test -n "$uuid"
 printf 'hardware=%s\\nuser=%s\\nuid=%s\\n' "$(printf %s "$uuid" | shasum -a 256 | awk '{print $1}')" "$(id -un)" "$(id -u)"
 `;
 export const AVAILABILITY_SCRIPT = `${IDENTITY_SCRIPT}
+vm=$(sysctl -n kern.hv_vmm_present 2>/dev/null || echo unknown)
 groups=$(id -Gn)
 admin=$(case " $groups " in (*' admin '*) echo 1 ;; (*) echo 0 ;; esac)
 ac=$(case "$(pmset -g batt)" in (*"AC Power"*) echo 1 ;; (*"Battery Power"*) echo 0 ;; (*) exit 1 ;; esac)
@@ -40,13 +43,17 @@ memory=$(sysctl -n hw.memsize)
 free=$(vm_stat | awk 'NR==1 {for(i=1;i<=NF;i++) if($i=="of") page=$(i+1)} /^Pages (free|inactive|speculative):/ {gsub(/\\./,"",$NF); pages+=$NF} END {if(page>0) printf "%.0f", pages*page/1048576; else exit 1}')
 cpus=$(sysctl -n hw.ncpu)
 load=$(sysctl -n vm.loadavg | awk '{print $2}')
-running=$(find "$HOME/.bb-ownmac-active" -type f 2>/dev/null | wc -l | tr -d ' ')
-printf 'admin=%s\\nac=%s\\nsession=%s\\nmemoryMiB=%s\\nfreeMiB=%s\\ncpus=%s\\nload=%s\\nrunning=%s\\n' "$admin" "$ac" "$session" "$((memory / 1048576))" "$free" "$cpus" "$load" "$running"
+running=$(pgrep -u "$(id -u)" -f '(/claude|/codex)( |$)' 2>/dev/null | wc -l | tr -d ' ')
+printf 'vm=%s\\nadmin=%s\\nac=%s\\nsession=%s\\nmemoryMiB=%s\\nfreeMiB=%s\\ncpus=%s\\nload=%s\\nrunning=%s\\n' "$vm" "$admin" "$ac" "$session" "$((memory / 1048576))" "$free" "$cpus" "$load" "$running"
 `;
 const readingSchema = z.object({
   hardware: z.string().regex(/^[a-f0-9]{64}$/),
   user: z.string().regex(/^[a-z_][a-z0-9_-]*$/i),
   uid: z.coerce.number().int().nonnegative(),
+  vm: z
+    .enum(["0", "1", "unknown"])
+    .default("unknown")
+    .transform((value) => (value === "unknown" ? null : value === "1")),
   admin: z.enum(["0", "1"]).transform((v) => v === "1"),
   ac: z.enum(["0", "1"]).transform((v) => v === "1"),
   session: z.enum(["0", "1"]).transform((v) => v === "1"),
@@ -67,14 +74,14 @@ export function parseReading(stdout: string): Reading {
   );
 }
 export function refusal(remote: Reading, local: Identity): string | null {
-  if (remote.admin || remote.uid === 0)
-    return "Refused: this account is an administrator. Use a standard user or a VM with a standard user.";
   if (
     local.hardware &&
     remote.hardware === local.hardware &&
     (remote.user === local.user || remote.uid === local.uid)
   )
-    return "Refused: this is your personal login on the bb server. Use a separate standard user or a VM.";
+    return "Can't use · your own login";
+  if ((remote.admin || remote.uid === 0) && remote.vm !== true)
+    return "Can't use · admin user";
   return null;
 }
 export function availability(
@@ -85,9 +92,9 @@ export function availability(
 ): string {
   const reason = refusal(reading, local);
   if (reason) return reason;
-  if (!reading.ac) return "On battery";
   if (!reading.session) return "No logged-in session";
-  if (reading.freeMiB < Math.max(4096, reading.memoryMiB / 4))
+  if (!reading.ac) return "On battery";
+  if (reading.freeMiB < OWN_MAC_MIN_FREE_GB * 1024)
     return "Not enough free memory";
   if (reading.load > Math.max(1, reading.cpus - 1))
     return "Not enough free CPU";

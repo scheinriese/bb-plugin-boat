@@ -440,7 +440,7 @@ export const PLUGIN_SETTINGS = {
   ownMacEnabled: { section:"setup", type:"boolean", default:false, label:"Enable Your Mac", description:"Use an isolated VM or separate standard user, never your own login. SSH access and a logged-in session on mains power are required." },
   ownMacPaused: { section:"setup", type:"boolean", default:false, label:"Pause Your Mac", description:"Stop accepting new tasks. Running tasks keep their session." },
   ownMacAlias: { section:"setup", type:"string", default:"", label:"Your Mac SSH host alias", description:"A name from your SSH config only. Never enter a key path or key contents.", experimental_schema:sshAliasSchema },
-  ownMacMaxTasks: { section:"setup", type:"number", default:1, label:"Your Mac maximum concurrent tasks", description:"Keep memory and CPU headroom for your own work.", experimental_schema:z.number().int().min(1).max(16) },
+  ownMacMaxTasks: { section:"setup", type:"number", default:1, label:"Your Mac maximum concurrent tasks", description:"Keep memory and CPU headroom for your own work.", experimental_schema:z.number().int().min(1).max(4) },
   instaboxEnabled: {
     section: "advanced",
     type: "boolean",

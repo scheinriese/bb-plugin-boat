@@ -526,6 +526,7 @@ export interface CreateSandboxOptions {
   ttlSeconds: number;
   /** git uses the plugin's hooks (the base-branch push guard), whatever the repo configures. */
   gitGuard: boolean;
+  macCostLimit?: import("../../contract-ownmac.ts").MacRentalQuote;
   signal?: AbortSignal;
 }
 
@@ -635,8 +636,12 @@ export interface LaterMembers {
   /** Already rented monthly capacity is reused before held day leases; never allocated. */
   macLeaseKind?: "monthly" | "day";
   closeTaskCredentials?(sandboxId: string, signal?: AbortSignal, machineRemoved?: boolean): Promise<void>;
+  ownMacCleanup?(): import("../../contract-ownmac.ts").OwnMacFacts["cleanup"];
+  testOwnMacConnection?(): Promise<import("../../contract-ownmac.ts").OwnMacFacts>;
+  ownMacSetupStep?(step:number):Promise<void>;
+  checkOwnMacCleanup?(proxyRevoked?:(sandboxId:string)=>Promise<boolean>):Promise<import("../../contract-ownmac.ts").OwnMacFacts>;
   runsOnMachine?(sandboxId?: string | null): string | null;
-  ownMacStatus?(force?: boolean, signal?: AbortSignal): Promise<{ status: string; running: number; max: number }>;
+  ownMacStatus?(force?: boolean, signal?: AbortSignal): Promise<import("../../contract-ownmac.ts").OwnMacFacts>;
   /** Whether any provider-specific setup was saved, even if incomplete. */
   configured?(): boolean | Promise<boolean>;
   /** Read-only, bounded setup and billing metadata. Also works while turned off. */
