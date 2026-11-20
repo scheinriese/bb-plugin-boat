@@ -8,6 +8,8 @@ export type ProviderFailure = {
 export function providerFailureCard(failure: ProviderFailure, message = "") {
   const { code, provider, mac, released } = failure,
     instabox = provider === "instabox";
+  // Your Mac refusal/fallback designs are pending; use the plain task status.
+  if (provider === "ownmac") return null;
   if (
     instabox &&
     (code === "github_secret_missing" ||

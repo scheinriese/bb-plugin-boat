@@ -1083,6 +1083,22 @@ export class TaskStore {
   }
 
   /** The newest event of one kind (e.g. "review", "approval"), or null. */
+  countOwnMacTasksSince(since:string):number {
+    const row=this.db().prepare(`SELECT COUNT(*) AS n FROM tasks WHERE sandbox_provider='ownmac' AND sandbox_id IS NOT NULL AND created_at>=? AND (turns>0 OR status IN ('starting','running','idle'))`).get(since) as {n:number};
+    return row.n;
+  }
+  /** Bounded provider state for Your Mac cards, outside the public history feed. */
+  addOwnMacEvent(taskId:string,kind:string,text:string,payload:unknown):void {
+    if(!kind.startsWith("ownmac-"))throw new Error("Invalid Your Mac event kind");
+    const metadata=JSON.stringify({ownMac:payload});
+    if(metadata.length>12000)throw new Error("Your Mac event is too large");
+    this.db().prepare(`INSERT INTO task_events (task_id,at,kind,text,metadata) VALUES (?,?,?,?,?)`).run(taskId,new Date().toISOString(),kind,text.slice(0,4000),metadata);
+  }
+  ownMacEventData(taskId:string,kind:string):unknown {
+    const row=this.db().prepare(`SELECT metadata FROM task_events WHERE task_id=? AND kind=? ORDER BY seq DESC LIMIT 1`).get(taskId,kind) as {metadata:string}|undefined;
+    try{return row?JSON.parse(row.metadata).ownMac:null;}catch{return null;}
+  }
+
   latestEvent(taskId: string, kind: string): TaskEvent | null {
     const row = this.db()
       .prepare(`SELECT task_id, at, kind, text FROM task_events WHERE task_id = ? AND kind = ? ORDER BY seq DESC LIMIT 1`)

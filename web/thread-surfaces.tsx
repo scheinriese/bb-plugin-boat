@@ -1,3 +1,4 @@
+import { LiveOwnMacNotices } from "./own-mac-live";
 import { runsOnDetail } from "./providers-logic";
 import { RunsOnLine } from "./providers";
 // Surfaces outside the Cloud agents page: the context row segment above a
@@ -131,6 +132,7 @@ export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentP
   }
   if(!own&&(data?.ready.length??0)>0&&setup?.plan)return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{setup.plan.activeSandboxes}{setup.plan.maxActiveSandboxes!==null?' of '+setup.plan.maxActiveSandboxes:''} sandboxes{usage?.usedPercent!==null&&usage?.usedPercent!==undefined?` · ${usage.provider==='claude'?'Claude':'Codex'} ${Math.round(usage.usedPercent)}%`:''}</span>;
   if((data?.needsYou.length??0)>0)return <span className="boat-ui ml-auto hidden text-[12px] text-muted-foreground md:inline">{decisionTask?.provider==='claude'?'Claude':decisionTask?.provider==='codex'?'Codex':'The agent'} waits in its sandbox; nothing is lost</span>;
+  if(own?.runsOn?.provider === "ownmac") return <span className="boat-ui ml-auto flex min-h-9 min-w-0 items-center gap-2 text-xs text-[#D6D6D6]"><RunsOnLine runsOn={{...own.runsOn,note:null}}/><span className="hidden text-[#6E6E6E] lg:inline">{runsOnDetail(own.runsOn)}</span></span>;
   if(own?.runsOn?.os === "macos") return <span className="boat-ui ml-auto flex min-w-0 items-center gap-2 text-xs text-muted-foreground" title={own.runsOn.detail ?? undefined}><RunsOnLine runsOn={own.runsOn} /><span className="hidden text-[color:var(--boat-faint)] lg:inline">{runsOnDetail(own.runsOn)}</span></span>;
   if(own?.runsOn?.provider==="instabox" && own.runsOn.os==="linux") return <span className="boat-ui ml-auto flex gap-2 text-xs text-[#D6D6D6]">Instabox · Linux <span className="text-[#6E6E6E]">per second · pauses after 30 min idle</span></span>;
   if(own?.sandboxId)return <span className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title={SANDBOX_POWER_LABEL[power]}><span className={cn("size-1.5 rounded-full",power==='on'?'bg-[#5BD08A]':'bg-muted-foreground')}/><span className="sm:hidden">{SANDBOX_POWER_SHORT[power]}</span><span className="hidden sm:inline">{SANDBOX_POWER_LABEL[power]}{detail?.memory?.size?' · '+detail.memory.size.label:''}</span>{cardStatus(own).status==='ready'&&<span className="sm:hidden"><TaskContextAction task={own} compact/></span>}</span>;
@@ -144,14 +146,14 @@ export function ThreadSegmentDetails({ threadId, isExpanded }: ExperimentalThrea
   const tasks = own ? [own] : [...data.ready, ...data.running, ...data.done];
   if (data.needsYou.length === 0 && tasks.length === 0) return null;
   return (
-    <ul aria-label="Cloud agents" className="max-h-64 space-y-px overflow-y-auto py-1">
+    <><LiveOwnMacNotices threadId={threadId}/><ul aria-label="Cloud agents" className="max-h-64 space-y-px overflow-y-auto py-1">
       {data.needsYou.map((decision) => (
         <CompactDecisionRow key={decision.id} decision={decision} threadId={threadId} />
       ))}
       {tasks.map((task) => (
         <CompactTaskRow key={task.id} task={task} />
       ))}
-    </ul>
+    </ul></>
   );
 }
 

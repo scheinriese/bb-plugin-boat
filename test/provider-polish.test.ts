@@ -257,3 +257,45 @@ test("post-deletion token reminder shows expiry without a dismissal action",()=>
   assert.match(html,/recorded token expiry/);assert.match(html,/2030-04-01/);
   assert.doesNotMatch(html,/Dismiss|Delete without|Owner approval/);
 });
+
+for (const [scene,status] of [["ownmac-paused","Paused"],["ownmac-battery","On battery"],["ownmac-memory","Low memory · 3 GB free"],["ownmac-logged-out","Not logged in"],["ownmac-refused-personal-login","Can't use · your own login"],["ownmac-refused-admin","Can't use · admin user"],["ownmac-cleanup","Logins left behind"]]) test(`Your Mac state: ${scene}`,()=>{
+  const html=renderScene(scene!);assert.ok(html.includes(status!.replaceAll("'","&#x27;")));assert.match(html,/Your Mac/);assert.match(html,/fake-mac-agents · SSH/);
+});
+test("Your Mac available row follows the completed design and detects isolation",()=>{
+  const html=renderScene("ownmac-available");for(const text of ["fake-mac-agents · SSH","Available","$0 rent. Awake and on power","Use for Mac tasks","SSH alias","Runs in","Agents never run in your own login.","macOS VM","detected","Tasks at once","Pause"])assert.ok(html.includes(text),text);
+  assert.match(html,/role="switch"[^>]*aria-checked="true"/);assert.doesNotMatch(html,/role="radiogroup"/);
+});
+test("first setup has seven steps and a read-only connection result",()=>{
+  const html=renderScene("ownmac-setup-test-failed");for(const text of ["Setting up · 4 of 7","Chose where agents run","Created the VM","Remote Login on","SSH alias added","Test connection","Logged in and on power","Turned on","Couldn&#x27;t sign in as fake-mac-agents","Test again","It changes nothing"])assert.ok(html.includes(text),text);
+  const first=renderScene("ownmac-not-set-up");assert.match(first,/role="radiogroup"/);assert.match(first,/macOS VM \(recommended\)/);
+});
+test("low-memory copy comes from the shared 6 GB policy",()=>{assert.match(renderScene("ownmac-memory"),/A task needs 6 GB free/);assert.doesNotMatch(renderScene("ownmac-memory"),/8 GB free/);});
+test("cleanup uses the generic failed-check card and exact command family",()=>{
+  const html=renderScene("ownmac-cleanup-card");for(const text of ["Login cleanup couldn&#x27;t be verified","automatically paused","Check again","Copy steps","gh auth logout","claude auth logout","codex logout"])assert.ok(html.includes(text),text);
+  assert.doesNotMatch(html,/still there|2 logins|type.*\/logout|>Remove</);
+});
+test("refusal, fallback and consent cards use the supplied style and real quote fields",()=>{
+  const refusal=renderScene("ownmac-refusals");assert.match(refusal,/your own login/);assert.match(refusal,/physical Mac/);assert.match(refusal,/at no extra cost/);
+  const card=renderScene("ownmac-fallback");for(const text of ["Needs you","nothing is rented yet","Rent for $10.80","then $0.45 / h","Wait for your Mac","no new cost"])assert.ok(card.includes(text),text);
+});
+test("footer and usage include task counts, no meter and zero rent",()=>{
+  const html=renderScene("ownmac-footer");for(const text of ["7 on","Running 1 of 1","$0 · fake-mac-agents · on power","9 tasks this month","$0 rent","Your Mac · VM"])assert.ok(html.includes(text),text);
+});
+
+test("a changed Your Mac target uses the existing amber refusal style",()=>{
+  const html=renderScene("ownmac-target-changed");assert.match(html,/Test connection again/);assert.match(html,/bg-\[#F0B135\]/);assert.doesNotMatch(html,/Setting up|Administrator/);
+});
+test("Your Mac UI explains guest power cannot prove the host is on mains",()=>{
+  const html=renderScene("ownmac-available");assert.match(html,/power is read from the guest/);assert.match(html,/host battery use may not be detected/);
+});
+test("an explicit rental choice does not offer automatic Your Mac waiting",()=>{
+  const html=renderScene("ownmac-explicit-rental");assert.match(html,/Runs on selects a rented Mac/);assert.match(html,/Choose Your Mac in Runs on/);assert.doesNotMatch(html,/Wait for your Mac/);assert.match(html,/Rent for \$10.80/);
+});
+
+test("separate-user setup explains how the owner makes the personal home private",()=>{
+  const html=renderScene("ownmac-setup-user");for(const text of ["Created the user","In your personal account","chmod 700 ~","Get Info","personal home folder is unreadable"])assert.ok(html.includes(text),text);
+  assert.doesNotMatch(renderScene("ownmac-setup-test-failed"),/chmod 700/);
+});
+test("unknown power has the orange status and routes new starts elsewhere",()=>{
+  const html=renderScene("ownmac-power-unknown");assert.match(html,/Power state unknown/);assert.match(html,/bg-\[#FC8C45\]/);assert.match(html,/next Mac in line/);assert.doesNotMatch(html,/Asleep or unreachable/);
+});

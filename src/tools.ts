@@ -97,6 +97,7 @@ export function registerTools(runtime: Runtime): void {
     name: "boat_protocol",
     description:
       "Load your orchestrator protocol: the shared rules (delegating, model presets, reviews, reporting) followed by this project's rules file from its repo. Call it when you start, after taking over, and whenever you've lost track (e.g. after context compaction).",
+    instructions: "Agents must not run Test connection or change Your Mac settings. A target-change notice is for the owner, who must re-test in Settings.",
     presentation: { label: { pending: "Loading the orchestrator protocol", completed: "Loaded the orchestrator protocol" }, icon: { glyph: "FileText" } },
     parameters: z.object({
       project: z.string().optional().describe("Project id (default: this chat's project)"),

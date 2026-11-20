@@ -35,7 +35,7 @@ export function providerGlyph(provider: Pick<SandboxProviderDto, "id" | "kind">)
 
 /** The dot and words beside a provider: "Connected" (green), else grey. */
 export function providerStatus(provider: Pick<SandboxProviderDto, "connection" | "status" | "available">): { text: string; ok: boolean } {
-  const ok = provider.available && provider.connection === "connected";
+  const ok = provider.available && provider.connection === "connected" && (!provider.status || ["Connected","Available"].includes(provider.status));
   return { text: provider.status ?? (ok ? "Connected" : "Not connected"), ok };
 }
 

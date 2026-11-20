@@ -1,3 +1,4 @@
+import {withFakeMacRentalConsent} from "./mac-consent.ts";
 // Instabox as the second sandbox provider (src/providers/instabox/), against
 // the fake instabox CLI and REST API (src/providers/instabox/fixtures/):
 // a machine's whole life, the headless agent runner through the service,
@@ -731,7 +732,9 @@ async function macEnv(t: { after(fn: () => unknown): void }, overrides: Record<s
   const fakeBoat=new FakeBoat();
   const notices:string[]=[];
   const registry=createProviderRegistry([createBoatProvider(fakeBoat as unknown as BoatApi),box.provider]);
-  const service=new BoatService(registry,store,hooks({tell:async (_id:string,text:string)=>{notices.push(text)},...overrides}).hooks);
+  // These assertions count lease reminders; the fake owner's cost-card receipt is separate.
+  const service=new BoatService(registry,store,hooks({tell:async (_id:string,text:string)=>{if(!text.startsWith("::boat-task{"))notices.push(text)},...overrides}).hooks);
+  withFakeMacRentalConsent(service);
   const start=(extra:Partial<import("../src/service.ts").StartTaskInput>={})=>service.startTask({title:"Mac task",brief:"Check tools",role:"custom",sandboxSystem:"macos",...extra});
   return {box,store,service,start,notices,fakeBoat};
 }

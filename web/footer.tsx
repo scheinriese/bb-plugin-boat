@@ -1,3 +1,4 @@
+import { footerOnCount } from "./own-mac-count";
 import { FooterUsage } from "./footer-usage";
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
@@ -156,7 +157,8 @@ function BoatFooterIcon({ className }: { className?: string }) {
     method: "overview",
     input: null,
   });
-  const count = sandboxes.data?.sandboxes.filter(s=>isSandboxActive(s.state)).length;
+  const own=experimental_useRpcQuery({pluginId:"boat",contract:rpcContract,method:"macUsage",input:{timezoneOffsetMinutes:new Date().getTimezoneOffset()}});
+  const count = footerOnCount(sandboxes.data?.sandboxes,own.data?.ownMac?.running);
   const broken = sandboxes.data?.sandboxes.some((sandbox) =>
     sandboxFailure(sandbox, tasks.data?.tasks ?? []),
   );
@@ -199,7 +201,7 @@ export function BoatFooter({
       }),
     [sandboxes.data, tasks.data],
   );
-  const count = sandboxes.data?.sandboxes.filter(s=>isSandboxActive(s.state)).length ?? null;
+  const count = footerOnCount(sandboxes.data?.sandboxes,mac.data?.ownMac?.running) ?? null;
   const boatOn = sandboxes.data?.sandboxes.filter(s=>s.runsOn?.provider==="boat" && isSandboxActive(s.state)).length ?? null;
   const providers = providerInfo.data?.providers.map(p=>p.id==="instabox" && p.linuxUsage ? {...p,linuxUsage:{...p.linuxUsage,active:sandboxes.data?.sandboxes.filter(s=>s.runsOn?.provider==="instabox" && s.runsOn?.os!=="macos" && isSandboxActive(s.state)).length ?? null}} : p);
   function allSandboxes() {

@@ -1,3 +1,4 @@
+import { sshAliasSchema } from "../contract-providers.ts";
 import { monthlyMacPricesSchema } from "../contract-monthly-macs.ts";
 import { CREDENTIAL_RISKS_URL } from "../credential-warnings.ts";
 // The plugin's settings live in two places:
@@ -435,6 +436,11 @@ export const PLUGIN_SETTINGS = {
     description: "Near the end of paid Mac time, tell the orchestrator once when every open task has been idle this long.",
     experimental_schema: range("macIdleNoticeMinutes"), default: 60,
   },
+  ownMacIsolation: {section:"setup",type:"select",default:"vm",label:"Your Mac runs in",description:"A description of the isolated target you set up. This does not create a VM or an account.",options:["vm","user"] as const,experimental_optionLabels:{vm:"macOS VM (recommended)",user:"Separate macOS user"}},
+  ownMacEnabled: { section:"setup", type:"boolean", default:false, label:"Enable Your Mac", description:"Use an isolated VM or separate standard user, never your own login. SSH access and a logged-in session on mains power are required." },
+  ownMacPaused: { section:"setup", type:"boolean", default:false, label:"Pause Your Mac", description:"Stop accepting new tasks. Running tasks keep their session." },
+  ownMacAlias: { section:"setup", type:"string", default:"", label:"Your Mac SSH host alias", description:"A name from your SSH config only. Never enter a key path or key contents.", experimental_schema:sshAliasSchema },
+  ownMacMaxTasks: { section:"setup", type:"number", default:1, label:"Your Mac maximum concurrent tasks", description:"Keep memory and CPU headroom for your own work.", experimental_schema:z.number().int().min(1).max(4) },
   instaboxEnabled: {
     section: "advanced",
     type: "boolean",

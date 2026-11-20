@@ -1,3 +1,4 @@
+import { createOwnMacProvider } from "./src/providers/ownmac/provider.ts";
 import { MONTHLY_MACS_TAG } from "./contract-monthly-macs.ts";
 import { monthlyMacPrices } from "./src/monthly-macs.ts";
 import { createCredentialSource, createAgentRouteCheck } from "./src/credentials.ts";
@@ -131,14 +132,18 @@ export default async function plugin(bb: BbPluginApi) {
   settings.onChange(keys => { if (keys.includes("scalewayProjectId")) void githubScope.configurationChanged("project").catch(scopeNotice); });
   await githubScope.assertAllowed().catch(scopeNotice);
   const machineCredentials = createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), assertDeliveryAllowed: githubScope.assertAllowed, agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) });
+  let ownMacTargetChanged:(()=>Promise<void>)|undefined;
+  const ownmac = await createOwnMacProvider({ config: () => settings.get(), kv: bb.storage.kv, onTargetChanged:async()=>{await ownMacTargetChanged?.();}, taskState:id=>{const tasks=store.liveSandboxTasks(id);if(tasks.some(task=>["starting","running"].includes(task.status)))return "running";if(tasks.length)return "idle";return store.sandboxTasks(id).length?"closed":null;}, credentials: createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) }) });
+  let ownMacOn = (await settings.get()).ownMacEnabled;
+  settings.onChange(keys => { void settings.get().then(async values => { ownMacOn = values.ownMacEnabled; if(keys.includes("ownMacAlias"))await ownmac.ownMacStatus!(true); }).catch(()=>bb.log.warn("Your Mac settings need a connection test.")); });
   const scaleway = createScalewayProvider({ credentials: machineCredentials, api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(dirname(bb.storage.database().name), "scaleway-keys")), ledger: store.macLeases });
   scaleway.configured = async () => Boolean((await settings.get()).scalewayProjectId) || providerSecrets.scalewayKeyPresent();
   let scalewayOn = Boolean((await settings.get()).scalewayProjectId);
   settings.onChange(() => { void settings.get().then(values => { scalewayOn = Boolean(values.scalewayProjectId); }); });
   let instaboxOn = (await settings.get()).instaboxEnabled;
   // Sandbox providers: boat.dev, the default; Instabox while it's turned on and its key stored (src/providers/registry.ts).
-  const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli }), instabox, scaleway], {
-    isEnabled: (provider) => provider.id === "scaleway" ? scalewayOn && providerSecrets.scalewayKeyPresent() : provider.id !== INSTABOX_PROVIDER_ID || (instaboxOn && providerSecrets.instaboxKeyPresent()),
+  const sandboxProviders = createProviderRegistry([createBoatProvider(boat, { cli }), instabox, scaleway, ownmac], {
+    isEnabled: (provider) => provider.id === "ownmac" ? ownMacOn : provider.id === "scaleway" ? scalewayOn && providerSecrets.scalewayKeyPresent() : provider.id !== INSTABOX_PROVIDER_ID || (instaboxOn && providerSecrets.instaboxKeyPresent()),
   });
   const instaboxSetup = createInstaboxSetup({ cli: instaboxCli, turnedOn: async () => (await settings.get()).instaboxEnabled, keyPresent: () => providerSecrets.instaboxKeyPresent() });
   // Worker chats and cloud orchestrators need bb Connect.
@@ -369,7 +374,7 @@ export default async function plugin(bb: BbPluginApi) {
     usageRefused: provider => limits.record(provider, Date.now() + DEFAULT_LIMIT_MS),
     connect,
     // Each provider's own checks: Instabox's for work there, boat's otherwise.
-    preflight: (input) => input.provider === "scaleway" ? Promise.resolve() : (input.provider === INSTABOX_PROVIDER_ID ? instaboxPreflight(instaboxSetup) : setup.preflight(input)),
+    preflight: (input) => ["scaleway", "ownmac"].includes(input.provider ?? "") ? Promise.resolve() : (input.provider === INSTABOX_PROVIDER_ID ? instaboxPreflight(instaboxSetup) : setup.preflight(input)),
     machineProviders: () => registeredMachines,
     // Sandbox sizes: the projects' sizes, the plan's sizes (never waiting unless fresh), and plain messages to chats.
     projects: () => projects.list(),
@@ -501,6 +506,8 @@ export default async function plugin(bb: BbPluginApi) {
     wake: () => wakeMonitor(),
   });
   runtimeRef = runtime;
+  ownMacTargetChanged=()=>service.deliverOwnMacTargetNotice();
+  void service.deliverOwnMacTargetNotice().catch(()=>bb.log.warn("Your Mac target-change notice is waiting for chat delivery."));
   // The paid Claude resume: its own timer, one pass at a time, so it never holds up the monitor's loop or the relay.
   const paidTimer = createPaidResumeTimer(
     async () => {
@@ -555,6 +562,11 @@ export default async function plugin(bb: BbPluginApi) {
     return state?.state === "off" ? { status: "setup-required", message: "Turn on bb Connect for Scaleway task chats." } : { status: "available" };
   } });
   registeredMachines.add(scaleway.machine!.id);
+  registerSandboxMachine(bb, ownmac, {service,settings:readSettings,availability:async()=>{
+    const state=await ownmac.ownMacStatus!();
+    return state.status === "Available" ? {status:"available"} : {status:"setup-required",message:state.status};
+  }});
+  registeredMachines.add(ownmac.machine!.id);
   // Instabox machines for task chats, when it's on at load (turning it on later needs a reload for these).
   let keepInstaboxAwake: (() => Promise<void>) | null = null;
   if (instaboxOn) {
@@ -1005,6 +1017,7 @@ export default async function plugin(bb: BbPluginApi) {
           if (before !== after) changed();
         }
         catch (error) { bb.log.warn(`monthly Mac forecast failed: ${String(error)}`); }
+        await service.maintainOwnMac().catch(error=>bb.log.warn(`Your Mac check failed: ${String(error)}`));
         await recoverProviders();
         await maintainLeasesAndKeepAwake({
           hasMacLeases: () => store.macLeases.held().length > 0,

@@ -194,7 +194,7 @@ test("setProjectRunsOn takes boat.dev, refuses a provider that can't take work, 
   projects.save(STOREFRONT);
   const handlers = providerHandlers(runtime);
   await assert.rejects(handlers.setProjectRunsOn({ projectId: "storefront", provider: "instabox" }), /Instabox can't take new work: add its API key first\./);
-  await assert.rejects(handlers.setProjectRunsOn({ projectId: "storefront", provider: "your-mac" }), /not available yet/);
+  await assert.rejects(handlers.setProjectRunsOn({ projectId: "storefront", provider: "ownmac" }), /not connected/);
   await assert.rejects(handlers.setProjectRunsOn({ projectId: "storefront", provider: "nope" }), /isn't a sandbox provider/);
   await assert.rejects(handlers.setProjectRunsOn({ projectId: "gone", provider: "boat" }), /No project "gone"/);
   assert.equal(changes(), 0);
@@ -306,7 +306,7 @@ test("provider rows: glyphs, status, the key line and where the key goes", () =>
   assert.deepEqual([BOAT_CONNECTED, INSTABOX_CONNECTED, YOUR_MAC_DISABLED, MONTHLY_MAC_DISABLED].map(providerGlyph), ["boat", "box", "laptop", "laptop-dashed"]);
   assert.deepEqual(providerStatus(BOAT_CONNECTED), { text: "Connected", ok: true });
   assert.deepEqual(providerStatus(INSTABOX_NOT_CONNECTED), { text: "Not connected", ok: false });
-  assert.deepEqual(providerStatus(YOUR_MAC_DISABLED), { text: "Not available yet", ok: false });
+  assert.deepEqual(providerStatus(YOUR_MAC_DISABLED), { text: "Not connected", ok: false });
   assert.equal(keyLine(BOAT_CONNECTED), null);
   assert.deepEqual(keyLine(INSTABOX_CONNECTED), { set: true, action: "Change" });
   assert.deepEqual(keyLine(INSTABOX_NOT_CONNECTED), { set: false, action: "Add key in bb secrets" });
@@ -336,7 +336,7 @@ test("the plugin answers with providers, Runs on, and where its tasks and sandbo
     ["boat", "connected", true],
     ["instabox", "key-missing", true],
     ["scaleway", "key-missing", true],
-    ["your-mac", "not-connected", false],
+    ["ownmac", "not-connected", true],
     ["monthly-mac", "not-connected", false],
   ]);
   assert.deepEqual(view.projects.map((row) => [row.name, row.provider, row.chosen]), [["Storefront", "boat", false]]);

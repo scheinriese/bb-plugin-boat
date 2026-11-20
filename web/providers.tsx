@@ -1,3 +1,4 @@
+import { OwnMacRow } from "./own-mac";
 import { ProviderSetup } from "./provider-setup";
 // Sandbox providers in the UI (contract-providers.ts): Settings › Sandbox
 // providers and Runs on, and where each task runs (the line under a task in
@@ -140,8 +141,9 @@ function KeyLine({ provider }: { provider: SandboxProviderDto }) {
 }
 
 /** One provider: icon, name and what it is, and its status (on the right, or after a Mac's name). */
-export function ProviderRow({ provider, onCheck, onEnable, onKey, busy }: { provider: SandboxProviderDto; onCheck?:()=>void; onEnable?:()=>void; onKey?:()=>void; busy?:boolean }) {
+export function ProviderRow({ provider, onCheck, onEnable, onKey, busy, onOwnMacSave, onOwnMacTest, onOwnMacStep, onOwnMacCleanup }: { provider: SandboxProviderDto; onCheck?:()=>void; onEnable?:()=>void; onKey?:()=>void; busy?:boolean; onOwnMacTest?:()=>void; onOwnMacStep?:(step:number)=>void; onOwnMacCleanup?:()=>void; onOwnMacSave?:(value:NonNullable<SandboxProviderDto["ownMac"]>)=>void }) {
   const [expanded,setExpanded] = useState(false);
+  if (provider.id === "ownmac" && provider.ownMac) return <OwnMacRow icon={<ProviderGlyphIcon glyph="laptop" className="size-3.5 text-[#A8A8A8]"/>} provider={provider} onSave={onOwnMacSave} onTest={onOwnMacTest} onSetupStep={onOwnMacStep} onCleanup={onOwnMacCleanup} busy={busy}/>;
   const incomplete = provider.steps?.some(s=>s.possible && s.required !== false && !s.done) ?? false;
   const showSteps = provider.steps && (incomplete || expanded || (provider.waitingTasks ?? 0) > 0);
   const mac = provider.kind !== "cloud";
@@ -159,7 +161,7 @@ export function ProviderRow({ provider, onCheck, onEnable, onKey, busy }: { prov
         </div>
         {provider.releaseNotice && <p role="alert" className="mt-2 whitespace-pre-line text-xs text-[#F0B135]">{provider.releaseNotice}</p>}
         <p className="mt-0.5 text-xs leading-[17px] text-muted-foreground">{provider.pricing ? `${provider.summary} ${provider.pricing}` : provider.summary}</p>
-        {showSteps ? <ProviderSetup provider={provider} onCheck={onCheck} onEnable={onEnable} onKey={onKey} busy={busy}/> : <><SystemChips provider={provider}/><KeyLine provider={provider}/>{provider.steps && <><div className="mt-2 flex flex-wrap gap-1.5">{provider.steps.map(s=><span key={s.id} className={`rounded-md border px-2 py-[3px] text-xs ${s.possible ? "border-[#2E2E2E] text-[#A8A8A8]" : "border-dashed border-[#2A2A2A] text-[#6E6E6E]"}`}>{s.done ? "✓ " : ""}{s.label}{s.required === false ? " · optional" : ""}{!s.possible ? " · not possible yet" : ""}</span>)}</div>{provider.steps.filter(s=>s.docsUrl).map(s=><p key={s.id} className="mt-2 text-xs text-muted-foreground">{s.detail} <a href={s.docsUrl} target="_blank" rel="noreferrer" className="text-[#7AA7FF] hover:underline">Credential risks ↗</a></p>)}<button type="button" className="mt-2 text-xs text-[#7AA7FF]" onClick={()=>setExpanded(true)}>Show steps</button></>}</>}
+        {showSteps ? <ProviderSetup provider={provider} onCheck={onCheck} onEnable={onEnable} onKey={onKey} busy={busy}/> : <><SystemChips provider={provider}/><KeyLine provider={provider}/>{(provider.steps?.length ?? 0) > 0 && <><div className="mt-2 flex flex-wrap gap-1.5">{provider.steps!.map(s=><span key={s.id} className={`rounded-md border px-2 py-[3px] text-xs ${s.possible ? "border-[#2E2E2E] text-[#A8A8A8]" : "border-dashed border-[#2A2A2A] text-[#6E6E6E]"}`}>{s.done ? "✓ " : ""}{s.label}{s.required === false ? " · optional" : ""}{!s.possible ? " · not possible yet" : ""}</span>)}</div>{provider.steps!.filter(s=>s.docsUrl).map(s=><p key={s.id} className="mt-2 text-xs text-muted-foreground">{s.detail} <a href={s.docsUrl} target="_blank" rel="noreferrer" className="text-[#7AA7FF] hover:underline">Credential risks ↗</a></p>)}<button type="button" className="mt-2 text-xs text-[#7AA7FF]" onClick={()=>setExpanded(true)}>Show steps</button></>}</>}
         {expanded && !incomplete && <button type="button" className="mt-2 text-xs text-[#7AA7FF]" onClick={()=>setExpanded(false)}>Hide steps</button>}
       </div>
     </div>
@@ -221,6 +223,10 @@ export function SandboxProvidersSettings({ className }: { className?: string }) 
   const navigate = useBbNavigate();
   const check = experimental_useRpcMutation({contract:rpcContract,method:"checkSandboxProviders"});
   const save = experimental_useRpcMutation({contract:rpcContract,method:"saveSettings"});
+  const ownTest=experimental_useRpcMutation({contract:rpcContract,method:"ownMacTestConnection"});
+  const ownStep=experimental_useRpcMutation({contract:rpcContract,method:"ownMacSetupStep"});
+  const ownCleanup=experimental_useRpcMutation({contract:rpcContract,method:"ownMacCheckCleanup"});
+  const testOwn=()=>{void ownTest.mutate(null).catch(reason=>toast.error(reason.message));};
   const checkAgain = () => { void check.mutate(null).catch(reason=>toast.error(reason.message)); };
   const enable = () => { void save.mutate({values:{instaboxEnabled:true}}).then(checkAgain).catch(reason=>toast.error(reason.message)); };
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -253,7 +259,7 @@ export function SandboxProvidersSettings({ className }: { className?: string }) 
       <Group title="Sandbox providers" className={className}>
         <div className={BOX}>
           {data.providers.map((provider) => (
-            <ProviderRow key={provider.id} provider={provider} onCheck={checkAgain} onEnable={enable} onKey={()=>{ const hint=keyHint(provider);toast(hint.title,{description:hint.description}); window.scrollTo({top:0,behavior:"smooth"}); }} busy={check.isPending || save.isPending} />
+            <ProviderRow key={provider.id} provider={provider} onOwnMacTest={testOwn} onOwnMacStep={step=>{void ownStep.mutate({step}).catch(reason=>toast.error(reason.message));}} onOwnMacCleanup={()=>{void ownCleanup.mutate(null).catch(reason=>toast.error(reason.message));}} onOwnMacSave={value=>{const {ownMacAlias,ownMacEnabled,ownMacPaused,ownMacMaxTasks,ownMacIsolation}=value;void save.mutate({values:{ownMacAlias,ownMacEnabled,ownMacPaused,ownMacMaxTasks,ownMacIsolation}}).then(()=>{if(provider.ownMac?.ownMacAlias!==ownMacAlias)testOwn();checkAgain();}).catch(reason=>toast.error(reason.message));}} onCheck={checkAgain} onEnable={enable} onKey={()=>{ const hint=keyHint(provider);toast(hint.title,{description:hint.description}); window.scrollTo({top:0,behavior:"smooth"}); }} busy={check.isPending || save.isPending || ownTest.isPending || ownStep.isPending || ownCleanup.isPending} />
           ))}
         </div>
         <p className="px-0.5 text-xs leading-[17px] text-muted-foreground">{data.routing}</p><p className="text-xs leading-[17px] text-[#8A8A8A]">Harbormaster checks each step when this page opens and before every rent. Keys and tokens stay in bb’s secret store or the provider; this page never shows them.</p>

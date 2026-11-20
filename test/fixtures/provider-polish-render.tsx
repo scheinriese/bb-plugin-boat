@@ -1,3 +1,6 @@
+import { OwnMacRefusalCard, OwnMacRentalCard, OwnMacFallbackLine, OwnMacCleanupCard } from "../../web/own-mac-cards";
+import { CREDENTIAL_CLEANUP_SCRIPT } from "../../src/credentials";
+import type { OwnMacFacts, OwnMacNotice } from "../../contract-ownmac";
 import { TodayStartHereActions } from "../../web/today-start-here";
 import { MonthlyMacCard } from "../../web/monthly-mac";
 import { LeaseDayMeter } from "../../web/mac-usage";
@@ -12,7 +15,7 @@ import { ThisMonthUsage } from "../../web/mac-usage";
 import { FooterUsage } from "../../web/footer-usage";
 import { ProviderSetup } from "../../web/provider-setup";
 import { ProviderFailureCard } from "../../web/provider-failure";
-import { ProviderRow, RunsOnLine } from "../../web/providers";
+import { ProviderRow, RunsOnLine, ChipProvider } from "../../web/providers";
 import type {
   MacUsageDto,
   SandboxProviderDto,
@@ -164,6 +167,37 @@ export const monthlySuggestion: MonthlyMacSuggestion = {
   candidate:MONTHLY_MAC_PRICES[1]!,alternatives:[MONTHLY_MAC_PRICES[5]!],dayProvider:"instabox",chip:"M2",ramGB:16,currency:"USD",days:16,cost:172.8,dayRate:10.8,breakEven:119.99/10.8,forecast:{low:15,base:18,high:22},savings:74.41,answer:null,answeredAt:null,
 };
 export function scene(name: string) {
+  if (name.startsWith("ownmac-")) {
+    const codes:Record<string,NonNullable<OwnMacFacts["code"]>>={"ownmac-power-unknown":"power","ownmac-setup-user":"setup","ownmac-target-changed":"target","ownmac-available":"available","ownmac-user":"available","ownmac-busy":"busy","ownmac-asleep":"unreachable","ownmac-paused":"paused","ownmac-battery":"battery","ownmac-memory":"memory","ownmac-logged-out":"session","ownmac-refused-personal-login":"personal","ownmac-refused-admin":"admin","ownmac-cleanup":"cleanup","ownmac-not-set-up":"setup","ownmac-setup-test-failed":"setup","ownmac-setup-success":"off","ownmac-setup-battery":"battery","ownmac-off":"off","ownmac-footer":"busy"};
+    const statuses:Record<string,string>={power:"Power state unknown",target:"Test connection again",available:"Available",busy:"At task limit",unreachable:"Asleep or unreachable",paused:"Paused",battery:"On battery",memory:"Not enough free memory",session:"No logged-in session",personal:"Can't use · your own login",admin:"Can't use · admin user",cleanup:"Logins left behind",setup:"Not set up",off:"Off"};
+    const cleanup={failed:true,checkedAt:"2030-01-01T16:20:00Z",taskIds:["ownmac_fake_task"],steps:'# In the fake agents account\n(\nexport HOME="$HOME/.bb-ownmac/ownmac_fake_task"\nexport PATH="$HOME/.local/bin:$PATH"\n'+CREDENTIAL_CLEANUP_SCRIPT+')\n'};
+    const make=(scene:string):SandboxProviderDto=>{
+      const code=codes[scene] ?? "available",setup=scene.startsWith("ownmac-setup") || scene==="ownmac-not-set-up";
+      const f:OwnMacFacts={code,status:statuses[code]!,alias:scene==="ownmac-not-set-up"?"":"fake-mac-agents",enabled:!setup && scene!=="ownmac-off",running:code==="busy"?1:0,max:1,vm:scene==="ownmac-user" || scene==="ownmac-setup-user" || code==="admin"?false:scene==="ownmac-not-set-up" || scene==="ownmac-setup-test-failed"?null:true,freeMiB:code==="memory"?3072:14336,account:code==="personal"?undefined:"fake-agents",onPower:code==="power"?null:code!=="battery",loggedIn:code!=="session",checkedAt:new Date(Date.now()-20000).toISOString(),since:code==="unreachable"?"2030-01-01T18:40:00Z":null,tested:!setup || ["ownmac-setup-success","ownmac-setup-battery"].includes(scene),setupSteps:scene==="ownmac-not-set-up"?0:scene==="ownmac-setup-user"?1:scene==="ownmac-setup-test-failed"?4:setup?5:7,tasksThisMonth:9,runningTitles:["Fix the fake share sheet crash"],...(code==="cleanup"?{cleanup}: {})};
+      if(scene==="ownmac-setup-test-failed")f.testResult={ok:false,title:"Couldn't sign in as fake-mac-agents",detail:"The alias was found and the Mac answered, but the agents account didn't accept your SSH key. Add your public key to that account's ~/.ssh/authorized_keys, then test again.",checkedAt:new Date().toISOString()};
+      if(scene==="ownmac-setup-success" || scene==="ownmac-setup-battery")f.testResult={ok:true,title:"Connected as fake-agents",detail:`Standard user, not you · macOS VM · 14 GB free · ${scene==="ownmac-setup-battery"?"on battery":"on power"}`,checkedAt:new Date().toISOString()};
+      const ownMac={ownMacIsolation:scene==="ownmac-setup-user" || scene==="ownmac-user"?"user" as const:"vm" as const,ownMacAlias:f.alias!,ownMacEnabled:f.enabled!,ownMacPaused:code==="paused",ownMacMaxTasks:1,running:f.running,max:1,facts:f};
+      return {id:"ownmac",label:"Your Mac",kind:"own-mac",isDefault:false,available:true,enabled:f.enabled!,connection:code==="available"?"connected":"not-connected",meta:`${f.alias} · SSH`,summary:"$0 rent",pricing:"$0 rent",systems:[],apiKey:null,status:f.status,ownMac};
+    };
+    const row=(provider:SandboxProviderDto)=><ProviderRow provider={provider} onOwnMacSave={()=>{}} onOwnMacTest={()=>{}} onOwnMacStep={()=>{}} onOwnMacCleanup={()=>{}}/>;
+    const box=(children:React.ReactNode)=><div className="max-w-[760px] divide-y divide-[#222222] overflow-hidden rounded-[10px] border border-[#262626] bg-[#181818]">{children}</div>;
+    const quote={id:"fake-quote",provider:"instabox",label:"Instabox",model:"fake-m2",modelLabel:"Mac M2",minimumCost:10.8,hourPrice:0.45,minimumHours:24,currency:"USD",expiresAt:"2030-01-01T00:00:00Z"};
+    const notice:OwnMacNotice={taskId:"fake-task",title:"Fix the fake share sheet crash",alias:"fake-mac-agents",reason:"asleep or unreachable",offer:quote};
+    if(name==="ownmac-states")return box(["ownmac-available","ownmac-busy","ownmac-paused","ownmac-asleep","ownmac-battery","ownmac-memory","ownmac-logged-out"].map(scene=><div key={scene}>{row(make(scene))}</div>));
+    if(name==="ownmac-refusals")return <div className="space-y-6">{box(row(make("ownmac-refused-personal-login")))}{box(row(make("ownmac-refused-admin")))}<OwnMacRefusalCard notice={{...notice,reason:"can't be used",refusal:"personal"}} onTest={()=>{}} onRent={()=>{}}/><OwnMacRefusalCard notice={{...notice,offer:undefined,reason:"can't be used",refusal:"admin",account:"fake-agents",fallback:{provider:"fake-monthly",label:"Fake monthly",monthly:true,paidUntil:null}}} onTest={()=>{}}/></div>;
+    if(name==="ownmac-mobile")return <div className="mx-auto max-w-[358px]"><OwnMacRefusalCard notice={{...notice,reason:"can't be used",refusal:"personal"}} onTest={()=>{}} onRent={()=>{}}/></div>;
+    if(name==="ownmac-fallback")return <div className="space-y-6"><OwnMacFallbackLine notice={{...notice,offer:undefined,reason:"asleep",fallback:{provider:"fake-monthly",label:"Fake monthly",monthly:true,paidUntil:null}}}/><OwnMacFallbackLine notice={{...notice,title:"Add fake widget previews",offer:undefined,reason:"busy (1 of 1)",fallback:{provider:"instabox",label:"Instabox",monthly:false,paidUntil:"2030-01-01T14:00:00Z"}}}/><OwnMacRentalCard notice={notice} onAnswer={()=>{}} onOwnWords={()=>{}}/></div>;
+    if(name==="ownmac-explicit-rental")return <OwnMacRentalCard notice={{...notice,canWaitForOwnMac:false}} onAnswer={()=>{}}/>;
+    if(name==="ownmac-receipt")return <OwnMacRentalCard notice={{...notice,answer:"rent",replacementId:"fake-replacement"}}/>;
+    if(name==="ownmac-waiting")return <OwnMacRentalCard notice={{...notice,answer:"wait"}}/>;
+    if(name==="ownmac-cleanup-card")return <OwnMacCleanupCard cleanup={cleanup} title={notice.title} onCheck={()=>{}}/>;
+    if(name==="ownmac-cleanup-removed")return <OwnMacCleanupCard cleanup={{...cleanup,failed:false,steps:"",taskIds:[]}} title={notice.title}/>;
+    const provider=make(name),usage={...mac,ownMac:{...provider.ownMac!.facts!,rent:0 as const},held:[]};
+    const taskRunsOn={provider:"ownmac",label:"Your Mac",os:"macos" as const,machine:"VM",note:"$0",detail:"$0 · keep it awake and on power"};
+    if(name==="ownmac-footer")return <div className="space-y-6"><div className="max-w-[298px] space-y-3 rounded-xl border border-[#303030] bg-[#202020] p-3.5"><p className="flex justify-between text-[13px] font-semibold">Cloud sandboxes <span className="text-xs font-normal text-[#A8A8A8]">7 on</span></p><FooterUsage providers={[provider]} plan={plan} mac={usage} boatOn={3} cap={300} day={{hours:1.6,dollars:0.92}}/></div><ThisMonthUsage plan={plan} mac={usage} instabox={linux}/><div className="rounded-lg border border-[#262626] px-3.5 py-3 text-[13px] text-[#A8A8A8]">Fix the fake share sheet crash <span className="ml-6">Your Mac · VM</span><span className="ml-6">$0</span><span className="ml-6">Running · 12 min</span></div></div>;
+    if(name!=="ownmac-available")return box(row(provider));
+    return <div className="space-y-6">{box(row(provider))}<div className="max-w-[720px] divide-y divide-[#222222] rounded-[10px] border border-[#2A2A2A] bg-card text-[13px]"><p className="px-3.5 py-2.5">1 task · fake sample</p><div className="px-3.5 py-[9px]"><p className="mb-0.5 text-[#E2E2E2]">{notice.title}</p><RunsOnLine runsOn={taskRunsOn}/></div></div><span className="inline-flex items-center gap-1.5 rounded-md border border-[#2E2E2E] bg-[#222222] px-2 py-px text-xs">{notice.title} <ChipProvider runsOn={taskRunsOn}/><span className="size-1.5 rounded-full bg-[#6E6E6E]"/></span><div className="flex min-h-9 max-w-[720px] flex-wrap items-center justify-between gap-2 border-y border-[#262626] py-2"><RunsOnLine runsOn={{...taskRunsOn,note:null}}/><span className="text-xs text-[#6E6E6E]">{taskRunsOn.detail}</span></div></div>;
+  }
   if(name==="monthly-zero")return <ThisMonthUsage plan={plan} mac={{...mac,byProvider:undefined,month:{leaseDays:1,costs:{USD:10.8}},rolling30:{leaseDays:0,costs:{}},monthlyComparisons:[{dayProvider:"instabox",currency:"USD",candidate:monthlySuggestion.candidate,breakEven:monthlySuggestion.breakEven}],monthlySuggestions:[]}}/>;
 
   if(name==="monthly-today-alone")return <div className="max-w-[720px]"><p className="mb-6 text-[13px] text-[#A8A8A8]">0 need you · 1 in progress</p><h3 className="text-sm font-medium">Start here</h3><MonthlyMacCard suggestion={monthlySuggestion} project="iOS app"/><TodayStartHereActions>{[]}{[]}</TodayStartHereActions></div>;

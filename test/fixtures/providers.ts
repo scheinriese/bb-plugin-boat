@@ -72,19 +72,19 @@ export const SCALEWAY_NOT_CONNECTED: SandboxProviderDto = {
 };
 
 export const YOUR_MAC_DISABLED: SandboxProviderDto = {
-  id: "your-mac",
+  id: "ownmac",
   label: "Your Mac",
   kind: "own-mac",
   isDefault: false,
-  available: false,
+  available: true,
   enabled: false,
   connection: "not-connected",
   meta: null,
-  summary: "Agents on your own Mac, enrolled in bb. Harbormaster can't run agents on a Mac yet.",
+  summary: "Use a separate standard user or a VM, never your own login. Administrator accounts are refused.",
   pricing: null,
-  systems: [],
+  systems: [{os:"macos",label:"Mac",note:null,ready:false}],
   apiKey: null,
-  status: "Not available yet",
+  status: null,
 };
 
 export const MONTHLY_MAC_DISABLED: SandboxProviderDto = {
@@ -118,7 +118,7 @@ function options(instabox: string | null): RunsOnOptionDto[] {
     { provider: "boat", label: "boat.dev", disabledReason: null },
     { provider: "instabox", label: "Instabox", disabledReason: instabox },
     { provider: "scaleway", label: "Scaleway", disabledReason: "Add its API key first" },
-    { provider: "your-mac", label: "Your Mac", disabledReason: "Not available yet" },
+    { provider: "ownmac", label: "Your Mac", disabledReason: "Not connected" },
   ];
 }
 
@@ -156,7 +156,7 @@ export const RUNS_ON = {
   instaboxLinux: runsOn({ provider: "instabox", label: "Instabox", machine: "Linux · Default" }),
   instaboxMac: runsOn({ provider: "instabox", label: "Instabox", os: "macos", machine: "Mac M2", note: "lease ends Thu 14:00" }),
   instaboxMacShared: runsOn({ provider: "instabox", label: "Instabox", os: "macos", machine: "Mac M2", note: "same lease, ends Thu 14:00", detail: "Shares the lease with Redesign the onboarding screens" }),
-  yourMac: runsOn({ provider: "your-mac", label: "Your Mac", os: "macos", machine: "MacBook Pro", note: "$0" }),
+  yourMac: runsOn({ provider: "ownmac", label: "Your Mac", os: "macos", machine: "MacBook Pro", note: "$0" }),
   /** A sandbox row: what the lease costs under its name. */
   instaboxMacSandbox: runsOn({ provider: "instabox", label: "Instabox", os: "macos", machine: "Mac M2", detail: "24 h lease · $10.80" }),
 } satisfies Record<string, RunsOnDto>;

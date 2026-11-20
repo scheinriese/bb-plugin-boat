@@ -1,3 +1,4 @@
+import {withFakeMacRentalConsent} from "./mac-consent.ts";
 import { createCredentialSource, type CredentialSource } from "../src/credentials.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -156,6 +157,7 @@ async function routing(preferred:string, options:{disabled?:string; fail?:string
   });
   const registry=createProviderRegistry([createBoatProvider(boat as never),...providers],{isEnabled:p=>p.id!==options.disabled});
   const service=new BoatService(registry,store,{preflight:options.preflight,projects:()=>[{id:"mac",name:"Mac app",repos:[],machineType:null,sandboxProvider:preferred,sandboxSystem:"macos"}],settings:async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:""}),chat,lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+  withFakeMacRentalConsent(service);
   const initial=await service.startTask({title:"Mac",role:"custom",brief:"Check tools",provider:"codex",runner:"boat"});
   const task=store.update(initial.id,{sandboxProvider:preferred,sandboxSystem:"macos",runner:"chat",sandboxId:null})!;
   if(options.held)store.macLeases.record({id:`${options.held}:held`,provider:options.held,machineId:`${options.held}_held`,size:"M1-M",startedAt:new Date().toISOString(),paidUntil:new Date(Date.now()+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"EUR",cpus:8,memoryMiB:16384});
@@ -476,7 +478,7 @@ test("each Mac fallback provider runs its own agent preflight before models or a
   f.providers[0]!.macModels=async()=>{assert.fail("models must not be queried before preflight succeeds");};
   const task=await f.service.startTask({title:"Mac",brief:"Check tools",role:"custom",provider:"codex",runner:"chat",project:macTaskProject()});
   assert.equal(task.sandboxProvider,"scaleway");assert.deepEqual(f.creates,["scaleway"]);
-  assert.deepEqual(checked,["instabox","scaleway","scaleway"]);
+  assert.deepEqual(checked,["instabox","scaleway","scaleway","scaleway"]); // Fresh preflight after fake cost consent too.
   assert.ok(f.store.events(task.id).some(e=>e.text.includes("Instabox isn't ready")));
 });
 

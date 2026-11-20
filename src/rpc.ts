@@ -342,9 +342,11 @@ export function registerRpc(runtime: Runtime): void {
       service.sandboxProvider(task),
       task.sandboxId !== null && OPEN_STATUSES.includes(task.status) ? sizeOf(task.sandboxId, task) : null,
       service.sandboxProviders.default.id,
+      task.sandboxId,
     );
 
   function providerFailure(task: Task): TaskDto["providerFailure"] {
+    if(service.store.latestEvent(task.id,"ownmac-rental-offer"))return undefined;
     if (task.status !== "failed" || task.turns!==0 || (task.sandboxProvider ?? "boat")==="boat") return undefined;
     const code = service.store.history({taskId:task.id,limit:30}).events.find(e=>e.kind==="stopped" && e.cause)?.cause ?? "provider_failed";
     const snapshot=service.store.macLeases.snapshot();
@@ -487,7 +489,7 @@ export function registerRpc(runtime: Runtime): void {
               sandbox,
               own.map((task) => task.id),
               sandboxUses(sandbox.id, tasks, chats, orchestrators),
-              macView(sandbox.id) ?? runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id),
+              macView(sandbox.id) ?? runsOnOf(service.sandboxProvider(sandbox.id), size, service.sandboxProviders.default.id, sandbox.id),
             );
             if (result.runsOn?.os === "macos") {
               const now = Date.now();
