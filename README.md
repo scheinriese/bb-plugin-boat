@@ -322,6 +322,10 @@ in my spare time, so replies can take a while.
   then "Report a vulnerability"; see [SECURITY.md](SECURITY.md)), not in an
   issue or on Discord.
 
+CI scans Git history with gitleaks default rules (including GitHub tokens) plus
+Instabox keys, Scaleway access and contextual UUID secret keys, private preview
+tokens, presigned credentials, and personal Connect hosts.
+
 Before you open a pull request, run `npm run typecheck` and `npm test`. A
 plugin is full-trust code, so I read every change before merging, and I may
 not merge changes I can't maintain.
