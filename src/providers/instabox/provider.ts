@@ -7,7 +7,7 @@ import type { MacLease, MacLeaseLedger } from "../../mac-leases.ts";
 // through boat's: lifecycle, exec, ports, snapshots, usage and its headless
 // agent runner (`instabox agent`, which only the CLI has). The REST API
 // (./api.ts) is for what the CLI can't do: bb's setup over exec with
-// `noHistory` and stdin, activity leases, and a machine's running time.
+// `noHistory` and stdin, activity leases, process provenance, and running time.
 //
 // Instabox in the plugin's terms:
 // - Machines (m_…) are the sandboxes; a running one reads "idle", a paused
@@ -587,8 +587,13 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       return { pid: num(record.pid) };
     },
     async processes(sandboxId, signal) {
-      const result = await cli.run(["ps", sandboxId, "--json"], { signal, timeoutMs: 30_000 });
-      return toProcessSample(result.value);
+      const now = options.now ?? Date.now;
+      const requestedAt = now();
+      const timeout = AbortSignal.timeout(30_000);
+      const readSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+      const result = await rest.processes(sandboxId, readSignal);
+      readSignal.throwIfAborted();
+      return toProcessSample(result, { machineId: sandboxId, requestedAt, receivedAt: now() });
     },
 
     async host(sandboxId, port, title, signal): Promise<HostedPort> {

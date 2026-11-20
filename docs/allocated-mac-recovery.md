@@ -51,6 +51,34 @@ recovery action uses the basic operation. It never opts into legacy adoption.
 There is no separate agent tool;
 agents can use the CLI only when the user authorized this same-machine start.
 
+## Fresh process evidence
+
+An idle healthy machine description does not establish that its processes are
+idle. Recovery still requires a fresh complete process read and refuses busy
+work. A refusal to confirm idle work is uncertainty, not evidence of busy work
+or an explanation of the historical lease admission failure.
+
+The [official ProcessList contract](https://api.instabox.sh/v1/openapi.json)
+distinguishes a live request from a stored stop/suspend sample and marks
+truncated lists. The [CLI reference](https://instabox.sh/docs/cli.md#ps) describes
+the process rows. A localhost-only check of published CLI 0.8.326 confirmed that
+`ps --json` emits only those rows even for a stored, truncated sample, exiting
+successfully. Those rows alone cannot authorize recovery.
+
+The adapter now uses `GET /v1/machines/{id}/processes` to retain the envelope.
+It confirms `live` only for the requested machine in `running` state, with
+`trigger: request`, `live: true`, `truncated: false`, a valid provider capture
+timestamp and complete valid process rows. Reads have a 30-second deadline;
+capture time must fit the request window with at most five seconds of clock
+skew and be at most 30 seconds old on receipt. Larger clock differences refuse
+recovery. Missing, malformed, cached, stale, truncated or failed observations
+cannot establish idle work. No local timestamp substitutes for provider evidence.
+
+Fake public-RPC regressions use the real Instabox adapter, a child fake CLI and
+localhost REST server, including the existing legacy adoption path. They verify
+same-task/same-machine recovery, repeated reads, one retained minimum and no
+allocation or release-plan changes. This does not validate an owner's live Mac.
+
 ## Explicit adoption of a legacy deletion after failed admission
 
 The basic command still refuses an ambiguous legacy end. A reviewed, explicit

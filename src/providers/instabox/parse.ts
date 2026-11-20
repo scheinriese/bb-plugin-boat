@@ -142,12 +142,38 @@ export function toPricing(raw: JsonRecord): string | null {
   return parts.length === 0 ? null : parts.join(" · ");
 }
 
-/** `ps --json`: an array of {pid, ppid, user, cpuPercent, memPercent, elapsedSeconds, command}. */
-export function toProcessSample(value: unknown): ProcessSample {
-  const rows = Array.isArray(value) ? value : (rec(value)?.processes as unknown[] | undefined) ?? [];
+/** GET /v1/machines/{id}/processes, including its freshness/completeness envelope.
+ * Bare CLI rows remain unknown: ps --json omits this evidence even for a
+ * stored or truncated list. Never promote them based on a successful exit.
+ */
+export function toProcessSample(value: unknown, read?: { machineId: string; requestedAt: number; receivedAt: number }): ProcessSample {
+  const raw = rec(value);
+  const rows = Array.isArray(value) ? value : Array.isArray(raw?.processes) ? raw.processes : [];
+  const capturedAt = str(raw?.capturedAt);
+  const captured = capturedAt && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(capturedAt) ? Date.parse(capturedAt) : NaN;
+  const nonnegative = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  const complete = Array.isArray(raw?.processes) && rows.every(value => {
+    const row = rec(value);
+    return row !== null && Number.isSafeInteger(row.pid) && (row.pid as number) > 0
+      && Number.isSafeInteger(row.ppid) && (row.ppid as number) >= 0
+      && typeof row.command === "string" && row.command.trim() !== ""
+      && typeof row.user === "string" && row.user.trim() !== ""
+      && nonnegative(row.cpuPercent) && nonnegative(row.memPercent)
+      && Number.isSafeInteger(row.elapsedSeconds) && (row.elapsedSeconds as number) >= 0;
+  });
+  // Bound both request duration and capture age; allow at most five seconds
+  // of server clock skew. The provider timestamp is evidence, not local now().
+  const fresh = read !== undefined && Number.isFinite(captured)
+    && read.receivedAt >= read.requestedAt && read.receivedAt - read.requestedAt <= 30_000
+    && captured >= read.requestedAt - 5_000 && captured <= read.receivedAt + 5_000
+    && read.receivedAt - captured <= 30_000;
+  const live = raw?.live === false ? false
+    : raw?.live === true && raw.machineId === read?.machineId && raw.state === "running"
+      && raw.trigger === "request" && raw.truncated === false && raw.error === undefined
+      && complete && fresh ? true : null;
   return {
-    live: null,
-    sampledAt: null,
+    live,
+    sampledAt: Number.isFinite(captured) ? capturedAt : null,
     processes: rows
       .map(rec)
       .filter((row): row is JsonRecord => row !== null)
