@@ -26,3 +26,7 @@ coverage/
 # Private local fidelity tooling and disposable demo instances
 fidelity-work/
 build-shots/
+
+# Temporary component rendering bundles
+.provider-preview-*/
+.provider-polish-*/

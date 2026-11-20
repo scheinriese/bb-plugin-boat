@@ -164,6 +164,7 @@ export type SetupStatusDto = z.infer<typeof setupStatusSchema>;
  * in its issues.
  */
 export interface RpcErrorInfo {
+  taskId?: string;
   code: string | null;
   message: string;
   hint: string | null;
@@ -180,7 +181,8 @@ export function rpcErrorInfo(error: unknown): RpcErrorInfo {
     );
     return typeof found?.message === "string" ? found.message : null;
   };
-  return { code: part("code"), message: part("message") ?? message, hint: part("hint") };
+  const taskId=part("taskId");
+  return { ...(taskId ? {taskId} : {}), code: part("code"), message: part("message") ?? message, hint: part("hint") };
 }
 
 export const projectRepoSchema = z.object({ repo: z.string(), baseBranch: z.string() });
@@ -341,6 +343,7 @@ export const taskSchema = z.object({
   parentTaskId: z.string().nullable(),
   prUrl: z.string().nullable(),
   error: z.string().nullable(),
+  providerFailure: z.object({code:z.string(),provider:z.string(),mac:z.boolean(),released:z.boolean(),canRetry:z.boolean()}).optional(),
   turns: z.number(),
   ownsSandbox: z.boolean(),
   createdAt: z.string(),
@@ -795,6 +798,7 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.union([launchResult, z.object({ queued: queuedStartSchema, pending: z.literal(true) })]),
   },
+  retryProviderStart: { input: z.object({id:z.string()}), output: z.union([launchResult,z.object({queued:queuedStartSchema,pending:z.literal(true)})]) },
   review: {
     input: z.object({
       id: z.string(),

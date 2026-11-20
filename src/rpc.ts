@@ -1,3 +1,4 @@
+import { providerFailureCard } from "../provider-failure.ts";
 import { macRunsOnBatch } from "./mac-lease-view.ts";
 import { projectSnapshotHandlers } from "./project-snapshot.ts";
 import { readProjectCatalog, validateLocalProjectLink } from "./project-catalog.ts";
@@ -77,7 +78,7 @@ export function shipApprovalDto(task: Pick<Task, "turns" | "shipApproval">): Tas
 
 export function toTaskDto(
   task: Task,
-  extras: { ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean; publicStatus?: TaskPublicStatus; runsOn?: RunsOnDto } = {},
+  extras: { providerFailure?: TaskDto["providerFailure"]; ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean; publicStatus?: TaskPublicStatus; runsOn?: RunsOnDto } = {},
 ): TaskDto {
   const report = task.result ? parseReport(task.result) : { status: null, verdict: null };
   const unshipped = holdsUnshippedWork(task);
@@ -118,6 +119,7 @@ export function toTaskDto(
     parentTaskId: task.parentTaskId,
     prUrl: task.prUrl,
     error: task.error,
+    ...(extras.providerFailure ? {providerFailure:extras.providerFailure} : {}),
     turns: task.turns,
     ownsSandbox: task.ownsSandbox,
     createdAt: task.createdAt,
@@ -192,13 +194,14 @@ function message(error: unknown): string {
  * show it as is); the plugin's code, the message and the hint ride in its
  * issues as paths ["code"], ["message"], ["hint"] (contract.ts rpcErrorInfo).
  */
-export function refusal(code: "conflict" | "forbidden" | "invalid" | "not_found", error: ExplainedError): experimental_PluginRpcRefusal {
+export function refusal(code: "conflict" | "forbidden" | "invalid" | "not_found", error: ExplainedError & {taskId?:string}): experimental_PluginRpcRefusal {
   return new experimental_PluginRpcRefusal({
     code,
     message: error.hint ? `${error.message} ${error.hint}` : error.message,
     issues: [
       { message: error.code, path: ["code"] },
       { message: error.message, path: ["message"] },
+      ...(error.taskId ? [{message:error.taskId,path:["taskId"]}] : []),
       ...(error.hint ? [{ message: error.hint, path: ["hint"] }] : []),
     ],
   });
@@ -209,10 +212,12 @@ export async function refuse<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
+    const taskId=typeof (error as {taskId?:unknown} | null)?.taskId==="string" ? (error as {taskId:string}).taskId : undefined;
     if (error instanceof TaskError) {
-      throw refusal(error.code === "task_not_found" ? "not_found" : "conflict", { code: error.code, message: error.message, hint: error.hint ?? null });
+      throw refusal(error.code === "task_not_found" ? "not_found" : "conflict", { code: error.code, message: error.message, hint: error.hint ?? null, taskId });
     }
-    if (error instanceof ProviderError) throw refusal(error.status === 404 ? "not_found" : "conflict", error.explain());
+    if (error instanceof ProviderError) throw refusal(error.status === 404 ? "not_found" : "conflict", {...error.explain(),taskId});
+    if (taskId) throw refusal("conflict", {code:"provider_failed",message:message(error),hint:null,taskId});
     throw error;
   }
 }
@@ -339,9 +344,20 @@ export function registerRpc(runtime: Runtime): void {
       service.sandboxProviders.default.id,
     );
 
+  function providerFailure(task: Task): TaskDto["providerFailure"] {
+    if (task.status !== "failed" || task.turns!==0 || (task.sandboxProvider ?? "boat")==="boat") return undefined;
+    const code = service.store.history({taskId:task.id,limit:30}).events.find(e=>e.kind==="stopped" && e.cause)?.cause ?? "provider_failed";
+    const snapshot=service.store.macLeases.snapshot();
+    const leaseId=snapshot.tasks.find(attached=>attached.taskId===task.id)?.leaseId;
+    const lease = leaseId ? snapshot.leases.find(l=>l.id===leaseId) : snapshot.leases.slice().reverse().find(l=>l.machineId===task.sandboxId);
+    const failure = {code,provider:task.sandboxProvider!,mac:task.sandboxSystem==="macos",released:!!lease?.endedAt,canRetry:task.turns===0 && !task.sandboxId && !["creation_unknown","creation_allocated"].includes(code)};
+    return providerFailureCard(failure,task.error ?? "") ? failure : undefined;
+  }
+  const retrying = new Set<string>();
   const dto = (task: Task, sources: Sourcing, all?: readonly Task[], macView = macRunsOnBatch(service.store.macLeases.snapshot(), service.store.sandboxTasks(task.sandboxId ?? ""))) =>
     toTaskDto(task, {
       runsOn: runsOn(task, macView),
+      providerFailure: providerFailure(task),
       publicStatus: service.publicStatus(task, { ready: isReady(task, all ?? service.store.list({ parentTaskId: task.id, limit: 100 }).concat(task), latestReview, sources.isOrchestrator) }),
       untrustedRepo: untrusted(task),
       movingToChat: service.isMovingToChat(task.id),
@@ -684,6 +700,28 @@ export function registerRpc(runtime: Runtime): void {
         const { task, pending } = result;
         return { task: await single(task), pending };
       }),
+
+    retryProviderStart: ({id}) => refuse(async () => {
+      const task=service.mustGet(id);
+      if (!providerFailure(task)?.canRetry || retrying.has(task.id)) throw new TaskError("Check the provider machine list before retrying this start.","task_busy");
+      retrying.add(task.id);
+      try {
+        const project=task.boatProject ? await runtime.resolveProject({kind:"boat",id:task.boatProject}) : null;
+        const result=await runtime.launchTask({title:task.title,brief:task.brief,role:task.role,parentTaskId:task.parentTaskId,repo:task.repo,branch:task.branch,baseBranch:task.baseBranch,provider:task.provider,model:task.model,tier:task.tier as import("./tiers.ts").Tier | null,reasoningEffort:task.reasoningEffort,userApproved:true,runner:task.runner,project,orchestratorThreadId:task.orchestratorThreadId,sandboxSystem:task.sandboxSystem,environment:task.environment,snapshot:task.snapshot,machineType:task.startOptions?.machineType ?? service.sizes.knownSize(task)?.type ?? null,confirmUntrustedChat:task.startOptions?.confirmUntrustedChat ?? null},runtime.launchWaitMs);
+        service.store.transition(task.id,["failed"],{status:"cancelled"});
+        runtime.changed();runtime.wake();
+        if(result.kind==="queued")return {queued:result.request,pending:true as const};
+        return {task:await single(result.task),pending:result.pending};
+      } catch (error) {
+        const replacementId=(error as {taskId?:unknown} | null)?.taskId;
+        const replacement=typeof replacementId==="string" ? service.store.get(replacementId) : null;
+        if(replacement && replacement.id!==task.id && replacement.status==="failed") {
+          service.store.transition(task.id,["failed"],{status:"cancelled"});
+          runtime.changed();runtime.wake();
+        }
+        throw error;
+      } finally {retrying.delete(task.id);}
+    }),
 
     continueAsChatStatus: ({ id }) => refuse(() => service.continueAsChatStatus(id)),
 

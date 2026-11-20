@@ -1,3 +1,4 @@
+import { hours as providerHours } from "./provider-format";
 // The plugin's own settings sections (Settings → Plugins → Boat Cloud
 // Agents, below bb's list): Setup, Usage limits, Models, Orchestrators
 // (optional) and Advanced. Projects and Back up and restore have their own
@@ -611,7 +612,7 @@ export function MobileBoatSettings() {
   const rows = query.data?.settings ?? [];
   const master = rows.find((row) => row.key === "pushNotifications")?.value === true;
   return <div className="space-y-3.5 text-sm">
-    <div className="flex items-center gap-2 rounded-[12px] border border-border bg-[var(--boat-mobile-card)] px-3.5 py-3 text-[14px] leading-[19px]"><span aria-hidden className={cn("size-[7px] shrink-0 rounded-full",setup?.ok ? "bg-[#5BD08A]" : "bg-[#F0B135]")} /><span>{setup === undefined ? "Checking cloud agents…" : setup.ok ? ["All set",setup.plan?.maxActiveSandboxes ? `${setup.plan.activeSandboxes} of ${setup.plan.maxActiveSandboxes} sandboxes on` : null,usage?.plan?.hoursRemaining !== null && usage?.plan?.hoursRemaining !== undefined ? `${usage.plan.hoursRemaining.toLocaleString()} h left` : null].filter(Boolean).join(" · ") : "Cloud agents need setup"}</span></div>
+    <div className="flex items-center gap-2 rounded-[12px] border border-border bg-[var(--boat-mobile-card)] px-3.5 py-3 text-[14px] leading-[19px]"><span aria-hidden className={cn("size-[7px] shrink-0 rounded-full",setup?.ok ? "bg-[#5BD08A]" : "bg-[#F0B135]")} /><span>{setup === undefined ? "Checking cloud agents…" : setup.ok ? ["All set",setup.plan?.maxActiveSandboxes ? `${setup.plan.activeSandboxes} of ${setup.plan.maxActiveSandboxes} sandboxes on` : null,usage?.plan?.hoursRemaining !== null && usage?.plan?.hoursRemaining !== undefined ? `${providerHours(usage.plan.hoursRemaining)} h left` : null].filter(Boolean).join(" · ") : "Cloud agents need setup"}</span></div>
     {/* The homepage's usage link opens this page on a phone or a narrow window too. */}
     <UsageLimitsSection compact />
     <div className="divide-y divide-border overflow-hidden rounded-[12px] border border-border bg-[var(--boat-mobile-card)]">

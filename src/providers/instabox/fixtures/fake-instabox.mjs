@@ -126,7 +126,7 @@ switch (command) {
   }
   case "usage": {
     const count = Object.values(state.machines).filter((entry) => entry.state !== "deleted").length;
-    print({ machines: count, snapshots: state.snapshots.length, limits: { maxMachines: state.maxMachines, maxSnapshots: 0, unlimited: state.maxMachines === 0 ? ["maxMachines", "maxSnapshots"] : ["maxSnapshots"], ...(state.machineSpecs ? { machineSpecs: state.machineSpecs } : {}) }, org: { id: "org_1", name: "acme", tier: state.tier }, cost: { costUSD: 3.21, creditRemainingUSD: 16.79 } });
+    print({ machines: count, snapshots: state.snapshots.length, limits: { maxMachines: state.maxMachines, maxSnapshots: 0, unlimited: state.maxMachines === 0 ? ["maxMachines", "maxSnapshots"] : ["maxSnapshots"], ...(state.machineSpecs ? { machineSpecs: state.machineSpecs } : {}) }, org: { id: "org_1", name: "acme", tier: state.tier }, cost: state.cost ?? { costUSD: 3.21, creditRemainingUSD: 16.79 } });
     break;
   }
   case "ls":

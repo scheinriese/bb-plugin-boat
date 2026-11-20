@@ -58,13 +58,15 @@ export class MacLeaseLedger {
     this.db().prepare(`UPDATE mac_lease_tasks SET work_outcome=?,work_turns=? WHERE lease_id=? AND task_id=?`).run(outcome,turns,leaseId,taskId);
   }
   end(id: string, reason: NonNullable<MacLease["endReason"]>, now = Date.now()): void {
-    this.db().prepare(`UPDATE mac_leases SET ended_at=?,end_reason=? WHERE id=? AND ended_at IS NULL`).run(iso(now), reason, id);
+    this.db().prepare(`UPDATE mac_leases SET ended_at=?,end_reason=?,notice_text=NULL WHERE id=? AND ended_at IS NULL`).run(iso(now), reason, id);
   }
+  clearNotice(id: string): boolean { return this.db().prepare(`UPDATE mac_leases SET notice_text=NULL WHERE id=? AND notice_text IS NOT NULL`).run(id).changes>0; }
   keep(id: string): void { this.db().prepare(`UPDATE mac_leases SET kept=1 WHERE id=? AND ended_at IS NULL`).run(id); }
   schedule(id: string, at: string | null): void { this.db().prepare(`UPDATE mac_leases SET release_at=? WHERE id=? AND ended_at IS NULL`).run(at,id); }
   /** A minimum-end heads-up, then at most one reminder per 24 h. Persist
    * before delivery so a restart cannot duplicate the same reminder. */
   warn(id: string, now = Date.now(), repeat = false, pageText: string | null = null): boolean {
+    if (pageText !== null) this.db().prepare(`UPDATE mac_leases SET notice_text=? WHERE id=? AND ended_at IS NULL`).run(pageText,id);
     return this.db().prepare(`UPDATE mac_leases SET notice_at=?,notice_text=COALESCE(?,notice_text) WHERE id=? AND ended_at IS NULL AND (notice_at IS NULL OR (?=1 AND notice_at<=?))`).run(iso(now),pageText,id,repeat ? 1 : 0,iso(now-LEASE_DAY_MS)).changes > 0;
   }
   private billableEnd(lease: MacLease, now: number): number {
@@ -85,11 +87,12 @@ export class MacLeaseLedger {
   /** Billable time includes the entire committed minimum, even after an early
    * deletion. Allocate that minimum uniformly across its actual interval;
    * subsequent time uses the provider's hourPrice, with no rounding to days. */
-  between(from: number, until: number, now = Date.now(), machineId?: string) {
+  between(from: number, until: number, now = Date.now(), machineId?: string, provider?: string) {
     let leaseDays = 0; const costs: Record<string, number> = {};
     const overlap = (start: number, end: number) => Math.max(0, Math.min(end,until)-Math.max(start,from));
     for (const lease of this.list()) {
       if (machineId && lease.machineId !== machineId) continue;
+      if (provider && lease.provider !== provider) continue;
       const start = Date.parse(lease.startedAt), minimumEnd = Date.parse(lease.paidUntil);
       const end = this.billableEnd(lease,now);
       const minimumMs = overlap(start,minimumEnd), extraMs = overlap(minimumEnd,end);

@@ -1,3 +1,5 @@
+import { TaskProviderFailure } from "./provider-failure";
+import { providerFailureCard } from "../provider-failure";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   UrlLink,
@@ -167,6 +169,7 @@ function TaskCard({
       </Notice>
     );
   const task = data.task;
+  if (task.providerFailure && providerFailureCard(task.providerFailure,task.error ?? "") && kind !== "chip") return <TaskProviderFailure task={task}/>;
   if (kind === "chip") return <TaskChip task={task} />;
   if (kind === "review") return <ReviewCard task={task} round={Number(props.attributes.round) || undefined} />;
   if (kind === "ready") return <ReadyCard task={task} />;
@@ -313,7 +316,7 @@ export function ProblemCard({ task,stage }: { task: TaskDetailDto;stage?:string 
     }
   };
   return <><Frame className={cn('space-y-[10px] px-[14px] py-[12px]',broken&&'border-[#3D3420] bg-[#181818]')}>
-    <header className="flex flex-wrap items-center gap-2"><Icon name={oom?'Cpu':'Pause'} className="size-3.5 text-[#FC8C45]"/><span className="font-medium dark:text-[#EDEDED]">{oom?'Out of memory':waiting?'Waiting for a reset':stopped?'Sandbox stopped':state.label}</span>{task.memory?.size&&<span className="text-[12px] text-muted-foreground dark:text-[#6E6E6E]">{task.memory.size.label} sandbox{task.memory.peak?' · '+task.memory.peak.totalGb+' GB':''}{stage?' · '+stage:''}{stop?' · '+new Date(stop.at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}).toLowerCase():''}</span>}</header>
+    <header className="flex flex-wrap items-center gap-2"><Icon name={oom?'Cpu':'Pause'} className="size-3.5 text-[#FC8C45]"/><span className="font-medium dark:text-[#EDEDED]">{oom?'Out of memory':waiting?'Waiting for a reset':stopped?'Sandbox stopped':state.label}</span>{task.memory?.size&&<span className="text-[12px] text-muted-foreground dark:text-[#6E6E6E]">{task.memory.size.label} sandbox{task.memory.peak?' · '+task.memory.peak.totalGb+' GB':''}{stage?' · '+stage:''}{stop?' · '+new Date(stop.at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hourCycle:'h23'}).toLowerCase():''}</span>}</header>
     <div className="space-y-[10px] pl-[22px]"><p className="text-[13px] leading-5 text-[#C1C1C1]">{stop?.detail??(oom?'The sandbox ran out of memory. Continue on a larger sandbox to pick up where it stopped.':state.reason??task.error??'Your next message resumes the sandbox.')}</p>
     {task.memory?.peak&&<div className="flex flex-wrap items-center gap-[10px]"><div className="h-1.5 w-[260px] max-w-full rounded-full bg-secondary"><div className="h-full rounded-full bg-[#E06C6C]" style={{width:Math.min(100,task.memory.peak.percent)+'%'}}/></div><span className="text-[12px] leading-4 text-muted-foreground">Peak {task.memory.peak.usedGb.toFixed(1)} of {task.memory.peak.totalGb} GB{task.memory.next?' · '+task.memory.next.label+(nextMemory?' has '+nextMemory+' GB':''):''}</span></div>}
     <div className="flex flex-wrap items-center gap-2 pt-[2px]">{oom&&task.memory?.canResize?<Button size="sm" className="h-[26px] px-3 text-[12px] leading-4" onClick={()=>setResizing(true)}>Continue on a larger sandbox</Button>:stopped&&task.sandboxId?<Button size="sm" variant="outline" disabled={resume.isPending} onClick={()=>void run()}>Resume</Button>:null}<Button size="sm" variant="outline" className="h-7 px-3 text-[12px] font-normal leading-4" onClick={()=>{if(!task.threadId||!openSection(task.threadId,"Transcript"))openTask(task.id)}}>Open transcript</Button>{oom&&nextCost&&<span className="text-[12px] text-muted-foreground">{nextCost}</span>}</div></div>

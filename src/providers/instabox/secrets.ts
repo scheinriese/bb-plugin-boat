@@ -28,6 +28,7 @@ export function createInstaboxSecrets(cli: InstaboxCli, selection: () => Promise
   }
   return {
     selected,
+    invalidate: () => { cached = null; },
     async check(signal?: AbortSignal, onWarning?: (message: string) => void) {
       const choice = await selected();
       if (choice !== "all" && !choice.split(",").includes("GH_TOKEN")) {

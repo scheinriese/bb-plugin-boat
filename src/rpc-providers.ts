@@ -1,3 +1,4 @@
+import { usageWindows } from "./usage.ts";
 // RPC handlers for sandbox providers (contract-providers.ts): Settings ›
 // Sandbox providers and Runs on, and the runsOn words on tasks and
 // sandboxes. boat.dev's row reads the setup's boat facts (CLI, sign-in,
@@ -49,7 +50,7 @@ export const PROVIDER_CATALOG: readonly CatalogEntry[] = [
     label: "Instabox",
     kind: "cloud",
     // No amounts here: prices come only from the provider itself (pricing).
-    summary: "Linux microVMs billed per second.",
+    summary: "Linux microVMs billed per second. Macs: 24 h minimum, then per second.",
     systems: [
       { os: "linux", label: "Linux", note: null },
       { os: "macos", label: "Mac", note: null },
@@ -57,7 +58,7 @@ export const PROVIDER_CATALOG: readonly CatalogEntry[] = [
     ],
     apiKey: true,
   },
-  { id: "scaleway", label: "Scaleway", kind: "cloud", summary: "Paris Apple silicon · 24 h minimum, then hourly. New task rentals are blocked until credentials can be provisioned.", systems: [{ os: "macos", label: "Mac", note: null }], apiKey: true },
+  { id: "scaleway", label: "Scaleway", kind: "cloud", summary: "Whole Mac minis. 24 h minimum, then hourly. Prices in EUR.", systems: [{ os: "macos", label: "Mac", note: null }], apiKey: true },
   { id: "your-mac", label: "Your Mac", kind: "own-mac", summary: `Agents on your own Mac, enrolled in bb. ${NO_MACS}`, systems: [], apiKey: false, unsupported: NO_MACS },
   {
     id: "monthly-mac",
@@ -110,7 +111,7 @@ function implementedSystems(provider: SandboxProvider | null): readonly string[]
 }
 
 function hoursText(hours: number): string {
-  return hours.toLocaleString("en-US", { maximumFractionDigits: hours < 10 ? 1 : 0 });
+  return hours.toLocaleString("en-US", { maximumFractionDigits: hours < 100 ? 1 : 0 });
 }
 
 function boatRow(provider: SandboxProvider, reading: BoatReading, isDefault: boolean): SandboxProviderDto {
@@ -118,7 +119,7 @@ function boatRow(provider: SandboxProvider, reading: BoatReading, isDefault: boo
   const plan = reading?.plan ?? null;
   const why = reading === null ? "not checked yet" : !reading.cli.found ? "the boat CLI isn't installed" : reading.account.signedIn === false ? "not signed in" : "couldn't check";
   const summary = connected
-    ? ["Linux", plan?.name ? `${plan.name} plan` : null, plan?.vmHoursRemaining != null ? `${hoursText(plan.vmHoursRemaining)} h left this month` : null]
+    ? ["Linux", plan?.name ? `${plan.name} plan` : null, plan?.vmHoursRemaining != null ? `${hoursText(plan.vmHoursRemaining)} h left` : null]
     : ["Linux", why];
   return {
     id: provider.id,
@@ -249,13 +250,13 @@ export function providersView(input: {
 /** How long another provider's connection check counts. */
 const CONNECTION_TTL_MS = 60_000;
 
-export function providerHandlers(runtime: Runtime) {
+export function providerHandlers(runtime: Runtime, now = Date.now) {
   const { service, bb } = runtime;
   let checked: { at: number; connections: Connections; prices: Prices; macReady: ReadonlySet<string>; statuses: ReadonlyMap<string,string> } | null = null;
 
   /** Ask each enabled provider other than boat.dev for its plan (an answer means connected) and its prices. */
   async function others(): Promise<{ connections: Connections; prices: Prices; macReady: ReadonlySet<string>; statuses: ReadonlyMap<string,string> }> {
-    if (checked !== null && Date.now() - checked.at < CONNECTION_TTL_MS) return checked;
+    if (checked !== null && now() - checked.at < CONNECTION_TTL_MS) return checked;
     const providers = service.sandboxProviders.enabled.filter((provider) => provider.id !== "boat");
     const results = await Promise.all(
       providers.map(async (provider) => {
@@ -276,7 +277,7 @@ export function providerHandlers(runtime: Runtime) {
       }),
     );
     checked = {
-      at: Date.now(),
+      at: now(),
       macReady: new Set(results.filter(entry=>entry.macReady).map(entry=>entry.id)),
       connections: new Map(results.map((entry) => [entry.id, entry.connection])),
       prices: new Map(results.flatMap((entry) => (entry.pricing ? [[entry.id, entry.pricing] as const] : []))),
@@ -285,22 +286,69 @@ export function providerHandlers(runtime: Runtime) {
     return checked;
   }
 
-  async function view(): Promise<SandboxProvidersResultDto> {
+  async function readPresentation(force = false): Promise<SandboxProvidersResultDto> {
     const reading = runtime.setup ? (runtime.setup.peek()?.facts ?? (await runtime.setup.reading().catch(() => null))) : null;
+    if (force) checked = null;
     const { connections, prices, macReady, statuses } = await others();
     const keys = new Map(service.sandboxProviders.all.flatMap((provider) => {
       const stored = runtime.providers?.keyPresent(provider.id) ?? null;
       return stored === null ? [] : [[provider.id, stored] as const];
     }));
-    return providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, keys, macReady, statuses, projects: runtime.projects.list() });
+    const result = providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, keys, macReady, statuses, projects: runtime.projects.list() });
+    const boatPlan=reading ? await Promise.resolve().then(()=>service.sandboxProviders.default.usagePlan(AbortSignal.timeout(10_000))).catch(()=>null) : null;
+    const boatRow=result.providers.find(row=>row.id==="boat");
+    if(boatRow && boatPlan)boatRow.summary=["Linux",boatPlan.name ? `${boatPlan.name} plan` : null,boatPlan.hoursRemaining===null ? null : `${hoursText(boatPlan.hoursRemaining)} h left`,boatPlan.resetsAt ? `resets ${new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",timeZone:"UTC"}).format(new Date(boatPlan.resetsAt))}` : null].filter(Boolean).join(" · ");
+    await Promise.all(result.providers.map(async row => {
+      const provider = service.sandboxProviders.all.find(p => p.id === row.id);
+      if (!provider?.presentation) return;
+      const metadata = await provider.presentation({force, signal: AbortSignal.timeout(15_000)}).catch(() => null);
+      if (metadata) Object.assign(row, metadata);
+      if (row.id === "scaleway" && row.connection === "connected") row.status = [row.status,"Held Macs only"].filter(Boolean).join(" · ");
+      if (row.steps) {
+        const complete = row.steps.filter(s => s.possible).every(s => s.done);
+        row.status = complete ? row.id === "scaleway" ? (row.status ?? "Held Macs only") : "Connected" : `Setting up · ${row.steps.filter(s => s.possible && s.done).length} of ${row.steps.filter(s => s.possible).length}`;
+      }
+    }));
+    return result;
+  }
+
+  // One shared promise includes plan, usage, lists and Secret metadata. Project
+  // choices and waiting counts are cheap local reads and stay current.
+  let presentation: { at: number; value: Promise<SandboxProvidersResultDto> } | null = null;
+  async function view(force = false): Promise<SandboxProvidersResultDto> {
+    if (force || !presentation || now() - presentation.at >= CONNECTION_TTL_MS) {
+      const value = readPresentation(force);
+      presentation = { at: now(), value };
+      value.catch(() => { if (presentation?.value === value) presentation = null; });
+    }
+    const result = await presentation.value;
+    const waiting = result.providers.some(row => row.steps) ? service.store.list({ statuses: ["failed"], limit: 500 }) : [];
+    return {
+      ...result,
+      projects: runtime.projects.list().map(project => projectRow(project, service.sandboxProviders)),
+      providers: result.providers.map(row => ({
+        ...row,
+        ...(row.steps ? { waitingTasks: waiting.filter(task => task.sandboxProvider === row.id && /GitHub|API key|setup/i.test(task.error ?? "")).length } : {}),
+      })),
+    };
   }
 
   return {
     sandboxProviders: () => view(),
-    macUsage: () => {
+    checkSandboxProviders: async () => {
+      const result = await view(true);
+      bb.rpc.experimental_invalidate([PROVIDERS_TAG]);
+      return result;
+    },
+    macUsage: (input?: {timezoneOffsetMinutes:number}|null) => {
       const summary = service.store.macLeases.summary();
+      const now = Date.now(), date = new Date(now);
+      const monthStart = Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1), monthEnd = Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1);
       const label = (id: string) => providerLabel(id, service.sandboxProviders.all.find(provider=>provider.id===id));
-      return { ...summary, providers: summary.providers.map(id=>({id,label:label(id)})),
+      return { ...summary,
+        byProvider: summary.providers.map(id => ({id,label:label(id),month:service.store.macLeases.between(monthStart,monthEnd,now,undefined,id),rolling30:service.store.macLeases.between(now-30*86400000,now,now,undefined,id)})),
+        today: service.store.macLeases.between(Date.parse(usageWindows(date,input?.timezoneOffsetMinutes ?? 0).day.since),now,now).costs,
+        providers: summary.providers.map(id=>({id,label:label(id)})),
         notices: summary.held.flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []) };
     },
 

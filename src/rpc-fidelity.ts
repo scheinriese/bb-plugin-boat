@@ -78,10 +78,12 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
         return result.sandboxes;
       })
       .catch(() => { listed = false; return []; });
-    const sandboxes = all.slice(0, 100);
+    const macIds=new Set(service.store.macLeases.list().map(l=>l.machineId));
+    const linux=all.filter(s=>s.system!=="macos" && !macIds.has(s.id));
+    const sandboxes = linux.slice(0, 100);
     async function aggregate(window: { since: string; until: string }) {
       const values: (SandboxUsage & { sandboxId: string })[] = [];
-      let index = 0; let complete = listed && all.length <= 100;
+      let index = 0; let complete = listed && linux.length <= 100;
       // Bound subprocess fanout independently of the account's sandbox count.
       await Promise.all(Array.from({ length: 4 }, async () => {
         while (index < sandboxes.length) {

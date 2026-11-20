@@ -118,7 +118,12 @@ test("Scaleway pricing uses hourly EUR catalog entries only; external deletion c
   const f=await fixture(t); assert.match((await f.provider.pricing!())!,/EUR 0.11\/h · EUR 2.64 minimum/);
   const sandbox=await f.create();
   await f.api.request("DELETE",`/apple-silicon/v1alpha1/zones/fr-par-3/servers/${serverId}`);
-  assert.deepEqual(await f.provider.list(),[]); assert.equal((await f.keys.records()).length,0);
+  const deletes=f.calls.filter(c=>c.method==="DELETE").length;
+  assert.deepEqual(await f.provider.list(),[]); await f.provider.orphans!();
+  assert.equal((await f.keys.records()).length,1,"read-only listing preserves recovery keys");
+  assert.equal(f.calls.filter(c=>c.method==="DELETE").length,deletes,"reads never delete IAM keys");
+  await f.provider.recoverCreations!();
+  assert.equal((await f.keys.records()).length,0,"normal reconciliation clears absent keys");
   assert.equal(await f.provider.findInfo(sandbox.id),null);
 });
 test("Scaleway secrets fail closed and response, network and parse errors never echo keys",async()=>{
@@ -165,7 +170,7 @@ test("ambiguous Mac create fails closed without a second rental",async()=>{
 test("Scaleway settings, Runs on and task lease lines use existing UI contracts",async()=>{
   const boat=unavailableProvider("boat"),scw=unavailableProvider("scaleway");const registry=createProviderRegistry([boat,{...scw,caps:{...scw.caps,os:"macos",systems:["macos"]}}]);
   const view=providersView({registry,boat:null,connections:new Map([["scaleway","connected"]]),projects:[]});const row=view.providers.find(r=>r.id==="scaleway")!;
-  assert.equal(row.apiKey?.setting,"Scaleway secret key");assert.equal(row.systems[0]?.ready,true);assert.equal(view.options.find(o=>o.provider==="scaleway"),undefined);assert.equal(providerGlyph(row),"box");
+  assert.equal(row.apiKey?.setting,"Scaleway secret key");assert.equal(row.systems[0]?.ready,true);assert.equal(view.options.find(o=>o.provider==="scaleway"),undefined);assert.equal(providerGlyph(row),"laptop");
   assert.deepEqual(view.options.find(o=>o.provider==="scaleway-macos"),{provider:"scaleway-macos",label:"Scaleway · Mac",disabledReason:null});
   const f=await routing("scaleway",{held:"scaleway"});assert.equal(macRunsOn(f.store.macLeases,"scaleway_held",[])?.label,"Scaleway");
 });
@@ -467,4 +472,12 @@ test("each Mac fallback provider runs its own agent preflight before models or a
   assert.equal(task.sandboxProvider,"scaleway");assert.deepEqual(f.creates,["scaleway"]);
   assert.deepEqual(checked,["instabox","scaleway","scaleway"]);
   assert.ok(f.store.events(task.id).some(e=>e.text.includes("Instabox isn't ready")));
+});
+
+test("providers CLI leaves an unconfigured Scaleway off without making provider reads",async()=>{
+ const {providerStates}=await import("../src/provider-status.ts");let reads=0;
+ const scw={...unavailableProvider("scaleway"),presentation:async()=>{reads++;return {steps:[]};}};
+ const registry=createProviderRegistry([createBoatProvider(new FakeBoat() as never),scw],{isEnabled:p=>p.id!=="scaleway"});
+ const states=await providerStates({registry,projects:()=>[],machines:()=>new Set(),boatSetup:null,instabox:null});
+ const row=states.find(p=>p.id==="scaleway")!;assert.equal(row.status,"off");assert.equal(row.turnedOn,false);assert.equal(row.problem,null);assert.equal(reads,0);
 });

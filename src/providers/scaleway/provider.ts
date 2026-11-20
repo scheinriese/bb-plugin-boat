@@ -106,7 +106,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     const zone = SCALEWAY_ID_PATTERN.exec(id)![1]!;
     return api.parse(serverSchema, "GET", `/apple-silicon/v1alpha1/zones/${zone}/servers/${serverId}`, undefined, signal);
   }
-  async function keyFor(server: Server) {
+  async function keyFor(server: Server, reconcile = true) {
     const records = await keys.records();
     const recorded = records.find(record => record.serverId === server.id);
     if (recorded) return recorded;
@@ -115,7 +115,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     const record = records.find(record => record.token === token && !record.serverId);
     if (!record) return null;
     const bound = { ...record, serverId: server.id, zone: server.zone, projectId: server.project_id };
-    await keys.save(bound);
+    if (reconcile) await keys.save(bound);
     return bound;
   }
   async function run(server: Server, request: SshRequest) {
@@ -123,12 +123,12 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     if (!record) throw fail("This Scaleway Mac has no recorded Boat SSH key.", "key_missing");
     return ssh({ ip: server.ip, user: server.ssh_username, key: keys.path(record.token) }, { ...request, command: ["bash", "-lc", request.command.map(shellQuote).join(" ")] });
   }
-  async function view(server: Server, signal?: AbortSignal): Promise<SandboxInfo> {
+  async function view(server: Server, signal?: AbortSignal, reconcile = true): Promise<SandboxInfo> {
     const id = `scw_${server.zone}_${server.id}`;
-    const record = await keyFor(server);
+    const record = await keyFor(server, reconcile);
     let lease = ledger.held(id)[0];
     if (!record && !lease) throw fail("This Scaleway server has no local ownership record. It is an orphan and will not be managed automatically.", "unmanaged_server");
-    if (!lease && record) {
+    if (!lease && record && reconcile) {
       const model = (await models(signal)).find(m => m.id === server.type);
       if (!model) throw fail("Scaleway Mac pricing could not be confirmed.", "lease_unknown");
       lease = ledger.record({ id: `scaleway:${server.id}`, provider: "scaleway", machineId: id, size: model.id, startedAt: server.created_at, paidUntil: server.deletable_at, minimumCost: model.minimumCost, hourPrice: model.hourPrice, billingIncrementSeconds: 3600, currency: "EUR", cpus: model.cpus, memoryMiB: model.memoryMiB });
@@ -139,7 +139,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     await api.request("DELETE", `/iam/v1alpha1/ssh-keys/${record.sshKeyId}`, undefined, signal).catch(error => { if (!isNotFound(error)) throw error; });
     await keys.remove(record.token);
   }
-  async function managedServers(signal?: AbortSignal) {
+  async function managedServers(signal?: AbortSignal, reconcile = true) {
     const config = await api.config();
     const records = await keys.records();
     const scopes = new Map<string,{zone:string;projectId:string}>();
@@ -155,8 +155,8 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
         try { found = await raw(`scw_${record.zone}_${record.serverId}`,signal); all.push(found); }
         catch (error) { if (!isNotFound(error)) throw error; }
       }
-      if (found) { if (!record.serverId) { await keyFor(found); recovered++; } }
-      else { await forgetKey(record,signal); cleared++; }
+      if (found) { if (!record.serverId && reconcile) { await keyFor(found); recovered++; } }
+      else if (reconcile) { await forgetKey(record,signal); cleared++; }
     }
     const ids = new Set(records.map(record => record.serverId).filter(Boolean));
     const names = new Set(records.filter(record => !record.serverId).map(record => `${NAME_PREFIX}${record.token}`));
@@ -202,6 +202,26 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
   }
   const provider: SandboxProvider = {
     ...unavailableProvider("scaleway"), id: "scaleway", displayName: "Scaleway", caps, idPattern: SCALEWAY_ID_PATTERN, machine,
+    async presentation({signal} = {}) {
+      let project = false, accepted = false;
+      let detail = "Set Scaleway project ID in Boat settings";
+      try {
+        const config=await api.config();
+        await api.parse(z.object({organization_id:z.string()}),"GET",`/account/v3/projects/${config.projectId}`,undefined,signal);
+        project=true;accepted=true;detail="Project found";
+      } catch (error) {
+        const code=(error as {code?:string}).code;
+        if(code==="key_missing")detail="Add Scaleway secret key in bb secrets";
+        else if(code==="not_found"){accepted=true;detail="Check Scaleway project ID in Boat settings";}
+        else if(code!=="provider_unavailable")detail="Check Scaleway secret key and project access";
+      }
+      return { steps: [
+        {id:"api",label:"API access",done:accepted,possible:true,detail},
+        {id:"project",label:"Project found",done:project,possible:true,detail:project ? "Paris Apple silicon" : detail},
+        {id:"enabled",label:"On",done:accepted && project,possible:true,detail:"Held Macs only"},
+        {id:"logins",label:"Logins on fresh Macs",done:false,possible:false,detail:"not possible yet"},
+      ] };
+    },
     classifiesCreateErrors: true,
     sizes: SCALEWAY_TASK_SIZES,
     macModels: signal => models(signal),
@@ -212,14 +232,14 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       return { tier: "Apple silicon · hourly", summary: "24 h minimum, then hourly; billed until deleted", activeSandboxes: servers.length, maxActiveSandboxes: choices.some(c => c.max === null) ? null : servers.length + choices.reduce((n,c) => n+Math.max(0,(c.max ?? 0)-c.used),0), startsLeftToday: null, startsLeftThisHour: null, canStart, blockedReason: canStart ? null : "Scaleway Mac stock or quota is unavailable.", checkoutRequired: false, autoStopCapHours: null };
     },
     usagePlan: async () => null, usage: async () => ({ seconds: null, hours: null, dollars: null, since: null, until: null, running: null }),
-    list: ({ signal } = {}) => withAllocationLock(async () => { const listed = await managedServers(signal); return Promise.all(listed.servers.map(server=>view(server,signal))); }),
-    orphans: signal => withAllocationLock(async () => (await managedServers(signal)).orphans),
+    list: ({ signal } = {}) => withAllocationLock(async () => { const listed = await managedServers(signal, false); return Promise.all(listed.servers.map(server=>view(server,signal,false))); }),
+    orphans: signal => withAllocationLock(async () => (await managedServers(signal, false)).orphans),
     recoverCreations: signal => withAllocationLock(async () => {
       const result = await managedServers(signal);
       for (const server of result.servers) await view(server,signal);
       return { recovered: result.recovered, cleared: result.cleared };
     }),
-    async info(id, signal) { return view(await raw(id,signal),signal); },
+    async info(id, signal) { return view(await raw(id,signal),signal,false); },
     async findInfo(id, signal) { try { return await provider.info(id,signal); } catch (error) { if (isNotFound(error)) return null; throw error; } },
     async assertTaskReady({ agent, repos, sandboxId, signal }) {
       if (!sandboxId) throw fail("Scaleway task credentials are not configured. Boat will not rent a Mac without a supported agent login and GitHub authentication path. Use Instabox, or a held Mac with verified logins.", "task_credentials_missing");

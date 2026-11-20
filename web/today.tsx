@@ -1,3 +1,4 @@
+import { hours as providerHours } from "./provider-format";
 import { MacLeaseNotices } from "./mac-lease-notices";
 // Live events and measured usage; the demo seeds only the backend data.
 import { useMemo, useState } from "react";
@@ -56,7 +57,7 @@ const HEADING =
 const SURFACE =
   "overflow-hidden rounded-xl border sm:rounded-[10px] border-border bg-card";
 const countNumber = (n: number) =>
-  n.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  n.toLocaleString("en-US", { maximumFractionDigits: 1 });
 export function Today() {
   const macUsage = experimental_useRpcQuery({contract:rpcContract,method:"macUsage",input:null});
   const board = useBoard(null);
@@ -489,7 +490,7 @@ export function Today() {
                         {new Date(event.at)
                           .toLocaleTimeString("en-US", {
                             hour: "numeric",
-                            minute: "2-digit",
+                            minute: "2-digit", hourCycle:"h23",
                           })
                           .toLowerCase()}
                       </time>
@@ -604,7 +605,7 @@ export function Today() {
                     >
                       <dt>Sandbox time</dt>
                       <dd className="text-foreground/80">
-                        {countNumber(usage.data.week.hours)} h · about $
+                        {providerHours(usage.data.week.hours)} h · about $
                         {usage.data.week.dollars.toFixed(2)}
                       </dd>
                     </div>

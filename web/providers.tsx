@@ -1,3 +1,4 @@
+import { ProviderSetup } from "./provider-setup";
 // Sandbox providers in the UI (contract-providers.ts): Settings › Sandbox
 // providers and Runs on, and where each task runs (the line under a task in
 // the tasks-started card, the provider on a task chip off boat.dev, and the
@@ -90,7 +91,7 @@ function StatusText({ provider, className }: { provider: SandboxProviderDto; cla
   const status = providerStatus(provider);
   return (
     <span className={cn("inline-flex shrink-0 items-center gap-1.5 text-xs leading-4 text-[color:var(--boat-secondary)] dark:text-[#A8A8A8]", className)}>
-      <span aria-hidden className={cn("size-1.5 rounded-full", status.ok ? "bg-[#5BD08A]" : "bg-[#6E6E6E]")} />
+      <span aria-hidden className={cn("size-1.5 rounded-full", provider.steps?.some(s=>s.possible && !s.done) ? (provider.waitingTasks ? "bg-[#F0B135]" : "bg-[#7AA7FF]") : status.ok ? "bg-[#5BD08A]" : "bg-[#6E6E6E]")} />
       {status.text}
     </span>
   );
@@ -139,7 +140,10 @@ function KeyLine({ provider }: { provider: SandboxProviderDto }) {
 }
 
 /** One provider: icon, name and what it is, and its status (on the right, or after a Mac's name). */
-export function ProviderRow({ provider }: { provider: SandboxProviderDto }) {
+export function ProviderRow({ provider, onCheck, onEnable, onKey, busy }: { provider: SandboxProviderDto; onCheck?:()=>void; onEnable?:()=>void; onKey?:()=>void; busy?:boolean }) {
+  const [expanded,setExpanded] = useState(false);
+  const incomplete = provider.steps?.some(s=>s.possible && !s.done) ?? false;
+  const showSteps = provider.steps && (incomplete || expanded);
   const mac = provider.kind !== "cloud";
   return (
     <div className="flex items-start gap-3 px-3.5 py-3" aria-disabled={provider.available ? undefined : true}>
@@ -151,13 +155,12 @@ export function ProviderRow({ provider }: { provider: SandboxProviderDto }) {
           <span className="text-[13px] leading-[18px] text-[var(--boat-label)]">{provider.label}</span>
           {provider.isDefault ? <span className="rounded bg-muted px-1.5 py-px text-[11px] leading-[14px] text-[color:var(--boat-secondary)] dark:bg-[#222222] dark:text-[#A8A8A8]">Default</span> : null}
           {provider.meta ? <span className="text-xs leading-4 text-[color:var(--boat-faint)]">{provider.meta}</span> : null}
-          {mac ? <StatusText provider={provider} className="ml-1" /> : null}
+          <StatusText provider={provider} className={mac ? "ml-1" : "ml-auto"} />
         </div>
         <p className="mt-0.5 text-xs leading-[17px] text-muted-foreground">{provider.pricing ? `${provider.summary} ${provider.pricing}` : provider.summary}</p>
-        <SystemChips provider={provider} />
-        <KeyLine provider={provider} />
+        {showSteps ? <ProviderSetup provider={provider} onCheck={onCheck} onEnable={onEnable} onKey={onKey} busy={busy}/> : <><SystemChips provider={provider}/><KeyLine provider={provider}/>{provider.steps && <><div className="mt-2 flex flex-wrap gap-1.5">{provider.steps.map(s=><span key={s.id} className={`rounded-md border px-2 py-[3px] text-xs ${s.possible ? "border-[#2E2E2E] text-[#A8A8A8]" : "border-dashed border-[#2A2A2A] text-[#6E6E6E]"}`}>{s.done ? "✓ " : ""}{s.label}{!s.possible ? " · not possible yet" : ""}</span>)}</div><button type="button" className="mt-2 text-xs text-[#7AA7FF]" onClick={()=>setExpanded(true)}>Show steps</button></>}</>}
+        {expanded && !incomplete && <button type="button" className="mt-2 text-xs text-[#7AA7FF]" onClick={()=>setExpanded(false)}>Hide steps</button>}
       </div>
-      {mac ? null : <StatusText provider={provider} />}
     </div>
   );
 }
@@ -215,6 +218,10 @@ const BOX = "divide-y divide-[color:var(--boat-divider)] overflow-hidden rounded
 export function SandboxProvidersSettings({ className }: { className?: string }) {
   const { data, error } = useSandboxProviders();
   const navigate = useBbNavigate();
+  const check = experimental_useRpcMutation({contract:rpcContract,method:"checkSandboxProviders"});
+  const save = experimental_useRpcMutation({contract:rpcContract,method:"saveSettings"});
+  const checkAgain = () => { void check.mutate(null).catch(reason=>toast.error(reason.message)); };
+  const enable = () => { void save.mutate({values:{instaboxEnabled:true}}).then(checkAgain).catch(reason=>toast.error(reason.message)); };
   const [errors, setErrors] = useState<Record<string, string>>({});
   const pick = experimental_useRpcMutation({
     contract: rpcContract,
@@ -245,10 +252,10 @@ export function SandboxProvidersSettings({ className }: { className?: string }) 
       <Group title="Sandbox providers" className={className}>
         <div className={BOX}>
           {data.providers.map((provider) => (
-            <ProviderRow key={provider.id} provider={provider} />
+            <ProviderRow key={provider.id} provider={provider} onCheck={checkAgain} onEnable={enable} onKey={()=>{ const hint=keyHint(provider);toast(hint.title,{description:hint.description}); window.scrollTo({top:0,behavior:"smooth"}); }} busy={check.isPending || save.isPending} />
           ))}
         </div>
-        <p className="px-0.5 text-xs leading-[17px] text-muted-foreground">{data.routing}</p>
+        <p className="px-0.5 text-xs leading-[17px] text-muted-foreground">{data.routing}</p><p className="text-xs leading-[17px] text-[#8A8A8A]">Boat checks each step when this page opens and before every rent. Keys and tokens stay in bb’s secret store or the provider; this page never shows them.</p>
       </Group>
       <Group title="Runs on" className={className}>
         <div className={BOX}>

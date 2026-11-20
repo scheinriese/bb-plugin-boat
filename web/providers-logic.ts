@@ -1,3 +1,4 @@
+import { leaseTime, money } from "./provider-format.ts";
 // Words and glyphs for sandbox providers (web/providers.tsx): where a task
 // or sandbox runs, and each provider's status in Settings. No React here,
 // so the tests can read it.
@@ -8,7 +9,7 @@ export type ProviderGlyph = "boat" | "box" | "laptop" | "laptop-dashed";
 
 /** "boat.dev · Default", "Instabox · Mac M2 · lease ends Thu 14:00": a task's line and its chip's tooltip. */
 export function runsOnLine(runsOn: RunsOnDto, fallbackMachine: string | null = null): string {
-  return [runsOn.label, runsOn.machine ?? fallbackMachine, runsOnNote(runsOn)].filter(Boolean).join(" · ");
+  return [runsOn.label, runsOn.provider === "instabox" && runsOn.os === "linux" ? "Linux" : runsOn.machine ?? fallbackMachine, runsOnNote(runsOn)].filter(Boolean).join(" · ");
 }
 
 /** "boat.dev · Default", "Instabox · Mac M2": a sandbox's provider and machine (the Sandboxes table). */
@@ -27,7 +28,7 @@ export function runsOnGlyph(runsOn: Pick<RunsOnDto, "provider" | "os">): Provide
 }
 
 export function providerGlyph(provider: Pick<SandboxProviderDto, "id" | "kind">): ProviderGlyph {
-  if (provider.kind === "own-mac") return "laptop";
+  if (provider.kind === "own-mac" || provider.id === "scaleway") return "laptop";
   if (provider.kind === "monthly-mac") return "laptop-dashed";
   return provider.id === DEFAULT_SANDBOX_PROVIDER ? "boat" : "box";
 }
@@ -65,11 +66,21 @@ export function keyHint(provider: Pick<SandboxProviderDto, "label" | "apiKey">):
 /** Local browser time; the server sends instants, never preformatted UTC. */
 export function runsOnNote(runsOn: RunsOnDto, now = Date.now(), locale?: string, timeZone?: string): string | null {
   const lease = runsOn.lease;
-  if (!lease) return runsOn.note;
-  const time = (value: string) => new Intl.DateTimeFormat(locale, { weekday: "short", hour: "2-digit", minute: "2-digit", ...(timeZone ? { timeZone } : {}) }).format(new Date(value)).replace(",", "");
+  if (!lease) return runsOn.provider === "instabox" && runsOn.os === "linux" ? "per second" : runsOn.note;
+  const time = (value: string) => leaseTime(value,timeZone);
   if (lease.endedAt) return `lease ended ${time(lease.endedAt)}`;
-  if (lease.kept) return "Kept · automatic hand-back off";
+  if (lease.kept) return "Kept · hand-back off";
   if (lease.releaseAt) return `release scheduled ${time(lease.releaseAt)}`;
-  if (now >= Date.parse(lease.paidUntil)) return `${lease.shared ? "same lease · " : ""}bills per second`;
-  return `${lease.shared ? "same lease, paid until" : "paid until"} ${time(lease.paidUntil)}`;
+  if (now >= Date.parse(lease.paidUntil)) return `${lease.shared ? "same Mac · " : ""}${lease.billingIncrementSeconds===3600 ? "bills hourly" : "bills per second"}`;
+  return `${lease.shared ? "same Mac, paid until" : runsOn.provider === "scaleway" ? "held Mac, paid until" : "paid until"} ${time(lease.paidUntil)}`;
+}
+
+export function runsOnDetail(runsOn:RunsOnDto,now=Date.now()):string | null {
+ const lease=runsOn.lease;
+ if(!lease || lease.hourPrice===undefined || !lease.currency)return runsOn.leaseCost ?? runsOn.detail;
+ const rate=`${money(lease.hourPrice,lease.currency)} / h`;
+ if(lease.kept)return `${rate} while kept`;
+ if(lease.releaseAt)return "Nothing waiting";
+ if(now>=Date.parse(lease.paidUntil))return `${rate} since ${leaseTime(lease.paidUntil)}`;
+ return `${rate} after 24 h minimum${runsOn.sharedTasks ? ` · shared with ${runsOn.sharedTasks} task${runsOn.sharedTasks===1 ? "" : "s"}` : ""}`;
 }

@@ -38,7 +38,7 @@ test("gitleaks provider rules and inherited GitHub rules", { skip: !available &&
     assert.deepEqual(scan(randomUUID()), []);
     assert.deepEqual(scan("scalewayProjectId: " + randomUUID()), []);
     assert.deepEqual(scan("scaleway " + ".".repeat(81) + randomUUID()), []);
-    assert.deepEqual(scan("ibk_short ibp_fake_example_key ibk_test_example_key ibp_example_key"), []);
+    assert.deepEqual(scan("ibk_testshort ibp_fake_example_key ibk_test_example_key ibp_example_key"), []);
     for (const [prefix, rule] of [["ghp_", "github-pat"], ["gho_", "github-oauth"],
       ["ghu_", "github-app-token"], ["ghs_", "github-app-token"], ["ghr_", "github-refresh-token"],
       ["github_pat_", "github-fine-grained-pat"]]) {

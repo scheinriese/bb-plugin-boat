@@ -60,13 +60,15 @@
     "clsx": "^2.1.1",
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.4.0",
-    "vaul": "^1.1.2"
+    "vaul": "^1.1.2",
+    "esbuild": "0.28.2"
   },
   "description": "Run Claude Code and Codex in boat.dev cloud sandboxes from bb: tasks from any chat, a Cloud agents page, and optional orchestrators.",
   "scripts": {
     "typecheck": "tsc --noEmit -p .",
     "test": "node --test test/*.test.ts",
-    "build": "bb plugin build"
+    "build": "bb plugin build",
+    "preview:providers": "node scripts/providers-preview-server.mjs"
   },
   "allowScripts": {
     "better-sqlite3": true

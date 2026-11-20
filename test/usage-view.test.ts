@@ -538,7 +538,7 @@ test("usage wording: agent facts, reset times in local time", () => {
   assert.equal(agentFact({ provider: "codex", usedPercent: 98.6, window: "Weekly limit", resetsAt: null, source: "pool", limitHitUntil: null }, "codex"), "Codex is at 99%");
   const reset = "2026-11-19T01:00:00Z";
   const date = new Date(reset);
-  assert.equal(resetLabel(reset, now), `resets ${date.toLocaleDateString([], { weekday: "short" })} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+  assert.equal(resetLabel(reset, now), `resets ${date.toLocaleDateString("en-US", { weekday: "short" })} ${date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit",hourCycle:"h23" })}`);
   assert.match(resetLabel("2026-11-30T01:00:00Z", now)!, /^resets \S+ \d+/, "a date past six days");
   assert.match(resetLabel("2026-11-16T01:00:00Z", now)!, /^reset was due /);
   assert.equal(resetLabel(null, now), null);
@@ -546,4 +546,12 @@ test("usage wording: agent facts, reset times in local time", () => {
   assert.equal(accountStatus({ enabled: false, state: null, heldUntil: null, observedAt: now }, now).text, "Off in the Account Pooler");
   assert.match(accountStatus({ enabled: true, state: null, heldUntil: now + 30 * MIN, observedAt: now }, now).text, /^Held until /);
   assert.equal(accountStatus({ enabled: true, state: "needs_login", heldUntil: null, observedAt: now }, now).text, "Account Pooler: needs login");
+});
+
+test("public timestamps and usage resets consistently use a 24-hour clock",async()=>{
+ const {clockTime,dateTime}=await import("../web/format.ts");const {dayTime}=await import("../web/usage-logic.ts");
+ const at=new Date(2026,10,19,14,5),iso=at.toISOString();
+ assert.equal(clockTime(iso),"14:05");assert.match(dateTime(iso),/14:05/);assert.doesNotMatch(dateTime(iso),/AM|PM/);
+ assert.match(dayTime(iso,at.getTime())!,/14:05/);
+ assert.equal(clockTime(new Date(2026,10,19,0,5).toISOString()),"00:05");
 });
