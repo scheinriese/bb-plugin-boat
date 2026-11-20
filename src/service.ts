@@ -1814,7 +1814,12 @@ export class BoatService {
    * token is caught here, with what to do, instead of failing mid-turn.
    */
   private async assertGithubLogin(task: Task, options: { signal?: AbortSignal; resume?: boolean; forShip?: boolean } = {}): Promise<void> {
-    const recorded = this.githubExpiry(task);
+    let recorded = this.githubExpiry(task);
+    const provider = this.sandboxProvider(task);
+    if (task.sandboxId !== null && provider.refreshGithubLogin && (recorded === null || Date.parse(recorded) - Date.now() <= 45 * 60_000)) {
+      const expiry = await provider.refreshGithubLogin(task.sandboxId, options.signal);
+      if (expiry) { this.store.addEvent(task.id, "github-token", expiry); recorded = expiry; }
+    }
     if (recorded === null || task.sandboxId === null) return;
     // A turn can run a while: a token running out within it is checked too.
     if (Date.parse(recorded) - Date.now() > 45 * 60_000) return;
@@ -1834,15 +1839,17 @@ export class BoatService {
     const settings = await this.settings();
     const environment = task.environment ?? sandbox.environment ?? (settings.environment || null);
     const upgrade = environment ? `\`boat env upgrade ${environment}\`` : "`boat env upgrade <its environment>`";
+    const remedy = provider.id === "boat" ? `Run ${upgrade} to give sandboxes fresh credentials` : "Refresh this machine’s GitHub credential source in bb settings";
+    const duration = provider.id === "boat" ? "boat's GitHub tokens last about 8 hours; " : "";
     const when = new Date(expiresAt).toUTCString().slice(17, 22);
     throw new TaskError(
       options.forShip
-        ? `Task ${task.id}'s sandbox has an expired GitHub login (boat's GitHub tokens last about 8 hours; this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so it can't push the approved work.`
-        : `Task ${task.id}'s sandbox has an expired GitHub login (boat's GitHub tokens last about 8 hours; this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so the agent can't push or open pull requests from it.`,
+        ? `Task ${task.id}'s sandbox has an expired GitHub login (${duration}this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so it can't push the approved work.`
+        : `Task ${task.id}'s sandbox has an expired GitHub login (${duration}this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so the agent can't push or open pull requests from it.`,
       "github_token_expired",
       options.forShip
-        ? `Run ${upgrade} to give sandboxes fresh credentials, then ship again. Don't close this task or delete its sandbox: the approved commits exist only there.`
-        : `Run ${upgrade} to give sandboxes fresh credentials and try again; if that doesn't help, start the work again in a new sandbox (boat_dispatch with context_from ${task.id}).`,
+        ? `${remedy}, then ship again. Don't close this task or delete its sandbox: the approved commits exist only there.`
+        : `${remedy} and try again; if that doesn't help, start the work again in a new sandbox (boat_dispatch with context_from ${task.id}).`,
     );
   }
 
@@ -2639,6 +2646,19 @@ export class BoatService {
         const machines = await provider.list({ all: true, signal: this.hooks.lifecycle });
         this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)), now);
         for (const lease of this.store.macLeases.held().filter(lease => lease.provider === provider.id)) {
+          // Refresh active held leases too, before a long-running chat hits expiry.
+          if (provider.refreshGithubLogin) {
+            for (const task of this.store.liveSandboxTasks(lease.machineId).filter(task => task.repo !== null)) {
+              try { await this.assertGithubLogin(task, { signal: this.hooks.lifecycle }); }
+              catch (error) {
+                const warning = errorText(error);
+                if (this.store.latestEvent(task.id, "github-refresh-failed")?.text !== warning) {
+                  this.store.addEvent(task.id, "github-refresh-failed", warning);
+                  this.hooks.log.warn(`GitHub credentials for task ${task.id}: ${warning}`);
+                }
+              }
+            }
+          }
           const minimumEnd = Date.parse(lease.paidUntil);
           if (now < minimumEnd-(settings.macHandBackMarginMinutes ?? 30)*60_000) continue;
           const open = this.store.liveSandboxTasks(lease.machineId);

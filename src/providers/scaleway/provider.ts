@@ -1,3 +1,5 @@
+import type { MachineExecutor } from "@get-bb/plugin-sdk";
+import { createCredentialSource, type CredentialSource } from "../../credentials.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { unavailableProvider } from "../registry.ts";
@@ -54,9 +56,11 @@ case "$(cat "$HOME/.bash_profile" 2>/dev/null || true)" in (*'.local/bin'*) ;; (
 mkdir -p "$HOME/.boat-hooks"
 git config --global core.hooksPath "$HOME/.boat-hooks"
 `;
-export function createScalewayProvider(options: { api: ScalewayApi; keys: ScalewayKeys; ledger: MacLeaseLedger; ssh?: SshExec; pollMs?: number; readyTimeoutMs?: number }): SandboxProvider {
+export function createScalewayProvider(options: { api: ScalewayApi; keys: ScalewayKeys; ledger: MacLeaseLedger; credentials?: CredentialSource; ssh?: SshExec; pollMs?: number; readyTimeoutMs?: number }): SandboxProvider {
   const { api, keys, ledger } = options;
   const ssh = options.ssh ?? sshExec;
+  const credentials = options.credentials ?? createCredentialSource({ githubToken: async () => null, agentAvailable: async () => false });
+  const executor = (id: string): MachineExecutor => ({ async exec(request) { const result = await run(await raw(id,request.signal), request); return { exitCode: result.exitCode }; } });
   // Only the short allocation phase owns this lock. Account-wide reads can
   // run outside Boat's placement lock, but cannot clear a pending POST's key.
   let allocationLock: Promise<unknown> = Promise.resolve();
@@ -184,6 +188,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
             if (probe.exitCode === 0) {
               const setup = await run(server, { command: ["bash", "-s"], stdin: BOOTSTRAP, timeoutMs: 15*60_000, signal });
               if (setup.exitCode !== 0) throw fail("Scaleway Mac tooling installation failed.", "bootstrap_failed");
+              if (await credentials.githubConfigured()) await credentials.ensureGithub(id, executor(id), signal);
               const record = await keyFor(server);
               if (record) await keys.save({...record,prepared:true});
               return view(server,signal);
@@ -194,6 +199,8 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       }
       throw fail("Scaleway Mac did not become SSH-ready in time.");
     } catch {
+      try { await credentials.cleanup(id, executor(id)); }
+      catch { throw fail("Scaleway allocated a Mac but setup failed and credential removal could not be verified. The lease is tracked; retry cleanup before release.", "creation_allocated"); }
       if (ledger.held(id).some(lease=>lease.kept)) throw fail("Scaleway Mac setup was interrupted; this lease is explicitly kept and automatic deletion is off.","creation_allocated");
       try { await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${zone}/servers/${serverId}`, { schedule_deletion: true }); }
       catch { throw fail("Scaleway allocated a Mac but setup failed, and automatic deletion could not be scheduled. The lease is tracked; delete it manually after its minimum.", "creation_allocated"); }
@@ -215,11 +222,16 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
         else if(code==="not_found"){accepted=true;detail="Check Scaleway project ID in Boat settings";}
         else if(code!=="provider_unavailable")detail="Check Scaleway secret key and project access";
       }
+      const github = await credentials.githubConfigured();
+      const routes = await Promise.all((["claude", "codex"] as const).map(agent => credentials.agentAvailable(agent, signal)));
+      const agent = routes.some(Boolean);
       return { steps: [
         {id:"api",label:"API access",done:accepted,possible:true,detail},
         {id:"project",label:"Project found",done:project,possible:true,detail:project ? "Paris Apple silicon" : detail},
-        {id:"enabled",label:"On",done:accepted && project,possible:true,detail:"Held Macs only"},
-        {id:"logins",label:"Logins on fresh Macs",done:false,possible:false,detail:"not possible yet"},
+        {id:"rented-github",label:"GitHub token stored",done:github,possible:true,detail:github ? "Selected repository access is checked before rental" : "Add GitHub token for rented machines in bb secret settings: selected repos; Contents, Pull requests and Workflows read and write; 90-day expiry"},
+        {id:"agent-route",label:"Agent route available",done:agent,possible:true,detail:agent ? `Account Pooler via bb Connect: ${[routes[0] ? "Claude" : "", routes[1] ? "Codex" : ""].filter(Boolean).join(", ")}` : "Enable an available agent route in Account Pooler and bb Connect on the owner server"},
+        {id:"logins",label:"Logins on fresh Macs",done:github && agent,possible:true,detail:github && agent ? "GitHub over SSH stdin; agent traffic through the owner server" : "Complete the GitHub and agent checks above"},
+        {id:"enabled",label:"On",done:accepted && project && github && agent,possible:true,detail:"Credentials are checked for the chosen agent and repositories before rental"},
       ] };
     },
     classifiesCreateErrors: true,
@@ -242,10 +254,12 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     async info(id, signal) { return view(await raw(id,signal),signal,false); },
     async findInfo(id, signal) { try { return await provider.info(id,signal); } catch (error) { if (isNotFound(error)) return null; throw error; } },
     async assertTaskReady({ agent, repos, sandboxId, signal }) {
-      if (!sandboxId) throw fail("Scaleway task credentials are not configured. Boat will not rent a Mac without a supported agent login and GitHub authentication path. Use Instabox, or a held Mac with verified logins.", "task_credentials_missing");
-      const command = agent === "claude" ? "claude auth status" : "codex login status";
+      if (!sandboxId) return credentials.assertReady(agent, repos, signal);
+      const routed = await credentials.agentAvailable(agent, signal);
+      const command = routed ? `command -v ${agent}` : agent === "claude" ? "claude auth status" : "codex login status";
       const server = await raw(sandboxId,signal);
       if ((await run(server,{command:["bash","-lc",`${command} >/dev/null 2>&1`],timeoutMs:30_000,signal})).exitCode !== 0) throw fail("The held Scaleway Mac has no verified agent login.","task_credentials_missing");
+      if (repos.length && await credentials.githubConfigured()) await credentials.ensureGithub(sandboxId, executor(sandboxId), signal);
       if (repos.length && (await run(server,{command:["bash","-lc","gh auth status >/dev/null 2>&1"],timeoutMs:30_000,signal})).exitCode !== 0) throw fail("The held Scaleway Mac has no verified GitHub login for repository tasks.","task_credentials_missing");
     },
     allocate: input => withAllocationLock(async () => {
@@ -290,6 +304,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       try { server = await raw(id,signal); } catch (error) { if (!isNotFound(error)) throw error; return; }
       await view(server,signal); // Require a local key/lease record before deleting.
       if (Date.now() < Date.parse(server.deletable_at)) throw fail("Scaleway cannot release this Mac before its 24 h minimum ends.", "minimum_lease");
+      await credentials.cleanup(id, executor(id), signal);
       await api.request("DELETE", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, undefined, signal);
       const record = await keyFor(server);
       if (record) await forgetKey(record,signal);
@@ -299,6 +314,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       const server = await raw(id,signal);
       await view(server,signal);
       if (Date.parse(at) !== Date.parse(server.deletable_at)) throw fail("Scaleway only schedules deletion at its minimum boundary.", "minimum_lease");
+      await credentials.cleanup(id, executor(id), signal);
       await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, { schedule_deletion: true }, signal);
     },
     async cancelLeaseRelease(id, signal) {
@@ -313,11 +329,14 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     resume: async (id, options) => { await provider.info(id,options?.signal); }, extend: unsupported,
     async exec(id, script, options) { return run(await raw(id,options?.signal), { command: ["bash", options?.login === false ? "-c" : "-lc", script], timeoutMs: options?.timeoutMs ?? 60_000, signal: options?.signal }); },
     async execDetached(id, script, signal) { const result = await provider.exec(id, `nohup bash -lc ${shellQuote(script)} </dev/null >/dev/null 2>&1 & echo $!`, { signal }); return { pid: Number(result.stdout.trim()) || null }; },
-    machineHooks: () => ({ beforeBootstrap: async (id, signal) => {
+    beforeRepo: async (id, signal) => { if (await credentials.githubConfigured()) await credentials.ensureGithub(id, executor(id), signal); },
+    refreshGithubLogin: async (id, signal) => await credentials.githubConfigured() ? credentials.ensureGithub(id, executor(id), signal) : null,
+    machineHooks: () => ({ bootstrapFailed: id => credentials.cleanup(id, executor(id)), beforeBootstrap: async (id, signal) => {
       const result = await run(await raw(id,signal), { command: ["bash", "-s"], stdin: BOOTSTRAP, timeoutMs: 15*60_000, signal });
       if (result.exitCode !== 0) throw fail("Scaleway Mac tooling installation failed.", "bootstrap_failed");
+      if (await credentials.githubConfigured()) await credentials.ensureGithub(id, executor(id), signal);
     } }),
-    executor: id => ({ async exec(request) { const result = await run(await raw(id,request.signal), request); return { exitCode: result.exitCode }; } }),
+    executor,
     processes: unsupported, host: unsupported, fork: unsupported, snapshot: unsupported, lastSnapshotAt: async () => null, snapshots: async () => ({ snapshots: [], included: null, used: null }), environments: async () => [], defaultEnvironment: async () => null, environmentInfo: unsupported, aiProxy: async () => ({ enabled: false, dailyDollars: null, dollarsPer1000Requests: null }), prompt: unsupported, events: unsupported, conversations: async () => [], steer: unsupported, interrupt: unsupported,
   };
   return provider;

@@ -86,8 +86,8 @@ export async function providerStates(deps: ProviderStatusDeps, options: { force?
       if (provider.id === "scaleway" && provider.presentation) {
         const presentation = await provider.presentation().catch(() => null);
         const missing = presentation?.steps.find(step=>step.possible && !step.done);
-        const orphans = missing ? undefined : await provider.orphans?.(AbortSignal.timeout(10_000)).catch(()=>undefined);
-        return {...base(provider),orphans,turnedOn:presentation?.steps.find(step=>step.id==="project")?.done ?? false,keyPresent:null,status:"setup-required",checks:[],problem:missing?.detail ?? "Held Macs only; logins on fresh Macs are not possible yet."};
+        const orphans = presentation?.steps.find(step=>step.id==="project")?.done ? await provider.orphans?.(AbortSignal.timeout(10_000)).catch(()=>undefined) : undefined;
+        return {...base(provider),orphans,turnedOn:presentation?.steps.find(step=>step.id==="project")?.done ?? false,keyPresent:null,status:presentation && !missing ? "ready" : "setup-required",checks:[],problem:missing?.detail ?? (presentation ? null : "Could not check machine credentials.")};
       }
       if (enabled.has(provider.id) && provider.orphans) {
         try {

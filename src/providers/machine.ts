@@ -122,6 +122,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
     inputs,
     availability: () => deps.availability(),
     async create({ inputs: given, key, checkpoint, report, signal }) {
+      let bootstrapSandbox: string | null = null;
       try {
         const parsed = inputs.safeParse(given ?? {});
         if (!parsed.success) throw new Error(words.invalidInputs);
@@ -158,6 +159,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
         }
         await checkpoint({ sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) });
         report.log(words.created(sandbox.id));
+        bootstrapSandbox = sandbox.id;
         await beforeBootstrap(sandbox.id, signal);
         report.step("Installing bb on the sandbox");
         const { hostId } = await bb.experimental_machines.bootstrap({
@@ -168,6 +170,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
         });
         return { status: "created" as const, name: machine.machineLabel(sandbox.id, hostId), resource: { sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) } };
       } catch (error) {
+        if (bootstrapSandbox !== null) await hooks.bootstrapFailed?.(bootstrapSandbox);
         signal.throwIfAborted();
         const transient = retryableBootstrap(error);
         return { status: "failed" as const, message: transient ? bootstrapFailureMessage(transient) : message(error) };
@@ -241,13 +244,15 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
           await service.bringUp(sandboxId, signal, { permit: slot });
           woke = true;
         }
-        await beforeBootstrap(sandboxId, signal);
-        // bb's own update can hang on a disk the provider is still restoring: Boat updates it first, safely.
-        // No check for a running turn: bb calls resume() only for a suspended machine, so no turn runs
-        // there, and stopping bb's unit for the install interrupts nothing.
-        await deps.prepareHost?.({ sandboxId, hostId: hostId ?? null, woke, signal, report });
-        report.step("Restarting bb on the sandbox");
-        await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(executor(sandboxId), report), report, signal });
+        try {
+          await beforeBootstrap(sandboxId, signal);
+          // bb's own update can hang on a disk the provider is still restoring: Boat updates it first, safely.
+          // No check for a running turn: bb calls resume() only for a suspended machine, so no turn runs
+          // there, and stopping bb's unit for the install interrupts nothing.
+          await deps.prepareHost?.({ sandboxId, hostId: hostId ?? null, woke, signal, report });
+          report.step("Restarting bb on the sandbox");
+          await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(executor(sandboxId), report), report, signal });
+        } catch (error) { await hooks.bootstrapFailed?.(sandboxId); throw error; }
       });
       return { resource };
     },

@@ -1,3 +1,4 @@
+import { createCredentialSource, createAgentRouteCheck } from "./src/credentials.ts";
 import { createProviderRecovery } from "./src/provider-recovery.ts";
 import { ScalewayApi } from "./src/providers/scaleway/api.ts";
 import { ScalewayKeys } from "./src/providers/scaleway/ssh.ts";
@@ -120,7 +121,8 @@ export default async function plugin(bb: BbPluginApi) {
   const instaboxCli = new InstaboxCli(async () => resolveInstaboxBinary((await settings.get()).instaboxPath), () => providerSecrets.instaboxKey());
   const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
   const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases, enabled: () => instaboxOn, keyPresent: () => providerSecrets.instaboxKeyPresent(), secrets: async () => (await settings.get()).instaboxSecrets });
-  const scaleway = createScalewayProvider({ api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(dirname(bb.storage.database().name), "scaleway-keys")), ledger: store.macLeases });
+  const machineCredentials = createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) });
+  const scaleway = createScalewayProvider({ credentials: machineCredentials, api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(dirname(bb.storage.database().name), "scaleway-keys")), ledger: store.macLeases });
   scaleway.configured = async () => Boolean((await settings.get()).scalewayProjectId) || providerSecrets.scalewayKeyPresent();
   let scalewayOn = Boolean((await settings.get()).scalewayProjectId);
   settings.onChange(() => { void settings.get().then(values => { scalewayOn = Boolean(values.scalewayProjectId); }); });

@@ -469,6 +469,7 @@ export const PLUGIN_SETTINGS = {
  * Agents) is where the owner enters them; only the server reads them.
  */
 export const SECRET_SETTINGS = {
+  rentedMachineGithubToken: { type: "string", label: "GitHub token for rented machines", description: "Fine-grained token: only selected task repositories; Contents, Pull requests and Workflows read and write; 90-day expiry. Enter it here, never in chat. Delivered over private SSH stdin; removed before hand-back.", secret: true },
   scalewaySecretKey: { type: "string", label: "Scaleway secret key", description: "Only used for Scaleway API authentication. Enter it here, never in chat.", secret: true },
   instaboxApiKey: {
     type: "string",

@@ -303,10 +303,9 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       if (!provider?.presentation) return;
       const metadata = await provider.presentation({force, signal: AbortSignal.timeout(15_000)}).catch(() => null);
       if (metadata) Object.assign(row, metadata);
-      if (row.id === "scaleway" && row.connection === "connected") row.status = [row.status,"Held Macs only"].filter(Boolean).join(" · ");
       if (row.steps) {
         const complete = row.steps.filter(s => s.possible).every(s => s.done);
-        row.status = complete ? row.id === "scaleway" ? (row.status ?? "Held Macs only") : "Connected" : `Setting up · ${row.steps.filter(s => s.possible && s.done).length} of ${row.steps.filter(s => s.possible).length}`;
+        row.status = complete ? (row.status ?? "Connected") : [row.status, `Setting up · ${row.steps.filter(s => s.possible && s.done).length} of ${row.steps.filter(s => s.possible).length}`].filter(Boolean).join(" · ");
       }
     }));
     return result;
@@ -328,7 +327,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       projects: runtime.projects.list().map(project => projectRow(project, service.sandboxProviders)),
       providers: result.providers.map(row => ({
         ...row,
-        ...(row.steps ? { waitingTasks: waiting.filter(task => task.sandboxProvider === row.id && /GitHub|API key|setup/i.test(task.error ?? "")).length } : {}),
+        ...(row.steps ? { waitingTasks: waiting.filter(task => task.sandboxProvider === row.id && /GitHub|API key|setup|credentials|Account Pooler/i.test(task.error ?? "")).length } : {}),
       })),
     };
   }

@@ -7,6 +7,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { SECRET_SETTINGS } from "./settings.ts";
 
 export interface ProviderSecrets {
+  rentedMachineGithubToken(): Promise<string | null>;
   /** The Instabox API key (null: none stored), read fresh. */
   scalewayKey(): Promise<string | null>;
   scalewayKeyPresent(): boolean;
@@ -38,6 +39,10 @@ export async function defineProviderSecrets(bb: Pick<BbPluginApi, "settings">): 
       });
   });
   return {
+    rentedMachineGithubToken: async () => {
+      const values = await handle.get();
+      return typeof values.rentedMachineGithubToken === "string" ? values.rentedMachineGithubToken.trim() || null : null;
+    },
     scalewayKey: async () => {
       const values = await handle.get();
       const key = typeof values.scalewaySecretKey === "string" ? values.scalewaySecretKey.trim() : "";
