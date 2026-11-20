@@ -7,7 +7,7 @@ import { TaskStore } from "../src/store.ts";
 import { BoatService, TaskError, type StartTaskInput } from "../src/service.ts";
 import type { BoatApi } from "../src/providers/boat/api.ts";
 import { createStartQueue } from "../src/start-queue.ts";
-import { StartQueueStore, durableStartInput } from "../src/start-queue-store.ts";
+import { StartQueueStore, durableStartInput, queueDigest } from "../src/start-queue-store.ts";
 import { createPaidStartInteractions } from "../src/start-queue-interaction.ts";
 import { createQuotaReader, type Quotas, type QuotaReader } from "../src/quota.ts";
 import { defaultSettings, fakeRepos, FakeBoat, FakeChat } from "./fakes.ts";
@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const input: StartTaskInput = { title: "Cart drawer", role: "implement", brief: "Implement the quantity controls.", repo: "demo/storefront", baseBranch: "main", orchestratorThreadId: "thr_orch" };
-const quotas = (claude = 95, codex = 97): Quotas => new Map(([ ["claude",claude], ["codex",codex] ] as const).map(([provider,usedPercent]) => [provider,{provider,usedPercent,resetsAt:"2026-11-08T00:00:00Z",window:"Weekly limit"}]));
+const quotas = (claude = 95, codex = 97): Quotas => new Map(([ ["claude",claude], ["codex",codex] ] as const).map(([provider,usedPercent]) => [provider,{provider,usedPercent,...(provider==="claude"?{paidAttemptAllowed:true}:{}),resetsAt:"2026-11-08T00:00:00Z",window:"Weekly limit"}]));
 function gate() { let release!: () => void; const promise = new Promise<void>(r=>{release=r;}); return {promise,release}; }
 async function until(check: () => boolean) { const end=Date.now()+3000;while(!check()){if(Date.now()>end)throw Error("Timed out");await new Promise(r=>setTimeout(r,2));} }
 function setup(asChat = false) {
@@ -139,13 +139,13 @@ test("paid confirmation is one original request and explicit provider only; no g
  const e=setup();t.after(()=>e.dispose());const q=await e.queued();const before=structuredClone(e.settings);const quote=await e.queue.quotePaid(q.id,q.revision,"codex");const launched=await e.queue.confirmPaid(quote,5000);
  assert.equal(launched.kind,"started");if(launched.kind!=="started")throw Error("Not started");assert.equal(launched.task.provider,"codex");assert.deepEqual(e.settings,before);
  const evidence=JSON.parse(e.registry.latestEvent(launched.task.id,"paid-start-approved")!.text);assert.equal(evidence.requestId,q.id);assert.equal(evidence.provider,"codex");assert.equal(evidence.quotas.length,2);
- await assert.rejects(e.queue.confirmPaid(quote,5000));assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);
+ const duplicate=await e.queue.confirmPaid(quote,5000);assert.equal(duplicate.kind,"started");if(duplicate.kind==="started")assert.equal(duplicate.task.id,launched.task.id);assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);
  assert.equal(e.harness.sdk.calls.filter(c=>/account|setting/i.test(c.path)).length,0);
 });
 test("expired, changed, cancelled, unavailable and unknown-usage paid requests never allocate",async t=>{
- for(const change of ["expired","usage","cancel","provider","unknown","beforeInsert"] as const){const e=setup();t.after(()=>e.dispose());const q=await e.queued();const quote=await e.queue.quotePaid(q.id,q.revision,"codex");
- if(change==="expired")e.advance(300001);if(change==="usage")e.setUsage(quotas(96,97));if(change==="cancel")e.queue.cancel(q.id,q.revision);if(change==="provider")e.setSettings({agents:"claude"});if(change==="unknown")e.setUsage(new Map());
- if(change==="beforeInsert"){const at=e.freshReads+2;e.setFresh(n=>{if(n===at)e.setUsage(quotas(98,99));});}
+ for(const change of ["expired","cancel","provider","unknown","beforeInsert"] as const){const e=setup();t.after(()=>e.dispose());const q=await e.queued();const quote=await e.queue.quotePaid(q.id,q.revision,"codex");
+ if(change==="expired")e.advance(300001);if(change==="cancel")e.queue.cancel(q.id,q.revision);if(change==="provider")e.setSettings({agents:"claude"});if(change==="unknown")e.setUsage(new Map());
+ if(change==="beforeInsert"){const at=e.freshReads+2;e.setFresh(n=>{if(n===at)e.setUsage(new Map());});}
  await assert.rejects(e.queue.confirmPaid(quote,5000));assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);}
 });
 test("settings changes during confirmation or async preparation invalidate paid approval and return automatic work to waiting",async t=>{
@@ -155,13 +155,13 @@ test("settings changes during confirmation or async preparation invalidate paid 
  assert.equal(e.queue.get(q.id)!.state,"waiting");assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);}
 });
 test("native paid interaction returns promptly, deduplicates, and requires a matching explicit Start submission",async t=>{
- for(const choice of ["wait","wrong-id","start","cancel","stale-usage","closed-source"] as const){const e=setup();t.after(()=>e.dispose());const q=await e.queued();
+ for(const choice of ["wait","wrong-id","start","cancel","usage-drift","closed-source"] as const){const e=setup();t.after(()=>e.dispose());const q=await e.queued();
  const interaction=createPaidStartInteractions({queue:e.queue,waitMs:5000,requestInput:(r,o)=>e.bb.ui.requestInput(r,o),changed(){}});t.after(()=>interaction.dispose());
  const request=interaction.request({id:q.id,revision:q.revision,provider:"codex"});assert.equal(request.pending,true);assert.equal(request.threadId,"thr_orch");assert.equal(interaction.request({id:q.id,revision:q.revision,provider:"codex"}).duplicate,true);
  await until(()=>e.harness.inspection.pendingInteractions.length>0);const pending=e.harness.inspection.pendingInteractions[0]!;assert.equal(pending.rendererId,"paid-task-start");assert.equal(e.boat.calls.length,0);
- if(choice==="stale-usage")e.setUsage(quotas(96,98));if(choice==="closed-source")e.setClosed();
+ if(choice==="usage-drift")e.setUsage(quotas(96,98));if(choice==="closed-source")e.setClosed();
  if(choice==="cancel")e.harness.behavior.cancelInteraction(pending.id);else e.harness.behavior.submitInteraction(pending.id,{requestId:choice==="wrong-id"?"stale":request.requestId,choice:choice==="wait"?"wait":"start"} as never);
- await interaction.settled();assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,choice==="start"?1:0);assert.equal(e.harness.sdk.callsTo("threads.send").length,0);assert.equal(e.harness.sdk.callsTo("threads.spawn").length,0);if(choice==="wrong-id")assert.match(e.queue.get(q.id)!.message,/choice is invalid/);if(choice==="stale-usage")assert.match(e.queue.get(q.id)!.message,/usage changed/);if(choice==="closed-source")assert.equal(e.queue.get(q.id)!.state,"cancelled");}
+ await interaction.settled();assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,choice==="start"||choice==="usage-drift"?1:0);assert.equal(e.harness.sdk.callsTo("threads.send").length,0);assert.equal(e.harness.sdk.callsTo("threads.spawn").length,0);if(choice==="wrong-id")assert.match(e.queue.get(q.id)!.message,/choice is invalid/);if(choice==="closed-source")assert.equal(e.queue.get(q.id)!.state,"cancelled");}
 });
 test("an unavailable paid reviewer publishes queue feedback without opening a question or waking an agent",async t=>{
  const e=setup();t.after(()=>e.dispose());const q=await e.queued();e.setSettings({notConnectedAgents:["codex"]});const interaction=createPaidStartInteractions({queue:e.queue,waitMs:5000,requestInput:(r,o)=>e.bb.ui.requestInput(r,o),changed(){}});t.after(()=>interaction.dispose());
@@ -207,7 +207,7 @@ test("actual dispatch tool, task-start CLI and New Task RPC all return durable q
 });
 
 function paidUsage(claude=100,codex=100,allowed=true):Quotas {
- const value=quotas(claude,codex);value.get("claude")!.extraUsage={allowed,observedAt:Date.now()};return value;
+ const value=quotas(claude,codex);value.get("claude")!.extraUsage={allowed,observedAt:Date.now()};value.get("claude")!.paidAttemptAllowed=true;return value;
 }
 test("automatic paid policy starts one eligible bb chat only after included allowances are exhausted, with its own receipt",async t=>{
  const e=setup(true);t.after(()=>e.dispose());e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true}});e.setUsage(paidUsage());
@@ -225,9 +225,9 @@ test("automatic policy never spends on headless Harbormaster credentials or a na
 test("a saved waiting receipt starts exactly once after the automatic policy is enabled",async t=>{
  const e=setup(true);t.after(()=>e.dispose());const q=await e.queued({repo:null,baseBranch:null});e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true}});e.setUsage(paidUsage());await Promise.all([e.queue.tick(),e.queue.tick()]);await e.settle();assert.equal(e.queue.get(q.id)!.state,"started");assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);await e.start().tick();assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);
 });
-test("lost billing availability, source closure or policy revocation during paid preflight allocates nothing",async t=>{
+test("lost account availability, source closure or policy revocation during paid preflight allocates nothing",async t=>{
  for(const change of ["billing","source","policy"]){const e=setup(true);t.after(()=>e.dispose());const q=await e.queued({repo:null,baseBranch:null});e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true}});e.setUsage(paidUsage());const hold=gate();let entered=false;e.setPreflight(async()=>{entered=true;await hold.promise;});const work=e.queue.tick();await until(()=>entered);
- if(change==="billing")e.setUsage(paidUsage(100,100,false));else if(change==="source")e.setClosed();else e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:false}});hold.release();await work;assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);assert.equal(e.queue.get(q.id)!.state,change==="source"?"cancelled":"waiting");}
+ if(change==="billing"){const restricted=paidUsage(100,100,false);restricted.get("claude")!.paidAttemptAllowed=false;e.setUsage(restricted);}else if(change==="source")e.setClosed();else e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:false}});hold.release();await work;assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);assert.equal(e.queue.get(q.id)!.state,change==="source"?"cancelled":"waiting");}
 });
 
 test("headless automatic paid start requires the separately saved same-account authorization",async t=>{
@@ -236,4 +236,93 @@ test("headless automatic paid start requires the separately saved same-account a
 
 test("a same-account headless credit refusal prevents the next automatic request from allocating another sandbox",async t=>{
  const e=setup();t.after(()=>e.dispose());e.setSettings({relay:{...e.settings.relay,paidClaudeFallback:true,paidClaudeHeadless:true}});e.setUsage(paidUsage());e.boat.prompt=async()=>{throw Error("Out of credits");};await assert.rejects(e.queue.launch(input,5000),/Out of credits/);const created=e.boat.calls.filter(c=>c.startsWith("create ")).length;assert.equal(created,1);await e.queued({title:"Another task"});assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,created);
+});
+
+
+test("native paid start tolerates monitor revisions, reset jitter and unrelated quota changes at both fresh reads",async t=>{
+ const e=setup();t.after(()=>e.dispose());const q=await e.queued();
+ const interaction=createPaidStartInteractions({queue:e.queue,waitMs:5000,requestInput:(r,o)=>e.bb.ui.requestInput(r,o),changed(){}});t.after(()=>interaction.dispose());
+ const request=interaction.request({id:q.id,revision:q.revision,provider:"claude"});await until(()=>e.harness.inspection.pendingInteractions.length>0);
+ const pending=e.harness.inspection.pendingInteractions[0]!;
+ const updated=quotas(95,100);updated.get("claude")!.resetsAt="2026-11-08T00:00:00.125Z";e.setUsage(updated);await e.queue.tick();
+ assert.ok(e.queue.get(q.id)!.revision>q.revision); // The original reproducible revision race.
+ e.setFresh(()=>{const current=quotas(99,12);current.get("claude")!.resetsAt=new Date(Date.now()+1000).toISOString();e.setUsage(current);});
+ e.harness.behavior.submitInteraction(pending.id,{requestId:request.requestId,choice:"start"} as never);await interaction.settled();await e.settle();
+ assert.equal(e.queue.get(q.id)!.state,"started");assert.equal(e.registry.list().length,1);assert.equal(e.registry.list()[0]!.provider,"claude");assert.equal(e.registry.list()[0]!.claudePaidContinuation,false);
+ assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);
+});
+
+test("paid quotation tolerates metadata updates during its own fresh read",async t=>{
+ const e=setup();t.after(()=>e.dispose());const q=await e.queued();e.setFresh(()=>{const current=e.store.get(q.id)!;e.store.transition(q.id,current.dto.revision,["waiting"],"waiting","Updated reset display","2026-11-09T00:00:00Z");});
+ const quote=await e.queue.quotePaid(q.id,q.revision,"claude");e.setFresh(null);const result=await e.queue.confirmPaid(quote,5000);assert.equal(result.kind,"started");assert.equal(e.registry.list().length,1);
+});
+
+test("concurrent and repeated confirmations allocate the original reserved task exactly once",async t=>{
+ const e=setup();t.after(()=>e.dispose());const q=await e.queued();const quote=await e.queue.quotePaid(q.id,q.revision,"claude"),reserved=e.store.get(q.id)!.reservedTaskId;
+ const results=await Promise.all([e.queue.confirmPaid(quote,5000),e.queue.confirmPaid(quote,5000)]);assert.ok(results.some(r=>r.kind==="started"));await e.settle();
+ const repeat=await e.queue.confirmPaid(quote,5000);assert.equal(repeat.kind,"started");if(repeat.kind==="started")assert.equal(repeat.task.id,reserved);
+ assert.equal(e.registry.list().length,1);assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);
+});
+
+test("material original request, source, reserved task or provider changes still reject paid confirmation",async t=>{
+ for(const field of ["brief","orchestratorThreadId","provider","reservedTaskId"] as const){const e=setup();t.after(()=>e.dispose());const q=await e.queued();const quote=await e.queue.quotePaid(q.id,q.revision,"claude");const entry=e.store.get(q.id)!;
+ if(field==="reservedTaskId")e.db.prepare("UPDATE start_queue SET reserved_task_id=? WHERE id=?").run("t_fake_replacement",q.id);
+ else {const changed={...entry.input,[field]:field==="provider"?"codex":"Changed original input"};e.db.prepare("UPDATE start_queue SET input=?,digest=? WHERE id=?").run(JSON.stringify(changed),queueDigest({input:changed,parentGeneration:entry.parentGeneration}),q.id);}
+ await assert.rejects(e.queue.confirmPaid(quote,5000),/request changed/);assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);}
+});
+
+test("failed native confirmation keeps concrete feedback after a monitor revision",async t=>{
+ const e=setup();t.after(()=>e.dispose());const q=await e.queued();const interaction=createPaidStartInteractions({queue:e.queue,waitMs:5000,requestInput:(r,o)=>e.bb.ui.requestInput(r,o),changed(){}});t.after(()=>interaction.dispose());
+ const request=interaction.request({id:q.id,revision:q.revision,provider:"claude"});await until(()=>e.harness.inspection.pendingInteractions.length>0);const pending=e.harness.inspection.pendingInteractions[0]!;
+ const updated=quotas();updated.get("claude")!.resetsAt="2026-11-09T00:00:00Z";updated.get("codex")!.resetsAt="2026-11-09T00:00:00Z";e.setUsage(updated);await e.queue.tick();assert.ok(e.queue.get(q.id)!.revision>q.revision);
+ e.setSettings({agents:"codex"});e.harness.behavior.submitInteraction(pending.id,{requestId:request.requestId,choice:"start"} as never);await interaction.settled();
+ assert.match(e.queue.get(q.id)!.message,/Paid start stopped.*selected agent is unavailable/);assert.equal(e.registry.list().length,0);
+});
+
+test("only the newly offered native Claude continuation choice creates durable task consent",async t=>{
+ for(const choice of ["start","start-claude-continuation"] as const){const e=setup();t.after(()=>e.dispose());const q=await e.queued({role:"custom",provider:"claude",userApproved:true});const interaction=createPaidStartInteractions({queue:e.queue,waitMs:5000,requestInput:(r,o)=>e.bb.ui.requestInput(r,o),changed(){}});t.after(()=>interaction.dispose());
+ const request=interaction.request({id:q.id,revision:q.revision,provider:"claude"});await until(()=>e.harness.inspection.pendingInteractions.length>0);const pending=e.harness.inspection.pendingInteractions[0]!;assert.equal((pending.payload as {claudeContinuationOffered:boolean}).claudeContinuationOffered,true);
+ const usage=quotas(95,100);usage.get("claude")!.extraUsage={allowed:false,observedAt:Date.now()-3600000};e.setUsage(usage);
+ e.harness.behavior.submitInteraction(pending.id,{requestId:request.requestId,choice} as never);await interaction.settled();
+ const task=e.registry.list()[0]!;assert.equal(task.claudePaidContinuation,choice==="start-claude-continuation");assert.equal(e.queue.get(q.id)!.claudePaidContinuation,choice==="start-claude-continuation");
+ assert.equal(e.registry.latestEvent(task.id,"claude-continuation-approved")!==null,choice==="start-claude-continuation");assert.equal(e.registry.list().length,1);
+ const another=await e.queued({title:"Unrelated work"});assert.equal(another.claudePaidContinuation,false);assert.equal(e.registry.list().length,1);
+ assert.equal(e.harness.sdk.calls.filter(c=>/account|setting/i.test(c.path)).length,0);}
+});
+
+test("Claude continuation is never offered or accepted for Codex, reviews or child work",async t=>{
+ for(const kind of ["codex","review","child"] as const){const e=setup();t.after(()=>e.dispose());const parent=kind==="child"?(await e.service.launchTask({...input,provider:"claude"},5000)).task:null;const q=await e.queued({role:kind==="review"?"review":"custom",...(parent?{parentTaskId:parent.id}:{}),provider:kind==="codex"?"codex":"claude"});const interaction=createPaidStartInteractions({queue:e.queue,waitMs:5000,requestInput:(r,o)=>e.bb.ui.requestInput(r,o),changed(){}});t.after(()=>interaction.dispose());
+ const request=interaction.request({id:q.id,revision:q.revision,provider:kind==="codex"?"codex":"claude"});await until(()=>e.harness.inspection.pendingInteractions.length>0);const pending=e.harness.inspection.pendingInteractions[0]!;assert.equal((pending.payload as {claudeContinuationOffered:boolean}).claudeContinuationOffered,false);
+ e.harness.behavior.submitInteraction(pending.id,{requestId:request.requestId,choice:"start-claude-continuation"} as never);await interaction.settled();assert.match(e.queue.get(q.id)!.message,/not offered/);assert.equal(e.registry.list().length,parent?1:0);}
+});
+
+test("scoped pending consent survives reload and transfers atomically to its original task ID",async t=>{
+ const e=setup();t.after(()=>e.dispose());const q=await e.queued({provider:"claude",role:"custom"});const quote=await e.queue.quotePaid(q.id,q.revision,"claude");const reserved=quote.entry.reservedTaskId;const hold=gate();let entered=false;
+ e.setPreflight(async()=>{entered=true;await hold.promise;});const confirming=e.queue.confirmPaid({...quote,claudePaidContinuation:true},5000);await until(()=>entered);
+ assert.equal(e.store.get(q.id)!.claudeConsent!.reservedTaskId,reserved);e.queue.dispose();hold.release();await assert.rejects(confirming);assert.equal(e.queue.get(q.id)!.state,"waiting");assert.equal(e.registry.list().length,0);
+ e.setPreflight(null);const restored=e.start();assert.equal(restored.get(q.id)!.claudePaidContinuation,true);await restored.tick();await e.settle();const receipt=restored.get(q.id)!;assert.equal(receipt.taskId,reserved);assert.equal(e.registry.get(reserved)!.claudePaidContinuation,true);assert.ok(e.registry.latestEvent(reserved,"claude-continuation-approved"));
+ await e.start().tick();assert.equal(e.boat.calls.filter(c=>c.startsWith("create ")).length,1);
+});
+
+test("cancelled or expired scoped queue consent cannot resume after reload",async t=>{
+ for(const stop of ["cancel","expire","policy"] as const){const e=setup();t.after(()=>e.dispose());const q=await e.queued({provider:"claude",role:"custom"});const quote=await e.queue.quotePaid(q.id,q.revision,"claude");const hold=gate();let entered=false;e.setPreflight(async()=>{entered=true;await hold.promise;});const confirming=e.queue.confirmPaid({...quote,claudePaidContinuation:true},5000);await until(()=>entered);e.queue.dispose();hold.release();await assert.rejects(confirming);e.setPreflight(null);
+ if(stop==="cancel")e.queue.cancel(q.id,e.queue.get(q.id)!.revision);if(stop==="expire")e.advance(300001);if(stop==="policy")e.setSettings({machineType:"large"});
+ const restored=e.start();await restored.tick();assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);assert.equal(restored.get(q.id)!.state,stop==="cancel"?"cancelled":"waiting");if(stop!=="cancel"){assert.match(restored.get(q.id)!.message,/expired or.*policy changed/);e.setUsage(quotas(100,10));e.advance(30001);await restored.tick();assert.equal(e.registry.list().length,0);assert.equal(restored.get(q.id)!.claudePaidContinuation,true);}}
+});
+
+
+test("scoped Claude attempts use included or full quota despite rejected, stale or absent extra telemetry in both runners",async t=>{
+ for(const chat of [false,true])for(const percent of [95,100])for(const telemetry of ["missing","stale","rejected"] as const){const e=setup(chat);t.after(()=>e.dispose());const q=await e.queued({provider:"claude",role:"custom",...(chat?{repo:null,baseBranch:null}:{})});const usage=quotas(percent,100);usage.get("claude")!.paidAttemptAllowed=true;if(telemetry!=="missing")usage.get("claude")!.extraUsage={allowed:telemetry!=="rejected",observedAt:Date.now()-3600000};e.setUsage(usage);
+ const quote=await e.queue.quotePaid(q.id,q.revision,"claude");const result=await e.queue.confirmPaid({...quote,claudePaidContinuation:true},5000);assert.equal(result.kind,"started");if(result.kind==="started"){assert.equal(result.task.provider,"claude");assert.equal(result.task.claudePaidContinuation,true);assert.equal(result.task.runner,chat?"chat":"boat");}assert.equal(e.registry.list().length,1);}
+});
+
+test("scoped consent cannot bypass concrete account restrictions before admission or insertion",async t=>{
+ for(const phase of ["admission","insert"] as const){const e=setup();t.after(()=>e.dispose());const q=await e.queued({provider:"claude",role:"custom"});const quote=await e.queue.quotePaid(q.id,q.revision,"claude");const restrict=()=>{const usage=quotas();usage.get("claude")!.paidAttemptAllowed=false;e.setUsage(usage);};
+ if(phase==="admission")restrict();else {const read=e.freshReads+2;e.setFresh(n=>{if(n===read)restrict();});}
+ await assert.rejects(e.queue.confirmPaid({...quote,claudePaidContinuation:true},5000),/routing, credentials or account restrictions/);assert.equal(e.registry.list().length,0);assert.equal(e.boat.calls.length,0);}
+});
+
+test("expired scoped intent cannot be downgraded by an older manual-only confirmation",async t=>{
+ const e=setup();t.after(()=>e.dispose());const q=await e.queued({provider:"claude",role:"custom"});const quote=await e.queue.quotePaid(q.id,q.revision,"claude");const hold=gate();let entered=false;e.setPreflight(async()=>{entered=true;await hold.promise;});const confirming=e.queue.confirmPaid({...quote,claudePaidContinuation:true},5000);await until(()=>entered);e.queue.dispose();hold.release();await assert.rejects(confirming);e.setPreflight(null);
+ const restored=e.start();await assert.rejects(restored.confirmPaid(quote,5000),/older start-only receipt/);assert.equal(e.registry.list().length,0);assert.equal(restored.get(q.id)!.claudePaidContinuation,true);
 });

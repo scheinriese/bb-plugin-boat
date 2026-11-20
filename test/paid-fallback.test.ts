@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {agentForWork,automaticPaidClaude,decideRelay,PAID_USAGE_EVIDENCE_MS,type RelaySettings,type OrchestratorView} from "../src/relay.ts";
+import {agentForWork,automaticPaidClaude,decideRelay,type RelaySettings,type OrchestratorView} from "../src/relay.ts";
 import {applyLimitFlags,createQuotaReader,poolExtraUsage,type Quotas} from "../src/quota.ts";
 const now=Date.now();
 const settings:RelaySettings={enabled:true,preferred:"claude",switchAtPercent:98,switchBackBelowPercent:50,quietMinutes:10,paidClaudeFallback:true};
-function usage(claude=100,codex=100):Quotas{return new Map(([['claude',claude],['codex',codex]] as const).map(([provider,usedPercent])=>[provider,{provider,usedPercent,resetsAt:null,window:"Weekly limit",...(provider==='claude'?{extraUsage:{allowed:true,observedAt:now}}:{})}]))}
+function usage(claude=100,codex=100):Quotas{return new Map(([['claude',claude],['codex',codex]] as const).map(([provider,usedPercent])=>[provider,{provider,usedPercent,resetsAt:null,window:"Weekly limit",...(provider==='claude'?{paidAttemptAllowed:true,extraUsage:{allowed:true,observedAt:now}}:{})}]))}
 const view:OrchestratorView={threadId:"thr_demo",provider:"codex",status:"idle",updatedAt:now-3600000,archived:false,hasProject:true};
-test("paid fallback requires explicit policy, both actual limits, fresh affirmative availability and a connected Claude choice",()=>{
+test("paid fallback requires explicit policy, included limits and a usable Claude route, not extra-usage telemetry",()=>{
  const q=usage();assert.equal(automaticPaidClaude(q,settings,"both",now),true);
  assert.equal(automaticPaidClaude(q,{...settings,paidClaudeFallback:false},"both",now),false);
  assert.equal(automaticPaidClaude(usage(100,97),settings,"both",now),false);
  assert.equal(automaticPaidClaude(q,settings,"codex",now),false);
  q.delete("codex");assert.equal(automaticPaidClaude(q,settings,"both",now),false);assert.equal(automaticPaidClaude(q,settings,"claude",now),true);
- for(const evidence of [undefined,{allowed:false,observedAt:now},{allowed:true,observedAt:now-PAID_USAGE_EVIDENCE_MS-1},{allowed:true,observedAt:now+1}]){const value=usage();value.get("claude")!.extraUsage=evidence;assert.equal(automaticPaidClaude(value,settings,"both",now),false);}
+ for(const evidence of [undefined,{allowed:false,observedAt:null},{allowed:false,status:"rejected" as const,observedAt:now},{allowed:true,observedAt:now-3600000},{allowed:true,observedAt:now+1}]){const value=usage();value.get("claude")!.extraUsage=evidence;assert.equal(automaticPaidClaude(value,settings,"both",now),true);}
+ for (const route of [undefined, false]) {const value=usage();value.get("claude")!.paidAttemptAllowed=route;assert.equal(automaticPaidClaude(value,settings,"both",now),false);}
 });
 test("included usage wins regardless of preferred agent or paid availability",()=>{
  assert.equal(agentForWork("claude",usage(100,20),settings),"codex");assert.equal(agentForWork("codex",usage(0,100),settings),"claude");assert.equal(agentForWork("codex",usage(),settings),"claude");
@@ -44,7 +45,25 @@ test("a stale Pooler rejection keeps its own time and status; it is never restam
  assert.deepEqual(await poolExtraUsage({sdk:{plugins:{callRpc:async()=>{throw new Error('disabled')}}}} as never,'claude'),{allowed:false,status:'unknown',observedAt:null,pool:'off'});
  // Newest allowed wins; a disabled account's reading doesn't count.
  assert.deepEqual(await poolExtraUsage(pool([{id:'a',provider:'claude',status:'ready',extraUsage:{status:'rejected',observedAt:now}},{id:'b',provider:'claude',status:'ready',extraUsage:{status:'allowed',observedAt:old}},{id:'c',provider:'claude',status:'disabled',extraUsage:{status:'allowed',observedAt:now}}]),'claude'),{allowed:true,status:'allowed',observedAt:old,pool:'on'});
- // The stale allowance is shown but cannot start paid work.
- const q=usage();q.get('claude')!.extraUsage={allowed:true,status:'allowed',observedAt:old,pool:'on'};assert.equal(automaticPaidClaude(q,settings,'both',now),false);
- q.get('claude')!.extraUsage={allowed:false,status:'rejected',observedAt:now,pool:'on'};assert.equal(automaticPaidClaude(q,settings,'both',now),false);
+ // Telemetry is shown with its own timestamp; an authorized attempt uses route state.
+ const q=usage();q.get('claude')!.extraUsage={allowed:true,status:'allowed',observedAt:old,pool:'on'};assert.equal(automaticPaidClaude(q,settings,'both',now),true);
+ q.get('claude')!.extraUsage={allowed:false,status:'rejected',observedAt:now,pool:'on'};assert.equal(automaticPaidClaude(q,settings,'both',now),true);
+});
+
+test("routed ready unrestricted accounts permit attempts despite rejected or missing observations; account restrictions still block", async()=>{
+ let account:Record<string,unknown>={id:"fake-claude",provider:"claude",enabled:true,status:"ready",usageRestriction:null,extraUsage:{status:"rejected",observedAt:now-3600000}};
+ let routing=true;
+ const bb={sdk:{plugins:{callRpc:async({method}:{method:string})=>{
+  if(method==="status.get")return {routing:{claude:routing,codex:true},accounts:[account]};
+  if(method.endsWith("listResources"))return {resources:[{id:"fake-claude",providerId:"claude-code"},{id:"fake-codex",providerId:"codex"}]};
+  return {usage:{status:"ok",windows:[{usedPercent:100,model:null}]}};
+ }}}} as never;
+ const read=()=>createQuotaReader(bb,{sources:["account-pool"]}).read(undefined,{fresh:true});
+ assert.equal(automaticPaidClaude(await read(),settings,"both",now),true);
+ account.extraUsage=null;assert.equal(automaticPaidClaude(await read(),settings,"both",now),true);
+ account.extraUsage={status:"disabled",observedAt:null};assert.equal(automaticPaidClaude(await read(),settings,"both",now),true);
+ for(const change of [{enabled:false},{status:"auth_required"},{usageRestriction:{reason:"spend_control_reached"}},{heldUntil:now+3600000},{error:{message:"Authentication failed"}}]){
+  const saved={...account};account={...account,...change};assert.equal(automaticPaidClaude(await read(),settings,"both",now),false);account=saved;
+ }
+ routing=false;assert.equal(automaticPaidClaude(await read(),settings,"both",now),false);
 });

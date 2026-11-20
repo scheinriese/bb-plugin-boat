@@ -61,7 +61,7 @@ function settings(relay: Partial<BoatSettings["relay"]> = {}): BoatSettings {
 /** Claude at its weekly limit, Codex at 99%, and a fresh "allowed" extra-usage reading. */
 function usage(extra: Partial<{ allowed: boolean; status: "allowed" | "rejected"; observedAt: number }> = {}, blockedUntil?: number): Quotas {
   return new Map([
-    ["claude", { provider: "claude", usedPercent: 100, resetsAt: null, window: "Weekly limit", extraUsage: { allowed: true, status: "allowed", observedAt: NOW - 60_000, pool: "on", ...extra }, ...(blockedUntil ? { blockedUntil } : {}) }],
+    ["claude", { provider: "claude", usedPercent: 100, resetsAt: null, window: "Weekly limit", paidAttemptAllowed: true, extraUsage: { allowed: true, status: "allowed", observedAt: NOW - 60_000, pool: "on", ...extra }, ...(blockedUntil ? { blockedUntil } : {}) }],
     ["codex", { provider: "codex", usedPercent: 99, resetsAt: null, window: "Weekly limit" }],
   ]);
 }
@@ -199,6 +199,7 @@ function setup(options: { tasks?: Task[]; projects?: { id: string; name: string;
     wakes,
     tasks: {
       byThread: (threadId) => tasks.find((entry) => entry.threadId === threadId || entry.id === `chat-of-${threadId}`) ?? null,
+      get: (taskId) => tasks.find((entry) => entry.id === taskId) ?? null,
       failedHeadless: () => tasks.filter((entry) => entry.runner === "boat" && entry.status === "failed"),
       addEvent: (taskId, kind, text) => void events.push({ taskId, kind, text }),
       continueHeadless: async (taskId, text) => {
@@ -294,7 +295,7 @@ test("a turn provider retry skipped (beyond its maximum wait, or no decision) is
   assert.deepEqual((await env.resume.pass(usage(), settings())).skipped, [{ id: "thr_old_decision", reason: "waiting for provider retry's decision" }]);
 });
 
-test("nothing resumes on a stale, rejected or held reading, or with the setting or the fallback off", async () => {
+test("nothing resumes without a usable route, on a held reading, or with the setting or fallback off", async () => {
   const env = setup();
   env.threads.add("thr_a");
   env.threads.decisions.set("thr_a", { requestId: "req_thr_a", kind: "decline", reason: "beyond-maximum-wait" });
@@ -304,8 +305,12 @@ test("nothing resumes on a stale, rejected or held reading, or with the setting 
     const report = await env.resume.pass(quotas, current);
     assert.deepEqual(report.resumed, []);
   };
-  await none(usage({ observedAt: NOW - PAID_USAGE_EVIDENCE_MS - 1 }));
-  await none(usage({ allowed: false, status: "rejected", observedAt: NOW - 1_000 }));
+  const unready = usage();
+  unready.get("claude")!.paidAttemptAllowed = false;
+  await none(unready);
+  const unknownRoute = usage();
+  delete unknownRoute.get("claude")!.paidAttemptAllowed;
+  await none(unknownRoute);
   await none(usage({}, NOW + 3_600_000));
   // Codex still has included room: not paid Claude's turn.
   const room = usage();
@@ -1122,7 +1127,7 @@ test("opted-out and held chats are set aside before their events are read", asyn
   skippedStop(env, "thr_held");
   skippedStop(env, "thr_in");
   await env.resume.pass(usage(), settings());
-  assert.deepEqual(env.threads.eventReads, ["thr_in"]);
+  assert.deepEqual(env.threads.eventReads, ["thr_in", "thr_in"]);
 });
 
 test("one pass at a time, and a burst of stops makes one check", async () => {
@@ -1140,4 +1145,221 @@ test("one pass at a time, and a burst of stops makes one check", async () => {
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(runs, 1);
   controller.abort();
+});
+
+test("task owner permission resumes only its Claude task despite rejected, stale or absent paid telemetry", async () => {
+  for (const usedPercent of [95, 100]) {
+    for (const observation of ["rejected", "stale", "unknown"] as const) {
+      const approved = task({ id: "t_scoped", role: "custom", threadId: "thr_scoped", claudePaidContinuation: true });
+      const review = task({ id: "t_review", role: "review", threadId: "thr_review", claudePaidContinuation: true });
+      const ordinary = task({ id: "t_ordinary", threadId: "thr_ordinary" });
+      const env = setup({ tasks: [approved, review, ordinary] });
+      for (const id of ["thr_scoped", "thr_review", "thr_ordinary", "thr_orchestrator"]) skippedStop(env, id);
+      const quotas = usage(observation === "rejected" ? { allowed: false, status: "rejected" } : { observedAt: NOW - PAID_USAGE_EVIDENCE_MS - 1 });
+      const claude = quotas.get("claude")!;
+      claude.usedPercent = usedPercent;
+      if (observation === "unknown") delete claude.extraUsage;
+      quotas.get("codex")!.usedPercent = 40;
+      const report = await env.resume.pass(quotas, settings({ paidClaudeFallback: false, resumeStoppedChats: false }));
+      assert.deepEqual(report.resumed.map((work) => work.taskId), ["t_scoped"], `${usedPercent}, ${observation}`);
+      assert.deepEqual(env.threads.calls, ["thr_scoped"]);
+      assert.match(env.threads.retried[0]!.reason, /owner permitted attempting paid Claude/i);
+      assert.match(env.events[0]!.text, /Attempted Claude continuation with task owner permission/);
+      assert.equal(report.resumed[0]!.scoped, true);
+      assert.doesNotMatch(parentNotice(report.resumed), /Paid Claude is available/);
+    }
+  }
+});
+
+test("scoped recovery preserves connection and project policy, closed tasks, archives and superseded chats", async () => {
+  for (const state of ["disconnected", "project", "done", "cancelled", "archived", "superseded", "revoked"] as const) {
+    const approved = task({ id: state === "superseded" ? "chat-of-thr_scoped" : "t_scoped", threadId: state === "superseded" ? "thr_new" : "thr_scoped", claudePaidContinuation: true, boatProject: "web", ...(state === "done" || state === "cancelled" ? { status: state } : {}), ...(state === "revoked" ? { claudePaidContinuationRevoked: true } : {}) });
+    const env = setup({ tasks: [approved], projects: state === "project" ? [{ id: "web", name: "Web", neverPaidClaude: true }] : [] });
+    skippedStop(env, "thr_scoped", state === "archived" ? { archived: true } : {});
+    const current = settings({ paidClaudeFallback: false });
+    if (state === "disconnected") current.notConnectedAgents = ["claude"];
+    assert.deepEqual((await env.resume.pass(usage(), current)).resumed, [], state);
+    assert.deepEqual(env.threads.calls, [], state);
+  }
+  // Revocation keeps its meaning with global paid recovery enabled too.
+  const revoked = setup({ tasks: [task({ threadId: "thr_revoked", claudePaidContinuationRevoked: true })] });
+  skippedStop(revoked, "thr_revoked");
+  assert.deepEqual((await revoked.resume.pass(usage(), settings())).resumed, []);
+  assert.deepEqual(revoked.threads.calls, []);
+});
+
+test("revoking or closing task permission during a machine read prevents an already planned native continuation", async () => {
+  for (const change of ["revoke", "close", "archive", "supersede"] as const) {
+    const approved = task({ threadId: "thr_scoped", claudePaidContinuation: true });
+    const env = setup({ tasks: [approved] });
+    skippedStop(env, "thr_scoped");
+    env.machines.sandbox = async () => {
+      if (change === "revoke") { approved.claudePaidContinuation = false; approved.claudePaidContinuationRevoked = true; }
+      if (change === "close") approved.status = "done";
+      if (change === "archive") env.threads.threads.get("thr_scoped")!.archived = true;
+      if (change === "supersede") approved.threadId = "thr_new";
+      return "running";
+    };
+    const report = await env.resume.pass(usage(), settings({ paidClaudeFallback: false }));
+    assert.deepEqual(report.resumed, [], change);
+    assert.deepEqual(env.threads.calls, [], change);
+  }
+});
+
+test("an actual scoped native billing or authentication refusal is visible and never automatically retried", async () => {
+  for (const refusal of [Object.assign(new Error("The provider refused billing"), { status: 402 }), Object.assign(new Error("Authentication failed"), { status: 401 })]) {
+    const env = setup({ tasks: [task({ threadId: "thr_scoped", claudePaidContinuation: true })] });
+    skippedStop(env, "thr_scoped");
+    env.threads.failures.set("thr_scoped", refusal);
+    const current = settings({ paidClaudeFallback: false });
+    const first = await env.resume.pass(usage(), current);
+    assert.equal(first.attempts, 1);
+    assert.equal(first.resumed.length, 0);
+    assert.equal(env.events.filter((event) => event.kind === "paid-resume-stopped").length, 1);
+    assert.match(env.events[0]!.text, /task and workspace are preserved/);
+    env.advance(BACKOFF_MAX_MS);
+    await env.resume.pass(usage(), current);
+    env.advance(BACKOFF_MAX_MS);
+    await env.resume.pass(usage(), current);
+    assert.deepEqual(env.threads.calls, ["thr_scoped"]);
+    assert.equal(env.events.filter((event) => event.kind === "paid-resume-stopped").length, 1);
+  }
+});
+
+test("a scoped stopped turn that has already reached the provider cannot form an endless usage retry chain", async () => {
+  const env = setup({ tasks: [task({ threadId: "thr_scoped", claudePaidContinuation: true })] });
+  skippedStop(env, "thr_scoped");
+  const current = settings({ paidClaudeFallback: false });
+  assert.equal((await env.resume.pass(usage(), current)).resumed.length, 1);
+  env.threads.threads.get("thr_scoped")!.status = "error";
+  env.threads.events.set("thr_scoped", stoppedEvents("req_second", { root: "req_thr_scoped", message: "Usage limit reached" }));
+  env.store.recordStop("thr_scoped", "req_second", new Date(NOW));
+  assert.equal((await env.resume.pass(usage(), current)).resumed.length, 0);
+  assert.deepEqual(env.threads.calls, ["thr_scoped"]);
+  assert.equal(env.events.filter((event) => event.kind === "paid-resume-stopped").length, 1);
+});
+
+test("scoped headless recovery is explicit, rechecks revocation, and respects actual billing refusals", async () => {
+  const approved = task({ runner: "boat", claudePaidContinuation: true, error: "Claude usage limit reached" });
+  const ordinary = task({ id: "t_other", runner: "boat", error: "Claude usage limit reached" });
+  const env = setup({ tasks: [approved, ordinary] });
+  const current = settings({ paidClaudeFallback: false, paidClaudeHeadless: false });
+  const report = await env.resume.pass(usage(), current);
+  assert.deepEqual(report.resumed.map((work) => work.taskId), [approved.id]);
+  assert.match(env.followups[0]!.text, /owner permitted attempting paid Claude for this task only/);
+  assert.equal(env.followups.length, 1);
+
+  const revoked = task({ runner: "boat", claudePaidContinuation: true, error: "Claude usage limit reached" });
+  const changed = setup({ tasks: [revoked] });
+  changed.machines.sandbox = async () => {
+    revoked.claudePaidContinuationRevoked = true;
+    return "running";
+  };
+  assert.deepEqual((await changed.resume.pass(usage(), current)).resumed, []);
+  assert.deepEqual(changed.followups, []);
+
+  const refused = setup({ tasks: [task({ runner: "boat", claudePaidContinuation: true, error: "Claude usage limit reached" })] });
+  // A stopped machine does not make an actual refusal safe to repeat.
+  refused.machines.sandboxes.set("sbx_1", "stopped");
+  refused.followupFailures.set("t_1", new TaskError("Provider billing refused the request", "billing"));
+  await refused.resume.pass(usage(), current);
+  refused.advance(BACKOFF_MAX_MS);
+  await refused.resume.pass(usage(), current);
+  assert.equal(refused.followups.length, 1);
+  assert.equal(refused.events.filter((event) => event.kind === "paid-resume-stopped").length, 1);
+});
+
+
+test("native recovery rechecks actual refusals, superseded turns and user queue changes after machine reads", async () => {
+  for (const change of ["billing", "auth", "superseded", "user-message", "cancelled-retry"] as const) {
+    const env = setup({ tasks: [task({ threadId: "thr_scoped", claudePaidContinuation: true })] });
+    skippedStop(env, "thr_scoped");
+    env.threads.rows.push({ id: "q_scoped", threadId: "thr_scoped", retry: true, sendAt: NOW + 20 * 3_600_000 });
+    env.machines.sandbox = async () => {
+      if (change === "billing" || change === "auth") env.threads.events.set("thr_scoped", stoppedEvents("req_thr_scoped", { category: change === "billing" ? "billing" : "unauthorized", status: change === "billing" ? 402 : 401, message: "Provider refused this request" }));
+      if (change === "superseded") env.threads.events.set("thr_scoped", stoppedEvents("req_new", { message: "Usage limit reached" }));
+      if (change === "user-message") env.threads.rows.push({ id: "q_user", threadId: "thr_scoped", retry: false, sendAt: null });
+      if (change === "cancelled-retry") env.threads.rows = [];
+      return "running";
+    };
+    const report = await env.resume.pass(usage(), settings({ paidClaudeFallback: false }));
+    assert.deepEqual(report.resumed, [], change);
+    assert.deepEqual(env.threads.calls, [], change);
+    assert.equal(env.store.attempts("thr_scoped", "req_thr_scoped"), 0, change);
+    if (change === "billing" || change === "auth") assert.equal(env.events.filter(event => event.kind === "paid-resume-stopped").length, 1, change);
+  }
+});
+
+test("permission revocation during final native event and queue reads prevents submission", async () => {
+  for (const phase of ["events", "queue"] as const) {
+    const approved = task({ threadId: "thr_scoped", claudePaidContinuation: true });
+    const env = setup({ tasks: [approved] }); skippedStop(env, "thr_scoped");
+    if (phase === "events") {
+      const read = env.threads.stopEvents.bind(env.threads); let count = 0;
+      env.threads.stopEvents = async id => { if (++count === 2) approved.claudePaidContinuationRevoked = true; return read(id); };
+    } else {
+      const read = env.threads.queued.bind(env.threads); let count = 0;
+      env.threads.queued = async id => { if (++count === 2) approved.claudePaidContinuationRevoked = true; return read(id); };
+    }
+    assert.deepEqual((await env.resume.pass(usage(), settings({ paidClaudeFallback: false }))).resumed, [], phase);
+    assert.deepEqual(env.threads.calls, [], phase);
+  }
+});
+
+test("headless recovery rechecks concrete failure after machine reads and stops raw HTTP refusals", async () => {
+  const approved = task({ runner: "boat", claudePaidContinuation: true, error: "Claude usage limit reached" });
+  const env = setup({ tasks: [approved] });
+  env.machines.sandbox = async () => { approved.error = "Authentication failed"; return "running"; };
+  assert.deepEqual((await env.resume.pass(usage(), settings({ paidClaudeFallback: false }))).resumed, []);
+  assert.deepEqual(env.followups, []);
+  for (const status of [401, 402, 403]) {
+    const refused = setup({ tasks: [task({ runner: "boat", claudePaidContinuation: true, error: "Claude usage limit reached" })] });
+    refused.machines.sandboxes.set("sbx_1", "stopped");
+    refused.followupFailures.set("t_1", Object.assign(new Error("Provider rejected request"), { status }));
+    await refused.resume.pass(usage(), settings({ paidClaudeFallback: false }));
+    refused.advance(BACKOFF_MAX_MS);
+    await refused.resume.pass(usage(), settings({ paidClaudeFallback: false }));
+    assert.equal(refused.followups.length, 1, String(status));
+    assert.equal(refused.events.filter(event => event.kind === "paid-resume-stopped").length, 1, String(status));
+  }
+});
+
+test("unavailable or unknown scoped routing records durable actionable feedback without spending a resume attempt", async () => {
+  for (const route of ["false", "unknown", "missing"] as const) {
+    const approved = task({ threadId: "thr_scoped", claudePaidContinuation: true });
+    const env = setup({ tasks: [approved] });
+    skippedStop(env, "thr_scoped");
+    const reading = usage();
+    if (route === "false") reading.get("claude")!.paidAttemptAllowed = false;
+    if (route === "unknown") delete reading.get("claude")!.paidAttemptAllowed;
+    if (route === "missing") reading.clear();
+    const current = settings({ paidClaudeFallback: false });
+    const report = await env.resume.pass(reading, current);
+    assert.equal(report.attempts, 0, route);
+    assert.deepEqual(env.threads.calls, []);
+    assert.match(report.skipped[0]!.reason, /route or login is unavailable or unconfirmed/);
+    assert.equal(env.events.filter(event => event.kind === "paid-resume-blocked").length, 1);
+    assert.equal(env.store.attempts("thr_scoped", "req_thr_scoped"), 0);
+    assert.equal(env.store.settled("thr_scoped", "req_thr_scoped"), false);
+    await env.resume.pass(reading, current);
+    assert.equal(env.events.filter(event => event.kind === "paid-resume-blocked").length, 1);
+    // A ready route permits the next pass; old feedback has consumed no retry.
+    const permitted = await env.resume.pass(usage(), current);
+    assert.equal(permitted.resumed.length, 1);
+    assert.equal(permitted.skipped.length, 0);
+    assert.equal(env.store.attempts("thr_scoped", "req_thr_scoped"), 1);
+  }
+  const headless = setup({ tasks: [task({ runner: "boat", claudePaidContinuation: true, error: "Claude usage limit reached" })] });
+  const blocked = await headless.resume.pass(new Map(), settings({ paidClaudeFallback: false }));
+  assert.equal(blocked.attempts, 0);
+  assert.equal(headless.events[0]!.kind, "paid-resume-blocked");
+  assert.equal((await headless.resume.pass(usage(), settings({ paidClaudeFallback: false }))).resumed.length, 1);
+});
+
+test("scoped headless recovery never replays an initial start that did not reach an agent turn", async () => {
+  const env = setup({ tasks: [task({ runner: "boat", claudePaidContinuation: true, turns: 0, promptId: null, error: "Claude usage limit reached" })] });
+  const report = await env.resume.pass(usage(), settings({ paidClaudeFallback: false }));
+  assert.deepEqual(report.resumed, []);
+  assert.deepEqual(env.followups, []);
+  assert.equal(report.attempts, 0);
 });

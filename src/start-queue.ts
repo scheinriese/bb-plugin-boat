@@ -8,7 +8,7 @@ import type { Provider, Task } from "./store.ts";
 import type { QuotaReader, Quotas } from "./quota.ts";
 
 export type StartLaunch = { kind: "started"; task: Task; pending: boolean } | { kind: "queued"; request: QueuedStartDto; pending: true };
-export interface PaidStartQuote { entry: QueuedStart; provider: Provider; quotas: ReturnType<typeof quotaRows>; quotedAt: string; expiresAt: string; policyDigest: string; policyRevision: number }
+export interface PaidStartQuote { entry: QueuedStart; provider: Provider; quotas: ReturnType<typeof quotaRows>; quotedAt: string; expiresAt: string; policyDigest: string; policyRevision: number; claudePaidContinuation?: boolean }
 export function quotaRows(quotas: Quotas) { return [...quotas.values()].sort((a,b) => a.provider.localeCompare(b.provider)).slice(0,2).map(q => startQuotaSchema.parse(q)); }
 const waitingMessage = "Waiting for a usage reset. No sandbox has been created.";
 const quotaReset = (quotas: Quotas) => quotaRows(quotas).map(q=>q.resetsAt).filter((at): at is string => !!at && Number.isFinite(Date.parse(at))).sort()[0] ?? null;
@@ -31,6 +31,36 @@ export function createStartQueue(deps: StartQueueDeps) {
     if (!entry) throw new TaskError("This queued request no longer exists.", "queued_start_missing");
     if (revision !== undefined && revision !== entry.dto.revision) throw new TaskError("This queued request changed. Check its current state and try again.", "queued_start_stale");
     return entry;
+  }
+  // Revisions also cover display metadata (for example reset timestamps).
+  // Consent belongs to immutable request content and its reserved task ID.
+  function sameRequest(entry: QueuedStart, expected: QueuedStart) {
+    if (entry.dto.id !== expected.dto.id || entry.digest !== expected.digest || entry.reservedTaskId !== expected.reservedTaskId || entry.parentGeneration !== expected.parentGeneration) throw new TaskError("This paid-start request changed. Request it again.", "paid_start_stale");
+    return entry;
+  }
+  function currentRequest(expected: QueuedStart) { return sameRequest(must(expected.dto.id), expected); }
+  function scopedAllowed(entry: QueuedStart, provider: Provider) { return provider === "claude" && entry.input.role !== "review" && !entry.input.parentTaskId; }
+  function assertPaid(quote: PaidStartQuote, entry: QueuedStart, quotas?: Quotas) {
+    sameRequest(entry, quote.entry);
+    if (!Number.isFinite(Date.parse(quote.expiresAt)) || now() >= Date.parse(quote.expiresAt)) throw new TaskError("This paid-start confirmation expired. Request a fresh confirmation for this same queued request.", "paid_start_stale");
+    if (quote.claudePaidContinuation && !scopedAllowed(entry, quote.provider)) throw new TaskError("Claude continuation can only be approved for one Claude task, excluding reviews and child work.", "paid_start_invalid");
+    // These observations are a display, not a spending cap. Reset estimates,
+    // percent changes and another agent's usage do not invalidate permission to
+    // attempt this provider. Actual provider refusals remain authoritative.
+    if (quote.claudePaidContinuation && quotas && quotas.get("claude")?.paidAttemptAllowed !== true) throw new TaskError("Claude routing, credentials or account restrictions prevent this paid attempt. Reconnect or repair the account before requesting confirmation again.", "queued_agent_unavailable");
+    if (quotas && !quotas.has(quote.provider)) throw new TaskError("Current usage for the selected agent is unknown. Request a fresh paid-start confirmation.", "queued_usage_unknown");
+  }
+  function paidFailure(id: string, error: unknown, expected?: QueuedStart) {
+    const entry = store.get(id);
+    // Feedback follows the original receipt despite metadata revisions; it can
+    // never overwrite cancellation, dispatch, insertion or different content.
+    if (!entry || entry.dto.state !== "waiting") return;
+    if (expected) { try { sameRequest(entry, expected); } catch { return; } }
+    const closed = error instanceof TaskError && error.code === "queued_source_changed";
+    const message = `Paid start stopped. ${error instanceof Error ? error.message : "Request a fresh paid-start confirmation."}`;
+    if (entry.dto.message === message && !closed) return;
+    store.transition(id, entry.dto.revision, ["waiting"], closed ? "cancelled" : "waiting", message, entry.dto.resetsAt);
+    deps.changed();
   }
   function localSourceCurrent(entry: QueuedStart) {
     if (deps.projectCurrent && !deps.projectCurrent(entry.input)) throw new TaskError("The original project changed or was removed. Request this work again with its current configuration.", "queued_source_changed");
@@ -75,7 +105,10 @@ export function createStartQueue(deps: StartQueueDeps) {
       }
       assertPolicy();
       const threshold = settings.relay.switchAtPercent;
-      if (paid && (now() >= Date.parse(paid.expiresAt) || queueDigest(quotaRows(quotas)) !== queueDigest(paid.quotas))) throw new TaskError("Agent usage changed while this confirmation was open. Request paid start again to review the current usage.", "paid_start_stale");
+      if (paid) assertPaid(paid, entry, quotas);
+      // Async reads above may overlap a monitor update of presentation fields.
+      // Claim the current row only when its immutable request still matches.
+      entry = currentRequest(entry);
       const claimed = store.transition(entry.dto.id, entry.dto.revision, ["waiting"], "dispatching", "Checking this request before starting.");
       if (!claimed) throw new TaskError("This queued request changed before it could start.", "queued_start_stale");
       entry = claimed; deps.changed();
@@ -85,11 +118,12 @@ export function createStartQueue(deps: StartQueueDeps) {
           queuedStart: {
             taskId: entry.reservedTaskId,
             paidApproved: !!paid,
+            claudePaidContinuation: paid?.claudePaidContinuation === true,
             async beforeInsert() {
               quotas = await fresh(signal);
               if (paid) {
                 await allowed(paid.provider);
-                if (now() >= Date.parse(paid.expiresAt) || queueDigest(quotaRows(quotas)) !== queueDigest(paid.quotas)) throw new TaskError("Agent usage changed. Review a fresh paid-start confirmation.", "paid_start_stale");
+                assertPaid(paid, currentRequest(entry), quotas);
               }
               assertPolicy(await service.settings());
               // The origin read is last: a close during quota/settings reads
@@ -99,12 +133,14 @@ export function createStartQueue(deps: StartQueueDeps) {
             insert(task, save, preparedSettings) {
               signal.throwIfAborted(); lifecycle.signal.throwIfAborted(); localSourceCurrent(entry);
               assertPolicy(preparedSettings);
+              if (paid) assertPaid(paid, currentRequest(entry), quotas);
               const q = quotas.get(task.provider);
               if (paid ? task.provider !== paid.provider : !automaticRoom(task.provider, quotas, settings.relay, settings.agents) || task.runner === "boat" && !settings.relay.paidClaudeHeadless && !!q && q.usedPercent >= threshold) throw new TaskError("The requested agent still has no confirmed subscription room or authorized extra usage.", "agents_at_limit");
               return store.attach(entry, task, () => {
                 const saved = save();
                 service.store.addEvent(saved.id, "queued-start", JSON.stringify({ requestId: entry.dto.id, digest: entry.digest }));
-                if (paid) service.store.addEvent(saved.id, "paid-start-approved", JSON.stringify({ requestId: entry.dto.id, digest: entry.digest, provider: paid.provider, quotas: paid.quotas, quotedAt: paid.quotedAt, confirmedAt: new Date().toISOString() }));
+                if (paid) service.store.addEvent(saved.id, "paid-start-approved", JSON.stringify({ requestId: entry.dto.id, digest: entry.digest, provider: paid.provider, quotas: paid.quotas, quotedAt: paid.quotedAt, confirmedAt: entry.claudeConsent?.confirmedAt ?? new Date().toISOString(), claudePaidContinuation: paid.claudePaidContinuation === true }));
+                if (paid?.claudePaidContinuation) service.store.addEvent(saved.id, "claude-continuation-approved", "Owner approved attempting Claude paid usage for this task only; upstream uses included allowance before paid usage. Provider and billing refusals remain authoritative.");
                 return saved;
               });
             },
@@ -158,15 +194,7 @@ export function createStartQueue(deps: StartQueueDeps) {
     },
     list: (includeFinished = false) => store.list(includeFinished).map(e=>e.dto),
     get: (id: string) => store.get(id)?.dto ?? null,
-    paidFailure(id: string, revision: number, error: unknown) {
-      const entry = store.get(id);
-      // A stale form cannot overwrite a newer request state or a task receipt.
-      if (!entry || entry.dto.revision !== revision || entry.dto.state !== "waiting") return;
-      const closed = error instanceof TaskError && error.code === "queued_source_changed";
-      const message = error instanceof Error ? error.message : "Request a fresh paid-start confirmation.";
-      store.transition(id, revision, ["waiting"], closed ? "cancelled" : "waiting", `Paid start stopped. ${message}`, entry.dto.resetsAt);
-      deps.changed();
-    },
+    paidFailure(id: string, _revision: number, error: unknown, expected?: QueuedStart) { paidFailure(id, error, expected); },
     cancel(id: string, revision: number) {
       const entry = must(id);
       if (entry.dto.state === "started" || entry.dto.state === "cancelled") return entry.dto;
@@ -181,15 +209,33 @@ export function createStartQueue(deps: StartQueueDeps) {
       await sourceCurrent(entry); const policyRevision = deps.policyRevision?.() ?? 0; const settings = await allowed(provider);
       const quotas = await fresh();
       if (!quotas.has(provider)) throw new TaskError("Current usage for this agent is unknown. No paid start was requested.", "queued_usage_unknown");
-      must(id, revision); const quotedAt = new Date(now()).toISOString();
+      const current = currentRequest(entry);
+      if (current.dto.state !== "waiting") throw new TaskError("This request is no longer waiting.", "paid_start_stale");
+      const quotedAt = new Date(now()).toISOString();
       const policyDigest = queueDigest(settings);
       if ((deps.policyRevision?.() ?? 0) !== policyRevision || queueDigest(await service.settings()) !== policyDigest) throw new TaskError("The start policy changed. Request a fresh paid-start confirmation.", "paid_start_stale");
-      return { entry, provider, quotas: quotaRows(quotas), quotedAt, expiresAt: new Date(now()+5*60_000).toISOString(), policyDigest, policyRevision };
+      return { entry: current, provider, quotas: quotaRows(quotas), quotedAt, expiresAt: new Date(now()+5*60_000).toISOString(), policyDigest, policyRevision };
     },
-    async confirmPaid(quote: PaidStartQuote, waitMs: number, signal?: AbortSignal) {
-      const entry = must(quote.entry.dto.id, quote.entry.dto.revision);
-      if (entry.digest !== quote.entry.digest || entry.dto.state !== "waiting") throw new TaskError("This paid-start request changed. Request it again.", "paid_start_stale");
-      await allowed(quote.provider); return dispatch(entry, waitMs, quote, signal);
+    async confirmPaid(quote: PaidStartQuote, waitMs: number, signal?: AbortSignal): Promise<StartLaunch> {
+      let entry = currentRequest(quote.entry);
+      if (entry.dto.state === "started" && entry.dto.taskId) {
+        const task = service.store.get(entry.dto.taskId);
+        if (task && task.provider === quote.provider) return { kind: "started", task, pending: task.status === "starting" };
+      }
+      if (entry.dto.state !== "waiting" && !(entry.dto.state === "dispatching" && active.has(entry.dto.id))) throw new TaskError("This paid-start request is no longer waiting.", "paid_start_stale");
+      assertPaid(quote, entry);
+      if (entry.claudeConsent && !quote.claudePaidContinuation) throw new TaskError("This request has Claude continuation permission. Request a fresh Claude continuation confirmation or cancel it; an older start-only receipt cannot replace that scope.", "paid_start_stale");
+      const settings = await allowed(quote.provider);
+      if (queueDigest(settings) !== quote.policyDigest || (deps.policyRevision?.() ?? 0) !== quote.policyRevision) throw new TaskError("The start policy changed. Request a fresh paid-start confirmation.", "paid_start_stale");
+      await sourceCurrent(entry, signal);
+      entry = currentRequest(entry);
+      if (active.has(entry.dto.id)) return { kind: "queued", request: entry.dto, pending: true };
+      if (entry.dto.state !== "waiting") throw new TaskError("This paid-start request is no longer waiting.", "paid_start_stale");
+      if (quote.claudePaidContinuation) {
+        entry = store.approveClaude(entry, { provider: "claude", digest: entry.digest, reservedTaskId: entry.reservedTaskId, policyDigest: quote.policyDigest, quotas: quote.quotas, quotedAt: quote.quotedAt, expiresAt: quote.expiresAt, confirmedAt: new Date(now()).toISOString() }) ?? currentRequest(entry);
+        deps.changed();
+      }
+      return dispatch(entry, waitMs, quote, signal);
     },
     async tick() {
       if (ticking || lifecycle.signal.aborted || now() < nextTickAt) return;
@@ -216,6 +262,17 @@ export function createStartQueue(deps: StartQueueDeps) {
               entry = store.transition(entry.dto.id, entry.dto.revision, ["waiting"], "waiting", entry.dto.message, resetsAt) ?? entry;
               deps.changed();
             }
+            if (entry.claudeConsent) {
+              const consent = entry.claudeConsent;
+              if (now() >= Date.parse(consent.expiresAt) || queueDigest(settings) !== consent.policyDigest) {
+                const message = "Paid start stopped. Claude continuation confirmation expired or the start policy changed. Request a fresh confirmation for this same queued request.";
+                if (entry.dto.message !== message) store.transition(entry.dto.id, entry.dto.revision, ["waiting"], "waiting", message, entry.dto.resetsAt);
+                deps.changed(); continue;
+              }
+              dispatched++;
+              await dispatch(entry, 0, { entry, provider: "claude", quotas: consent.quotas, quotedAt: consent.quotedAt, expiresAt: consent.expiresAt, policyDigest: consent.policyDigest, policyRevision: deps.policyRevision?.() ?? 0, claudePaidContinuation: true });
+              continue;
+            }
             const preferred = entry.input.provider ?? (entry.input.role === "review" ? settings.reviewProvider : settings.implementProvider);
             const canSwitch = settings.relay.enabled || (entry.input.role === "review" && !!entry.input.parentTaskId && settings.autoFailover);
             const candidate = canSwitch ? agentForWork(preferred, quotas, settings.relay, settings.agents) : onlyAgent(settings.agents) ?? preferred;
@@ -225,6 +282,7 @@ export function createStartQueue(deps: StartQueueDeps) {
           } catch (error) {
             const current = store.get(entry.dto.id);
             if (current && ["waiting", "dispatching"].includes(current.dto.state) && error instanceof TaskError && error.code === "queued_source_changed") store.transition(current.dto.id, current.dto.revision, ["waiting", "dispatching"], "cancelled", error.message);
+            else if (current?.claudeConsent && !lifecycle.signal.aborted) paidFailure(entry.dto.id, error, entry);
             deps.changed();
           }
         }

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import type { QueuedStartDto } from "../contract-start-queue.ts";
+import { startQuotaSchema, type QueuedStartDto } from "../contract-start-queue.ts";
 import { MACHINE_TYPES } from "./providers/types.ts";
 import { newTaskId, type Task } from "./store.ts";
 import type { StartTaskInput } from "./service.ts";
@@ -15,6 +15,7 @@ const projectSchema = z.object({
 });
 /** No closures/signals/internal launch capabilities may cross the durable boundary. */
 export const queuedInputSchema = z.object({
+  purpose: z.enum(["design"]).nullable().optional(),
   title: z.string().trim().min(1).max(200), compactTitle: text(120), role: z.enum(["implement", "review", "custom"]), brief: z.string().trim().min(1).max(100_000),
   repo: text(), branch: text(), baseBranch: text(), pr: text(1000), provider: z.enum(["claude", "codex"]).nullable().optional(), model: text(), reasoningEffort: text(40),
   tier: z.enum(TIERS).nullable().optional(), reason: text(4000), userApproved: z.boolean().optional(), flexibleAgent: z.boolean().optional(),
@@ -33,15 +34,22 @@ export function queueDigest(value: unknown): string {
   const sorted = (v: unknown): unknown => Array.isArray(v) ? v.map(sorted) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).filter(([, x]) => x !== undefined).sort(([a],[b]) => a.localeCompare(b)).map(([k,x]) => [k,sorted(x)])) : v;
   return createHash("sha256").update(JSON.stringify(sorted(value))).digest("hex");
 }
-export interface QueuedStart { dto: QueuedStartDto; input: QueuedInput; digest: string; parentGeneration: string | null; reservedTaskId: string }
+export const claudeStartConsentSchema = z.object({
+  provider: z.literal("claude"), digest: z.string(), reservedTaskId: z.string(), policyDigest: z.string(),
+  quotas: z.array(startQuotaSchema).max(2), quotedAt: z.string(), expiresAt: z.string(), confirmedAt: z.string(),
+}).strict();
+export type ClaudeStartConsent = z.infer<typeof claudeStartConsentSchema>;
+export interface QueuedStart { claudeConsent: ClaudeStartConsent | null; dto: QueuedStartDto; input: QueuedInput; digest: string; parentGeneration: string | null; reservedTaskId: string }
 export class StartQueueStore {
   private readonly db: () => Database.Database;
   constructor(db: () => Database.Database) { this.db = db; }
   private decode(row: Record<string, unknown>): QueuedStart {
     const input = queuedInputSchema.parse(JSON.parse(String(row.input)));
     if (queueDigest({ input, parentGeneration: row.parent_generation }) !== row.digest) throw new Error("Queued request data changed. Cancel it and request the work again.");
-    return { input, digest: String(row.digest), parentGeneration: row.parent_generation as string | null, reservedTaskId: String(row.reserved_task_id), dto: {
-      id: String(row.id), revision: Number(row.revision), state: row.state as QueuedStartDto["state"], title: input.title,
+    const claudeConsent = row.claude_paid_consent == null ? null : claudeStartConsentSchema.parse(JSON.parse(String(row.claude_paid_consent)));
+    if (claudeConsent && (claudeConsent.digest !== row.digest || claudeConsent.reservedTaskId !== row.reserved_task_id || input.role === "review" || input.parentTaskId)) throw new Error("Queued Claude consent does not match its original request.");
+    return { claudeConsent, input, digest: String(row.digest), parentGeneration: row.parent_generation as string | null, reservedTaskId: String(row.reserved_task_id), dto: {
+      claudePaidContinuation: claudeConsent !== null, id: String(row.id), revision: Number(row.revision), state: row.state as QueuedStartDto["state"], title: input.title,
       threadId: input.orchestratorThreadId ?? null, parentTaskId: input.parentTaskId ?? null, taskId: row.task_id as string | null,
       createdAt: String(row.created_at), updatedAt: String(row.updated_at), message: String(row.message), resetsAt: row.resets_at as string | null, requestedProvider: input.provider ?? null,
     } };
@@ -66,6 +74,13 @@ export class StartQueueStore {
   transition(id: string, revision: number, from: QueuedStartDto["state"][], to: QueuedStartDto["state"], message: string, resetsAt: string | null = null): QueuedStart | null {
     const result = this.db().prepare(`UPDATE start_queue SET state=?,revision=revision+1,updated_at=?,message=?,resets_at=? WHERE id=? AND revision=? AND state IN (${from.map(()=>"?").join(",")})`).run(to, new Date().toISOString(), message.slice(0,1000), resetsAt, id, revision, ...from);
     return result.changes ? this.get(id) : null;
+  }
+  /** Only the native paid-start interaction calls this after an explicit scoped submission. */
+  approveClaude(entry: QueuedStart, consent: ClaudeStartConsent): QueuedStart | null {
+    const parsed = claudeStartConsentSchema.parse(consent);
+    if (parsed.digest !== entry.digest || parsed.reservedTaskId !== entry.reservedTaskId || entry.input.role === "review" || entry.input.parentTaskId) throw new Error("Claude consent must belong to one original non-review request.");
+    const result = this.db().prepare("UPDATE start_queue SET claude_paid_consent=?,revision=revision+1,updated_at=?,message=? WHERE id=? AND revision=? AND digest=? AND reserved_task_id=? AND state='waiting'").run(JSON.stringify(parsed), new Date().toISOString(), "Claude continuation approved for this request only. Checking before starting.", entry.dto.id, entry.dto.revision, entry.digest, entry.reservedTaskId);
+    return result.changes ? this.get(entry.dto.id) : null;
   }
   /** The queue receipt and actual registry insertion share one synchronous DB transaction. */
   attach(entry: QueuedStart, task: Task, insert: () => Task): Task {

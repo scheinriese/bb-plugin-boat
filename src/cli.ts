@@ -590,6 +590,7 @@ export function buildCli(runtime: Runtime) {
           brief: { type: "string", description: "Self-contained task brief (goal, context, acceptance criteria)" },
           "brief-file": { type: "string", description: "Read the brief from this file (on the invoking machine)" },
           role: { type: "enum", values: TASK_ROLES, default: "implement", description: "implement (branch + PR), review, or custom" },
+          purpose: { type: "enum", values: ["design"], description: "Explicit design work: provider preference only, no paid approval" },
           project: {
             type: "string",
             description: "Project id (default: this orchestrator's project). Sets repo, base branch and environment defaults",
@@ -670,6 +671,7 @@ export function buildCli(runtime: Runtime) {
                 sandboxSystem: options.system as "linux" | "macos" | undefined,
                 compactTitle: options["compact-title"] ? compactTitleSchema.parse(options["compact-title"]) : null,
                 role: options.role,
+                purpose: options.purpose ?? null,
                 brief: `${brief ?? ""}${context}`,
                 project,
                 environment: options.environment ?? null,

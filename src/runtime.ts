@@ -25,7 +25,7 @@ import {
 import { toOrchestratorProject, type OrchestratorProject, type ProjectStore } from "./projects.ts";
 import { ensureProjectSection, threadSection } from "./sections.ts";
 import type { QuotaReader, Quotas } from "./quota.ts";
-import { resumeEnabled, type PaidResume, type ResumeReport } from "./paid-resume.ts";
+import { type PaidResume, type ResumeReport } from "./paid-resume.ts";
 import type { SandboxWaker, WakeCall, WakeReport } from "./sandbox-wake.ts";
 import type { ConnectCheck, ConnectStatus } from "./connect.ts";
 import type { ConfigDeps } from "./config.ts";
@@ -333,7 +333,10 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     const policyRevision = startPolicyRevision;
     if (policy.relay.paidClaudeFallback || options.automaticUsage) {
       const provider = PROVIDER_FROM_ID[options.providerId ?? ""];
-      if (provider) await service.assertSubscriptionRoom(provider, { settings: policy, runner: "chat" });
+      if (provider) {
+        const paid = await service.assertSubscriptionRoom(provider, { settings: policy, runner: "chat" });
+        if (paid && projects.get(project.id)?.neverPaidClaude) throw new TaskError("This project does not permit automatic paid Claude. Wait for included allowance to reset.", "agents_at_limit");
+      }
       if (policyRevision !== startPolicyRevision) throw new TaskError("The usage policy changed before the handover. It will be checked again.", "agents_at_limit");
     }
     const { threadId } = await spawnThread(bb, {
@@ -666,10 +669,12 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
         if (state !== null) await bb.storage.kv.delete(relayKey(row.threadId)).catch(() => undefined);
         continue;
       }
-      let decision = decideRelay(view, quotas, state, relay, now());
+      const savedProject = await getThreadProject(bb, row.threadId);
+      const projectRelay = savedProject && projects.get(savedProject.id)?.neverPaidClaude ? { ...relay, paidClaudeFallback: false } : relay;
+      let decision = decideRelay(view, quotas, state, projectRelay, now());
       // "Both out" ends once the same reading no longer says so.
       if (state?.phase === "both-out") {
-        const fresh = decideRelay(view, quotas, null, relay, now());
+        const fresh = decideRelay(view, quotas, null, projectRelay, now());
         if (fresh.kind !== "both-out") {
           await bb.storage.kv.delete(relayKey(row.threadId)).catch(() => undefined);
           decision = fresh;
@@ -733,7 +738,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   }
 
   async function paidResumePass(quotas: Quotas, settings: Awaited<ReturnType<BoatService["settings"]>>): Promise<RelayAction[]> {
-    if (deps.paidResume === undefined || !resumeEnabled(settings)) return [];
+    if (deps.paidResume === undefined) return [];
     const report = await deps.paidResume.pass(quotas, settings).catch((error: unknown) => {
       bb.log.warn(`paid resume: ${message(error)}`);
       return null;
@@ -1010,9 +1015,9 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
     quotas: deps.quotas ?? null,
     async paidResumeCheck() {
       const settings = await service.settings();
-      if (deps.quotas === undefined || deps.paidResume === undefined || !resumeEnabled(settings)) return [];
+      if (deps.paidResume === undefined) return [];
       // The relay's pass keeps the reading fresh each minute; this one only reads it.
-      return paidResumePass(await deps.quotas.read(), settings);
+      return paidResumePass(await deps.quotas?.read().catch(() => new Map()) ?? new Map(), settings);
     },
     recentPaidResumes: () => deps.paidResume?.recent() ?? 0,
     isHandingOver,

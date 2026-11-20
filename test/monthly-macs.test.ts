@@ -422,7 +422,7 @@ test("upgrade discards false instruction-time delivery claims", () => {
   const [s] = store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 7 * DAY);
   assert.ok(s);
   db.prepare("INSERT INTO monthly_mac_shown VALUES (?,?)").run(s.id, "chat");
-  db.exec(TaskStore.migrations().at(-1)!);
+  db.exec(TaskStore.migrations().find(sql => sql === "DELETE FROM monthly_mac_shown")!);
   assert.equal(store.monthlyMacs.takeForTool("chat").length, 1);
   assert.equal(store.monthlyMacs.takeForTool("chat").length, 0);
   db.close();

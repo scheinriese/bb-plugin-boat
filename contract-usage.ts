@@ -92,7 +92,7 @@ export const usageViewSchema = z.object({
   switchAtPercent: z.number(),
   paidClaudeFallback: z.boolean(),
   paidClaudeHeadless: z.boolean(),
-  /** A fresh "allowed" reading lets automatic paid Claude start now. */
+  /** Existing owner opt-in and a ready unrestricted route permit a paid Claude attempt; no funds guarantee. */
   paidClaudeAvailable: z.boolean(),
   claudeExtraUsage: extraUsageViewSchema,
   /** Chats (and headless tasks) stopped at a usage limit that continued on paid Claude in the last day. */

@@ -8,6 +8,7 @@ export const queuedStartSchema = z.object({
   state: z.enum(["waiting", "dispatching", "started", "failed", "cancelled"]),
   threadId: z.string().nullable(), parentTaskId: z.string().nullable(), taskId: z.string().nullable(),
   createdAt: z.string(), updatedAt: z.string(), message: z.string(),
+  claudePaidContinuation: z.boolean().optional(),
   resetsAt: z.string().nullable(), requestedProvider: z.enum(["claude", "codex"]).nullable(),
 });
 export type QueuedStartDto = z.infer<typeof queuedStartSchema>;
@@ -15,13 +16,17 @@ export const startQuotaSchema = z.object({ provider: z.enum(["claude", "codex"])
 export const paidStartFormSchema = z.object({
   requestId: z.string(), queueId: z.string(), title: z.string(), provider: z.enum(["claude", "codex"]),
   quotas: z.array(startQuotaSchema).max(2), quotedAt: z.string(), expiresAt: z.string(),
+  /** Absent on older forms: their start approval never grants ongoing permission. */
+  claudeContinuationOffered: z.boolean().optional().default(false),
 });
 export type PaidStartForm = z.infer<typeof paidStartFormSchema>;
-export const paidStartChoiceSchema = z.object({ requestId: z.string(), choice: z.enum(["start", "wait"]) }).strict();
+export const paidStartChoiceSchema = z.object({ requestId: z.string(), choice: z.enum(["start", "wait", "start-claude-continuation"]) }).strict();
 const key = z.object({ id: z.string().min(1).max(100), revision: z.number().int().nonnegative() });
 export const startQueueRpcContract = defineRpcContract({
   queuedStarts: { input: z.object({ threadId: z.string().max(200).optional(), includeFinished: z.boolean().optional() }), output: z.object({ requests: z.array(queuedStartSchema).max(200) }), tags: () => [START_QUEUE_TAG] },
   queuedStart: { input: z.object({ id: z.string().min(1).max(100) }), output: queuedStartSchema.nullable(), tags: () => [START_QUEUE_TAG] },
   cancelQueuedStart: { input: key, output: queuedStartSchema },
+  clearDesignClaudePreference: { input: z.object({ id: z.string().min(1).max(100) }), output: z.object({ ok: z.literal(true) }) },
+  revokeClaudePaidContinuation: { input: z.object({ id: z.string().min(1).max(100) }), output: z.object({ ok: z.literal(true) }) },
   requestPaidStart: { input: key.extend({ provider: z.enum(["claude", "codex"]) }), output: z.object({ pending: z.literal(true), requestId: z.string(), threadId: z.string(), duplicate: z.boolean() }) },
 });

@@ -699,16 +699,16 @@ test("provider handoff also preserves ordinary bb child chats without restarting
   assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,2);
 });
 
-test("relay RPC shows a stale Pooler rejection with its real check time, and never as paid room",async t=>{
+test("relay RPC preserves stale Pooler telemetry while authorizing an opted-in attempt",async t=>{
  const checked=Date.now()-25*60_000;let extra={status:"rejected",observedAt:checked};
  const {harness}=await relayHost(t,{claude:100,codex:100},{paidClaudeFallback:true,agents:"both"},{extraUsage:()=>extra});
  type Relay={paidClaudeAvailable:boolean;claudeExtraUsage:{status:string;observedAt:number|null;pool:string}};
  let state=await harness.callRpc("relay",null) as Relay;
- assert.equal(state.paidClaudeAvailable,false);assert.deepEqual(state.claudeExtraUsage,{status:"rejected",observedAt:checked,pool:"on"},"the old rejection keeps its own time, not now");
+ assert.equal(state.paidClaudeAvailable,true);assert.deepEqual(state.claudeExtraUsage,{status:"rejected",observedAt:checked,pool:"on"},"the old rejection keeps its own time, not now");
  extra={status:"allowed",observedAt:checked};await new Promise(r=>setTimeout(r,0));
  const fresh=await relayHost(t,{claude:100,codex:100},{paidClaudeFallback:true,agents:"both"},{extraUsage:()=>extra});
  state=await fresh.harness.callRpc("relay",null) as Relay;
- assert.equal(state.claudeExtraUsage.status,"allowed");assert.equal(state.paidClaudeAvailable,false,"a 25-minute-old allowance is too old for automatic paid use");
+ assert.equal(state.claudeExtraUsage.status,"allowed");assert.equal(state.paidClaudeAvailable,true,"stale extra-usage observations do not veto an owner-authorized attempt");
 });
 test("relay RPC says unknown, Pooler off, when the Account Pooler doesn't answer",async t=>{
  const {harness}=await relayHost(t,{claude:100,codex:100},{paidClaudeFallback:true,agents:"both"},{off:true});

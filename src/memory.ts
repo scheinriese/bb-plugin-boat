@@ -923,6 +923,7 @@ export interface SizedProject {
   name: string;
   repos: readonly { repo: string }[];
   machineType: MachineType | null;
+  neverPaidClaude?: boolean;
   /** Where its new tasks run (absent: boat.dev); the service reads it too (Runs on). */
   sandboxProvider?: string | null;
   sandboxSystem?: "linux" | "macos";

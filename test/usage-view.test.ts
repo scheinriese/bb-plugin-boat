@@ -335,7 +335,7 @@ const BASE: NewWorkSettings = {
 
 function usage(claude: number | null, codex: number | null, extra?: AgentQuota["extraUsage"]): Quotas {
   const map: Quotas = new Map();
-  if (claude !== null) map.set("claude", { provider: "claude", usedPercent: claude, resetsAt: new Date(RESET).toISOString(), window: "Weekly limit", ...(extra ? { extraUsage: extra } : {}) });
+  if (claude !== null) map.set("claude", { provider: "claude", usedPercent: claude, resetsAt: new Date(RESET).toISOString(), window: "Weekly limit", paidAttemptAllowed: !!extra, ...(extra ? { extraUsage: extra } : {}) });
   if (codex !== null) map.set("codex", { provider: "codex", usedPercent: codex, resetsAt: new Date(LATER_RESET).toISOString(), window: "Weekly limit" });
   return map;
 }
@@ -376,18 +376,18 @@ test("next step: Claude at its limit, Codex has room, so new work goes to Codex 
   assert.equal(nextStepLine(viewOf(quotas, off)), `Claude is at its weekly limit · switching is off · work waits until ${dayTime(new Date(RESET).toISOString(), Date.now())}`);
 });
 
-test("next step: both at their limits with fresh paid Claude evidence: paid Claude", () => {
+test("next step: both at their limits with an authorized ready Claude route: paid attempt", () => {
   const paid = { ...BASE, relay: { ...BASE.relay, paidClaudeFallback: true, paidClaudeHeadless: true } };
   const quotas = usage(100, 99, { allowed: true, status: "allowed", observedAt: Date.now() - MIN, pool: "on" });
   assert.deepEqual(nextForNewWork(quotas, paid), { kind: "paid", agent: "claude", wanted: "claude", until: null });
-  assert.equal(nextStepLine(viewOf(quotas, paid, { paidClaudeAvailable: true })), "Codex is at 99% · Claude is at its weekly limit · paid Claude is available, so new work goes to Claude");
+  assert.equal(nextStepLine(viewOf(quotas, paid, { paidClaudeAvailable: true })), "Codex is at 99% · Claude is at its weekly limit · paid Claude attempts are authorized, so new work goes to Claude");
   // Headless tasks need their own authorization.
   const chatsOnly = { ...paid, relay: { ...paid.relay, paidClaudeHeadless: false } };
   assert.match(nextStepLine(viewOf(quotas, chatsOnly, { paidClaudeAvailable: true })), /so new work goes to Claude \(headless tasks wait\)$/);
-  // Only a fresh (≤5 min) "allowed" starts paid Claude: an older one waits.
+  // Stale telemetry does not prevent an authorized attempt through the ready route.
   const old = usage(100, 99, { allowed: true, status: "allowed", observedAt: Date.now() - PAID_USAGE_EVIDENCE_MS - MIN, pool: "on" });
-  assert.equal(nextForNewWork(old, paid).kind, "wait");
-  assert.match(nextStepLine(viewOf(old, paid, { claudeExtraUsage: { status: "allowed", observedAt: Date.now() - 6 * MIN, pool: "on" } })), /^Both are at their limits · paid Claude needs a newer check · work waits until /);
+  assert.equal(nextForNewWork(old, paid).kind, "paid");
+  assert.match(nextStepLine(viewOf(old, paid, { claudeExtraUsage: { status: "allowed", observedAt: Date.now() - 6 * MIN, pool: "on" } })), /paid Claude attempts are authorized/);
 });
 
 test("next step: chats stopped at a limit that continued on paid Claude are counted", () => {
@@ -395,7 +395,7 @@ test("next step: chats stopped at a limit that continued on paid Claude are coun
   const quotas = usage(100, 99, { allowed: true, status: "allowed", observedAt: Date.now() - MIN, pool: "on" });
   assert.equal(
     nextStepLine(viewOf(quotas, paid, { paidClaudeAvailable: true, resumedOnPaid: 3 })),
-    "Codex is at 99% · Claude is at its weekly limit · paid Claude is available, so new work goes to Claude · 3 stopped chats resumed on paid Claude",
+    "Codex is at 99% · Claude is at its weekly limit · paid Claude attempts are authorized, so new work goes to Claude · 3 stopped chats resumed on paid Claude",
   );
   assert.match(nextStepLine(viewOf(quotas, paid, { paidClaudeAvailable: true, resumedOnPaid: 1 })), / · 1 stopped chat resumed on paid Claude$/);
   assert.doesNotMatch(nextStepLine(viewOf(quotas, paid, { paidClaudeAvailable: true, resumedOnPaid: 0 })), /resumed/);
@@ -410,9 +410,10 @@ test("next step: both at their limits, so work waits until the first reset", () 
   // With the paid fallback on, the line says why paid Claude doesn't start.
   const paid = { ...BASE, relay: { ...BASE.relay, paidClaudeFallback: true } };
   const blocked = usage(100, 95, { allowed: false, status: "rejected", observedAt: Date.now() - MIN, pool: "on" });
+  blocked.get("claude")!.paidAttemptAllowed = false;
   assert.equal(nextForNewWork(blocked, paid).kind, "wait");
-  assert.equal(nextStepLine(viewOf(blocked, paid, { claudeExtraUsage: { status: "rejected", observedAt: Date.now() - MIN, pool: "on" } })), `Both are at their limits · paid Claude is blocked · work waits until ${when}`);
-  assert.match(nextStepLine(viewOf(blocked, paid, { claudeExtraUsage: { status: "disabled", observedAt: null, pool: "on" } })), /· paid Claude is off · /);
+  assert.equal(nextStepLine(viewOf(blocked, paid, { claudeExtraUsage: { status: "rejected", observedAt: Date.now() - MIN, pool: "on" } })), `Both are at their limits · paid Claude needs a ready, unrestricted account route · work waits until ${when}`);
+  assert.match(nextStepLine(viewOf(blocked, paid, { claudeExtraUsage: { status: "disabled", observedAt: null, pool: "on" } })), /· paid Claude needs a ready, unrestricted account route · /);
   assert.match(nextStepLine(viewOf(blocked, paid, { claudeExtraUsage: { status: "unknown", observedAt: null, pool: "off" } })), /paid Claude is unknown \(Account Pooler off\)/);
   // No reset time known.
   assert.equal(nextStepLine(viewOf(usage(100, 95), BASE, { next: { kind: "wait", agent: null, wanted: "claude", until: null, switching: true } })), "Both are at their limits · work waits for a reset");
@@ -437,7 +438,7 @@ test("next step: a refused Claude turn holds paid Claude even with a fresh allow
   assert.equal(nextStepLine(view, now), `Both are at their limits · paid Claude is on hold until ${until} (a Claude turn hit its limit) · work waits until ${dayTime(new Date(RESET).toISOString(), now)}`);
   assert.doesNotMatch(nextStepLine(view, now), /newer check/);
   // Once the hold is over, the reading's own state speaks again.
-  assert.match(nextStepLine({ ...view, agents: view.agents.map((agent) => ({ ...agent, limitHitUntil: agent.provider === "claude" ? now - MIN : null })) }, now), /paid Claude needs a newer check/);
+  assert.match(nextStepLine({ ...view, agents: view.agents.map((agent) => ({ ...agent, limitHitUntil: agent.provider === "claude" ? now - MIN : null })) }, now), /paid Claude needs a ready, unrestricted account route/);
 });
 
 test("next step: with paid extra usage not avoided, work still starts past a limit; with one agent, only its own reset", () => {
@@ -452,19 +453,20 @@ test("next step: with paid extra usage not avoided, work still starts past a lim
   assert.equal(nextStepLine(view), `Codex is at 97% · work waits until ${dayTime(new Date(LATER_RESET).toISOString(), Date.now())}`);
 });
 
-test("next step through the RPC: paid Claude from a fresh Pooler reading, then both at limits once it's blocked", async (t) => {
+test("next step through the RPC: rejected extra telemetry keeps the authorized Claude attempt", async (t) => {
   const accounts = [account("c", "claude", { utilization: 1, status: "rejected" }), account("x", "codex", { utilization: 0.99 })];
   const host = await usageHost(t, { accounts }, { relayEnabled: true, paidClaudeFallback: true, paidClaudeHeadless: true });
   const view = await host.usage();
   assert.equal(view.paidClaudeAvailable, true);
   assert.equal(view.next.kind, "paid");
-  assert.equal(nextStepLine(view), "Codex is at 99% · Claude is at its weekly limit · paid Claude is available, so new work goes to Claude");
+  assert.equal(nextStepLine(view), "Codex is at 99% · Claude is at its weekly limit · paid Claude attempts are authorized, so new work goes to Claude");
   accounts[0] = account("c", "claude", { utilization: 1, status: "rejected", extra: { status: "rejected", observedAt: Date.now() } });
   const blocked = await usageHost(t, { accounts }, { relayEnabled: true, paidClaudeFallback: true, paidClaudeHeadless: true });
   const after = await blocked.usage();
-  assert.equal(after.next.kind, "wait");
-  assert.equal(after.next.until, new Date(RESET).toISOString());
-  assert.match(nextStepLine(after), /^Both are at their limits · paid Claude is blocked · work waits until /);
+  assert.equal(after.next.kind, "paid");
+  assert.equal(after.next.until, null);
+  assert.equal(after.claudeExtraUsage.status, "rejected");
+  assert.match(nextStepLine(after), /paid Claude attempts are authorized/);
 });
 
 test("the next-step line and a real start agree: same pick, same subscription check, same wait", async () => {

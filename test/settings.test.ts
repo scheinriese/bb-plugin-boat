@@ -430,3 +430,17 @@ test("Instabox Secrets defaults to all and validates selection names", () => {
   for (const value of ["all", "none", "GH_TOKEN", "GH_TOKEN,MODEL_KEY", " GH_TOKEN ", " all "]) assert.equal(settingProblem("instaboxSecrets", field, value), null);
   for (const value of ["", "GH_TOKEN,", "all,GH_TOKEN", "GH_TOKEN,all", "GH_TOKEN, MODEL_KEY", "--all", "1TOKEN", "GH_TOKEN;echo bad"]) assert.notEqual(settingProblem("instaboxSecrets", field, value), null);
 });
+
+test("design preference is an explicit persisted default-off setting and never grants payment consent", async t => {
+  assert.equal(PLUGIN_SETTINGS.preferClaudeForDesign.default, false);
+  assert.equal(PLUGIN_SETTINGS.preferClaudeForDesign.section, "models");
+  const { harness } = await setup(t);
+  const before = await harness.callRpc("settings", null) as SettingsResultDto;
+  assert.equal(before.settings.find(row=>row.key==="preferClaudeForDesign")?.value, false);
+  const after = await harness.callRpc("saveSettings", { values: { preferClaudeForDesign: true } }) as SettingsResultDto;
+  assert.equal(after.settings.find(row=>row.key==="preferClaudeForDesign")?.value, true);
+  assert.equal(after.settings.find(row=>row.key==="paidClaudeFallback")?.value, false);
+  assert.equal(after.settings.find(row=>row.key==="paidClaudeHeadless")?.value, false);
+  const read = await harness.callRpc("settings", null) as SettingsResultDto;
+  assert.equal(read.settings.find(row=>row.key==="preferClaudeForDesign")?.value, true);
+});
