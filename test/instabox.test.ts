@@ -796,7 +796,9 @@ test("empty Mac schedules hand-back at the minimum, then releases idempotently",
   await service.processMacLeases(until+1);
   await service.processMacLeases(until+2);
   assert.equal(store.macLeases.held().length,0);
-  assert.equal(store.macLeases.list()[0]!.endReason,"handed back");
+  // A fresh 404 confirms physical absence, but does not report when the
+  // provider executed its scheduled release. Do not invent that timestamp.
+  assert.equal(store.macLeases.list()[0]!.endReason,"deleted");
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,1);
 });
 test("idle open tasks get recurring paid-time heads-ups across restarts; running work is never deleted",async t=>{
