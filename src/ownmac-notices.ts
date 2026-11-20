@@ -52,7 +52,7 @@ export function ownMacTaskNotice(
   let candidates = exactId ? history.filter(entry => entry.id === exactId) : history;
   if (!exactId && typeof allocation?.leaseId === "string") {
     const raw = allocation.leaseId;
-    candidates = candidates.filter(entry => entry.id === `instabox:${raw}` || entry.id.startsWith(`instabox:${machineId}:${raw}:`));
+    candidates = candidates.filter(entry => entry.id === `instabox:${raw}` || entry.id === `instabox:${machineId}:${raw}:${Date.parse(entry.startedAt)}`);
   }
   const allocationStart = typeof allocation?.startedAt === "string" ? Date.parse(allocation.startedAt) : null;
   if (allocationStart !== null) candidates = candidates.filter(entry => Date.parse(entry.startedAt) === allocationStart);
