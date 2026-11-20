@@ -256,7 +256,7 @@ export function OwnMacRentalCard({
   const orderedOffers = [...offers].sort((a, b) => Number(b.id === notice.recommendedQuoteId) - Number(a.id === notice.recommendedQuoteId));
   const comparison = q ? compareRentalOffers(q, offers.find(other => other.id !== q.id)) : undefined;
   const rationale = [q && q.id === notice.recommendedQuoteId ? notice.recommendationReason : undefined, comparison].filter(Boolean).join(" ");
-  const rentalAction = "min-h-11 rounded-md border border-[#333333] px-3 py-2 text-[13px] leading-5 text-[#D0D0D0] disabled:opacity-50 max-sm:flex-1 max-sm:text-sm";
+  const rentalAction = "min-h-11 min-w-0 rounded-md border border-[#333333] px-3 py-2 text-[13px] leading-5 text-[#D0D0D0] disabled:opacity-50 max-sm:w-full max-sm:text-sm";
   return (
     <section aria-label="Mac rental choice" aria-busy={busy || undefined} className="min-w-0 max-w-[720px] overflow-hidden rounded-[10px] border border-[#3D3420] bg-[#181818] max-sm:rounded-xl">
       <div className="hidden flex-wrap items-center gap-2 border-b border-[#242424] px-3.5 py-2.5 text-xs leading-4 sm:flex">
@@ -335,11 +335,11 @@ export function OwnMacRentalCard({
             <p className="mt-2">A rental quote does not confirm GUI automation readiness.</p>
           </details>
         </div>}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
           <button className={rentalAction} disabled={busy || !onAnswer} onClick={() => onAnswer?.("queue")}>{notice.answer === "queue" ? "Kept queued" : "Keep it queued"}</button>
           {notice.canWaitForOwnMac !== false && <button className={rentalAction} disabled={busy || !onAnswer} onClick={() => onAnswer?.("wait")}>Wait for your Mac</button>}
-          {onRefresh && <button className={rentalAction} disabled={busy} onClick={onRefresh}>{busy && !approving ? "Updating…" : "Refresh offers"}</button>}
-          {onOwnWords && <button className="min-h-11 text-xs leading-5 text-[#8A8A8A] max-sm:flex-1 max-sm:text-sm sm:ml-auto" onClick={onOwnWords}>Ask about this rental</button>}
+          {onRefresh && <button className={cn(rentalAction,notice.canWaitForOwnMac !== false && "max-sm:col-span-2")} disabled={busy} onClick={onRefresh}>{busy && !approving ? "Updating…" : "Refresh offers"}</button>}
+          {onOwnWords && <button className="min-h-11 text-xs leading-5 text-[#8A8A8A] hover:underline max-sm:col-span-2 max-sm:w-full max-sm:text-sm sm:ml-auto" onClick={onOwnWords}>Ask about this rental</button>}
         </div>
         {notice.canWaitForOwnMac === false && <p className="text-xs leading-4 text-[#8A8A8A] max-sm:text-[13px] max-sm:leading-5">Choose Your Mac in Runs on to wait for it.</p>}
       </div>

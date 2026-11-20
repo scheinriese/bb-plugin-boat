@@ -17,18 +17,21 @@ const failed: OwnMacNotice = {
   ...initial, offer:quotes[0], answer:"rent", replacementId:"t_fake_allocated",
   linkedTask:{taskId:"t_fake_allocated",status:"failed",turns:0,machineId:"instabox_fake_allocated",error:"Instabox did not report the Mac lease; work cannot safely start.",lease:{provider:"instabox",model:"m2",minimumCost:10.8,hourPrice:.45,currency:"USD",paidUntil:"2030-01-02T12:00:00Z",releaseAt:"2030-01-02T12:00:00Z",endedAt:null}},
 };
+const allActions:OwnMacNotice = {...initial,canWaitForOwnMac:true};
 function Preview() {
-  const [notice, setNotice] = useState(new URL(location.href).searchParams.get("state")==="allocated-failed" ? failed : initial);
+  const state=new URL(location.href).searchParams.get("state");
+  const [notice, setNotice] = useState(state==="allocated-failed" ? failed : state==="all-actions" ? allActions : initial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   return <main className="boat-ui mx-auto max-w-[800px] space-y-4 p-4">
     <div className="space-y-1"><h1 className="text-base font-medium">Mac rental choice</h1><p className="text-xs leading-5 text-[#8A8A8A]">Interactive sample · fake quotes only · nothing is rented</p></div>
     <OwnMacRentalCard notice={notice} showTaskTitle={false} busy={busy} approving={busy} error={error}
+      onOwnWords={() => setError("Sample only: opens the composer to ask about this rental; it does not approve a rental.")}
       onRecover={() => setError("Sample refusal: current provider lease must be verified before this existing task can recover. No new rental was started.")}
       onOpenTask={() => setError("Sample only: opens the existing linked task in the installed plugin.")}
       onOpenMachine={() => setError("Sample only: opens Sandboxes to inspect this allocated machine.")}
       onSelect={quoteId => { setError(""); setNotice({ ...notice, offer: quotes.find(quote => quote.id === quoteId) }); }}
-      onRefresh={() => { setError(""); setNotice(initial); }}
+      onRefresh={() => { setError(""); setNotice({...initial,canWaitForOwnMac:notice.canWaitForOwnMac}); }}
       onAnswer={answer => {
         if (answer === "wait" || answer === "queue") { setNotice({ ...notice, answer }); return; }
         setBusy(true);
@@ -36,6 +39,7 @@ function Preview() {
       }} />
     <details className="text-xs leading-5 text-[#8A8A8A]"><summary className="cursor-pointer">Preview states</summary><div className="mt-2 flex flex-wrap gap-3">
       <button onClick={() => { setError(""); setNotice(initial); }}>Reset</button>
+      <button onClick={() => { setError(""); setNotice(allActions); }}>All four actions</button>
       <button onClick={() => { setError(""); setNotice(failed); }}>Allocated · task failed</button>
       <button onClick={() => { setError(""); setNotice({...failed,linkedTask:{...failed.linkedTask!,lease:{...failed.linkedTask!.lease!,endedAt:"2030-01-01T12:01:00Z"}}}); }}>Ended local row · uncertain billing</button>
       <button onClick={() => { setError(""); setNotice({...failed,linkedTask:undefined}); }}>Linked task unavailable</button>
