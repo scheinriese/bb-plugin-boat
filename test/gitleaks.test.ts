@@ -7,9 +7,11 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 
 const available = spawnSync("gitleaks", ["version"]).status === 0;
+const required = process.env.CI !== undefined || process.env.REQUIRE_GITLEAKS !== undefined;
 const body = (length: number) => randomBytes(length).toString("hex").slice(0, length);
 
-test("gitleaks provider rules and inherited GitHub rules", { skip: !available }, () => {
+test("gitleaks provider rules and inherited GitHub rules", { skip: !available && !required }, () => {
+  assert.ok(available, "gitleaks must be installed when CI or REQUIRE_GITLEAKS is set");
   const dir = mkdtempSync(join(tmpdir(), "secret-scan-"));
   try {
     const scan = (value: string): string[] => {
@@ -25,6 +27,8 @@ test("gitleaks provider rules and inherited GitHub rules", { skip: !available },
     for (const prefix of ["ibk_", "ibp_", "ibkv_", "ibpv_"]) {
       assert.deepEqual(scan(prefix + body(32)), ["instabox-key"]);
     }
+    assert.deepEqual(scan("ibk_" + body(16) + "test" + body(16)), ["instabox-key"]);
+    assert.deepEqual(scan("ibp_" + body(16) + "latest"), ["instabox-key"]);
     const access = "SCW" + body(17).toUpperCase();
     assert.deepEqual(scan(access), ["scaleway-access-key"]);
     for (const context of ["SCW_SECRET_KEY=", "scaleway: ", "secret_key: "]) {

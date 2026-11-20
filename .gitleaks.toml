@@ -61,7 +61,8 @@ keywords = ["ibk_", "ibp_", "ibkv_", "ibpv_"]
 
 [[rules.allowlists]]
 description = "Recognisably fake Instabox fixture values"
-stopwords = ["fake", "test", "example"]
+regexTarget = "match"
+regexes = ['''^ib[kp]v?_(?:fake|test|example)''']
 
 [[rules]]
 id = "scaleway-secret-key"
