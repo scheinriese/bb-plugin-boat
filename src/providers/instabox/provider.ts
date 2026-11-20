@@ -1,7 +1,7 @@
 import { macModels as readMacModels } from "./mac.ts";
 import { createInstaboxSecrets } from "./secrets.ts";
 import { GITHUB_LOGIN_HINT } from "./words.ts";
-import type { MacLeaseLedger } from "../../mac-leases.ts";
+import type { MacLease, MacLeaseLedger } from "../../mac-leases.ts";
 // Instabox (https://instabox.sh) as a sandbox provider: Linux and plan-gated Macs.
 // Its members go through the instabox CLI (./cli.ts) like boat's go
 // through boat's: lifecycle, exec, ports, snapshots, usage and its headless
@@ -232,19 +232,39 @@ export interface InstaboxProviderOptions {
   ledger?: MacLeaseLedger;
 }
 
+/** Preserve a matching legacy row, but scope new identities to the machine and
+ * physical start: provider lease IDs need not be globally unique. */
+export function instaboxLeaseInput(ledger: MacLeaseLedger, sandbox: SandboxInfo): Omit<MacLease, "endedAt" | "endReason" | "noticeAt" | "noticeText" | "kept" | "releaseAt"> | null {
+  const m = sandbox.mac;
+  if (!m || !m.leaseId || m.leaseId === "undefined" || m.leaseId === "null") return null;
+  const legacyId = `instabox:${m.leaseId}`;
+  const id = `instabox:${sandbox.id}:${m.leaseId}:${Date.parse(m.startedAt)}`;
+  const existing = ledger.list().find(row => (row.id === legacyId || row.id === id) && row.provider === "instabox" && row.machineId === sandbox.id && Date.parse(row.startedAt) === Date.parse(m.startedAt));
+  return { id: existing?.id ?? id, provider: "instabox", machineId: sandbox.id, size: m.model, startedAt: m.startedAt, paidUntil: m.chargeUntil, minimumCost: m.minimumCost, hourPrice: m.hourPrice, currency: "USD", cpus: m.cpus, memoryMiB: m.memoryMiB };
+}
+
 /** Instabox as a SandboxProvider: the CLI for its members, the REST API where the CLI can't. */
 export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, options: InstaboxProviderOptions = {}): SandboxProvider {
   const secrets = createInstaboxSecrets(cli, options.secrets ?? (async () => "all"), options.now);
   const caps = { ...INSTABOX_CAPABILITIES };
-  const remember = (sandbox: SandboxInfo) => {
-    if (sandbox.mac && options.ledger) {
-      const m = sandbox.mac;
-      // A confirmed newer physical lease may replace an older one on the
-      // same VM. An older/stale list must never end the newer lease.
-      for (const old of options.ledger.held(sandbox.id)) {
-        if (old.id !== `instabox:${m.leaseId}` && Date.parse(old.startedAt) < Date.parse(m.startedAt)) options.ledger.end(old.id, "handed back", Date.parse(m.startedAt));
+  const remember = (sandbox: SandboxInfo, authoritativeRevision?: number) => {
+    const ledger = options.ledger;
+    if (sandbox.mac && ledger) {
+      if (authoritativeRevision !== undefined && authoritativeRevision !== ledger.revision()) return sandbox;
+      const input = instaboxLeaseInput(ledger, sandbox);
+      if (!input) return sandbox;
+      const held = ledger.held(sandbox.id).filter(row => row.provider === "instabox");
+      if (held.some(row => row.id !== input.id && Date.parse(row.startedAt) >= Date.parse(input.startedAt))) return sandbox;
+      // Lists can be stale. Only a get dispatched after the last local
+      // transition may supersede a physical lease or correct an inferred end.
+      if (held.some(row => row.id !== input.id) && authoritativeRevision === undefined) return sandbox;
+      const row = authoritativeRevision === undefined ? ledger.record(input) : ledger.observeCurrent(input, authoritativeRevision);
+      if (!row || row.endedAt) {
+        const terminal = ledger.list().find(lease => lease.id === input.id);
+        if (authoritativeRevision !== undefined && terminal?.endedAt) ledger.observeDiscrepancy(input.id, `Instabox currently reports this physical Mac lease active, but the local lease ended with unverified current billing. Recorded minimum USD ${input.minimumCost.toFixed(2)}, paid until ${input.paidUntil}; provider scheduled release ${sandbox.scheduledReleaseAt ?? "not reported"}. Billing may continue. Inspect the existing task and machine before recovery; no new rental was started.`, options.now?.() ?? Date.now());
+        return sandbox;
       }
-      options.ledger.record({ id: `instabox:${m.leaseId}`, provider: "instabox", machineId: sandbox.id, size: m.model, startedAt: m.startedAt, paidUntil: m.chargeUntil, minimumCost: m.minimumCost, hourPrice: m.hourPrice, currency: "USD", cpus: m.cpus, memoryMiB: m.memoryMiB });
+      if (authoritativeRevision !== undefined) ledger.schedule(row.id, sandbox.scheduledReleaseAt ?? null);
     }
     return sandbox;
   };
@@ -256,9 +276,26 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
   }
   const links = options.links ?? new Map<string, string>();
 
+  const infoReads = new Map<string, number>();
   async function info(sandboxId: string, signal?: AbortSignal): Promise<SandboxInfo & { native: string | null }> {
-    const record = await cli.json(["get", sandboxId, "--json"], { signal, timeoutMs: 60_000 });
-    return { ...toSandbox(rec(record.machine) ?? record), native: nativeState(rec(record.machine) ?? record) };
+    const revision = options.ledger?.revision();
+    const read = (infoReads.get(sandboxId) ?? 0) + 1;
+    infoReads.set(sandboxId, read);
+    let record;
+    try { record = await cli.json(["get", sandboxId, "--json"], { signal, timeoutMs: 60_000 }); }
+    catch (error) {
+      if (isNotFound(error) && infoReads.get(sandboxId) === read && revision === options.ledger?.revision()) for (const lease of options.ledger?.held(sandboxId) ?? []) if (lease.provider === "instabox") options.ledger?.end(lease.id, "deleted");
+      throw error;
+    }
+    const raw = rec(record.machine) ?? record;
+    const sandbox = { ...toSandbox(raw), native: nativeState(raw) };
+    if (sandbox.id !== sandboxId) throw new InstaboxError("Instabox returned a different machine identity", {code: "instabox_bad_output"});
+    if (infoReads.get(sandboxId) === read && revision === options.ledger?.revision()) {
+      if (sandbox.native === "deleted" || (sandbox.native === "stopped" && !sandbox.mac && sandbox.stoppedAt)) {
+        for (const lease of options.ledger?.held(sandboxId) ?? []) if (lease.provider === "instabox" && (sandbox.native === "deleted" || Date.parse(sandbox.stoppedAt!) >= Date.parse(lease.startedAt))) options.ledger?.end(lease.id, sandbox.native === "deleted" ? "deleted" : "handed back", sandbox.native === "deleted" ? undefined : Date.parse(sandbox.stoppedAt!));
+      } else remember(sandbox, revision);
+    }
+    return sandbox;
   }
 
   async function findInfo(sandboxId: string, signal?: AbortSignal): Promise<(SandboxInfo & { native: string | null }) | null> {
@@ -373,9 +410,6 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       const result = await cli.run(["ls", "--json"], { signal: listOptions.signal });
       const sandboxes = machineList(result.value).filter((raw) => nativeState(raw) !== "deleted").map(raw => {
         const sandbox = toSandbox(raw);
-        if (sandbox.system === "macos" && sandbox.state === "stopped" && !sandbox.mac) {
-          for (const lease of options.ledger?.held(sandbox.id) ?? []) options.ledger?.end(lease.id, "handed back", Date.parse(sandbox.stoppedAt ?? lease.paidUntil));
-        }
         return rec(raw.metadata)?.["created-by"] === "bb-boat" ? remember(sandbox) : sandbox;
       });
       return listOptions.all ? sandboxes : sandboxes.filter((sandbox) => ACTIVE_STATES.has(sandbox.state));
@@ -427,9 +461,18 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         throw new InstaboxError("Instabox may have allocated a Mac before create failed. Check its machine list before retrying; Harbormaster will not rent a fallback Mac.",{code:"creation_unknown"});
       }
       try {
-        const sandbox = toSandbox(rec(record.machine) ?? record);
+        let sandbox = toSandbox(rec(record.machine) ?? record);
         if (sandbox.id === "") throw new InstaboxError("instabox create did not report a machine id", { code: create.system === "macos" ? "creation_unknown" : "instabox_bad_output" });
-        return remember(sandbox);
+        // Some create envelopes omit billing details. Re-read this exact VM;
+        // never retry create or accept another physical minimum.
+        if (create.system === "macos" && !sandbox.mac) sandbox = await info(sandbox.id, create.signal);
+        if (create.system === "macos" && !sandbox.mac) throw new InstaboxError("Instabox allocated a Mac without current physical lease terms", {code: "creation_allocated"});
+        remember(sandbox, options.ledger?.revision());
+        if (create.system === "macos" && options.ledger) {
+          const input = instaboxLeaseInput(options.ledger, sandbox);
+          if (!input || !options.ledger.restoreCurrent(input, {revision: options.ledger.revision()})) throw new InstaboxError("Instabox allocated a Mac but its current lease could not be registered safely", {code: "creation_allocated"});
+        }
+        return sandbox;
       } catch (error) {
         if (create.system !== "macos" || (error as {code?:string}).code === "creation_unknown") throw error;
         throw new InstaboxError("Instabox allocated a Mac but local lease registration failed. Reconcile its machine list before retrying.",{code:"creation_allocated"});
