@@ -1816,9 +1816,9 @@ export class BoatService {
   private async assertGithubLogin(task: Task, options: { signal?: AbortSignal; resume?: boolean; forShip?: boolean } = {}): Promise<void> {
     let recorded = this.githubExpiry(task);
     const provider = this.sandboxProvider(task);
-    if (task.sandboxId !== null && provider.refreshGithubLogin && (recorded === null || Date.parse(recorded) - Date.now() <= 45 * 60_000)) {
+    if (task.sandboxId !== null && provider.refreshGithubLogin) {
       const expiry = await provider.refreshGithubLogin(task.sandboxId, options.signal);
-      if (expiry) { this.store.addEvent(task.id, "github-token", expiry); recorded = expiry; }
+      if (expiry) { if (expiry !== recorded) this.store.addEvent(task.id, "github-token", expiry); recorded = expiry; }
     }
     if (recorded === null || task.sandboxId === null) return;
     // A turn can run a while: a token running out within it is checked too.
@@ -2634,6 +2634,25 @@ export class BoatService {
     if (this.hooks.tell) for (const thread of threads) await this.hooks.tell(thread,text);
   }
 
+  /** A failed enrollment must not log out a shared Mac's other tasks. */
+  async cleanupFailedMachineBootstrap(sandboxId: string, cleanup: () => Promise<void>, taskId?: string): Promise<void> {
+    await this.withMacLock(async () => {
+      const attachments = this.store.macLeases.held(sandboxId).flatMap(lease => this.store.macLeases.tasks(lease.id));
+      const owner = taskId ? this.store.get(taskId) : null;
+      // Only the failing start can be excluded. A running owner or an unknown
+      // resume still needs its login, even if it is the machine's only task.
+      const excluded = owner?.status === "starting" && (owner.sandboxId === sandboxId || attachments.some(attachment => attachment.taskId === owner.id)) ? owner.id : null;
+      if (this.store.liveSandboxTasks(sandboxId).some(task => task.id !== excluded)) return;
+      // Missing task metadata is uncertain ownership, so leave cleanup to hand-back.
+      if (attachments.some(attachment => {
+        if (attachment.taskId === excluded) return false;
+        const task = this.store.get(attachment.taskId);
+        return !task || OPEN_STATUSES.includes(task.status);
+      })) return;
+      await cleanup();
+    });
+  }
+
   /** Provider-neutral minimum/rate policy. No local extension of paid time. */
   async processMacLeases(now = Date.now()): Promise<void> {
     if (!this.store.macLeases.held().length) return;
@@ -2646,73 +2665,77 @@ export class BoatService {
         const machines = await provider.list({ all: true, signal: this.hooks.lifecycle });
         this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)), now);
         for (const lease of this.store.macLeases.held().filter(lease => lease.provider === provider.id)) {
-          // Refresh active held leases too, before a long-running chat hits expiry.
-          if (provider.refreshGithubLogin) {
-            for (const task of this.store.liveSandboxTasks(lease.machineId).filter(task => task.repo !== null)) {
-              try { await this.assertGithubLogin(task, { signal: this.hooks.lifecycle }); }
-              catch (error) {
-                const warning = errorText(error);
-                if (this.store.latestEvent(task.id, "github-refresh-failed")?.text !== warning) {
-                  this.store.addEvent(task.id, "github-refresh-failed", warning);
-                  this.hooks.log.warn(`GitHub credentials for task ${task.id}: ${warning}`);
+          try {
+            // Refresh active held leases too, before a long-running chat hits expiry.
+            if (provider.refreshGithubLogin) {
+              for (const task of this.store.liveSandboxTasks(lease.machineId).filter(task => task.repo !== null || task.extraRepos.length > 0)) {
+                try { await this.assertGithubLogin(task, { signal: this.hooks.lifecycle }); }
+                catch (error) {
+                  const warning = errorText(error);
+                  if (this.store.latestEvent(task.id, "github-refresh-failed")?.text !== warning) {
+                    this.store.addEvent(task.id, "github-refresh-failed", warning);
+                    this.hooks.log.warn(`GitHub credentials for task ${task.id}: ${warning}`);
+                  }
                 }
               }
             }
-          }
-          const minimumEnd = Date.parse(lease.paidUntil);
-          if (now < minimumEnd-(settings.macHandBackMarginMinutes ?? 30)*60_000) continue;
-          const open = this.store.liveSandboxTasks(lease.machineId);
-          const attached = () => this.store.macLeases.tasks(lease.id).flatMap(t => { const task=this.store.get(t.taskId); return task ? [task] : []; });
-          const work = !lease.kept && !open.length ? await this.macLeaseWorkState(lease) : "resolved";
-          if (work === "unknown") {
-            if (lease.releaseAt) {
-              if (!provider.cancelLeaseRelease) continue;
-              await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
-              this.store.macLeases.schedule(lease.id,null);
+            const minimumEnd = Date.parse(lease.paidUntil);
+            if (now < minimumEnd-(settings.macHandBackMarginMinutes ?? 30)*60_000) continue;
+            const open = this.store.liveSandboxTasks(lease.machineId);
+            const attached = () => this.store.macLeases.tasks(lease.id).flatMap(t => { const task=this.store.get(t.taskId); return task ? [task] : []; });
+            const work = !lease.kept && !open.length ? await this.macLeaseWorkState(lease) : "resolved";
+            if (work === "unknown") {
+              if (lease.releaseAt) {
+                if (!provider.cancelLeaseRelease) continue;
+                await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
+                this.store.macLeases.schedule(lease.id,null);
+              }
+              if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,"unknown");
+              continue;
             }
-            if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,"unknown");
-            continue;
-          }
-          if (work === "unshipped" || lease.kept) {
-            await this.keepMacLease(lease, this.hooks.lifecycle);
-            if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,true);
-            continue;
-          }
-          if (open.length) {
-            const threshold = (settings.macIdleNoticeMinutes ?? 60)*60_000;
-            if (open.every(t => t.status !== "running" && t.status !== "starting" && now-Date.parse(t.updatedAt) >= threshold) && !(await this.sandboxWorkRuns(lease.machineId))) {
-              await this.macLeaseNotice(lease,open,now,false);
-            } else { if(this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
-            continue; // All open tasks, including failed/unpushed work, are protected.
-          }
-          { if(this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
-          if (this.holdsSandbox(lease.machineId) || await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
-          const current = await provider.findInfo(lease.machineId, this.hooks.lifecycle);
-          if (await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
-          const checked = await this.macLeaseWorkState(lease);
-          if (checked === "unshipped") { await this.keepMacLease(lease,this.hooks.lifecycle); continue; }
-          if (checked === "unknown") {
-            if (lease.releaseAt && provider.cancelLeaseRelease) {
-              await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
-              this.store.macLeases.schedule(lease.id,null);
+            if (work === "unshipped" || lease.kept) {
+              await this.keepMacLease(lease, this.hooks.lifecycle);
+              if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,true);
+              continue;
             }
-            continue;
+            if (open.length) {
+              const threshold = (settings.macIdleNoticeMinutes ?? 60)*60_000;
+              if (open.every(t => t.status !== "running" && t.status !== "starting" && now-Date.parse(t.updatedAt) >= threshold) && !(await this.sandboxWorkRuns(lease.machineId))) {
+                await this.macLeaseNotice(lease,open,now,false);
+              } else { if(this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
+              continue; // All open tasks, including failed/unpushed work, are protected.
+            }
+            { if(this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
+            if (this.holdsSandbox(lease.machineId) || await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
+            const current = await provider.findInfo(lease.machineId, this.hooks.lifecycle);
+            if (await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
+            const checked = await this.macLeaseWorkState(lease);
+            if (checked === "unshipped") { await this.keepMacLease(lease,this.hooks.lifecycle); continue; }
+            if (checked === "unknown") {
+              if (lease.releaseAt && provider.cancelLeaseRelease) {
+                await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
+                this.store.macLeases.schedule(lease.id,null);
+              }
+              continue;
+            }
+            const latest = this.store.macLeases.held(lease.machineId).find(l => l.id === lease.id);
+            // Re-read after I/O. Nothing awaits between this guard and release.
+            if (this.store.liveSandboxTasks(lease.machineId).length || this.holdsSandbox(lease.machineId) || !latest || latest.kept) continue;
+            if (now < minimumEnd) {
+              // Keep the paid Mac available until the boundary. A provider without
+              // scheduling is released on the first pass after its minimum.
+              if (latest.releaseAt || !provider.scheduleLeaseRelease || !provider.cancelLeaseRelease) continue;
+              await provider.scheduleLeaseRelease(lease.machineId, lease.paidUntil, this.hooks.lifecycle);
+              this.store.macLeases.schedule(lease.id, current?.scheduledReleaseAt ?? lease.paidUntil);
+            } else {
+              await provider.delete(lease.machineId, this.hooks.lifecycle, { leaseEndReason: "handed back", leaseEndAt: now });
+              this.store.macLeases.end(lease.id, "handed back", now);
+              this.store.expirePreviewsForSandbox(lease.machineId);
+            }
+            this.hooks.changed([]);
+          } catch (error) {
+            this.hooks.log.warn(`Mac lease ${lease.machineId} maintenance failed: ${errorText(error)}`);
           }
-          const latest = this.store.macLeases.held(lease.machineId).find(l => l.id === lease.id);
-          // Re-read after I/O. Nothing awaits between this guard and release.
-          if (this.store.liveSandboxTasks(lease.machineId).length || this.holdsSandbox(lease.machineId) || !latest || latest.kept) continue;
-          if (now < minimumEnd) {
-            // Keep the paid Mac available until the boundary. A provider without
-            // scheduling is released on the first pass after its minimum.
-            if (latest.releaseAt || !provider.scheduleLeaseRelease || !provider.cancelLeaseRelease) continue;
-            await provider.scheduleLeaseRelease(lease.machineId, lease.paidUntil, this.hooks.lifecycle);
-            this.store.macLeases.schedule(lease.id, current?.scheduledReleaseAt ?? lease.paidUntil);
-          } else {
-            await provider.delete(lease.machineId, this.hooks.lifecycle, { leaseEndReason: "handed back", leaseEndAt: now });
-            this.store.macLeases.end(lease.id, "handed back", now);
-            this.store.expirePreviewsForSandbox(lease.machineId);
-          }
-          this.hooks.changed([]);
         }
       }
     });

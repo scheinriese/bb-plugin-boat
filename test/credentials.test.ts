@@ -16,13 +16,13 @@ function fixture() {
     githubToken: async () => configured, now: () => clock, agentAvailable: async () => route,
     fetch: (async (url, options) => {
       requests.push(String(url));
-      assert.equal(new Headers(options?.headers).get("Authorization"), `Bearer ${token}`);
+      assert.equal(new Headers(options?.headers).get("Authorization"), `Bearer ${configured}`);
       assert.equal(options?.redirect, "error");
       return new Response(JSON.stringify({ permissions: { push: !denied, pull: true } }), { headers: { "github-authentication-token-expiration": new Date(expires).toISOString() } });
     }) as typeof fetch,
   });
   const executor: MachineExecutor = { exec: async request => { spawns.push(request); return { exitCode: 0 }; } };
-  return { source, executor, spawns, requests, clock: (n: number) => { clock = n; }, expiry: (n: number) => { expires = n; }, missing: () => { configured = null; }, routeOff: () => { route = false; }, denied: () => { denied = true; } };
+  return { source, executor, spawns, requests, clock: (n: number) => { clock = n; }, expiry: (n: number) => { expires = n; }, rotate: () => { configured = "fake_rotated_rented_machine_token"; }, missing: () => { configured = null; }, routeOff: () => { route = false; }, denied: () => { denied = true; } };
 }
 test("delivery uses only private stdin; every recorded spawn has secret-free argv and discarded output", async () => {
   const f = fixture();
@@ -58,7 +58,7 @@ test("preflight refuses missing, expiring, inaccessible and unrouted credentials
     assert.equal(f.spawns.length, 0);
   }
 });
-test("secret-store, HTTP, body, and executor failures never appear in errors; partial delivery is cleaned", async () => {
+test("secret-store, HTTP, body, and executor failures never appear in errors; failed delivery preserves other shared logins", async () => {
   for (const stage of ["store", "http", "body", "exec"] as const) {
     const recorded: string[] = [];
     const source = createCredentialSource({
@@ -71,7 +71,7 @@ test("secret-store, HTTP, body, and executor failures never appear in errors; pa
     const executor: MachineExecutor = { exec: async request => { recorded.push(JSON.stringify(request.command)); if (request.command.includes(GITHUB_LOGIN_SCRIPT)) throw new Error(token); return { exitCode: 0 }; } };
     await assert.rejects(source.ensureGithub("mac", executor), error => { assert.ok(!String(error).includes(token)); return true; });
     assert.ok(!JSON.stringify(recorded).includes(token));
-    if (stage === "exec") assert.ok(recorded.some(line => line.includes("auth logout")));
+    assert.ok(!recorded.some(line => line.includes("auth logout")));
   }
 });
 test("cleanup fails closed and sanitizes transport errors", async () => {
@@ -132,7 +132,23 @@ test("delivery refuses symlinked credential paths before handing stdin to gh", a
     child.stdout.on("data", chunk => recorded.push(String(chunk))); child.stderr.on("data", chunk => recorded.push(String(chunk)));
     child.stdin.on("error",()=>{}); child.stdin.end(request.stdin); child.on("close", code => resolve({exitCode:code ?? 1}));
   }) };
-  await assert.rejects(fixture().source.ensureGithub("mac",executor), {code:"credential_cleanup_failed"});
+  await assert.rejects(fixture().source.ensureGithub("mac",executor), {code:"task_credentials_missing"});
   await assert.rejects(access(join(dir,"shared/gh")));
   assert.ok(!JSON.stringify(recorded).includes(token));
+});
+
+test("rotation re-delivers on the next use even while the previous expiry is distant", async () => {
+  const f = fixture();
+  await f.source.ensureGithub("mac", f.executor);
+  f.rotate();
+  await f.source.ensureGithub("mac", f.executor);
+  assert.equal(f.spawns.length, 2);
+  assert.equal(f.spawns[1]!.stdin, "fake_rotated_rented_machine_token\n");
+  for (const request of f.spawns) assert.ok(!JSON.stringify({ ...request, stdin: undefined }).includes("fake_rotated_rented_machine_token"));
+});
+test("repo-less preflight never reads or validates a stored GitHub token", async () => {
+  let reads = 0;
+  const source = createCredentialSource({ githubToken: async () => { reads++; throw new Error("fake_invalid_token"); }, agentAvailable: async () => true });
+  await source.assertReady("codex", []);
+  assert.equal(reads, 0);
 });

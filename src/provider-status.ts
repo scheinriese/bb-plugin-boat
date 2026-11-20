@@ -85,7 +85,7 @@ export async function providerStates(deps: ProviderStatusDeps, options: { force?
       }
       if (provider.id === "scaleway" && provider.presentation) {
         const presentation = await provider.presentation().catch(() => null);
-        const missing = presentation?.steps.find(step=>step.possible && !step.done);
+        const missing = presentation?.steps.find(step=>step.possible && step.required !== false && !step.done);
         const orphans = presentation?.steps.find(step=>step.id==="project")?.done ? await provider.orphans?.(AbortSignal.timeout(10_000)).catch(()=>undefined) : undefined;
         return {...base(provider),orphans,turnedOn:presentation?.steps.find(step=>step.id==="project")?.done ?? false,keyPresent:null,status:presentation && !missing ? "ready" : "setup-required",checks:[],problem:missing?.detail ?? (presentation ? null : "Could not check machine credentials.")};
       }

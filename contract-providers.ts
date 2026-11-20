@@ -59,6 +59,8 @@ export type ProviderSystemDto = z.infer<typeof providerSystemSchema>;
 export const providerStepSchema = z.object({
   id: z.string(), label: z.string(), done: z.boolean(), detail: z.string(),
   possible: z.boolean().default(true),
+  /** Optional setup (for example GitHub for repo-less tasks) does not block readiness. */
+  required: z.boolean().optional(),
 });
 export type ProviderStepDto = z.infer<typeof providerStepSchema>;
 export const linuxUsageSchema = z.object({

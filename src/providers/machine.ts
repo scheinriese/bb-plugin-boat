@@ -57,7 +57,7 @@ function message(error: unknown): string {
 }
 
 export interface MachineDeps {
-  service: Pick<BoatService, "createSandbox" | "bringUp">;
+  service: Pick<BoatService, "createSandbox" | "bringUp"> & Partial<Pick<BoatService, "cleanupFailedMachineBootstrap">>;
   settings: () => Promise<BoatSettings>;
   /** Can new machines start now (setup-required, with what to fix)? */
   availability: () => Promise<{ status: "available" } | { status: "setup-required"; message: string }>;
@@ -94,6 +94,12 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
     ...(deps.trimTimeoutMs === undefined ? {} : { stopStepTimeoutMs: deps.trimTimeoutMs }),
   }) ?? {};
   const beforeBootstrap = deps.quietLogins ?? hooks.beforeBootstrap ?? (async () => undefined);
+  async function bootstrapFailed(id: string, taskId?: string): Promise<void> {
+    if (!hooks.bootstrapFailed) return;
+    const cleanup = () => hooks.bootstrapFailed!(id);
+    if (service.cleanupFailedMachineBootstrap) await service.cleanupFailedMachineBootstrap(id, cleanup, taskId);
+    else await cleanup();
+  }
   /** After the provider fails a stop or delete, bb's retries wait (src/teardown-backoff.ts). */
   const teardown = new TeardownBackoff(deps.now);
   const stopWait = deps.stopWait ?? { pollMs: 5_000, maxMs: 90_000 };
@@ -123,6 +129,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
     availability: () => deps.availability(),
     async create({ inputs: given, key, checkpoint, report, signal }) {
       let bootstrapSandbox: string | null = null;
+      let bootstrapTask: string | undefined;
       try {
         const parsed = inputs.safeParse(given ?? {});
         if (!parsed.success) throw new Error(words.invalidInputs);
@@ -160,6 +167,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
         await checkpoint({ sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) });
         report.log(words.created(sandbox.id));
         bootstrapSandbox = sandbox.id;
+        bootstrapTask = parsed.success ? parsed.data.taskId : undefined;
         await beforeBootstrap(sandbox.id, signal);
         report.step("Installing bb on the sandbox");
         const { hostId } = await bb.experimental_machines.bootstrap({
@@ -170,7 +178,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
         });
         return { status: "created" as const, name: machine.machineLabel(sandbox.id, hostId), resource: { sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) } };
       } catch (error) {
-        if (bootstrapSandbox !== null) await hooks.bootstrapFailed?.(bootstrapSandbox);
+        if (bootstrapSandbox !== null) await bootstrapFailed(bootstrapSandbox, bootstrapTask);
         signal.throwIfAborted();
         const transient = retryableBootstrap(error);
         return { status: "failed" as const, message: transient ? bootstrapFailureMessage(transient) : message(error) };
@@ -252,7 +260,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
           await deps.prepareHost?.({ sandboxId, hostId: hostId ?? null, woke, signal, report });
           report.step("Restarting bb on the sandbox");
           await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(executor(sandboxId), report), report, signal });
-        } catch (error) { await hooks.bootstrapFailed?.(sandboxId); throw error; }
+        } catch (error) { await bootstrapFailed(sandboxId); throw error; }
       });
       return { resource };
     },

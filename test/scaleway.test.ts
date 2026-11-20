@@ -25,14 +25,16 @@ const keyId = "30000000-0000-4000-8000-000000000001";
 const secret = "test-only-scaleway-secret";
 const type = { name: "M1-M", stock: "high_stock", cpu: { core_count: 8 }, memory: { capacity: 8*1024**3 }, default_os: { id: "macos-stable", name: "macOS" } };
 const product = { locality: { zone: "fr-par-3" }, status: "general_availability", properties: { apple_silicon: { server_type: "M1-M" } }, unit_of_measure: { unit: "hour", size: 1 }, price: { retail_price: { currency_code: "EUR", units: 0, nanos: 110000000 } } };
-async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25, credentials?: CredentialSource) {
+async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25, credentials?: CredentialSource, readyTimeoutMs?: number) {
   const dir = await mkdtemp(join(tmpdir(), "scaleway-test-")); t.after(() => rm(dir, { recursive: true, force: true }));
   const store = memoryStore(), keys = new ScalewayKeys(dir);
   const order: string[] = [];
   const calls: { method: string; path: string; body: any }[] = [], ssh: SshRequest[] = [];
   let servers: any[] = [], quota = 2, available = true, beta = false, failSetup = false, ambiguousCreate = false, ambiguousAbsent = false, failList = false, failSchedule = false, noAgentLogin = false, noGithubLogin = false, poll = 0;
   let createGate: { entered(): void; ready: Promise<void> } | null = null;
-  let failKey = false;
+  let failKey = false, sshCode = 0;
+  let forcedState: string | null = null;
+  let sshHook: ((request: SshRequest) => Promise<void>) | undefined;
   const api = new ScalewayApi({ key: async () => secret, config: async () => ({ projectId, zone: "fr-par-3" }), fetch: (async (url: string, init: RequestInit) => {
     assert.equal(new Headers(init.headers).get("X-Auth-Token"), secret);
     const u = new URL(url), method = init.method!, path = u.pathname, body = init.body ? JSON.parse(String(init.body)) : null;
@@ -61,13 +63,15 @@ async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25, cre
       return json(servers[0]);
     }
     if (method === "DELETE") { servers = []; return new Response(null,{status:204}); }
-    if (method === "GET" && servers[0]) { poll++; if (poll >= 2) Object.assign(servers[0], { status: "ready", delivered: true }); return json(servers[0]); }
+    if (method === "GET" && servers[0]) { poll++; if (poll >= 2) Object.assign(servers[0], { status: forcedState ?? "ready", delivered: true }); return json(servers[0]); }
     return new Response(JSON.stringify({ message: secret }), {status:404});
   }) as typeof fetch });
-  const provider = createScalewayProvider({ api, keys, ledger: store.macLeases, credentials, pollMs: 1, ssh: async (_target, request) => {
+  const makeProvider = (source = credentials) => createScalewayProvider({ api, keys, ledger: store.macLeases, credentials: source, readyTimeoutMs, pollMs: 1, ssh: async (_target, request) => {
     ssh.push(request); order.push(request.command.join(" ")); request.onOutput?.("bb installed");
-    return { exitCode: (failSetup && request.stdin === BOOTSTRAP) || (noAgentLogin && /codex.*login status|claude.*auth status/.test(JSON.stringify(request.command))) || (noGithubLogin && /gh.*auth status/.test(JSON.stringify(request.command))) ? 1 : 0, stdout: "ok", stderr: "" };
+    await sshHook?.(request);
+    return { exitCode: sshCode || ((failSetup && request.stdin === BOOTSTRAP) || (noAgentLogin && /codex.*login status|claude.*auth status/.test(JSON.stringify(request.command))) || (noGithubLogin && /gh.*auth status/.test(JSON.stringify(request.command))) ? 1 : 0), stdout: "ok", stderr: "" };
   } });
+  const provider = makeProvider();
   const create = () => provider.create({ name: "bb-task", type: "default", system: "macos", ttlSeconds: 3600, gitGuard: true });
   const blockCreate = () => {
     let release!:()=>void,entered!:()=>void;
@@ -75,7 +79,7 @@ async function fixture(t: { after(fn: () => unknown): void }, ageHours = 25, cre
     const waiting=new Promise<void>(resolve=>{entered=resolve;});
     createGate={entered,ready};return {entered:waiting,release};
   };
-  return { order, blockCreate, failKey:()=>{failKey=true;}, api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, beta: () => { beta=true; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, ambiguousAbsent:()=>{ambiguousAbsent=true;}, listFailure:(value:boolean)=>{failList=value;}, scheduleFailure:()=>{failSchedule=true;}, noAgentLogin:()=>{noAgentLogin=true;}, noGithubLogin:()=>{noGithubLogin=true;}, servers: () => servers };
+  return { makeProvider, sshExit: (code: number) => { sshCode = code; }, status: (state: string) => { forcedState = state; }, onSsh: (hook: typeof sshHook) => { sshHook = hook; }, order, blockCreate, failKey:()=>{failKey=true;}, api, provider, store, keys, calls, ssh, create, setQuota: (n:number) => { quota=n; }, stock: (value:boolean) => { available=value; }, beta: () => { beta=true; }, failSetup: () => { failSetup=true; }, ambiguousCreate: () => { ambiguousCreate=true; }, ambiguousAbsent:()=>{ambiguousAbsent=true;}, listFailure:(value:boolean)=>{failList=value;}, scheduleFailure:()=>{failSchedule=true;}, noAgentLogin:()=>{noAgentLogin=true;}, noGithubLogin:()=>{noGithubLogin=true;}, servers: () => servers };
 }
 test("Scaleway create waits for delivered and SSH, bootstraps tools, stores a private key and releases it", async t => {
   const f=await fixture(t); const sandbox=await f.create();
@@ -493,6 +497,8 @@ test("configured credentials lift the fresh Mac gate for the selected agent and 
   await assert.rejects(f.provider.assertTaskReady!({agent:"claude",repos:["acme/web"]}), {code:"task_credentials_missing"});
   assert.equal(f.servers().length, 0);
   const sandbox = await f.create();
+  assert.ok(!f.ssh.some(request => request.stdin === "fake_mac_github_token\n"));
+  await f.provider.beforeRepo!(sandbox.id);
   const login = f.ssh.find(request => request.stdin === "fake_mac_github_token\n")!;
   assert.ok(login); assert.ok(!JSON.stringify(login.command).includes("fake_mac_github_token"));
   const steps = (await f.provider.presentation!()).steps;
@@ -503,20 +509,20 @@ test("configured credentials lift the fresh Mac gate for the selected agent and 
   const release = f.order.findIndex(command=>command.startsWith("DELETE /apple-silicon"));
   assert.ok(cleanup >= 0 && cleanup < release, "verified credential removal precedes API release");
 });
-test("scheduled hand-back and failed bootstrap clean credentials before scheduling deletion", async t => {
+test("scheduled hand-back cleans delivery; failed tool bootstrap schedules without credential SSH", async t => {
   for (const failed of [false, true]) {
     const f = await fixture(t, 23, rentedCredentials());
     if (failed) { f.failSetup(); await assert.rejects(f.create(), {code:"creation_allocated"}); }
-    else { const sandbox = await f.create(); await f.provider.scheduleLeaseRelease!(sandbox.id, f.servers()[0]!.deletable_at); }
+    else { const sandbox = await f.create(); await f.provider.beforeRepo!(sandbox.id); await f.provider.scheduleLeaseRelease!(sandbox.id, f.servers()[0]!.deletable_at); }
     const cleanup = f.order.findIndex(command=>command.includes("auth logout"));
     const schedule = f.order.findIndex(command=>command.startsWith("PATCH /apple-silicon"));
-    assert.ok(cleanup >= 0 && cleanup < schedule);
+    assert.ok(failed ? cleanup === -1 && schedule >= 0 : cleanup >= 0 && cleanup < schedule);
   }
 });
 test("cleanup failure prevents both immediate and scheduled release and preserves SSH recovery", async t => {
   const source = rentedCredentials();
   source.cleanup = async () => { throw Object.assign(new Error("Credential removal could not be verified"), {code:"credential_cleanup_failed"}); };
-  const f = await fixture(t, 25, source); const sandbox = await f.create();
+  const f = await fixture(t, 25, source); const sandbox = await f.create(); await f.provider.beforeRepo!(sandbox.id);
   await assert.rejects(f.provider.delete(sandbox.id), {code:"credential_cleanup_failed"});
   await assert.rejects(f.provider.scheduleLeaseRelease!(sandbox.id, f.servers()[0]!.deletable_at), {code:"credential_cleanup_failed"});
   assert.ok(!f.calls.some(call=>call.method==="DELETE" || call.method==="PATCH"));
@@ -532,7 +538,7 @@ test("missing agent route refuses repository task before allocation; every task 
 });
 test("failed bb enrollment invokes private cleanup without logging credentials", async t => {
   const { registerSandboxMachine } = await import("../src/providers/machine.ts");
-  const f = await fixture(t, 25, rentedCredentials()); const sandbox = await f.create();
+  const f = await fixture(t, 25, rentedCredentials()); const sandbox = await f.create(); await f.provider.beforeRepo!(sandbox.id);
   let registration: any;
   const logs: string[] = [], values = new Map();
   const bb = { experimental_machines: { register: (value: unknown) => { registration = value; }, bootstrap: async () => { throw new Error("test enrollment failure"); } }, experimental_environments: { register: () => {} }, storage: { kv: { get: async (key: string) => values.get(key), set: async (key: string, value: unknown) => { values.set(key,value); } } } };
@@ -567,4 +573,182 @@ test("held-lease refresh failure does not interrupt maintenance or repeat unchan
   await service.processMacLeases(); await service.processMacLeases();
   assert.equal(f.store.events(task.id).filter(event=>event.kind==="github-refresh-failed").length,1);
   assert.equal(f.store.macLeases.held().length,1);
+});
+
+for (const state of ["error", "locked", "ssh-unavailable"] as const) test(`a never-provisioned ${state} Mac can be scheduled and deleted without SSH cleanup`, async t => {
+  const f = await fixture(t, 25, rentedCredentials(), state === "ssh-unavailable" ? 500 : 100);
+  if (state === "ssh-unavailable") f.sshExit(255); else f.status(state);
+  await assert.rejects(f.create(), {code:"creation_allocated"});
+  assert.ok(f.calls.some(call=>call.method==="PATCH" && call.body.schedule_deletion));
+  assert.equal((await f.keys.records())[0]!.credentialDeliveryAttempted, false);
+  assert.ok(!f.ssh.some(request=>request.command.some(line=>line.includes("auth logout"))));
+  if (state === "ssh-unavailable") assert.ok(f.ssh.length > 0);
+  const id = `scw_fr-par-3_${serverId}`;
+  // A provider restart preserves proof that this machine never received a token.
+  const restarted = f.makeProvider(rentedCredentials());
+  await restarted.scheduleLeaseRelease!(id, f.servers()[0]!.deletable_at);
+  await restarted.delete(id);
+  assert.equal(f.store.macLeases.held().length, 0);
+});
+test("delivery attempt is persisted before SSH and an uncertain attempt survives restart", async t => {
+  const f = await fixture(t, 25, rentedCredentials()); const sandbox = await f.create();
+  f.onSsh(async request => {
+    if (request.stdin === "fake_mac_github_token\n") assert.equal((await f.keys.records())[0]!.credentialDeliveryAttempted, true);
+  });
+  f.sshExit(255);
+  await assert.rejects(f.provider.beforeRepo!(sandbox.id));
+  const record = (await f.keys.records())[0]!;
+  assert.equal(record.credentialDeliveryAttempted, true);
+  assert.equal((await stat(`${f.keys.path(record.token)}.json`)).mode & 0o777, 0o600);
+  const restarted = f.makeProvider(rentedCredentials());
+  await assert.rejects(restarted.scheduleLeaseRelease!(sandbox.id, f.servers()[0]!.deletable_at), {code:"credential_cleanup_failed"});
+  await assert.rejects(restarted.delete(sandbox.id), {code:"credential_cleanup_failed"});
+  assert.ok(!f.calls.some(call=>call.method==="PATCH" || call.method==="DELETE"));
+  f.sshExit(0); await restarted.scheduleLeaseRelease!(sandbox.id, f.servers()[0]!.deletable_at);
+  assert.equal((await f.keys.records())[0]!.credentialDeliveryAttempted, false);
+});
+test("legacy unknown credential state still requires verified cleanup", async t => {
+  const f = await fixture(t); const sandbox = await f.create();
+  const record = (await f.keys.records())[0]!;
+  const { credentialDeliveryAttempted: _attempt, ...legacy } = record;
+  await f.keys.save(legacy);
+  f.sshExit(255);
+  await assert.rejects(f.makeProvider().delete(sandbox.id), {code:"credential_cleanup_failed"});
+  assert.ok(!f.calls.some(call=>call.method==="DELETE"));
+});
+test("held preflight and daemon bootstrap never deliver; scheduled and failed-cancel Macs refuse repository delivery", async t => {
+  const f = await fixture(t, 23, rentedCredentials()); const sandbox = await f.create();
+  await f.provider.beforeRepo!(sandbox.id);
+  await f.provider.scheduleLeaseRelease!(sandbox.id, f.servers()[0]!.deletable_at);
+  const deliveries = () => f.ssh.filter(request=>request.stdin === "fake_mac_github_token\n").length;
+  const count = deliveries();
+  await f.provider.assertTaskReady!({agent:"codex",repos:["acme/web"],sandboxId:sandbox.id});
+  await f.provider.machineHooks!({warn:()=>{},debug:()=>{}}).beforeBootstrap!(sandbox.id);
+  assert.equal(deliveries(), count);
+  await assert.rejects(f.provider.beforeRepo!(sandbox.id), {code:"machine_release_scheduled"});
+  await assert.rejects(f.provider.refreshGithubLogin!(sandbox.id), {code:"machine_release_scheduled"});
+  f.scheduleFailure(); await assert.rejects(f.provider.cancelLeaseRelease!(sandbox.id));
+  await assert.rejects(f.provider.beforeRepo!(sandbox.id), {code:"machine_release_scheduled"});
+  assert.equal(deliveries(), count);
+  assert.equal((await f.keys.records())[0]!.credentialDeliveryAttempted, false);
+});
+test("scheduled hand-back waits for a concurrent delivery, then cleans it before PATCH", async t => {
+  const f = await fixture(t, 23, rentedCredentials()); const sandbox = await f.create();
+  let release!: () => void, entered!: () => void;
+  const paused = new Promise<void>(resolve=>{release=resolve;});
+  const waiting = new Promise<void>(resolve=>{entered=resolve;});
+  f.onSsh(async request=>{ if (request.stdin === "fake_mac_github_token\n") {entered();await paused;} });
+  const delivering = f.provider.beforeRepo!(sandbox.id); await waiting;
+  const scheduling = f.provider.scheduleLeaseRelease!(sandbox.id, f.servers()[0]!.deletable_at);
+  assert.ok(!f.calls.some(call=>call.method==="PATCH"));
+  release(); await delivering; await scheduling;
+  const cleanup = f.order.findIndex(line=>line.includes("auth logout"));
+  const patch = f.order.findIndex(line=>line.startsWith("PATCH /apple-silicon"));
+  assert.ok(cleanup >= 0 && cleanup < patch);
+  assert.equal((await f.keys.records())[0]!.credentialDeliveryAttempted, false);
+});
+test("repo-less Macs do not receive a stored token and are ready without one", async t => {
+  let reads = 0;
+  const source = createCredentialSource({githubToken:async()=>{reads++;return "fake_unused_token";},agentAvailable:async()=>true,fetch:(async()=>{assert.fail("repo-less tasks must not validate GitHub");}) as typeof fetch});
+  const f = await fixture(t, 25, source);
+  await f.provider.assertTaskReady!({agent:"codex",repos:[]});
+  const sandbox = await f.create();
+  await f.provider.machineHooks!({warn:()=>{},debug:()=>{}}).beforeBootstrap!(sandbox.id);
+  assert.equal(reads, 0); assert.equal((await f.keys.records())[0]!.credentialDeliveryAttempted,false);
+  assert.ok(!f.ssh.some(request=>request.stdin === "fake_unused_token\n"));
+  const missing = await fixture(t, 25, createCredentialSource({githubToken:async()=>null,agentAvailable:async()=>true}));
+  const presentation = await missing.provider.presentation!();
+  assert.equal(presentation.steps.find(step=>step.id==="enabled")!.done,true);
+  assert.equal(presentation.steps.find(step=>step.id==="rented-github")!.required,false);
+  const {providerStates} = await import("../src/provider-status.ts");
+  const states = await providerStates({registry:createProviderRegistry([createBoatProvider(new FakeBoat() as never),missing.provider]),projects:()=>[],machines:()=>new Set(),boatSetup:null,instabox:null});
+  assert.equal(states.find(state=>state.id==="scaleway")!.status,"ready");
+  await assert.rejects(missing.provider.assertTaskReady!({agent:"codex",repos:["acme/web"]}));
+});
+
+function credentialService(f: Awaited<ReturnType<typeof fixture>>, warnings: string[] = []) {
+  return new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:line=>warnings.push(line)}});
+}
+for (const failure of ["create", "resume", "cancel"] as const) test(`failed ${failure} bootstrap preserves a shared Mac's live-task logins`, async t => {
+  const {registerSandboxMachine} = await import("../src/providers/machine.ts");
+  const f = await fixture(t,25,rentedCredentials()); const sandbox = await f.create(); await f.provider.beforeRepo!(sandbox.id);
+  const service = credentialService(f);
+  const initial = await service.startTask({title:"Existing task",brief:"Check tools",role:"custom",runner:"boat"});
+  f.store.update(initial.id,{sandboxProvider:"scaleway",sandboxId:sandbox.id,repo:"acme/web",status:"running"});
+  let registration: any; const values = new Map(); const controller = new AbortController();
+  const bb = {experimental_machines:{register:(value:unknown)=>{registration=value;},bootstrap:async()=>{if(failure==="cancel")controller.abort();throw new Error("test enrollment failure");}},experimental_environments:{register:()=>{}},storage:{kv:{get:async(key:string)=>values.get(key),set:async(key:string,value:unknown)=>{values.set(key,value);}}}};
+  registerSandboxMachine(bb as never,f.provider,{service,settings:async()=>defaultSettings(),availability:async()=>({status:"available"})});
+  const report = {step:()=>{},log:()=>{}};
+  const run = failure === "resume" ? registration.resume({resource:{sandboxId:sandbox.id,key:"test"},report,signal:controller.signal}) : registration.create({inputs:{sandboxId:sandbox.id},key:"test",checkpoint:async()=>{},report,signal:controller.signal});
+  if(failure==="create")assert.equal((await run).status,"failed");else await assert.rejects(run);
+  assert.ok(!f.ssh.some(request=>request.command.some(line=>line.includes("auth logout"))));
+  assert.equal((await f.keys.records())[0]!.credentialDeliveryAttempted,true);
+});
+test("failed bootstrap preserves a live lease attachment even before its sandbox ID is recorded", async t => {
+  const f = await fixture(t); const sandbox = await f.create(); const service = credentialService(f);
+  const task = await service.startTask({title:"Reserved task",brief:"Check tools",role:"custom",runner:"boat"});
+  f.store.update(task.id,{status:"starting",sandboxId:null});
+  f.store.macLeases.attach(f.store.macLeases.held(sandbox.id)[0]!.id,task.id,1,1024);
+  let cleaned = false;
+  await service.cleanupFailedMachineBootstrap(sandbox.id,async()=>{cleaned=true;});
+  assert.equal(cleaned,false);
+});
+test("missing delivery cache re-delivers despite a task's distant recorded expiry", async t => {
+  const source = rentedCredentials(); const f = await fixture(t,25,source); const sandbox = await f.create(); await f.provider.beforeRepo!(sandbox.id);
+  const service = credentialService(f);
+  const initial = await service.startTask({title:"Existing task",brief:"Check tools",role:"custom",runner:"boat"});
+  const task = f.store.update(initial.id,{sandboxProvider:"scaleway",sandboxId:sandbox.id,repo:"acme/web",status:"running"})!;
+  f.store.addEvent(task.id,"github-token",new Date(Date.now()+90*86400_000).toISOString());
+  await source.cleanup(sandbox.id,f.provider.executor!(sandbox.id));
+  await (service as unknown as {assertGithubLogin(value:typeof task):Promise<void>}).assertGithubLogin(task);
+  assert.equal(f.ssh.filter(request=>request.stdin === "fake_mac_github_token\n").length,2);
+});
+for (const afterMinimum of [false,true]) test(`one lease's failed ${afterMinimum ? "delete" : "schedule"} does not stop hand-back for the next lease`, async()=>{
+  const f = await routing("scaleway"); const provider = f.providers[1]!;
+  const warnings:string[]=[];
+  const service = new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),provider]),f.store,{settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:line=>warnings.push(line)}});
+  const minimum = Date.now()+(afterMinimum ? -1 : 10*60_000); const done:string[]=[];
+  for(const id of ["scaleway_unreachable","scaleway_other"]) f.store.macLeases.record({id,provider:"scaleway",machineId:id,size:"M1-M",startedAt:new Date(minimum-86400_000).toISOString(),paidUntil:new Date(minimum).toISOString(),minimumCost:10,hourPrice:10/24,currency:"EUR",cpus:8,memoryMiB:16384});
+  provider.list=async()=>f.store.macLeases.held().map(lease=>({id:lease.machineId,state:"idle",system:"macos"} as never));
+  provider.findInfo=async id=>({id,state:"idle",system:"macos",scheduledReleaseAt:null} as never);
+  provider.cancelLeaseRelease=async()=>{};
+  const release=async(id:string)=>{if(id==="scaleway_unreachable")throw new Error("Credential removal could not be verified");done.push(id);};
+  provider.delete=release;provider.scheduleLeaseRelease=release;
+  await service.processMacLeases();
+  assert.deepEqual(done,["scaleway_other"]);
+  assert.ok(warnings.some(line=>line.includes("scaleway_unreachable") && line.includes("Credential removal")));
+});
+
+test("failed placement cancellation leaves the scheduled Mac credential-free", async t => {
+  const f = await fixture(t,23,rentedCredentials()); const sandbox = await f.create();
+  await f.provider.scheduleLeaseRelease!(sandbox.id,f.servers()[0]!.deletable_at);
+  f.scheduleFailure();
+  const service = new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{settings:async()=>defaultSettings({workerMode:"chat",adhocWorkerMode:"chat",evidenceUploader:""}),chat:new FakeChat(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+  let failure: unknown;
+  try { await service.startTask({title:"Repository task",brief:"Check tools",repo:"acme/web",role:"custom",runner:"chat",provider:"codex",sandboxSystem:"macos",confirmUntrustedChat:["acme/web"]}); } catch (error) { failure = error; }
+  assert.ok(failure);
+  assert.ok(f.calls.some(call=>call.method==="PATCH" && call.body.schedule_deletion===false),`placement tried to cancel deletion: ${String(failure)}`);
+  assert.equal(f.servers()[0]!.deletion_scheduled,true);
+  assert.ok(!f.ssh.some(request=>request.stdin==="fake_mac_github_token\n"));
+  assert.equal((await f.keys.records())[0]!.credentialDeliveryAttempted,false);
+});
+
+test("the only failing start cleans its credentials, while a running owner stays protected", async t => {
+  const {registerSandboxMachine} = await import("../src/providers/machine.ts");
+  const f = await fixture(t,25,rentedCredentials()); const sandbox = await f.create(); await f.provider.beforeRepo!(sandbox.id);
+  const service = credentialService(f);
+  const initial = await service.startTask({title:"Starting task",brief:"Check tools",role:"custom",runner:"boat"});
+  f.store.update(initial.id,{sandboxProvider:"scaleway",sandboxId:sandbox.id,repo:"acme/web",status:"starting"});
+  f.store.macLeases.attach(f.store.macLeases.held(sandbox.id)[0]!.id,initial.id,1,1024);
+  let registration: any; const values = new Map();
+  const bb = {experimental_machines:{register:(value:unknown)=>{registration=value;},bootstrap:async()=>{throw new Error("test enrollment failure");}},experimental_environments:{register:()=>{}},storage:{kv:{get:async(key:string)=>values.get(key),set:async(key:string,value:unknown)=>{values.set(key,value);}}}};
+  registerSandboxMachine(bb as never,f.provider,{service,settings:async()=>defaultSettings(),availability:async()=>({status:"available"})});
+  const result = await registration.create({inputs:{sandboxId:sandbox.id,taskId:initial.id},key:"test",checkpoint:async()=>{},report:{step:()=>{},log:()=>{}},signal:new AbortController().signal});
+  assert.equal(result.status,"failed");
+  assert.ok(f.ssh.some(request=>request.command.some(line=>line.includes("auth logout"))));
+  assert.equal((await f.keys.records())[0]!.credentialDeliveryAttempted,false);
+  f.store.update(initial.id,{status:"running"});
+  let cleaned = false;
+  await service.cleanupFailedMachineBootstrap(sandbox.id,async()=>{cleaned=true;},initial.id);
+  assert.equal(cleaned,false);
 });

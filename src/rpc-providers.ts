@@ -304,8 +304,11 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const metadata = await provider.presentation({force, signal: AbortSignal.timeout(15_000)}).catch(() => null);
       if (metadata) Object.assign(row, metadata);
       if (row.steps) {
-        const complete = row.steps.filter(s => s.possible).every(s => s.done);
-        row.status = complete ? (row.status ?? "Connected") : [row.status, `Setting up · ${row.steps.filter(s => s.possible && s.done).length} of ${row.steps.filter(s => s.possible).length}`].filter(Boolean).join(" · ");
+        const required = row.steps.filter(s => s.possible && s.required !== false);
+        const complete = required.every(s => s.done);
+        const setup = `Setting up · ${required.filter(s => s.done).length} of ${required.length}`;
+        // Scaleway's orphan warning remains visible; Instabox keeps its existing copy.
+        row.status = row.id === "scaleway" ? (complete ? (row.status ?? "Connected") : [row.status, setup].filter(Boolean).join(" · ")) : complete ? "Connected" : setup;
       }
     }));
     return result;

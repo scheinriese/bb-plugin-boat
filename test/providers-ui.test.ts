@@ -383,3 +383,11 @@ test("provider presentation is shared for 60 seconds; only Check again bypasses 
  now=60_001;await handlers.sandboxProviders();assert.deepEqual(reads,{plan:2,capacity:2,presentation:2});
  await handlers.checkSandboxProviders();await handlers.sandboxProviders();assert.deepEqual(reads,{plan:3,capacity:3,presentation:3});
 });
+
+for (const complete of [false, true]) test(`Instabox keeps its ${complete ? "connected" : "setup"} status copy when an orphan is reported`, async () => {
+  const instabox = {...INSTABOX,capacity:async()=>({} as never),orphans:async()=>[{id:"example_orphan",name:"Example orphan"}],presentation:async()=>({steps:[{id:"key",label:"Key",done:complete,possible:true,detail:"Key check"}]})};
+  const {runtime} = fakeRuntime(createProviderRegistry([BOAT,instabox]));
+  Object.assign(runtime.service, {store:{list:()=>[]}});
+  const view = await providerHandlers(runtime).sandboxProviders();
+  assert.equal(view.providers.find(provider=>provider.id==="instabox")!.status,complete ? "Connected" : "Setting up · 0 of 1");
+});

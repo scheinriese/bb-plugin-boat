@@ -1,6 +1,7 @@
 // Credentials for SSH-reachable machines. Secrets stay in bb settings and
 // travel only in the executor's private stdin, outside bootstrap/task logs.
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ConnectCheck } from "./connect.ts";
 import type { Provider } from "./store.ts";
@@ -40,6 +41,7 @@ for file in "$HOME/.claude/.credentials.json" "$HOME/.codex/auth.json"; do test 
 export interface CredentialSource {
   githubConfigured(): Promise<boolean>;
   agentAvailable(agent: Provider, signal?: AbortSignal): Promise<boolean>;
+  assertGithubAccess(repos: readonly string[], signal?: AbortSignal): Promise<void>;
   assertReady(agent: Provider, repos: readonly string[], signal?: AbortSignal): Promise<void>;
   ensureGithub(id: string, executor: MachineExecutor, signal?: AbortSignal, force?: boolean): Promise<string | null>;
   cleanup(id: string, executor: MachineExecutor, signal?: AbortSignal): Promise<void>;
@@ -73,7 +75,7 @@ export function createCredentialSource(options: {
   now?: () => number;
 }): CredentialSource {
   const fetcher = options.fetch ?? fetch, now = options.now ?? Date.now;
-  const delivered = new Map<string, string>(); // Expiry only; never persist a token.
+  const delivered = new Map<string, { expiresAt: string; fingerprint: string }>(); // No raw tokens.
   async function token() {
     try {
       const value = await options.githubToken();
@@ -113,19 +115,24 @@ export function createCredentialSource(options: {
   const source: CredentialSource = {
     async githubConfigured() { try { await token(); return true; } catch { return false; } },
     agentAvailable: options.agentAvailable,
+    async assertGithubAccess(repos, signal) { await access(await token(), repos, signal); },
     async assertReady(agent, repos, signal) {
-      if (repos.length || await source.githubConfigured()) await access(await token(), repos, signal);
+      if (repos.length) await source.assertGithubAccess(repos, signal);
       if (!(await options.agentAvailable(agent, signal))) throw problem(`Task credentials are not configured for ${agent}. Enable an available ${agent} route in Account Pooler and bb Connect on the owner server. Nothing was rented.`);
     },
     async ensureGithub(id, executor, signal, force = false) {
+      const value = await token();
+      const fingerprint = createHash("sha256").update(value).digest("hex");
       const previous = delivered.get(id);
-      if (!force && previous && Date.parse(previous) - now() > REFRESH_MARGIN) return previous;
-      const value = await token(), expiry = await access(value, [], signal);
+      if (!force && previous?.fingerprint === fingerprint && Date.parse(previous.expiresAt) - now() > REFRESH_MARGIN) return previous.expiresAt;
+      delivered.delete(id);
+      const expiry = await access(value, [], signal);
       if (!(await execute(executor, ["bash", "-c", GITHUB_LOGIN_SCRIPT], `${value}\n`, signal))) {
-        await source.cleanup(id, executor);
+        // A shared machine may still serve other tasks. Its lifecycle owner
+        // records the attempt and cleans up once no live task needs its logins.
         throw problem("GitHub credential delivery failed. Check the rented-machine token in bb secret settings.");
       }
-      delivered.set(id, expiry);
+      delivered.set(id, { expiresAt: expiry, fingerprint });
       return expiry;
     },
     async cleanup(id, executor, signal) {
