@@ -351,3 +351,23 @@ test("designer handoff keeps native radio accessibility and expanded selected ma
   assert.match(queued, /Nothing was rented/);
   assert.match(queued, /Rent Scaleway Mac/);
 });
+
+
+test("empty rental offers keep Your Mac waiting and queue actions available without spending consent", () => {
+  for (const scene of ["ownmac-rental-empty-wait", "ownmac-rental-empty-waiting", "ownmac-rental-empty-queued"]) {
+    const html = renderScene(scene);
+    assert.match(html, /No rental offer is available/);
+    assert.doesNotMatch(html, /type="radio"|>Rent (?:Scaleway|Instabox) Mac · /);
+    for (const label of ["Wait for your Mac", scene.endsWith("queued") ? "Kept queued" : "Keep it queued", "Refresh offers"]) {
+      const button = html.match(new RegExp(`<button[^>]*>${label}</button>`))?.[0];
+      assert.ok(button, `${scene}: ${label} is present`);
+      assert.doesNotMatch(button, /\sdisabled(?:=|\s|>)/, `${scene}: ${label} remains enabled`);
+    }
+    if (scene.endsWith("waiting")) assert.match(html, /Waiting for your Mac/);
+    if (scene.endsWith("queued")) assert.match(html, /Kept queued. Nothing was rented/);
+  }
+  const busy = renderScene("ownmac-rental-empty-busy");
+  assert.match(busy, /aria-busy="true"/);
+  assert.match(busy, /<button[^>]*disabled=""[^>]*>Wait for your Mac<\/button>/);
+  assert.match(busy, /<button[^>]*disabled=""[^>]*>Keep it queued<\/button>/);
+});

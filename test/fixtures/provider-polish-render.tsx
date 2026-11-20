@@ -195,6 +195,10 @@ export function scene(name: string) {
     if(name==="ownmac-rental-starting")return <OwnMacRentalCard notice={choices} busy approving onAnswer={()=>{}} onSelect={()=>{}} onRefresh={()=>{}}/>;
     if(name==="ownmac-rental-error")return <OwnMacRentalCard notice={choices} error="The selected model is no longer available. Refresh offers to choose again." onAnswer={()=>{}} onSelect={()=>{}} onRefresh={()=>{}}/>;
     if(name==="ownmac-rental-unknown")return <OwnMacRentalCard notice={{...choices,answer:"failed"}} onAnswer={()=>{}} onRefresh={()=>{}}/>;
+    if(name.startsWith("ownmac-rental-empty-")) {
+      const empty:OwnMacNotice={...choices,offer:undefined,offers:[],canWaitForOwnMac:true,...(name==="ownmac-rental-empty-waiting"?{answer:"wait" as const}:name==="ownmac-rental-empty-queued"?{answer:"queue" as const}:{})};
+      return <OwnMacRentalCard notice={empty} busy={name==="ownmac-rental-empty-busy"} onAnswer={()=>{}} onRefresh={()=>{}}/>;
+    }
     if(name==="ownmac-rental-unavailable")return <OwnMacRentalCard notice={{...choices,offer:undefined,offers:[]}} onRefresh={()=>{}}/>;
     if(name==="ownmac-explicit-rental")return <OwnMacRentalCard notice={{...notice,canWaitForOwnMac:false}} onAnswer={()=>{}}/>;
     if(name==="ownmac-receipt")return <OwnMacRentalCard notice={{...notice,answer:"rent",replacementId:"fake-replacement"}}/>;

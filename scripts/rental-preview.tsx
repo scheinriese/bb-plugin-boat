@@ -32,6 +32,7 @@ function Preview() {
       <button onClick={() => { setError(""); const offers = quotes.map(q => ({ ...q, expiresAt: "2020-01-01T00:00:00Z" })); setNotice({ ...initial, offers, offer: offers[1] }); }}>Expired</button>
       <button onClick={() => { setError("The selected model is no longer available. Refresh offers to choose again."); setNotice(initial); }}>Error</button>
       <button onClick={() => { setError(""); setNotice({ ...initial, offers: [], offer: undefined }); }}>Unavailable</button>
+      <button onClick={() => { setError(""); setNotice({ ...initial, offers: [], offer: undefined, canWaitForOwnMac: true }); }}>No offers · wait for Your Mac</button>
     </div></details>
   </main>;
 }

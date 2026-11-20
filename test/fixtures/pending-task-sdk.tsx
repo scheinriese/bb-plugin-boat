@@ -3,10 +3,10 @@ export * from "@get-bb/plugin-sdk/app";
 import type { TaskDetailDto } from "../../contract";
 import type { OwnMacNotice } from "../../contract-ownmac";
 let task: TaskDetailDto;
-let notice: OwnMacNotice;
-export function setPendingTaskFixture(next: TaskDetailDto, nextNotice: OwnMacNotice) { task = next; notice = nextNotice; }
+let notice: OwnMacNotice | null;
+export function setPendingTaskFixture(next: TaskDetailDto, nextNotice: OwnMacNotice | null) { task = next; notice = nextNotice; }
 export const experimental_useRpcQuery = ({method}: {method: string}) => ({
-  data: method === "task" ? {task} : method === "ownMacNotices" ? {notices:[notice]} : method === "overview" ? {taskChats:false,connect:{state:"connected"}} : undefined,
+  data: method === "task" ? {task} : method === "ownMacNotices" ? {notices:notice ? [notice] : []} : method === "overview" ? {taskChats:false,connect:{state:"connected"}} : undefined,
   refetch: async () => {}, isFetching: false,
 });
 export const experimental_useRpcKeyedQuery = ({method}: {method: string}) => ({data: method === "threadRoles" ? {fake: {kind:"task", task}} : {}});

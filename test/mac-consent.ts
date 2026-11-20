@@ -19,13 +19,14 @@ export function withFakeMacRentalConsent(service: BoatService) {
       signal: AbortSignal,
       unlisted?: Set<string>,
       approval?: MacRentalQuote,
+      assertCurrent?:()=>void,
     ): Promise<Sandbox>;
   };
   const create = seam.createMacFor.bind(service);
-  seam.createMacFor = async (task, type, signal, unlisted, approval) => {
+  seam.createMacFor = async (task, type, signal, unlisted, approval, assertCurrent) => {
     for (let attempts = 0; attempts < 4; attempts++) {
       try {
-        return await create(task, type, signal, unlisted, approval);
+        return await create(task, type, signal, unlisted, approval, assertCurrent);
       } catch (error) {
         if (
           (error as { code?: string }).code !==

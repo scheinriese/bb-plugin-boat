@@ -297,6 +297,8 @@ export interface StartTaskInput {
   macRentalApproval?: MacRentalQuote;
   /** Internal: the owner explicitly selected a task-scoped rental route. */
   macRentalSelected?: boolean;
+  /** Internal cancellation binding to an unstarted source rental request. */
+  macRentalStart?: { assertCurrent():void; inserted(taskId:string):void };
   sandboxSystem?: "linux" | "macos";
   title: string;
   compactTitle?: string | null;
@@ -1122,6 +1124,8 @@ export class BoatService {
     system?: "linux" | "macos";
     macCostLimit?: MacRentalQuote;
     allocateOnly?: boolean;
+    /** Internal source-request guard, checked after awaits and before allocation. */
+    assertCurrent?: () => void;
     signal?: AbortSignal;
   }): Promise<Sandbox> {
     const settings = await this.settings();
@@ -1133,6 +1137,10 @@ export class BoatService {
     if (environment !== null) await this.assertEnvironment(sandboxProvider, environment, options.signal);
     return this.withSlotLock(async () => {
       const { limits } = await this.ensureSlot(options.signal, undefined, { sandboxProvider });
+      // This guard is outside create error classification: cancellation before
+      // the provider call has no unknown allocation outcome.
+      options.signal?.throwIfAborted();
+      options.assertCurrent?.();
       // Snapshot errors in plain words, only when a snapshot was asked for.
       const plain = (error: unknown) => (options.snapshot ? snapshotError(error, options.snapshot) : null) ?? error;
       try {
@@ -1632,7 +1640,10 @@ export class BoatService {
     }
     if (input.queuedStart) await input.queuedStart.beforeInsert();
     input.subscriptionGuard?.assertCurrent();
+    input.signal?.throwIfAborted();
+    input.macRentalStart?.assertCurrent();
     const task = input.queuedStart ? input.queuedStart.insert(record, () => this.store.insert(record), settings) : this.store.insert(record);
+    input.macRentalStart?.inserted(task.id);
     if(input.macRentalSelected && input.macRentalApproval)ownMacEvent(this.store,task.id,"ownmac-rental-selection",{provider:input.macRentalApproval.provider,model:input.macRentalApproval.model},"The owner selected this rental route for this task only. Nothing was rented.");
     if (paidFallback) this.store.addEvent(task.id, "paid-fallback-authorized", "Automatic Claude extra usage authorized by the saved fallback policy after included allowances reached the cutoff. Claude's billing controls apply; no euro balance is available to Harbormaster.");
     if (input.nativeReview) this.store.addEvent(id, "native-review-source", JSON.stringify(input.nativeReview.source));
@@ -1946,6 +1957,7 @@ export class BoatService {
     const id = initial.id;
     const onOuterAbort = () => controller.abort();
     input.signal?.addEventListener("abort", onOuterAbort, { once: true });
+    if(input.signal?.aborted)controller.abort();
     const signal = controller.signal;
     let release: () => void = () => undefined;
     let task = initial;
@@ -1955,6 +1967,7 @@ export class BoatService {
     const stillWanted = () => {
       const current = this.store.get(id);
       if (signal.aborted || current?.status !== "starting") throw new DispatchCancelled();
+      input.macRentalStart?.assertCurrent();
       if (initial.claudePaidContinuation === true && (current.claudePaidContinuation !== true || current.claudePaidContinuationRevoked === true)) throw new TaskError("This task's Claude continuation permission changed before dispatch.", "claude_continuation_revoked");
       if (input.nativeReview) { input.nativeReview.signal?.throwIfAborted(); this.assertNativeReviewSource(input.nativeReview.source); }
     };
@@ -1980,6 +1993,7 @@ export class BoatService {
           if (own && task.runner === "chat") {
             try {
               await own.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(r=>r.repo)].filter((r):r is string=>r!==null),signal});
+              stillWanted();
               const owned = await (own.allocate ?? own.create)({name:`bb ${id}`,type:sizing.type,system:"macos",ttlSeconds:0,gitGuard:true,signal});
               this.store.update(id,{sandboxProvider:own.id});
               reuse = owned.id;
@@ -2018,15 +2032,17 @@ export class BoatService {
             }
           }
           await this.sandboxProvider(task).assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),sandboxId:reuse,signal,onWarning:message=>{this.store.addEvent(task.id,"preflight-warning",message);}});
+          stillWanted();
           release = this.claim(reuse);
           sandbox = await this.ensureRunning(reuse, signal);
+          stillWanted();
           task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: false }) ?? task;
           this.store.addEvent(id, "sandbox", `Reusing sandbox ${sandbox.id}`);
         } else {
           if (task.sandboxSystem !== "macos" && this.sandboxProvider(task).id === "instabox") {
             await this.sandboxProvider(task).assertTaskReady?.({ agent: task.provider, repos: [task.repo, ...task.extraRepos.map(repo => repo.repo)].filter((repo): repo is string => repo !== null), signal, onWarning: message => { if (this.store.latestEvent(task.id, "preflight-warning")?.text !== message) this.store.addEvent(task.id, "preflight-warning", message); } });
           }
-          sandbox = task.sandboxSystem === "macos" ? await this.createMacFor(task, sizing.type, signal, unlistedMacProviders,input.macRentalApproval) : await this.createSandbox({
+          sandbox = task.sandboxSystem === "macos" ? await this.createMacFor(task, sizing.type, signal, unlistedMacProviders,input.macRentalApproval,stillWanted) : await this.createSandbox({
             name: `bb ${id} ${slug(task.title)}`,
             type: sizing.type,
             environment: task.environment,
@@ -2037,6 +2053,7 @@ export class BoatService {
           task = this.store.get(id) ?? task;
           if ((sandbox.system === "macos") !== (task.sandboxSystem === "macos")) throw new TaskError("The created sandbox system does not match this task.", "invalid_task");
           createdSandbox = sandbox.id;
+          stillWanted();
           if (task.sandboxSystem === "macos" && this.sandboxProvider(task).allocate && this.sandboxProvider(task).waitReady) this.macPreparing.add(sandbox.id);
           release = this.claim(sandbox.id);
           task = this.store.update(id, { sandboxId: sandbox.id, ownsSandbox: true }) ?? task;
@@ -2247,7 +2264,8 @@ export class BoatService {
       this.hooks.changed([id]);
       return running;
     } catch (error) {
-      if (error instanceof DispatchCancelled || (signal.aborted && this.store.get(id)?.status !== "starting")) {
+      const uncertainCreation=["creation_unknown","creation_allocated"].includes((error as {code?:string})?.code ?? "");
+      if (!uncertainCreation && (error instanceof DispatchCancelled || (signal.aborted && this.store.get(id)?.status !== "starting"))) {
         // Closed mid-dispatch: clean up what we made and leave the status alone.
         release();
         await this.discardNew(id, createdSandbox, createdHost);
@@ -2257,6 +2275,7 @@ export class BoatService {
       const transient = task.runner === "chat" && this.store.get(id)?.threadId === null ? retryableBootstrap(error) : null;
       const failure = transient ? new TaskError(bootstrapFailureMessage(transient), "bootstrap_retryable", "Retry starting this task after npm's registry recovers; no agent turn ran.") : error;
       const message = errorText(failure);
+      if(uncertainCreation && this.store.get(id)?.status==="cancelled")this.store.update(id,{error:clip(message,4000)});
       if (task.runner === "boat" && settings.relay.paidClaudeFallback && settings.relay.paidClaudeHeadless && USAGE_LIMIT_PATTERN.test(message)) await this.hooks.usageRefused?.(provider);
       this.store.transition(id, ["starting"], { status: "failed", error: (failure as {code?:string}).code==="mac_rental_confirmation_required"?null:clip(message, 4000), finishedAt: new Date().toISOString() });
       this.store.addEvent(id, "failed", message, transient ? { source: "system", cause: "bootstrap_retryable", detail: `npm ${transient.code}; ${transient.attempts} installation attempts; no agent started` } : task.sandboxSystem==="macos" || (task.sandboxProvider && task.sandboxProvider!==DEFAULT_PROVIDER_ID) ? {source:"system",cause:(failure as {code?:string}).code ?? "provider_failed"} : {});
@@ -2698,7 +2717,7 @@ export class BoatService {
     return a.provider===b.provider && a.model===b.model && a.currency===b.currency && a.minimumCost===b.minimumCost && a.hourPrice===b.hourPrice && a.minimumHours===b.minimumHours;
   }
 
-  private async createMacFor(task: Task, type: MachineType, signal: AbortSignal, unlisted = new Set<string>(), approval?:MacRentalQuote): Promise<Sandbox> {
+  private async createMacFor(task: Task, type: MachineType, signal: AbortSignal, unlisted = new Set<string>(), approval?:MacRentalQuote,assertCurrent?:()=>void): Promise<Sandbox> {
     const choices=await this.macRentalChoices(task,type,signal,unlisted);
     const current=approval ? choices.offers?.find(q=>q.provider===approval.provider && q.model===approval.model) : undefined;
     if(!approval || !current || !this.sameMacPrice(approval,current) || Date.parse(approval.expiresAt)<=Date.now()) {
@@ -2715,7 +2734,7 @@ export class BoatService {
     // propagate unchanged and prevent a second allocation.
     // Persist the approved route before an API call can have an unknown outcome.
     this.store.update(task.id,{sandboxProvider:provider.id});
-    const sandbox=await this.createSandbox({name:`bb ${task.id} ${slug(task.title)}`,type,system:"macos",environment:task.environment,snapshot:task.snapshot,sandboxProvider:provider,macCostLimit:approval,allocateOnly:Boolean(provider.allocate && provider.waitReady),signal});
+    const sandbox=await this.createSandbox({name:`bb ${task.id} ${slug(task.title)}`,type,system:"macos",environment:task.environment,snapshot:task.snapshot,sandboxProvider:provider,macCostLimit:approval,allocateOnly:Boolean(provider.allocate && provider.waitReady),signal,assertCurrent});
     this.store.update(task.id,{sandboxProvider:provider.id});
     return sandbox;
   }
@@ -2745,6 +2764,7 @@ export class BoatService {
     return notice;
   }
   private readonly ownMacRestarts=new Set<string>();
+  private readonly ownMacStarts=new Map<string,{controller:AbortController;replacementId:string|null}>();
   private readonly ownMacAnswers=new Set<string>();
   private pendingMacRental(id:string):{task:Task;notice:OwnMacNotice} {
     const task=this.mustGet(id),notice=ownMacTaskNotice(this.store,task);
@@ -2809,21 +2829,35 @@ export class BoatService {
   private async restartOwnMacTask(task:Task,approval:MacRentalQuote|undefined,answer:"rent"|"auto"):Promise<string|null> {
     if(this.ownMacRestarts.has(task.id) || this.store.get(task.id)?.status!=="failed")throw new TaskError("This task start is already being handled.","task_busy");
     this.ownMacRestarts.add(task.id);
+    const start={controller:new AbortController(),replacementId:null as string|null};
+    this.ownMacStarts.set(task.id,start);
+    const signal=AbortSignal.any([start.controller.signal,this.hooks.lifecycle]);
+    const assertCurrent=()=>{
+      const source=this.store.get(task.id);
+      const notice=source ? ownMacTaskNotice(this.store,source) : null;
+      if(signal.aborted || source?.status!=="failed" || source.turns!==0 || source.sandboxId || source.hostId || !notice || (!notice.offer && !notice.offers) || notice.replacementId!==(start.replacementId ?? undefined))throw new TaskError("This rental request was cancelled or changed before the task could start.","task_busy");
+    };
     try {
       const project=governingProject(this.hooks.projects?.() ?? [],task.boatProject,task.repo);
-      const replacement=await this.startTask({title:task.title,brief:task.brief,role:task.role,parentTaskId:task.parentTaskId,repo:task.repo,branch:task.branch,baseBranch:task.baseBranch,provider:task.provider,model:task.model,tier:task.tier as Tier|null,reasoningEffort:task.reasoningEffort,userApproved:this.store.latestEvent(task.id,"approval")!==null,runner:task.runner,purpose:task.purpose,compactTitle:task.compactTitle,projectId:task.projectId,environment:task.environment,snapshot:task.snapshot ?? "none",project:project ? {...toOrchestratorProject(normalizeProject({...project,delivery:task.delivery,repos:task.repo?[{repo:task.repo,baseBranch:task.baseBranch ?? "main"},...task.extraRepos]:project.repos.map(r=>({...r,baseBranch:(r as ProjectRepo).baseBranch ?? "main"}))})),...(!task.repo?{repos:[]}: {})} : undefined,orchestratorThreadId:task.orchestratorThreadId,sandboxSystem:"macos",machineType:task.startOptions?.machineType,confirmUntrustedChat:task.startOptions?.confirmUntrustedChat,macRentalApproval:approval,macRentalSelected:Boolean(this.store.ownMacEventData(task.id,"ownmac-rental-selection")),subscriptionGuard:{
-        check:async(provider,settings,runner)=>{await this.assertSubscriptionRoom(provider,{settings,runner,projectId:task.boatProject,repo:task.repo});},
-        assertCurrent:()=>this.hooks.lifecycle.throwIfAborted(),
+      const replacement=await this.startTask({title:task.title,brief:task.brief,role:task.role,parentTaskId:task.parentTaskId,repo:task.repo,branch:task.branch,baseBranch:task.baseBranch,provider:task.provider,model:task.model,tier:task.tier as Tier|null,reasoningEffort:task.reasoningEffort,userApproved:this.store.latestEvent(task.id,"approval")!==null,runner:task.runner,purpose:task.purpose,compactTitle:task.compactTitle,projectId:task.projectId,environment:task.environment,snapshot:task.snapshot ?? "none",project:project ? {...toOrchestratorProject(normalizeProject({...project,delivery:task.delivery,repos:task.repo?[{repo:task.repo,baseBranch:task.baseBranch ?? "main"},...task.extraRepos]:project.repos.map(r=>({...r,baseBranch:(r as ProjectRepo).baseBranch ?? "main"}))})),...(!task.repo?{repos:[]}: {})} : undefined,orchestratorThreadId:task.orchestratorThreadId,sandboxSystem:"macos",machineType:task.startOptions?.machineType,confirmUntrustedChat:task.startOptions?.confirmUntrustedChat,macRentalApproval:approval,macRentalSelected:Boolean(this.store.ownMacEventData(task.id,"ownmac-rental-selection")),signal,macRentalStart:{assertCurrent,inserted:id=>{
+        start.replacementId=id;
+        // Persist consumption before any allocation, including across reloads.
+        ownMacEvent(this.store,task.id,"ownmac-rental-answer",{answer,replacementId:id},"Starting the linked task; this rental request cannot be approved again.");
+        this.hooks.changed([task.id,id]);
+      }},subscriptionGuard:{
+        check:async(provider,settings,runner)=>{assertCurrent();await this.assertSubscriptionRoom(provider,{settings,runner,projectId:task.boatProject,repo:task.repo,signal});assertCurrent();},
+        assertCurrent,
       }});
+      assertCurrent();
       const actualAnswer=replacement.sandboxProvider==="ownmac"?"auto":answer;
       ownMacEvent(this.store,task.id,"ownmac-rental-answer",{answer:actualAnswer,replacementId:replacement.id},actualAnswer==="auto"?"Your Mac is back; the task starts there.":"Rental choice accepted.");
       this.store.transition(task.id,["failed"],{status:"cancelled"});this.hooks.changed([task.id,replacement.id]);return replacement.id;
     } catch(error) {
-      const replacementId=typeof (error as {taskId?:unknown}).taskId==="string"?(error as {taskId:string}).taskId:undefined;
-      ownMacEvent(this.store,task.id,"ownmac-rental-answer",replacementId?{answer:"failed",replacementId}:{},replacementId?"The start failed; inspect the replacement before retrying.":"The start stopped before a new task or rental was created. Review the error before trying again.");
+      const replacementId=typeof (error as {taskId?:unknown}).taskId==="string"?(error as {taskId:string}).taskId:start.replacementId ?? undefined;
+      if(replacementId || this.store.get(task.id)?.status==="failed")ownMacEvent(this.store,task.id,"ownmac-rental-answer",replacementId?{answer:"failed",replacementId}:{},replacementId?"The start failed; inspect the replacement before retrying.":"The start stopped before a new task or rental was created. Review the error before trying again.");
       if(replacementId)this.store.transition(task.id,["failed"],{status:"cancelled"});
       this.hooks.changed([task.id]);throw error;
-    } finally {this.ownMacRestarts.delete(task.id);}
+    } finally {this.ownMacRestarts.delete(task.id);this.ownMacStarts.delete(task.id);}
   }
   private lastOwnMacCleanupCheck=0;
   private ownMacNoticeDelivery:Promise<void>=Promise.resolve();
@@ -2849,7 +2883,7 @@ export class BoatService {
     for(const task of this.store.list({statuses:["failed"],limit:500})) {
       if(this.explicitMacRental(task))continue;
       const notice=ownMacTaskNotice(this.store,task);
-      if(notice?.offer && !notice.replacementId && notice.answer!=="failed" && notice.answer!=="queue" && task.turns===0 && !task.sandboxId && !this.ownMacRestarts.has(task.id) && !this.ownMacAnswers.has(task.id)) {
+      if(notice && (notice.offer || notice.offers!==undefined) && !notice.replacementId && notice.answer!=="failed" && notice.answer!=="queue" && task.turns===0 && !task.sandboxId && !task.hostId && !this.ownMacRestarts.has(task.id) && !this.ownMacAnswers.has(task.id)) {
         await this.restartOwnMacTask(task,undefined,"auto").catch(()=>undefined);
         break;
       }
@@ -5369,14 +5403,14 @@ export class BoatService {
 
   async closeTask(
     idOrPrefix: string,
-    options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal } = {},
+    options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal; /** Internal linked-request cancellation only; never accepted from RPC. */ preserveMacWork?: boolean } = {},
   ): Promise<{ task: Task; sandbox: "deleted" | "kept" | "gone" | "none" }> {
     const task = this.mustGet(idOrPrefix);
     const mac = task.sandboxId !== null && (task.sandboxProvider === "ownmac" || this.store.macLeases.held(task.sandboxId).length > 0);
     return mac ? this.withMacLock(() => this.closeTaskInner(idOrPrefix,options)) : this.closeTaskInner(idOrPrefix,options);
   }
 
-  private async closeTaskInner(idOrPrefix: string, options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal }): Promise<{ task: Task; sandbox: "deleted" | "kept" | "gone" | "none" }> {
+  private async closeTaskInner(idOrPrefix: string, options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal; preserveMacWork?: boolean }): Promise<{ task: Task; sandbox: "deleted" | "kept" | "gone" | "none" }> {
     const settings = await this.settings();
     let task = this.mustGet(idOrPrefix);
     this.sizes.assertNotResizing(task, "close"); // sizes
@@ -5389,16 +5423,21 @@ export class BoatService {
     }
     const unfinished = task.status === "running" || task.status === "starting";
     const status: TaskStatus = options.status ?? (unfinished ? "cancelled" : "done");
+    const leases = task.sandboxId ? this.store.macLeases.held(task.sandboxId) : [];
+    // Linked-request cancellation must stop the turn before inspecting its
+    // Mac work. Existing outcome checks retain unshipped or uncertain work
+    // without turning a clean paid lease into a permanent keep.
+    const preserveMacWork=options.preserveMacWork===true && task.sandboxSystem==="macos" && task.sandboxId!==null && (task.sandboxProvider==="ownmac" || leases.length>0);
+    const discard=options.discard===true && !preserveMacWork;
     // Unshipped work lives only in its sandbox: closing (or cancelling) throws it away.
     const keep = options.keepSandbox ?? !settings.deleteSandboxOnClose;
-    if (options.discard !== true && !keep && (await this.holdsUnshippedWork(task, options.signal))) {
+    if (!preserveMacWork && !discard && !keep && (await this.holdsUnshippedWork(task, options.signal))) {
       throw new TaskError(
         `Task ${task.id}'s work hasn't shipped, and closing it deletes its sandbox.`,
         "unshipped_work",
         "Ship it once the user approves (Ship on the overview, or boat_ship after their OK in chat), or ask the user whether to throw the work away.",
       );
     }
-    const leases = task.sandboxId ? this.store.macLeases.held(task.sandboxId) : [];
     const shippedBeforeClose = leases.length > 0 && this.shippedSinceLastTurn(task);
     let permanentMacKeep = options.keepSandbox === true && leases.length > 0;
     if (permanentMacKeep) for (const lease of leases) await this.keepMacLease(lease,options.signal);
@@ -5406,13 +5445,27 @@ export class BoatService {
     if (task.claudePaidContinuation) this.store.addEvent(task.id, "claude-continuation-revoked", "Claude continuation permission closed with this task. Reopening work does not restore payment permission.");
     // Stop an in-flight dispatch, then the running turn.
     this.dispatches.get(task.id)?.abort();
+    const rentalStart=this.ownMacStarts.get(task.id);
+    if(rentalStart) {
+      rentalStart.controller.abort();
+      const child=rentalStart.replacementId ? this.store.get(rentalStart.replacementId) : null;
+      if(child?.status==="starting") {
+        this.store.transition(child.id,["starting"],{status:"cancelled",finishedAt:new Date().toISOString()});
+        this.store.addEvent(child.id,"cancelled",`Source rental request ${task.id} was cancelled.`);
+        this.dispatches.get(child.id)?.abort();this.hooks.changed([child.id]);
+      } else if(child?.status==="running") {
+        // Cancelling an unstarted source never authorizes discarding work
+        // already produced by its linked execution task.
+        await this.closeTask(child.id,{...options,status:"cancelled",keepSandbox:undefined,discard:false,preserveMacWork:true});
+      }
+    }
     if (task.status === "running" && task.runner === "chat" && task.threadId && this.hooks.chat) {
       await this.hooks.chat.stop(task.threadId).catch(() => undefined);
     } else if (task.status === "running" && task.sandboxId && task.conversationId) {
       await this.sandboxProvider(task).interrupt(task.sandboxId, task.conversationId, options.signal).catch(() => undefined);
     }
     if (leases.length) {
-      const outcome = await this.macCloseOutcome(task,options.signal,options.discard === true,shippedBeforeClose);
+      const outcome = await this.macCloseOutcome(task,options.signal,discard,shippedBeforeClose);
       for (const lease of leases) {
         this.store.macLeases.resolveTask(lease.id,task.id,outcome,task.turns);
         if (outcome === "unshipped") { await this.keepMacLease(lease,options.signal); permanentMacKeep = true; }

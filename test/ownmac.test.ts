@@ -813,3 +813,53 @@ test("an owner can change a task-scoped rental selection back to waiting without
   env.config.ownMacPaused=false;await env.service.maintainOwnMac();
   assert.equal(env.store.list({statuses:["running"],limit:10})[0]!.sandboxProvider,"ownmac");
 });
+
+test("waiting after an empty rental refresh starts once on the returning eligible Your Mac", async () => {
+  const env = await routingFixture();
+  env.config.ownMacPaused = true;
+  await assert.rejects(env.start(), { code: "mac_rental_confirmation_required" });
+  const task = env.store.list({ statuses: ["failed"], limit: 10 })[0]!;
+  env.rental.macModels = async () => [];
+  const refreshed = await env.service.refreshMacRentalOffers(task.id);
+  assert.deepEqual(refreshed.offers, []);
+  assert.equal(refreshed.offer, undefined);
+  assert.equal(await env.service.answerOwnMacRental(task.id, "wait"), null);
+  env.config.ownMacPaused = false;
+  await env.service.maintainOwnMac();
+  const running = env.store.list({ statuses: ["running"], limit: 10 });
+  assert.equal(running.length, 1, "the accepted wait must not depend on a paid rental quote");
+  assert.equal(running[0]!.sandboxProvider, "ownmac");
+  assert.equal(env.store.get(task.id)!.status, "cancelled");
+  assert.equal((await env.service.ownMacNotice(env.store.get(task.id)!))!.replacementId, running[0]!.id);
+  assert.equal(env.store.macLeases.held().length, 0);
+  await env.service.maintainOwnMac();
+  assert.equal(env.store.list({ statuses: ["running"], limit: 10 }).length, 1);
+});
+
+for (const barrier of ["queued", "cancelled", "selected rental", "pinned host", "prior turn", "failed answer", "no valid choices"] as const) {
+  test(`empty rental offers do not bypass the ${barrier} barrier`, async () => {
+    const env = await routingFixture();
+    env.config.ownMacPaused = true;
+    await assert.rejects(env.start(), { code: "mac_rental_confirmation_required" });
+    const task = env.store.list({ statuses: ["failed"], limit: 10 })[0]!;
+    const quote = (await env.service.ownMacNotice(task))!.offer!;
+    if (barrier === "selected rental") await env.service.selectMacRentalOffer(task.id, quote.id);
+    env.rental.macModels = async () => [];
+    await env.service.refreshMacRentalOffers(task.id);
+    if (barrier !== "selected rental") await env.service.answerOwnMacRental(task.id, "wait");
+    if (barrier === "queued") await env.service.answerOwnMacRental(task.id, "queue");
+    if (barrier === "cancelled") await env.service.closeTask(task.id, { status: "cancelled" });
+    if (barrier === "pinned host") env.store.update(task.id, { hostId: "fake-existing-host" });
+    if (barrier === "prior turn") env.store.update(task.id, { turns: 1 });
+    if (barrier === "failed answer") env.store.addOwnMacEvent(task.id, "ownmac-rental-answer", "fake ambiguous start", { answer: "failed" });
+    if (barrier === "no valid choices") {
+      env.store.addOwnMacEvent(task.id, "ownmac-rental-choices", "fake invalidated choices", null);
+      env.store.addOwnMacEvent(task.id, "ownmac-rental-offer", "fake invalidated quote", null);
+    }
+    env.config.ownMacPaused = false;
+    await env.service.maintainOwnMac();
+    assert.equal(env.store.list({ limit: 10 }).length, 1, "no replacement is created across this barrier");
+    assert.equal(env.chat.spawns.length, 0);
+    assert.equal(env.store.macLeases.held().length, 0);
+  });
+}

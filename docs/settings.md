@@ -647,6 +647,11 @@ the existing linked execution-task lifecycle and records its `replacementId`;
 an uncertain start requires inspection before any retry. Task-specific paid
 Claude permission is not transferred to that execution task, whose ordinary
 usage checks can block the start.
+Closing the pending request revokes its linked start, including while quote,
+subscription or capacity checks are still waiting. The source request is checked
+again before replacement insertion and allocation. If an allocation was already
+in flight, an uncertain result remains recorded for inspection and cannot be
+retried as another rental.
 Quotes also carry optional live `cpus`, `memoryMiB`, `region` and `checkedAt`
 facts. Older quotes remain valid without them; missing facts display as not
 listed. Catalog or hardware facts do not establish GUI automation readiness.
@@ -666,6 +671,9 @@ deferral. Agent tools and the CLI still cannot approve a rental.
 Mac returns before an answer, that pending task starts there at $0 rent. Linux
 routing is unchanged. Monthly enrollment remains the existing adapter seam;
 this change adds no monthly machine provisioning UI.
+Waiting still works after a refresh leaves no eligible rental offers; a paid
+quote is not required to use Your Mac. Cancelled, kept-queued and already-started
+requests do not resume automatically.
 An explicit project Runs-on choice of Scaleway or Instabox takes precedence over
 Your Mac. Every new day rental still needs a cost confirmation.
 To wait for Your Mac instead, first change that explicit Runs-on choice. A

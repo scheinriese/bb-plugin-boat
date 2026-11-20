@@ -14,7 +14,7 @@ const temporary = mkdtempSync(join(process.cwd(), ".pending-task-"));
 after(() => rmSync(temporary, {recursive:true,force:true}));
 const shim = resolve("test/fixtures/pending-task-sdk.tsx");
 await build({entryPoints:["test/fixtures/pending-task-render.tsx"],outfile:join(temporary,"render.mjs"),bundle:true,jsx:"automatic",platform:"node",format:"esm",packages:"external",logLevel:"silent",loader:{".css":"empty"},plugins:[{name:"render-only-host",setup(builder){builder.onResolve({filter:/^@get-bb\/plugin-sdk\/app$/},args=>args.importer===shim?{path:args.path,external:true}:{path:shim});}}]});
-const { renderPendingTask } = await import(pathToFileURL(join(temporary,"render.mjs")).href) as {renderPendingTask(task:TaskDetailDto,notice:OwnMacNotice,panel?:boolean):string};
+const { renderPendingTask } = await import(pathToFileURL(join(temporary,"render.mjs")).href) as {renderPendingTask(task:TaskDetailDto,notice:OwnMacNotice|null,panel?:boolean):string};
 
 async function fixture() {
   const env = makeService();
@@ -45,4 +45,12 @@ test("cancelling a pending rental uses cancellation semantics and leaves no comp
   env.store.update(original.id,{status:"failed",sandboxId:null,turns:0});
   const result=await env.service.closeTask(original.id,{status:closeTaskIsCancellation(task)?"cancelled":"done"});
   assert.equal(result.task.status,"cancelled");
+});
+
+for (const panel of [false, true]) test(`${panel ? "side panel" : "task detail"} removes rental controls after cancellation`, async () => {
+  const {task} = await fixture();
+  const cancelled: TaskDetailDto = {...task,status:"cancelled",phase:"cancelled",macRentalPending:false,publicStatus:{status:"stopped",label:"Stopped",tone:"neutral",reason:null,needsYou:false,moving:false}};
+  const html = renderPendingTask(cancelled, null, panel);
+  assert.match(html, /Stopped/);
+  assert.doesNotMatch(html, /Mac rental choice|Keep it queued|Wait for your Mac|Rent Scaleway Mac|Cancel task|Request review/);
 });
