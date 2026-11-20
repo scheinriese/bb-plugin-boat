@@ -177,6 +177,37 @@ export function OwnMacRefusalCard({
     </section>
   );
 }
+/** A consumed native approval stays visible even if its linked app task failed. */
+export function OwnMacLinkedRentalCard({notice,onOpenTask,onOpenMachine,onRecover,recovering,error}:{notice:OwnMacNotice;onOpenTask?:()=>void;onOpenMachine?:()=>void;onRecover?:()=>void;recovering?:boolean;error?:string}) {
+  const linked=notice.linkedTask, lease=linked?.lease, quote=notice.offer;
+  const stopped=linked && ["failed","cancelled"].includes(linked.status);
+  const started=Boolean(linked && (linked.turns>0 || ["running","idle","done","ready"].includes(linked.status)));
+  const heading=stopped ? (linked!.turns===0 ? "App task did not start" : "Linked task stopped") : started ? "App task started" : linked ? "Approval received · task preparing" : "Approval received · task status unavailable";
+  return <section aria-label="Approved Mac rental" aria-busy={recovering || undefined} role={stopped?"alert":"status"} className={cn("min-w-0 max-w-[720px] overflow-hidden rounded-[10px] border bg-[#181818] px-3.5 py-3 text-[13px] leading-5 text-[#A8A8A8] max-sm:rounded-xl max-sm:p-3 max-sm:text-sm",stopped?"border-[#3A2424]":"border-[#2A2A2A]")}>
+    <h3 className="font-medium text-[#EDEDED]">{heading}</h3>
+    <ol aria-label="Rental start progress" className="mt-2 space-y-1.5">
+      <li>Approval received for one {quote?.label ?? lease?.provider ?? "Mac"} {quote?.modelLabel ?? lease?.model ?? "rental"}{quote ? ` · ${money(quote.minimumCost,quote.currency)} ${quote.currency} minimum for ${quote.minimumHours} h` : ""}.</li>
+      <li className="font-medium text-[#D0D0D0]">{linked?.machineId ? "Mac allocated" : "Mac allocation unconfirmed"}{linked?.machineId && <span className="mt-0.5 block break-all font-mono text-xs font-normal text-[#A8A8A8]">{linked.machineId}</span>}</li>
+      <li>{lease && !lease.endedAt ? "Lease terms recorded" : "Current lease unconfirmed"}</li>
+      <li>{stopped && linked!.turns===0 ? "App task did not start · 0 turns" : started ? "App task started" : "App task start unconfirmed"}</li>
+    </ol>
+    {linked?.error && <p className="mt-2 break-words text-[#E6A3A3]">{linked.error}</p>}
+    {lease ? <dl className={cn(details,"mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-xs leading-[18px] max-sm:text-[13px] max-sm:leading-5")}>
+      <dt>Minimum committed</dt><dd className="text-[#D0D0D0]">{money(lease.minimumCost,lease.currency)} {lease.currency}</dd>
+      <dt>Paid until</dt><dd className="text-[#D0D0D0]"><time dateTime={lease.paidUntil} title={lease.paidUntil}>{leaseTime(lease.paidUntil)}</time></dd>
+      <dt>Then</dt><dd className="text-[#D0D0D0]">{money(lease.hourPrice,lease.currency)} {lease.currency} / h until released</dd>
+      <dt>Release plan</dt><dd className="text-[#D0D0D0]">{lease.releaseAt ? <>Scheduled for <time dateTime={lease.releaseAt} title={lease.releaseAt}>{leaseTime(lease.releaseAt)}</time></> : "No release schedule recorded"}</dd>
+    </dl> : <p className="mt-2">Current paid-until time and release schedule are unconfirmed. A rental may already be billing.</p>}
+    {lease && <p className="mt-2 text-xs leading-[18px] text-[#8A8A8A] max-sm:text-[13px] max-sm:leading-5">{lease.endedAt ? "The local ledger marks this lease ended; current provider lease and billing are unconfirmed." : "These are recorded lease terms. Scheduled release is not confirmation that billing has ended."}</p>}
+    {stopped && <p className="mt-2">Recover the existing task on this same Mac after its current lease is verified. No second rental is approved. Its release plan and any work or logins must be preserved.</p>}
+    {error && <p role="alert" className="mt-2 break-words text-[#E6A3A3]">{error}</p>}
+    <div className="mt-3 flex flex-wrap gap-2">
+      {linked?.status==="failed" && linked.turns===0 && linked.machineId && onRecover && <button type="button" className={cn(primary,"max-sm:min-h-11")} disabled={recovering} onClick={onRecover}>{recovering ? "Recovering existing task…" : "Recover on this Mac"}</button>}
+      {notice.replacementId && <button type="button" className={secondary} disabled={!onOpenTask} onClick={onOpenTask}>Open existing task</button>}
+      {linked?.machineId && <button type="button" className={secondary} disabled={!onOpenMachine} onClick={onOpenMachine}>View machine in Sandboxes</button>}
+    </div>
+  </section>;
+}
 export function OwnMacRentalCard({
   notice,
   showTaskTitle = true,
@@ -187,6 +218,10 @@ export function OwnMacRentalCard({
   approving,
   error,
   onOwnWords,
+  onOpenTask,
+  onOpenMachine,
+  onRecover,
+  recovering,
 }: {
   notice: OwnMacNotice;
   showTaskTitle?: boolean;
@@ -197,6 +232,10 @@ export function OwnMacRentalCard({
   approving?: boolean;
   error?: string;
   onOwnWords?: () => void;
+  onOpenTask?: () => void;
+  onOpenMachine?: () => void;
+  onRecover?: () => void;
+  recovering?: boolean;
 }) {
   const group = useId();
   const [now, setNow] = useState(Date.now);
@@ -208,16 +247,16 @@ export function OwnMacRentalCard({
   const offers = notice.offers ?? (q ? [q] : []);
   const expired = !q || !Number.isFinite(Date.parse(q.expiresAt)) || Date.parse(q.expiresAt) <= now;
   const price = q ? money(q.minimumCost, q.currency) : "";
-  if (notice.answer === "failed")
-    return <p role="alert" className="rounded-lg border border-[#3A2424] bg-[#181818] px-3.5 py-3 text-[13px] leading-5 text-[#A8A8A8]">The start failed. Inspect the task and the provider’s machines before retrying; a rental may already exist. No other provider was approved.</p>;
   if (notice.answer === "auto")
     return <p className="text-[13px] leading-5 text-[#A8A8A8]">Your Mac is available again, so “{notice.title}” runs on your Mac. No extra cost.</p>;
-  if (notice.answer === "rent" && notice.replacementId)
-    return <div role="status" className="max-w-[720px] rounded-[10px] border border-[#2A2A2A] bg-[#181818] px-3.5 py-3 text-[13px] leading-5 text-[#A8A8A8]">You approved one {q?.label} {q?.modelLabel} rental for {price} {q?.currency} minimum. Starting the task; check its status below.</div>;
+  if (notice.replacementId)
+    return <OwnMacLinkedRentalCard notice={notice} onOpenTask={onOpenTask} onOpenMachine={onOpenMachine} onRecover={onRecover} recovering={recovering} error={error} />;
+  if (notice.answer === "failed")
+    return <p role="alert" className="rounded-lg border border-[#3A2424] bg-[#181818] px-3.5 py-3 text-[13px] leading-5 text-[#A8A8A8]">The start failed. Inspect the task and the provider’s machines before retrying; a rental may already exist. No other provider was approved.</p>;
   const orderedOffers = [...offers].sort((a, b) => Number(b.id === notice.recommendedQuoteId) - Number(a.id === notice.recommendedQuoteId));
   const comparison = q ? compareRentalOffers(q, offers.find(other => other.id !== q.id)) : undefined;
   const rationale = [q && q.id === notice.recommendedQuoteId ? notice.recommendationReason : undefined, comparison].filter(Boolean).join(" ");
-  const rentalAction = "min-h-11 rounded-md border border-[#333333] px-3 py-2 text-[13px] leading-5 text-[#D0D0D0] disabled:opacity-50 max-sm:flex-1 max-sm:text-sm";
+  const rentalAction = "min-h-11 min-w-0 rounded-md border border-[#333333] px-3 py-2 text-[13px] leading-5 text-[#D0D0D0] disabled:opacity-50 max-sm:w-full max-sm:text-sm";
   return (
     <section aria-label="Mac rental choice" aria-busy={busy || undefined} className="min-w-0 max-w-[720px] overflow-hidden rounded-[10px] border border-[#3D3420] bg-[#181818] max-sm:rounded-xl">
       <div className="hidden flex-wrap items-center gap-2 border-b border-[#242424] px-3.5 py-2.5 text-xs leading-4 sm:flex">
@@ -296,11 +335,11 @@ export function OwnMacRentalCard({
             <p className="mt-2">A rental quote does not confirm GUI automation readiness.</p>
           </details>
         </div>}
-        <div className="flex flex-wrap items-center gap-2">
+        <div role="group" aria-label="Other rental actions" className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
           <button className={rentalAction} disabled={busy || !onAnswer} onClick={() => onAnswer?.("queue")}>{notice.answer === "queue" ? "Kept queued" : "Keep it queued"}</button>
           {notice.canWaitForOwnMac !== false && <button className={rentalAction} disabled={busy || !onAnswer} onClick={() => onAnswer?.("wait")}>Wait for your Mac</button>}
-          {onRefresh && <button className={rentalAction} disabled={busy} onClick={onRefresh}>{busy && !approving ? "Updating…" : "Refresh offers"}</button>}
-          {onOwnWords && <button className="min-h-11 text-xs leading-5 text-[#8A8A8A] max-sm:flex-1 max-sm:text-sm sm:ml-auto" onClick={onOwnWords}>Ask about this rental</button>}
+          {onRefresh && <button className={cn(rentalAction,notice.canWaitForOwnMac !== false && "max-sm:col-span-2")} disabled={busy} onClick={onRefresh}>{busy && !approving ? "Updating…" : "Refresh offers"}</button>}
+          {onOwnWords && <button className="min-h-11 text-xs leading-5 text-[#8A8A8A] hover:underline max-sm:col-span-2 max-sm:w-full max-sm:text-sm sm:ml-auto" onClick={onOwnWords}>Ask about this rental</button>}
         </div>
         {notice.canWaitForOwnMac === false && <p className="text-xs leading-4 text-[#8A8A8A] max-sm:text-[13px] max-sm:leading-5">Choose Your Mac in Runs on to wait for it.</p>}
       </div>

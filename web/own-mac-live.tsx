@@ -12,6 +12,8 @@ import {
   OwnMacRentalCard,
 } from "./own-mac-cards";
 import { toast } from "sonner";
+import { useCloudAgentsNavigation } from "./hooks";
+import { PANEL_PATH } from "./format";
 export function LiveOwnMacNotices({
   taskId,
   threadId,
@@ -22,6 +24,7 @@ export function LiveOwnMacNotices({
   showTaskTitle?: boolean;
 }) {
   const fill = useFillComposer(threadId ?? "");
+  const {openTask,navigate}=useCloudAgentsNavigation();
   const { data } = experimental_useRpcQuery({
     contract: rpcContract,
     method: "ownMacNotices",
@@ -39,6 +42,7 @@ export function LiveOwnMacNotices({
     contract: rpcContract,
     method: "answerOwnMacRental",
   });
+  const recover = experimental_useRpcMutation({contract:rpcContract,method:"recoverAllocatedMac"});
   const refresh = experimental_useRpcMutation({
     contract: rpcContract,
     method: "refreshMacRentalOffers",
@@ -106,7 +110,7 @@ export function LiveOwnMacNotices({
               }
             />
           );
-        if (notice.offer || notice.offers)
+        if (notice.offer || notice.offers || notice.replacementId)
           return (
             <div key={notice.taskId} className="space-y-3">
               {notice.refusal &&
@@ -126,6 +130,10 @@ export function LiveOwnMacNotices({
               <OwnMacRentalCard
                 notice={notice}
                 showTaskTitle={showTaskTitle}
+                onOpenTask={notice.replacementId ? () => openTask(notice.replacementId!) : undefined}
+                onOpenMachine={() => navigate.toPluginPanel(PANEL_PATH,{subPath:"sandboxes"})}
+                recovering={recover.isPending}
+                onRecover={notice.replacementId && notice.linkedTask?.machineId ? () => run(() => recover.mutate({taskId:notice.replacementId!,machineId:notice.linkedTask!.machineId!,userApproved:true})) : undefined}
                 onOwnWords={
                   fill
                     ? () =>

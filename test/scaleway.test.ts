@@ -371,6 +371,11 @@ test("a slow Mac bootstrap leaves the placement lock free for hand-back and held
   ibx.list=async()=>machines.map(id=>({id,state:"idle",system:"macos"} as never));
   ibx.delete=async id=>{machines.splice(machines.indexOf(id),1);};
   const record=(id:string,start:number)=>f.store.macLeases.record({id:`instabox:${id}`,provider:"instabox",machineId:id,size:"m2",startedAt:new Date(start).toISOString(),paidUntil:new Date(start+86400000).toISOString(),minimumCost:10,hourPrice:10/24,currency:"USD",cpus:8,memoryMiB:16384});
+  ibx.info=async id=>{
+    const lease=f.store.macLeases.held(id)[0]!;
+    return {id,state:"idle",system:"macos",mac:{model:lease.size,leaseId:lease.id,startedAt:lease.startedAt,chargeUntil:lease.paidUntil,minimumCost:lease.minimumCost,hourPrice:lease.hourPrice,cpus:lease.cpus,memoryMiB:lease.memoryMiB}} as never;
+  };
+  ibx.findInfo=async id=>machines.includes(id)?ibx.info(id):null;
   record("instabox_empty",Date.now()-25*3600000);
   const bounded=async<T>(work:Promise<T>)=>{let timer:ReturnType<typeof setTimeout>;try{return await Promise.race([work,new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error("placement lock was held by readiness")),2000);})]);}finally{clearTimeout(timer!);}};
   try {

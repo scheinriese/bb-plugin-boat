@@ -1,5 +1,6 @@
+import { machineName as instaboxMachineName, instaboxLeaseInput } from "./providers/instabox/provider.ts";
 import { ownMacEvent, ownMacTaskNotice } from "./ownmac-notices.ts";
-import { macRentalQuoteSchema, type MacRentalQuote, type OwnMacNotice } from "../contract-ownmac.ts";
+import { legacyMacAdoptionSchema, macRentalQuoteSchema, type LegacyMacAdoptionEvidence, type MacRentalQuote, type OwnMacNotice } from "../contract-ownmac.ts";
 import { CLEANUP_NOTICE_PREFIX, tokenExposureNotice } from "../credential-warnings.ts";
 import { createCodexHealthCheck } from "./codex-health.ts";
 import { providerFailureCard } from "../provider-failure.ts";
@@ -299,6 +300,8 @@ export interface StartTaskInput {
   macRentalSelected?: boolean;
   /** Internal cancellation binding to an unstarted source rental request. */
   macRentalStart?: { assertCurrent():void; inserted(taskId:string):void };
+  /** Internal recovery capability: placement must use this active physical lease only. */
+  macRecovery?: { machineId:string; validate(signal:AbortSignal):Promise<Sandbox>; assertCurrent():void };
   sandboxSystem?: "linux" | "macos";
   title: string;
   compactTitle?: string | null;
@@ -1274,6 +1277,8 @@ export class BoatService {
    */
   async releaseSandbox(sandboxId: string, exceptTaskId: string, signal?: AbortSignal): Promise<"deleted" | "kept" | "gone"> {
     if (this.store.macLeases.held(sandboxId).length) return "kept";
+    // A failed ledger admission is not evidence that the physical rental ended.
+    if (this.store.sandboxTasks(sandboxId).some(task=>task.sandboxSystem==="macos" && task.sandboxProvider!=="ownmac" && task.turns===0 && !task.threadId)) return "kept";
     if (!this.store.pluginOwnsSandbox(sandboxId) || this.claims.has(sandboxId)) return "kept";
     const others = this.store.liveSandboxTasks(sandboxId).filter((task) => task.id !== exceptTaskId);
     if (others.length > 0) return "kept";
@@ -1647,7 +1652,7 @@ export class BoatService {
     if(input.macRentalSelected && input.macRentalApproval)ownMacEvent(this.store,task.id,"ownmac-rental-selection",{provider:input.macRentalApproval.provider,model:input.macRentalApproval.model},"The owner selected this rental route for this task only. Nothing was rented.");
     if (paidFallback) this.store.addEvent(task.id, "paid-fallback-authorized", "Automatic Claude extra usage authorized by the saved fallback policy after included allowances reached the cutoff. Claude's billing controls apply; no euro balance is available to Harbormaster.");
     if (input.nativeReview) this.store.addEvent(id, "native-review-source", JSON.stringify(input.nativeReview.source));
-    this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
+    if (!input.macRecovery) this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
     if (input.measureMemory) this.sizes.watch(id); // sizes
     if (agentNote !== null) this.store.addEvent(id, "agent", agentNote);
     if (relayNote !== null) this.store.addEvent(id, "relay", relayNote);
@@ -1674,7 +1679,7 @@ export class BoatService {
     if (runner === "chat" && input.runner === "chat") {
       if (!trust.trusted) this.store.addEvent(id, "trust-confirmed", `${trustText(trust)}; started as a task chat after the warning in New task (its sandbox can reach this bb).`);
     }
-    if (input.userApproved === true && needsFrontierApproval(settings.modelTiers, tier, model, reasoningEffort)) {
+    if (!input.macRecovery && input.userApproved === true && needsFrontierApproval(settings.modelTiers, tier, model, reasoningEffort)) {
       this.store.addEvent(id, "approval", "Frontier at max effort, approved by the user");
     }
     // The implementer's history shows its reviews, so nobody starts a second one by mistake.
@@ -1729,7 +1734,7 @@ export class BoatService {
   private explicitChat(input: StartTaskInput, trust: ChatTrust): Runner {
     if (this.hooks.chat === undefined) throw new TaskError("This bb can't run task chats.", "chat_unavailable", "Start it headless instead (drop --chat).");
     const named = namedSandbox(input.sandbox);
-    if (named !== null && this.store.hostForSandbox(named) === null) {
+    if (named !== null && this.store.hostForSandbox(named) === null && !input.macRecovery) {
       throw new TaskError(`Sandbox ${named} doesn't run bb, so a task chat can't start there.`, "sandbox_not_chat", "Use a new sandbox, or start it headless.");
     }
     if (!confirmCovers(input.confirmUntrustedChat, trust)) throw this.untrustedRepoError(trust, "start", input.confirmUntrustedChat != null);
@@ -1968,6 +1973,7 @@ export class BoatService {
       const current = this.store.get(id);
       if (signal.aborted || current?.status !== "starting") throw new DispatchCancelled();
       input.macRentalStart?.assertCurrent();
+      input.macRecovery?.assertCurrent();
       if (initial.claudePaidContinuation === true && (current.claudePaidContinuation !== true || current.claudePaidContinuationRevoked === true)) throw new TaskError("This task's Claude continuation permission changed before dispatch.", "claude_continuation_revoked");
       if (input.nativeReview) { input.nativeReview.signal?.throwIfAborted(); this.assertNativeReviewSource(input.nativeReview.source); }
     };
@@ -1982,6 +1988,20 @@ export class BoatService {
       let sandbox!: Sandbox;
       const unlistedMacProviders = new Set<string>();
       const place = async () => {
+        if (input.macRecovery) {
+          // Recovery cannot wake, rent, or cancel the provider's release plan.
+          sandbox = await input.macRecovery.validate(signal);
+          stillWanted();
+          reuse = sandbox.id;
+          release = this.claim(sandbox.id);
+          task = this.store.update(id,{sandboxId:sandbox.id,ownsSandbox:true}) ?? task;
+          const lease=this.store.macLeases.held(sandbox.id).find(l=>l.provider===task.sandboxProvider);
+          if (!lease) throw new TaskError("The existing physical lease could not be admitted; recovery stopped.","lease_unknown");
+          const spec=macTaskResources(this.sandboxProvider(task),sizing.type);
+          this.store.macLeases.attach(lease.id,id,spec.vcpus,spec.memMiB);
+          this.store.addEvent(id,"mac-recovered",`Using the same allocated Mac ${sandbox.id}; its paid minimum and provider release schedule are unchanged.`);
+          return;
+        }
         reuse = await this.pickSandbox(input, parent, settings, signal);
         // Persistent Mac accounts still use one credential home per task.
         if (reuse?.startsWith("ownmac_")) reuse = null;
@@ -2180,6 +2200,7 @@ export class BoatService {
         if (head.exitCode !== 0 || head.stdout.trim() !== `BOAT_NATIVE_REVIEW_HEAD ${input.nativeReview.source.head}`) throw new TaskError("The review checkout does not match the recorded pull request HEAD.", "review_source_changed");
         stillWanted();
       }
+      if (input.macRecovery) { await input.macRecovery.validate(signal); stillWanted(); }
       // 3. Dispatch the agent.
       const prompt = composeInitialPrompt({
         runner: task.runner,
@@ -2300,6 +2321,14 @@ export class BoatService {
 
   /** Remove what a failed or cancelled dispatch created (a machine takes its sandbox with it). */
   private async discardNew(taskId: string, sandboxId: string | null, hostId: string | null): Promise<void> {
+    // An allocated rental survives failed admission, cancellation, and failed
+    // app setup even if its ledger row is absent. Deleting here could discard
+    // a paid physical lease, work, or credentials without an owner decision.
+    const task=this.store.get(taskId);
+    if (task?.sandboxSystem === "macos" && task.sandboxProvider !== "ownmac" && (sandboxId !== null || task.sandboxId !== null)) {
+      this.store.addEvent(taskId,"mac-start-preserved",`Allocated Mac ${sandboxId ?? task.sandboxId} is preserved after startup stopped. Its provider release schedule and credentials are unchanged; billing may continue.`);
+      return;
+    }
     // An attach that was cut short (cancel, restart) may still have made a machine.
     if (hostId === null && sandboxId !== null && this.hooks.chat && this.store.get(taskId)?.runner === "chat") {
       hostId = await this.hooks.chat.findMachine(sandboxId).catch(() => null);
@@ -2516,7 +2545,7 @@ export class BoatService {
       if (hostId === null) {
         this.store.addEvent(id, "machine", "Installing bb on the sandbox (about a minute)");
         this.hooks.changed([id]);
-        hostId = (await chat.attachMachine({ taskId: id, sandboxId: ctx.sandbox.id, signal: ctx.signal, ...this.machineProviderFor(task) })).hostId;
+        hostId = (await chat.attachMachine({ taskId: id, sandboxId: ctx.sandbox.id, signal: ctx.signal, ...(task.sandboxSystem==="macos" && task.sandboxProvider!=="ownmac" ? {keepSandbox:true}:{}), ...(input.macRecovery ? {recoveryLease:{...ctx.sandbox.mac!,scheduledReleaseAt:ctx.sandbox.scheduledReleaseAt ?? null}}:{}), ...this.machineProviderFor(task) })).hostId;
         ctx.onHost(hostId);
         this.store.addEvent(id, "machine", `The sandbox is bb machine ${hostId}`);
       }
@@ -2608,7 +2637,23 @@ export class BoatService {
         unlisted.add(provider.id);
         continue;
       }
-      this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
+      if (provider.id !== "instabox") this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
+      else for (const lease of this.store.macLeases.held().filter(l=>l.provider===provider.id)) {
+        // A list can predate allocation or hand-back. Confirm each physical
+        // lease before admitting reuse or considering another rental.
+        const current=await provider.info(lease.machineId,signal);
+        machines=machines.filter(machine=>machine.id!==lease.machineId);
+        machines.push(current);
+      }
+      if (provider.id === "instabox") for (const machine of [...machines]) {
+        if (machine.system!=="macos" || machine.mac || !ACTIVE_STATES.has(machine.state)) continue;
+        const current=await provider.info(machine.id,signal);
+        machines=machines.filter(row=>row.id!==machine.id);
+        machines.push(current);
+      }
+      if (provider.id === "instabox" && machines.some(machine=>(machine.system==="macos" && ACTIVE_STATES.has(machine.state) && !machine.mac) || (machine.mac && !this.store.macLeases.held(machine.id).some(lease=>lease.provider===provider.id && Date.parse(lease.startedAt)===Date.parse(machine.mac!.startedAt))))) {
+        throw new TaskError("Instabox reports an allocated physical Mac lease that the ledger cannot admit. Inspect that existing machine; Harbormaster will not rent another Mac.","lease_unknown");
+      }
       const need = macTaskResources(provider, type);
       for (const lease of this.store.macLeases.held()) {
         if (lease.provider !== provider.id || this.macPreparing.has(lease.machineId) || this.macCleaning.has(lease.machineId) || this.isMovingSandbox(lease.machineId) || this.sizes.isResizing(lease.machineId)) continue;
@@ -2734,7 +2779,18 @@ export class BoatService {
     // propagate unchanged and prevent a second allocation.
     // Persist the approved route before an API call can have an unknown outcome.
     this.store.update(task.id,{sandboxProvider:provider.id});
-    const sandbox=await this.createSandbox({name:`bb ${task.id} ${slug(task.title)}`,type,system:"macos",environment:task.environment,snapshot:task.snapshot,sandboxProvider:provider,macCostLimit:approval,allocateOnly:Boolean(provider.allocate && provider.waitReady),signal,assertCurrent});
+    ownMacEvent(this.store,task.id,"ownmac-rental-approved",approval,"The existing owner approval permits exactly these rental terms and this model.");
+    let sandbox:Sandbox;
+    try {
+      sandbox=await this.createSandbox({name:`bb ${task.id} ${slug(task.title)}`,type,system:"macos",environment:task.environment,snapshot:task.snapshot,sandboxProvider:provider,macCostLimit:approval,allocateOnly:Boolean(provider.allocate && provider.waitReady),signal,assertCurrent});
+    } catch (error) {
+      const allocated=error as {code?:string;machineId?:unknown;leaseId?:unknown};
+      if (allocated.code==="creation_allocated" && typeof allocated.machineId==="string" && allocated.machineId) {
+        ownMacEvent(this.store,task.id,"ownmac-allocation",{machineId:allocated.machineId,provider:provider.id,...(typeof allocated.leaseId==="string"?{leaseId:allocated.leaseId}:{})},"The provider allocated this Mac, but local lease admission failed. The machine is preserved.");
+      }
+      throw error;
+    }
+    ownMacEvent(this.store,task.id,"ownmac-allocation",{machineId:sandbox.id,provider:provider.id,...(sandbox.mac?{leaseId:sandbox.mac.leaseId,startedAt:sandbox.mac.startedAt,ledgerLeaseId:instaboxLeaseInput(this.store.macLeases,sandbox)?.id}:{})},"The provider allocated this Mac. App startup has not completed.");
     this.store.update(task.id,{sandboxProvider:provider.id});
     return sandbox;
   }
@@ -2960,6 +3016,7 @@ export class BoatService {
 
   /** A failed enrollment must not log out a shared Mac's other tasks. */
   async cleanupFailedMachineBootstrap(sandboxId: string, cleanup: () => Promise<void>, taskId?: string): Promise<void> {
+    if (taskId && this.store.latestEvent(taskId,"mac-recovery-approved")) return;
     const release = await this.withMacLock(async () => {
       const attachments = this.store.macLeases.held(sandboxId).flatMap(lease => this.store.macLeases.tasks(lease.id));
       const owner = taskId ? this.store.get(taskId) : null;
@@ -3017,7 +3074,13 @@ export class BoatService {
         const provider = this.sandboxProviders.get(providerId);
         if (!provider) continue;
         const machines = await provider.list({ all: true, signal: this.hooks.lifecycle });
-        this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)), now);
+        if (provider.id !== "instabox") this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)), now);
+        else for (const lease of this.store.macLeases.held().filter(l=>l.provider===provider.id)) {
+          // findInfo confirms absence without failing the whole maintenance
+          // pass. The provider records its authoritative end; other errors
+          // still propagate and never imply that a paid machine disappeared.
+          await provider.findInfo(lease.machineId,this.hooks.lifecycle);
+        }
         for (const lease of this.store.macLeases.held().filter(lease => lease.provider === provider.id)) {
           try {
             // Refresh active held leases too, before a long-running chat hits expiry.
@@ -4152,6 +4215,7 @@ export class BoatService {
 
   /** keepPlan: a resume the plugin makes itself (a ship), not someone asking: the sandbox's retry plan stays. */
   async sandboxAction(sandboxId: string, action: "stop" | "resume" | "delete", ttlSeconds: number, signal?: AbortSignal, options: { keepPlan?: boolean } = {}): Promise<void> {
+    if (action!=="resume") this.store.macLeases.recordReleaseIntent(sandboxId,action);
     if (this.macCleaning.has(sandboxId)) throw new TaskError("This Mac is cleaning up a failed start. Try again once cleanup finishes.", "sandbox_busy");
     if (this.isMovingSandbox(sandboxId)) {
       throw new TaskError(`A task is moving to a task chat in sandbox ${sandboxId}.`, "task_busy", "Try again once the chat is open (in about a minute).");
@@ -5377,6 +5441,176 @@ export class BoatService {
     if (options.keepOpen || now.status !== "idle" || now.turns !== task.turns) return { task: now, shipped: result.shipped, sandbox: "kept" };
     const closed = await this.closeTask(task.id, { status: "done", signal: options.signal });
     return { task: closed.task, shipped: result.shipped, sandbox: closed.sandbox };
+  }
+
+  /** Explicit continuation of an allocated rental whose app task never started. */
+  async recoverAllocatedMac(idOrPrefix:string,machineId:string,userApproved:boolean,adoptLegacyLease?:LegacyMacAdoptionEvidence):Promise<Task> {
+    function refuse(message:string):never {throw new TaskError(`${message} The existing Mac, release plan, and credentials are preserved. No new rental was requested.`,"mac_recovery_refused");}
+    if (!userApproved) throw new TaskError("Recovering allocated Mac work needs the user's explicit request.","approval_required");
+    const proof=adoptLegacyLease===undefined ? null : legacyMacAdoptionSchema.safeParse(adoptLegacyLease);
+    if (proof && !proof.success) refuse("The legacy adoption evidence is incomplete or invalid.");
+    const adoption=proof?.success ? proof.data : null;
+    const original=this.mustGet(idOrPrefix);
+    if (this.ownMacRestarts.has(original.id) || this.dispatches.has(original.id)) refuse("This task start is already being handled.");
+    if (original.status!=="failed" || original.sandboxSystem!=="macos" || original.sandboxProvider!=="instabox" || original.turns!==0 || original.threadId || original.hostId || original.environmentId || original.repoPath || original.promptId || original.conversationId || original.unshipped || original.shipApproval || original.claudePaidContinuation || original.claudePaidContinuationRevoked || original.role==="review" || original.parentTaskId) refuse("Only an untouched failed zero-turn Instabox Mac task can be recovered.");
+    const failure=this.store.history({taskId:original.id,limit:100}).events.find(event=>event.kind==="stopped");
+    if (!failure || !["lease_unknown","creation_allocated"].includes(failure.cause ?? "")) refuse("This failure does not prove an allocated Mac admission failure.");
+    const sources=this.store.list({limit:1000}).filter(task=>(this.store.ownMacEventData(task.id,"ownmac-rental-answer") as {replacementId?:string}|null)?.replacementId===original.id);
+    if (sources.length!==1) refuse("The original consumed rental approval could not be identified uniquely.");
+    const source=sources[0]!;
+    if (this.ownMacStarts.has(source.id)) refuse("The source request is already handling a task start.");
+    const start={controller:new AbortController(),replacementId:original.id};
+    const recoverySignal=AbortSignal.any([start.controller.signal,this.hooks.lifecycle]);
+    const consent=macRentalQuoteSchema.safeParse(this.store.ownMacEventData(original.id,"ownmac-rental-approved") ?? this.store.ownMacEventData(source.id,"ownmac-rental-offer"));
+    if (!consent.success || consent.data.provider!=="instabox" || source.status!=="cancelled" || source.turns!==0 || source.repo!==original.repo || source.brief!==original.brief || source.boatProject!==original.boatProject || source.projectId!==original.projectId || source.provider!==original.provider || source.model!==original.model || source.runner!==original.runner || source.orchestratorThreadId!==original.orchestratorThreadId || this.store.latestEvent(source.id,"cancelled")) refuse("The original task intent or approved rental terms cannot be confirmed.");
+    for (const key of ["role","branch","baseBranch","snapshot","environment","purpose"] as const) if (source[key]!==original[key]) refuse("The linked task no longer matches the original request.");
+    const repoIntent=(task:Task)=>JSON.stringify(task.extraRepos.map(({repo,baseBranch})=>({repo,baseBranch})));
+    if (repoIntent(source)!==repoIntent(original)) refuse("The linked task repository intent changed.");
+    const quote=consent.data!;
+    const allocation=this.store.ownMacEventData(original.id,"ownmac-allocation") as {machineId?:string;provider?:string;leaseId?:string;startedAt?:string}|null;
+    if (!machineId || (original.sandboxId && original.sandboxId!==machineId) || (allocation && (allocation.machineId!==machineId || allocation.provider!=="instabox"))) refuse("This machine does not match the task's recorded allocation.");
+    if (adoption && (adoption.sourceTaskId!==source.id || failure.cause!=="lease_unknown" || adoption.failedAt!==original.finishedAt || Date.parse(failure.at)<Date.parse(adoption.failedAt) || Date.parse(failure.at)-Date.parse(adoption.failedAt)>1000)) refuse("The adoption evidence does not match the original failed admission and consumed approval.");
+    const sourceVersion=source.updatedAt;
+    let inserted=false;
+    const assertCurrent=()=>{
+      this.hooks.lifecycle.throwIfAborted();
+      const releaseIntent=this.store.macLeases.releaseIntent(machineId);
+      if ((releaseIntent && Date.parse(releaseIntent.at)>=Date.parse(original.createdAt)) || (adoption && [original.id,source.id].some(id=>["cancelled","done","sandbox-deleted","discarded"].some(kind=>this.store.latestEvent(id,kind))))) refuse("A stop, delete, cancellation, or discard request prevents recovery of this allocation.");
+      const task=this.store.get(original.id),request=this.store.get(source.id);
+      if (!task || task.status!==(inserted?"starting":"failed") || task.turns!==0 || (!inserted && (task.threadId || task.hostId || task.repoPath || task.promptId || task.conversationId)) || (request?.status!=="cancelled" || request.updatedAt!==sourceVersion) || this.store.latestEvent(source.id,"cancelled") || (this.store.ownMacEventData(source.id,"ownmac-rental-answer") as {replacementId?:string}|null)?.replacementId!==task.id) refuse("The task or its original request changed during recovery.");
+      if (task.title!==original.title || task.brief!==original.brief || task.repo!==original.repo || task.branch!==original.branch || task.provider!==original.provider || task.model!==original.model) refuse("The task intent changed during recovery.");
+    };
+    const project=governingProject(this.hooks.projects?.() ?? [],original.boatProject,original.repo);
+    const assertProject=()=>{
+      const current=governingProject(this.hooks.projects?.() ?? [],original.boatProject,original.repo);
+      if (original.boatProject && (!current || current.id!==original.boatProject)) refuse("The task's project no longer exists.");
+      if (current && (JSON.stringify(current)!==JSON.stringify(project) || ([original.repo,...original.extraRepos.map(r=>r.repo)].filter(Boolean) as string[]).some(repo=>!current.repos.some(r=>r.repo.toLowerCase()===repo.toLowerCase())))) refuse("The project's routing or repository intent changed.");
+      if (current?.sandboxSystem==="linux" || (current?.sandboxProvider && !["boat","ownmac","instabox"].includes(current.sandboxProvider))) refuse("The project no longer permits this Mac route.");
+    };
+    const provider=this.sandboxProviders.get("instabox");
+    if (!provider) refuse("Instabox is unavailable or disabled.");
+    const activeProvider=provider!;
+    let expectedLease:string|null=null;
+    let expectedRelease:string|null|undefined;
+    let legacyAdopted=false;
+    let pendingAdoption:{current:NonNullable<ReturnType<typeof instaboxLeaseInput>> & {scheduledReleaseAt:string|null;physicalLeaseId:string};revision:number;observedAt:string}|null=null;
+    const validate=async(signal:AbortSignal):Promise<Sandbox>=>{
+      assertCurrent();assertProject();signal.throwIfAborted();
+      if (this.sandboxProviders.get("instabox")!==activeProvider) refuse("The configured provider changed during recovery.");
+      if (this.macPreparing.has(machineId) || this.macCleaning.has(machineId) || (!inserted && this.holdsSandbox(machineId)) || this.isMovingSandbox(machineId) || this.sizes.isResizing(machineId)) refuse("The allocated Mac is already busy with another operation.");
+      if (this.store.sandboxTasks(machineId).some(task=>task.id!==original.id) || this.store.machineForSandbox(machineId) || await this.hooks.chat?.findMachine(machineId)) refuse("This Mac already has an app workspace or other task history.");
+      const revision=this.store.macLeases.revision();
+      const machine=await activeProvider.info(machineId,signal);
+      assertCurrent();assertProject();signal.throwIfAborted();
+      const mac=machine.mac;
+      if (machine.id!==machineId || machine.system!=="macos" || machine.state!=="idle" || machine.health!=="ok" || machine.error || !mac) refuse("The provider did not confirm an idle healthy Mac with a current physical lease.");
+      if ((!original.sandboxId && !allocation) && machine.name!==instaboxMachineName(`bb ${original.id} ${slug(original.title)}`)) refuse("The provider machine name does not bind it to this failed task.");
+      if ((allocation?.leaseId && allocation.leaseId!==mac.leaseId) || (allocation?.startedAt && Date.parse(allocation.startedAt)!==Date.parse(mac.startedAt))) refuse("The physical lease identity changed.");
+      if (Date.parse(mac.startedAt)>Date.parse(original.finishedAt ?? original.updatedAt)+1000) refuse("This physical lease began after the original allocation failure.");
+      const duration=Date.parse(mac.chargeUntil)-Date.parse(mac.startedAt);
+      const close=(a:number,b:number)=>Math.abs(a-b)<1e-8;
+      // Recovery consumes remaining prepaid time; it cannot accept fresh terms
+      // or cross the scheduled provider hand-back while app setup is starting.
+      if (quote.currency!=="USD" || mac.model!==quote.model || !close(mac.minimumCost,quote.minimumCost) || !close(mac.hourPrice,quote.hourPrice) || Math.abs(duration-quote.minimumHours*3_600_000)>1000 || mac.cpus!==quote.cpus || mac.memoryMiB!==quote.memoryMiB || Date.parse(mac.startedAt)>Date.now() || Date.parse(mac.startedAt)<Date.parse(original.createdAt)-60_000) refuse("The current physical lease does not match the approved model and paid terms.");
+      const settings=await this.settings();
+      const boundary=Math.min(Date.parse(mac.chargeUntil),machine.scheduledReleaseAt?Date.parse(machine.scheduledReleaseAt):Infinity);
+      if (!Number.isFinite(boundary) || boundary-Date.now()<(settings.macHandBackMarginMinutes ?? 30)*60_000) refuse("There is too little confirmed prepaid time before hand-back to start safely.");
+      const confirmed=instaboxLeaseInput(this.store.macLeases,machine);
+      if (confirmed && !adoption) this.store.macLeases.restoreCurrent(confirmed,{revision,allowLegacy:true});
+      let lease=this.store.macLeases.held(machineId).find(l=>l.provider==="instabox" && l.size===mac.model && Date.parse(l.startedAt)===Date.parse(mac.startedAt) && Date.parse(l.paidUntil)===Date.parse(mac.chargeUntil) && close(l.minimumCost,mac.minimumCost) && close(l.hourPrice,mac.hourPrice) && l.currency==="USD");
+      pendingAdoption=null;
+      if (lease && adoption && !legacyAdopted) refuse("Explicit legacy adoption requires its original ended legacy row; use ordinary recovery for a held lease.");
+      if (!lease && adoption && confirmed) {
+        const raw=this.store.macLeases.rawList().find(row=>row.id===adoption.ledgerId);
+        const endDelay=Date.parse(adoption.endedAt)-Date.parse(adoption.failedAt);
+        if (!raw || raw.id!==confirmed.id || raw.endEvidence!=="legacy" || raw.endReason!=="deleted"
+          || raw.kept || raw.releaseAt!==null || !raw.endedAt || raw.endedAt!==adoption.endedAt
+          || !(endDelay>0 && endDelay<=10_000) || adoption.leaseId!==mac.leaseId
+          || adoption.startedAt!==mac.startedAt || adoption.paidUntil!==mac.chargeUntil
+          || raw.machineId!==machineId || raw.provider!=="instabox" || raw.size!==mac.model
+          || raw.startedAt!==mac.startedAt || raw.paidUntil!==mac.chargeUntil
+          || !close(raw.minimumCost,mac.minimumCost) || !close(raw.hourPrice,mac.hourPrice)
+          || raw.currency!=="USD" || raw.cpus!==mac.cpus || raw.memoryMiB!==mac.memoryMiB
+          || Date.parse(mac.startedAt)>Date.parse(adoption.failedAt)
+          || Date.parse(adoption.endedAt)>=Date.parse(mac.chargeUntil)
+          || machine.scheduledReleaseAt!==mac.chargeUntil) refuse("The legacy deleted row and provider lease do not match the exact failed-start evidence.");
+        if (this.store.macLeases.revision()!==revision) refuse("The lease changed during the current provider read.");
+        lease=raw;
+        pendingAdoption={current:{...confirmed,scheduledReleaseAt:machine.scheduledReleaseAt ?? null,physicalLeaseId:mac.leaseId},revision,observedAt:new Date().toISOString()};
+      }
+      if (!lease || (expectedLease!==null && expectedLease!==lease.id)) refuse("The current physical lease is absent or ended in the ledger; its history needs read-only diagnosis before recovery.");
+      expectedLease=lease.id;
+      if (expectedRelease!==undefined && expectedRelease!==(machine.scheduledReleaseAt ?? null)) refuse("The provider release plan changed during recovery.");
+      expectedRelease=machine.scheduledReleaseAt ?? null;
+      if (!pendingAdoption && (lease.releaseAt ?? null)!==(machine.scheduledReleaseAt ?? null)) refuse("The provider and ledger release plans disagree.");
+      const need=macTaskResources(activeProvider,original.startOptions?.machineType ?? "default");
+      if (need.vcpus>lease.cpus || need.memMiB>lease.memoryMiB || this.store.macLeases.tasks(lease.id).some(t=>t.taskId!==original.id || (t.workTurns ?? 0)>0 || (t.workOutcome!==null && t.workOutcome!=="clean")) || (await this.machineBusy(this.store.sandboxTasks(machineId).filter(t=>t.id!==original.id)))) refuse("The Mac has existing work, uncertain reservations, or insufficient resources.");
+      if ((await activeProvider.conversations(machineId,signal)).length) refuse("The Mac has provider-native conversation history.");
+      const sample=await activeProvider.processes(machineId,signal);
+      if (sample.live!==true || busyProcesses(sample).length) refuse("The current machine work state could not be confirmed idle.");
+      assertCurrent();assertProject();signal.throwIfAborted();
+      return machine;
+    };
+    this.ownMacRestarts.add(original.id);
+    this.ownMacStarts.set(source.id,start);
+    try {
+      const prepared=await this.withMacLock(async()=>{
+        await validate(recoverySignal);
+        const settings=await this.settings();
+        if (settings.notConnectedAgents.includes(original.provider) || (onlyAgent(settings.agents)!==null && onlyAgent(settings.agents)!==original.provider)) refuse("The original agent account is no longer available.");
+        await this.hooks.preflight?.({agent:original.provider,runner:original.runner,environment:original.environment,newSandbox:false,provider:"instabox"});
+        await activeProvider.capacity(recoverySignal); // Account authentication must still work; no new-start quota is consumed.
+        await activeProvider.assertTaskReady?.({agent:original.provider,repos:[original.repo,...original.extraRepos.map(r=>r.repo)].filter((r):r is string=>r!==null),sandboxId:machineId,signal:recoverySignal});
+        await this.assertSubscriptionRoom(original.provider,{settings,runner:original.runner,projectId:original.boatProject,repo:original.repo,signal:recoverySignal});
+        assertCurrent();assertProject();
+        return this.prepareTask({
+          title:original.title, brief:original.brief, role:original.role,
+          repo:original.repo, branch:original.branch, baseBranch:original.baseBranch,
+          provider:original.provider, model:original.model, tier:original.tier as Tier|null,
+          reasoningEffort:original.reasoningEffort,
+          userApproved:this.store.latestEvent(original.id,"approval")!==null,
+          runner:original.runner, purpose:original.purpose, compactTitle:original.compactTitle,
+          projectId:original.projectId, environment:original.environment,
+          snapshot:original.snapshot ?? "none",
+          project:project ? {
+            ...toOrchestratorProject(normalizeProject({...project,repos:project.repos.map(r=>({repo:r.repo,baseBranch:(r as ProjectRepo).baseBranch ?? "main"}))})),
+            ...(!original.repo ? {repos:[]} : {}),
+          } : undefined,
+          orchestratorThreadId:original.orchestratorThreadId,
+          sandbox:machineId, sandboxSystem:"macos",
+          machineType:original.startOptions?.machineType,
+          confirmUntrustedChat:original.startOptions?.confirmUntrustedChat,
+          signal:recoverySignal,
+          macRecovery:{machineId,validate,assertCurrent},
+          queuedStart:{
+            taskId:original.id,
+            beforeInsert:async()=>{await validate(recoverySignal);},
+            insert:record=>{
+          assertCurrent();assertProject();
+          for (const key of ["repo","branch","baseBranch","provider","model","reasoningEffort","runner","sandboxSystem","delivery","boatProject"] as const) if ((record[key] ?? null)!==(original[key] ?? null)) refuse("Current task settings would change the approved work.");
+          if (repoIntent(record)!==repoIntent(original)) refuse("The project repository list or base branches changed.");
+          let task:Task|null=null;
+          const admit=()=>{task=this.store.transition(original.id,["failed"],{status:"starting",error:null,finishedAt:null,notifiedAt:null});return task!==null;};
+          if (pendingAdoption && adoption) {
+            const overlay=this.store.macLeases.adoptLegacyDeleted(adoption.ledgerId,pendingAdoption.current,{revision:pendingAdoption.revision,taskId:original.id,sourceTaskId:source.id,failureCause:"lease_unknown",failedAt:adoption.failedAt,observedAt:pendingAdoption.observedAt,expectedEndedAt:adoption.endedAt,operatorProof:adoption,admit});
+            if (!overlay) refuse("The evidence-bound legacy adoption could not be admitted atomically.");
+            legacyAdopted=true;
+            ownMacEvent(this.store,original.id,"ownmac-legacy-adoption",{proof:adoption,leaseId:overlay.id,observedAt:pendingAdoption.observedAt},"The operator explicitly attested that no stop or release was requested and supplied this exact original lease evidence.");
+            this.store.addEvent(original.id,"mac-legacy-adopted",`Explicitly adopted existing physical lease ${adoption.ledgerId} after verifying the original failed admission. The legacy ended row is preserved for audit; no new minimum or provider change was authorized.`);
+          } else admit();
+          if (!task) refuse("The task changed before recovery could start.");
+          inserted=true;
+          this.store.addEvent(original.id,"mac-recovery-approved",`The user requested recovery on existing Mac ${machineId}, with the same lease and release schedule; no new rental is authorized.`);
+          return task!;
+            },
+          },
+        });
+      });
+      return await prepared.run();
+    } finally {
+      this.ownMacRestarts.delete(original.id);
+      if (this.ownMacStarts.get(source.id)===start) this.ownMacStarts.delete(source.id);
+    }
   }
 
   /** Explicit owner recovery of a cancelled chat whose original workspace still exists. No turn or VM is started. */

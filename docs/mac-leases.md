@@ -18,9 +18,9 @@ The rate is prorated by elapsed time, without rounding up to another day.
 Storage, tax and other provider charges are not included.
 
 `mac_leases` stores those terms, machine/model, end time/reason, the last
-notice time and page notice text, `kept`, and a pending `releaseAt`. Because this schema has not
-shipped, its final billing, keep, scheduling and notice columns are created
-directly in one `CREATE TABLE`, without upgrade rewrites. The attachment
+notice time and page notice text, `kept`, and a pending `releaseAt`. Appended
+migrations retain existing rows and distinguish inferred, confirmed and legacy
+ends. The attachment
 table retains task/resource history, a close outcome with its task turn count,
 and an index on `task_id`. An ended
 record is never reopened by a list upsert.
@@ -95,9 +95,9 @@ The release policy is provider-neutral:
   A shared lease with both page and chat tasks reaches both surfaces.
 
 Placement and hand-back share a lock. Release rechecks task records, claims,
-bb machine activity, attachment-history work and keep state after I/O. Successful lists close missing
-machines; a scheduled release ends at its scheduled time on reconciliation,
-and a stopped lease uses the provider's `stoppedAt` rather than the later list time.
+bb machine activity, attachment-history work and keep state after I/O. Instabox
+list snapshots never close missing or stopped leases; current per-machine reads
+confirm physical termination. Other providers retain list reconciliation.
 Failed lists never authorize another rental or mark machines gone. Mac
 maintenance and Linux activity leases have independent error handling; no
 held Mac leases means no Mac maintenance/provider-list pass.
@@ -148,4 +148,15 @@ The Usage table and footer show each Mac provider separately: paid minimum, per-
 
 A paused Mac whose unshipped work cannot be verified names `bb boat sandbox resume <id>` in its notice. Page notice text clears when work resumes or the lease is released, while reminder delivery stays limited to once per day. Scaleway listings and orphan checks only read; ownership recovery and IAM-key cleanup run in the maintenance sweep (or the explicit recovery command).
 
-A failed start does not prove a Mac was released. Cards only claim release when the ledger confirms it, keep ambiguous allocations out of automatic retries, and warn that the provider's minimum may still apply. `no_capacity` has no scheduled retry; **Try now** is an explicit retry.
+A failed start does not prove a Mac was released. Linked rental cards show the
+existing task's failure and allocation separately, keep ambiguous allocations
+out of automatic retries, and warn that billing may continue. A terminal local
+row contradicted by a current provider lease gets a visible discrepancy notice.
+Explicit evidence-bound recovery can adopt a narrowly verified legacy deletion
+after failed admission. It preserves the raw ended row and records an audit
+overlay under the same lease ID; held capacity and billing count that physical
+lease once. Ordinary list/info reads never activate an adoption. Public
+`macUsage.legacyEnded` and `macUsage.adoptions` expose the history and decision.
+See [allocated Mac recovery](allocated-mac-recovery.md) for the supported same
+task and same machine operation, refusal conditions and fake-test limitations.
+`no_capacity` has no scheduled retry; **Try now** is an explicit retry.

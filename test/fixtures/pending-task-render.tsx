@@ -22,3 +22,7 @@ export function renderCancelledTaskScene(): string {
   };
   return renderPendingTask(cancelled, null);
 }
+import { OwnMacRentalCard } from "../../web/own-mac-cards";
+export function renderLinkedRental(notice: OwnMacNotice, approving = false, error?:string): string {
+  return renderToStaticMarkup(<OwnMacRentalCard notice={notice} approving={approving} busy={approving} error={error} onOpenTask={()=>{}} onOpenMachine={()=>{}} onRecover={()=>{}} />);
+}

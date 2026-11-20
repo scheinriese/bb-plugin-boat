@@ -1,4 +1,4 @@
-import { ownMacFactsSchema, ownMacRpcMethods } from "./contract-ownmac.ts";
+import { ownMacFactsSchema, ownMacRpcMethods, legacyMacAdoptionSchema } from "./contract-ownmac.ts";
 import { monthlyMacRpcMethods, monthlyMacSuggestionSchema, monthlyMacComparisonSchema } from "./contract-monthly-macs.ts";
 // Sandbox providers in the RPC contract (contract.ts spreads
 // providerRpcMethods into it and puts runsOn on tasks and sandboxes):
@@ -158,6 +158,16 @@ export const macUsageSchema = z.object({
   today: z.record(z.string(),z.number()).optional(),
   providers: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
   notices: z.array(z.object({ id: z.string(), provider: z.string(), label: z.string(), machineId: z.string(), at: z.string(), text: z.string(), tokenRevocation: z.boolean().optional(), expiresAt: z.string().nullable().optional() })).optional(),
+  adoptions: z.array(z.object({
+    leaseId:z.string(), provider:z.string(), machineId:z.string(), taskId:z.string(), sourceTaskId:z.string(), adoptedAt:z.string(), endedAt:z.string().nullable(),
+    operatorProof:legacyMacAdoptionSchema,
+    original:z.object({endedAt:z.string().nullable(),endReason:z.string().nullable(),endEvidence:z.string(),releaseAt:z.string().nullable()}),
+    observed:z.object({leaseId:z.string(),startedAt:z.string(),paidUntil:z.string(),model:z.string(),minimumCost:z.number(),hourPrice:z.number(),currency:z.string(),scheduledReleaseAt:z.string().nullable()}),
+  })).optional(),
+  /** Raw history for evidence inspection, not a claim of recovery eligibility. */
+  legacyEnded: z.array(z.object({
+    id:z.string(),provider:z.string(),machineId:z.string(),model:z.string(),startedAt:z.string(),paidUntil:z.string(),endedAt:z.string(),endReason:z.literal("deleted"),endEvidence:z.literal("legacy"),releaseAt:z.string().nullable(),kept:z.boolean(),minimumCost:z.number(),hourPrice:z.number(),currency:z.string(),
+  })).max(100).optional(),
   held: z.array(z.object({ provider: z.string().optional(), billingIncrementSeconds: z.number().optional(), machineId: z.string(), size: z.string(), paidUntil: z.string(), minimumCost: z.number(), hourPrice: z.number(), kept: z.boolean(), releaseAt: z.string().nullable(), currency: z.string() })),
 });
 export type MacUsageDto = z.infer<typeof macUsageSchema>;

@@ -137,6 +137,19 @@ open task's sandbox that has evidence-upload.
 | `boat_wake` | A chat or task stuck on a paused or resuming machine: bring its sandbox and chat back (don't repair it by hand) |
 | `boat_ship` | Projects that ship after approval: push the work to the base branch, only on the user's OK in this chat |
 
+An allocated Mac with a failed zero-turn linked task must not get another rental
+approval or a generic retry. After the user requests recovery on that same Mac,
+use `bb boat task recover-mac <failed-task-id> <existing-machine-id> --user-approved --json`.
+This public operation verifies the consumed approval and current fixed lease,
+preserves the release schedule, and refuses uncertain/partially started work.
+It never creates, resumes or extends a physical lease. Basic recovery does not
+adopt ambiguous legacy ends. The explicit `--adopt-legacy-lease` proof path is
+limited to a verified legacy deletion just after failed admission; it preserves
+the original end and requires the same physical lease and no owner release
+intent. Never infer or fabricate that proof. See
+[allocated Mac recovery](../../docs/allocated-mac-recovery.md) for supported
+states, side effects and legacy-end limits.
+
 For task dispatch, optionally provide `compact_title` (CLI `--compact-title`):
 an authored short subject for mobile chips, at most 120 characters. Without it,
 the full title remains visible.

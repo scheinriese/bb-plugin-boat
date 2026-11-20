@@ -101,6 +101,19 @@ export const ownMacNoticeSchema = z.object({
   unavailable: z.array(z.object({provider:z.string(),label:z.string(),reason:z.string()})).optional(),
   answer: z.enum(["wait", "rent", "queue", "auto", "failed"]).optional(),
   replacementId: z.string().optional(),
+  /** Recorded task and lease facts, never a promise of current provider billing. */
+  linkedTask: z.object({
+    taskId: z.string(),
+    status: z.string(),
+    turns: z.number().int().nonnegative(),
+    error: z.string().nullable(),
+    machineId: z.string().nullable(),
+    lease: z.object({
+      provider: z.string(), model: z.string(), minimumCost: z.number(),
+      hourPrice: z.number(), currency: z.string(), paidUntil: z.string(),
+      releaseAt: z.string().nullable(), endedAt: z.string().nullable(),
+    }).optional(),
+  }).optional(),
   cleanup: ownMacFactsSchema.shape.cleanup,
   disconnect: z.string().optional(),
 });
@@ -121,6 +134,16 @@ export function ownMacStatusWords(facts: OwnMacFacts) {
     return `Asleep or unreachable · since ${new Date(facts.since).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}`;
   return facts.status;
 }
+/** Explicit operator evidence for a legacy deleted row after failed admission.
+ * This confirms existing allocation evidence, never another rental minimum. */
+export const legacyMacAdoptionSchema=z.object({
+  ledgerId:z.string().min(1).max(200), leaseId:z.string().min(1).max(100),
+  sourceTaskId:z.string().min(1).max(64),
+  startedAt:z.iso.datetime({offset:true}), paidUntil:z.iso.datetime({offset:true}),
+  endedAt:z.iso.datetime({offset:true}), failedAt:z.iso.datetime({offset:true}),
+  noReleaseRequested:z.literal(true),
+}).strict();
+export type LegacyMacAdoptionEvidence=z.infer<typeof legacyMacAdoptionSchema>;
 export const ownMacRpcMethods = {
   ownMacTestConnection: { input: z.null(), output: ownMacFactsSchema },
   ownMacSetupStep: {
@@ -143,6 +166,10 @@ export const ownMacRpcMethods = {
   selectMacRentalOffer: {
     input: z.object({taskId:z.string(),quoteId:z.string()}),
     output: z.object({notice:ownMacNoticeSchema}),
+  },
+  recoverAllocatedMac: {
+    input: z.object({taskId:z.string(),machineId:z.string(),userApproved:z.boolean(),adoptLegacyLease:legacyMacAdoptionSchema.optional()}),
+    output: z.object({taskId:z.string(),machineId:z.string()}),
   },
   answerOwnMacRental: {
     input: z.object({

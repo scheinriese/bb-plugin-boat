@@ -796,7 +796,9 @@ test("empty Mac schedules hand-back at the minimum, then releases idempotently",
   await service.processMacLeases(until+1);
   await service.processMacLeases(until+2);
   assert.equal(store.macLeases.held().length,0);
-  assert.equal(store.macLeases.list()[0]!.endReason,"handed back");
+  // A fresh 404 confirms physical absence, but does not report when the
+  // provider executed its scheduled release. Do not invent that timestamp.
+  assert.equal(store.macLeases.list()[0]!.endReason,"deleted");
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,1);
 });
 test("idle open tasks get recurring paid-time heads-ups across restarts; running work is never deleted",async t=>{
@@ -1053,11 +1055,15 @@ test("setting preserves unshipped Mac work with daily cost reminders across rest
   await restarted.processMacLeases(end+7*86400000+60000);assert.equal(notices.length,3);
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
 });
-test("stopped Mac leases end at stoppedAt rather than the later list time",async t=>{
+test("stopped Mac leases remain held through list and end at stoppedAt after authoritative get",async t=>{
   const {start,store,box}=await macEnv(t);const task=await start();
   const lease=store.macLeases.held()[0]!,stoppedAt=new Date(Date.parse(lease.paidUntil)+3600000).toISOString();
   const state=box.state();state.machines[task.sandboxId!].state="stopped";state.machines[task.sandboxId!].updatedAt=stoppedAt;delete state.machines[task.sandboxId!].lease;
   box.setState({machines:state.machines});await box.provider.list({all:true});
+  assert.equal(store.macLeases.held().length,1,"list snapshots cannot establish physical lease termination");
+  assert.equal(store.macLeases.list()[0]!.endedAt,null);
+  await box.provider.info(task.sandboxId!);
+  assert.equal(store.macLeases.held().length,0);
   assert.equal(store.macLeases.list()[0]!.endedAt,stoppedAt);
   assert.ok(Math.abs(store.macLeases.between(0,Infinity,Date.parse(stoppedAt)+86400000).costs.USD!-(lease.minimumCost+lease.hourPrice))<1e-8);
 });

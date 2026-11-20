@@ -40,6 +40,38 @@ export function ownMacTaskNotice(
     replacementId?: string;
   } | null;
   const fallback = data(store, task.id, "ownmac-fallback");
+  const linked = answer?.replacementId ? store.get(answer.replacementId) : null;
+  const allocation = linked ? data(store, linked.id, "ownmac-allocation") as {machineId?:unknown;provider?:unknown;leaseId?:unknown;ledgerLeaseId?:unknown;startedAt?:unknown}|null : null;
+  const machineId = linked?.sandboxId ?? (typeof allocation?.machineId === "string" ? allocation.machineId : null);
+  // Bind billing facts to this task's physical allocation. A later lease on
+  // the same VM must never become the failed task's apparent paid minimum.
+  const snapshot = linked && machineId ? store.macLeases.snapshot() : null;
+  const history = snapshot?.leases.filter(entry => entry.machineId === machineId && entry.provider === linked?.sandboxProvider) ?? [];
+  const attached = snapshot?.tasks.find(entry => entry.taskId === linked?.id)?.leaseId;
+  const exactId = attached ?? (typeof allocation?.ledgerLeaseId === "string" ? allocation.ledgerLeaseId : undefined);
+  let candidates = exactId ? history.filter(entry => entry.id === exactId) : history;
+  if (!exactId && typeof allocation?.leaseId === "string") {
+    const raw = allocation.leaseId;
+    candidates = candidates.filter(entry => entry.id === `instabox:${raw}` || entry.id === `instabox:${machineId}:${raw}:${Date.parse(entry.startedAt)}`);
+  }
+  const allocationStart = typeof allocation?.startedAt === "string" ? Date.parse(allocation.startedAt) : null;
+  if (allocationStart !== null) candidates = candidates.filter(entry => Date.parse(entry.startedAt) === allocationStart);
+  if (!exactId && typeof allocation?.leaseId !== "string" && allocationStart === null) {
+    const created = Date.parse(linked?.createdAt ?? "");
+    const finished = Date.parse(linked?.finishedAt ?? "");
+    // Legacy allocation failures may have no original lease row at all. A
+    // single later rental is not evidence about this task's paid minimum.
+    candidates = history.length === 1 ? candidates.filter(entry => Date.parse(entry.startedAt) >= created && Date.parse(entry.startedAt) <= finished) : [];
+  }
+  if ((typeof allocation?.machineId === "string" && allocation.machineId !== machineId) || (typeof allocation?.provider === "string" && allocation.provider !== linked?.sandboxProvider)) candidates = [];
+  // Older allocations may lack a physical identity. Only a unique historical
+  // row is usable then; ambiguous or missing evidence stays unconfirmed.
+  const lease = candidates.length === 1 ? candidates[0] : undefined;
+  const linkedTask = linked ? {
+    taskId: linked.id, status: linked.status, turns: linked.turns, error: linked.error,
+    machineId,
+    ...(lease ? {lease:{provider:lease.provider,model:lease.size,minimumCost:lease.minimumCost,hourPrice:lease.hourPrice,currency:lease.currency,paidUntil:lease.paidUntil,releaseAt:lease.releaseAt,endedAt:lease.endedAt}} : {}),
+  } : undefined;
   if (task.status === "cancelled" && !answer?.replacementId) return null;
   if (!skipped.success && !quote.success && !choices) return null;
   const state = skipped.success ? skipped.data : null;
@@ -78,6 +110,7 @@ export function ownMacTaskNotice(
         unavailable: choices?.unavailable,
         answer: answer?.answer,
         replacementId: answer?.replacementId,
+        linkedTask,
       }).filter(([, value]) => value !== undefined),
     ),
   );
