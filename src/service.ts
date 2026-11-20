@@ -1,4 +1,4 @@
-import { CLEANUP_NOTICE_PREFIX, UNSAFE_DELETE_WARNING } from "../credential-warnings.ts";
+import { CLEANUP_NOTICE_PREFIX, TOKEN_REVOCATION_NOTICE_PREFIX, UNSAFE_DELETE_WARNING } from "../credential-warnings.ts";
 import { createCodexHealthCheck } from "./codex-health.ts";
 import { providerFailureCard } from "../provider-failure.ts";
 import { canHostMac, macTaskResources } from "./providers/types.ts";
@@ -2671,7 +2671,7 @@ export class BoatService {
   private async credentialCleanupNotice(lease: MacLease, now: number): Promise<void> {
     const rate = new Intl.NumberFormat("en-US", { style: "currency", currency: lease.currency }).format(lease.hourPrice);
     const parts = lease.machineId.split("_");
-    const text = `${CLEANUP_NOTICE_PREFIX} Scaleway Mac ${lease.machineId} keeps billing at ${rate}/hour (the 24 h minimum still applies). Restore SSH access; the plugin will retry cleanup once SSH works. To delete manually: open https://console.scaleway.com → Apple silicon → ${parts[1] ?? "the recorded zone"} → server ${parts[2] ?? lease.machineId} → Delete after the minimum. Revoke or rotate the GitHub token in GitHub because it may still be on this Mac. Or use the explicit Delete without verified cleanup action and revoke the token.`;
+    const text = `${CLEANUP_NOTICE_PREFIX} Scaleway Mac ${lease.machineId} keeps billing at ${rate}/hour (the 24 h minimum still applies). Restore SSH access; the plugin will retry cleanup once SSH works. To delete manually: open https://console.scaleway.com → Apple silicon → ${parts[1] ?? "the recorded zone"} → server ${parts[2] ?? lease.machineId} → Delete after the minimum. Revoke or rotate the GitHub token in GitHub because it may still be on this Mac. Ask the owner to review the Cloud agents page and decide how to recover this Mac.`;
     const changed = lease.noticeText !== text;
     const notify = this.store.macLeases.warn(lease.id, now, true, text, changed);
     if (changed || notify) this.hooks.changed([]);
@@ -3758,12 +3758,25 @@ export class BoatService {
     if (emergency) {
       const provider = this.sandboxProvider(sandboxId);
       if (provider.id !== "scaleway" || !provider.deleteWithoutVerifiedCleanup) throw new TaskError("Emergency deletion is available only for a managed Scaleway Mac.", "unsupported");
-      await provider.deleteWithoutVerifiedCleanup(sandboxId, signal);
+      await provider.deleteWithoutVerifiedCleanup(sandboxId, signal, () => {
+        const lease = this.store.macLeases.held(sandboxId)[0];
+        if (!lease) throw new TaskError("A tracked lease is required for emergency deletion.", "lease_missing");
+        // Persist before the external DELETE so a crash or ambiguous response
+        // cannot hand hardware back without retaining the owner's reminder.
+        this.store.macLeases.recordCredentialNotice(lease.id, `${TOKEN_REVOCATION_NOTICE_PREFIX} Revoke or rotate the GitHub token in GitHub settings; it may still be on the returned Mac (${sandboxId}). Emergency deletion was requested. If its result is uncertain, check the Mac in the Scaleway console. This reminder stays until you dismiss it after taking action.`);
+        this.hooks.changed([]);
+      });
       for (const task of this.store.sandboxTasks(sandboxId)) this.store.addEvent(task.id, "credential-warning", UNSAFE_DELETE_WARNING);
       this.hooks.log.warn(UNSAFE_DELETE_WARNING);
       if (hostId !== null && this.hooks.chat) {
         for (const task of this.store.liveSandboxTasks(sandboxId)) for (const thread of this.store.chatThreads(task.id)) await this.hooks.chat.archive(thread).catch(() => undefined);
-        await this.hooks.chat.removeMachine(hostId);
+        try { await this.hooks.chat.removeMachine(hostId); }
+        catch (error) {
+          // Hardware deletion succeeded. Core's machine cleanup may briefly see
+          // a stale server after its ownership key and active lease are gone.
+          if ((error as { code?: string }).code !== "unmanaged_server") throw error;
+          this.hooks.log.warn("Scaleway hardware was deleted; bb machine removal may retry while the provider listing converges.");
+        }
         await this.dropMachineSources(hostId);
       }
       this.store.expirePreviewsForSandbox(sandboxId);

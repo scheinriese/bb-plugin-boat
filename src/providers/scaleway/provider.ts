@@ -95,12 +95,13 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     else await credentials.cleanup(id, executor(id), signal);
     if (record) await keys.save({ ...record, pluginGithubAttempted: false, credentialDeliveryAttempted: pluginOnly ? record.localLoginsObserved === true : false });
   }
-  async function deleteMachine(id: string, signal?: AbortSignal, endOptions?: { leaseEndReason?: "handed back" | "deleted" | "failed"; leaseEndAt?: number }, withoutCleanup = false) {
+  async function deleteMachine(id: string, signal?: AbortSignal, endOptions?: { leaseEndReason?: "handed back" | "deleted" | "failed"; leaseEndAt?: number }, withoutCleanup = false, beforeDelete?: () => void) {
     let server: Server;
     try { server = await raw(id,signal); } catch (error) { if (!isNotFound(error)) throw error; return; }
     await view(server,signal);
     if (Date.now() < Date.parse(server.deletable_at)) throw fail("Scaleway cannot release this Mac before its 24 h minimum ends.", "minimum_lease");
     if (!withoutCleanup) await cleanupCredentials(id, signal);
+    beforeDelete?.();
     await api.request("DELETE", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, undefined, signal);
     const record = await keyFor(server);
     if (record) await forgetKey(record,signal);
@@ -278,7 +279,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
         {id:"enabled",label:"On",done:accepted && project && agent,possible:true,detail:"Credentials are checked for the chosen agent and repositories before rental"},
       ] };
     },
-    releaseNotice: () => ledger.held().filter(lease => lease.provider === "scaleway" && lease.noticeText?.startsWith(CLEANUP_NOTICE_PREFIX)).map(lease => lease.noticeText).join("\n") || null,
+    releaseNotice: () => [...ledger.held().filter(lease => lease.provider === "scaleway" && lease.noticeText?.startsWith(CLEANUP_NOTICE_PREFIX)).map(lease => lease.noticeText), ...ledger.credentialNotices().filter(notice => notice.provider === "scaleway").map(notice => notice.text)].join("\n") || null,
     classifiesCreateErrors: true,
     sizes: SCALEWAY_TASK_SIZES,
     macModels: signal => models(signal),
@@ -354,7 +355,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     waitReady: prepare,
     async create(input) { const server = await provider.allocate!(input); return prepare(server.id,input.signal); },
     delete: (id, signal, endOptions) => withCredentialsLock(id, () => deleteMachine(id, signal, endOptions)),
-    deleteWithoutVerifiedCleanup: (id, signal) => withCredentialsLock(id, () => deleteMachine(id, signal, undefined, true)),
+    deleteWithoutVerifiedCleanup: (id, signal, beforeDelete) => withCredentialsLock(id, () => deleteMachine(id, signal, undefined, true, beforeDelete)),
     scheduleLeaseRelease: (id, at, signal) => withCredentialsLock(id, async () => {
       const server = await raw(id,signal);
       await view(server,signal);

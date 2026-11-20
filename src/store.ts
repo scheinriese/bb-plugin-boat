@@ -1,4 +1,4 @@
-import { MacLeaseLedger, MAC_LEASE_MIGRATIONS } from "./mac-leases.ts";
+import { MacLeaseLedger, MAC_LEASE_MIGRATIONS, MAC_CREDENTIAL_NOTICES_MIGRATION } from "./mac-leases.ts";
 // Plugin-owned task registry (SQLite, <dataDir>/plugins/boat/data.db).
 //
 // A task is one piece of delegated work: a coding agent conversation inside a
@@ -564,7 +564,7 @@ export class TaskStore {
   static migrations(): string[] {
     return [...MIGRATIONS, ...MAC_LEASE_MIGRATIONS, `ALTER TABLE tasks ADD COLUMN sandbox_system TEXT NOT NULL DEFAULT 'linux'`,
       `ALTER TABLE mac_leases ADD COLUMN billing_increment_seconds INTEGER NOT NULL DEFAULT 1`,
-      `ALTER TABLE tasks ADD COLUMN start_options TEXT`];
+      `ALTER TABLE tasks ADD COLUMN start_options TEXT`, MAC_CREDENTIAL_NOTICES_MIGRATION];
   }
 
   insert(task: Task): Task {

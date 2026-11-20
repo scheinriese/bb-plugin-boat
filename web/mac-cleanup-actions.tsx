@@ -31,3 +31,23 @@ export function EmergencyMacDeleteButton({ machineId }: { machineId: string }) {
       description={<><EmergencyDeleteWarning acknowledged={acknowledged} onChange={setAcknowledged}/>{failure && <span role="alert" className="mt-2 block text-destructive">{failure}</span>}</>} />
   </>;
 }
+
+
+export function TokenRevocationDismissWarning() {
+  return <span>This only dismisses the reminder. Revoke or rotate the GitHub token in GitHub settings first; deletion did not revoke it and a copy may still be on the returned Mac.</span>;
+}
+
+export function DismissTokenRevocationButton({ noticeId }: { noticeId: string }) {
+  const [open, setOpen] = useState(false), [failure, setFailure] = useState<string | null>(null);
+  const mutation = experimental_useRpcMutation({ contract: rpcContract, method: "dismissCredentialNotice" });
+  async function dismiss() {
+    setFailure(null);
+    try { await mutation.mutate({ id: noticeId, confirmedTokenAction: true }); setOpen(false); }
+    catch (error) { setFailure(error instanceof Error ? error.message : "Could not dismiss this reminder."); }
+  }
+  return <>
+    <Button type="button" size="sm" variant="outline" className="mt-2" onClick={()=>{setFailure(null);setOpen(true);}}>Dismiss token reminder</Button>
+    <ConfirmDialog open={open} onOpenChange={setOpen} title="Have you revoked or rotated the GitHub token?" confirmLabel="I have taken action — dismiss reminder" pending={mutation.isPending} onConfirm={()=>void dismiss()}
+      description={<><TokenRevocationDismissWarning/>{failure && <span role="alert" className="mt-2 block text-destructive">{failure}</span>}</>}/>
+  </>;
+}

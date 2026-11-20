@@ -10,6 +10,7 @@ import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import {
   PROVIDERS_TAG,
   type ProjectRunsOnDto,
+  type MacUsageDto,
   type ProviderSystemDto,
   type RunsOnDto,
   type RunsOnOptionDto,
@@ -330,7 +331,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       projects: runtime.projects.list().map(project => projectRow(project, service.sandboxProviders)),
       providers: result.providers.map(row => ({
         ...row,
-        ...(service.sandboxProviders.all.find(provider => provider.id === row.id)?.releaseNotice?.() ? { releaseNotice: service.sandboxProviders.all.find(provider => provider.id === row.id)!.releaseNotice!()!, status: "Credential cleanup blocked" } : {}),
+        ...(service.sandboxProviders.all.find(provider => provider.id === row.id)?.releaseNotice?.() ? { releaseNotice: service.sandboxProviders.all.find(provider => provider.id === row.id)!.releaseNotice!()!, status: "Credential action required" } : {}),
         ...(row.steps ? { waitingTasks: waiting.filter(task => task.sandboxProvider === row.id && /GitHub|API key|setup|credentials|Account Pooler/i.test(task.error ?? "")).length } : {}),
       })),
     };
@@ -348,11 +349,12 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const now = Date.now(), date = new Date(now);
       const monthStart = Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1), monthEnd = Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1);
       const label = (id: string) => providerLabel(id, service.sandboxProviders.all.find(provider=>provider.id===id));
+      const notices: NonNullable<MacUsageDto["notices"]> = [...summary.held.flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []), ...service.store.macLeases.credentialNotices().map(notice=>({...notice,label:label(notice.provider),tokenRevocation:true}))];
       return { ...summary,
         byProvider: summary.providers.map(id => ({id,label:label(id),month:service.store.macLeases.between(monthStart,monthEnd,now,undefined,id),rolling30:service.store.macLeases.between(now-30*86400000,now,now,undefined,id)})),
         today: service.store.macLeases.between(Date.parse(usageWindows(date,input?.timezoneOffsetMinutes ?? 0).day.since),now,now).costs,
         providers: summary.providers.map(id=>({id,label:label(id)})),
-        notices: summary.held.flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []) };
+        notices };
     },
 
     setProjectRunsOn: async ({ projectId, provider }: { projectId: string; provider: string }) => {

@@ -220,3 +220,10 @@ test("emergency delete warning requires acknowledgement and states token revocat
   assert.match(html,/type="checkbox"/);assert.doesNotMatch(html,/checked=""/);
   assert.match(html,/disabled=""/);
 });
+
+test("post-deletion owner reminder explains revocation and explicit dismissal rather than another delete",()=>{
+  const html=renderScene("credential-revocation");
+  assert.match(html,/GitHub token action required/);assert.match(html,/may still be on the returned Mac/);
+  assert.match(html,/Dismiss token reminder/);assert.match(html,/This only dismisses the reminder/);
+  assert.doesNotMatch(html,/Delete without verified cleanup/);
+});

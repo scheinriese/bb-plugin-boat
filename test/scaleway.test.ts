@@ -769,6 +769,7 @@ test("cleanup failure persists a billing notice, tells attached threads once, an
   const saved = f.store.macLeases.held()[0]!;
   assert.equal(told.length,1); assert.equal(told[0]!.thread,"test_owner_thread");
   assert.equal(told[0]!.text,saved.noticeText);assert.ok(changed>0);
+  assert.match(told[0]!.text,/Ask the owner/);assert.doesNotMatch(told[0]!.text,/Delete without verified cleanup|--without-verified-cleanup|--confirm-revoke/);
   for(const words of [/keeps billing/,/retry cleanup once SSH works/,/console.scaleway.com.*Apple silicon.*Delete/,/Revoke or rotate the GitHub token/])assert.match(saved.noticeText!,words);
   assert.ok(!f.calls.some(call=>call.method==="DELETE"));
   const runtime={service,projects:{list:()=>[]},setup:null} as unknown as import("../src/runtime.ts").Runtime;
@@ -794,22 +795,22 @@ test("emergency deletion requires both explicit acknowledgements and skips SSH o
   assert.equal(f.store.macLeases.held().length,0);assert.equal(f.servers().length,0);
   await assert.rejects(service.sandboxAction("bx_example","delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true}),{code:"unsupported"});
 });
-test("CLI and page emergency paths require acknowledgement and warn about token revocation", async t => {
+test("CLI refuses emergency deletion even with flags; the owner page retains its confirmed action", async t => {
   const {createTestHost}=await import("./fakes.ts");const {buildCli}=await import("../src/cli.ts");const {registerRpc}=await import("../src/rpc.ts");
   for(const channel of ["cli","page"] as const){
     const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);f.sshExit(255);
     const service=credentialService(f);const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:(await import("node:url")).fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs",import.meta.url))}});t.after(()=>harness.lifecycle.dispose());
-    const runtime={bb,service,projects:{list:()=>[]},projectForThread:async()=>null,changed:()=>{},setup:null} as unknown as import("../src/runtime.ts").Runtime;
+    const runtime={bb,service,projects:{list:()=>[]},projectForThread:async()=>null,chatApproval:async()=>({ok:false,reason:"Owner did not approve"}),changed:()=>{},setup:null} as unknown as import("../src/runtime.ts").Runtime;
     if(channel==="cli"){
       bb.cli.register(buildCli(runtime));
-      const refused=await harness.runCli(["sandbox","delete",sandbox.id,"--without-verified-cleanup"]);assert.notEqual(refused.exitCode,0);assert.match(refused.stderr+refused.stdout,/revoke or rotate/i);
-      const result=await harness.runCli(["sandbox","delete",sandbox.id,"--without-verified-cleanup","--confirm-revoke-github-token","--json"]);assert.equal(result.exitCode,0,result.stderr);assert.match(JSON.parse(result.stdout).warning,/must revoke or rotate/i);
+      const refused=await harness.runCli(["sandbox","delete",sandbox.id,"--without-verified-cleanup"]);assert.notEqual(refused.exitCode,0);assert.match(refused.stderr+refused.stdout,/unknown|owner|page/i);
+      const result=await harness.runCli(["sandbox","delete",sandbox.id,"--without-verified-cleanup","--confirm-revoke-github-token","--json"]);assert.notEqual(result.exitCode,0,result.stdout);assert.equal(f.servers().length,1);assert.ok(!f.calls.some(call=>call.method==="DELETE"));
     }else{
       registerRpc(runtime);
       await assert.rejects(harness.callRpc("sandboxAction",{id:sandbox.id,action:"delete",withoutVerifiedCleanup:true}));
       await harness.callRpc("sandboxAction",{id:sandbox.id,action:"delete",withoutVerifiedCleanup:true,confirmRevokeGithubToken:true});
     }
-    assert.equal(f.servers().length,0);
+    assert.equal(f.servers().length,channel === "page" ? 0 : 1);
   }
 });
 test("a setup failure with no delivered credentials skips a transient cleanup GET and schedules deletion",async t=>{
@@ -888,4 +889,50 @@ test("emergency deletion retains the minimum and ownership guards and removes a 
   const foreign=await fixture(t);foreign.servers().push({zone:"fr-par-3",id:serverId,name:"example-foreign",type:"M1-M",project_id:projectId,status:"ready",delivered:true,ip:"192.0.2.1",ssh_username:"m1",created_at:new Date(Date.now()-26*3600_000).toISOString(),deletable_at:new Date(Date.now()-3600_000).toISOString()});
   await assert.rejects(credentialService(foreign).sandboxAction(`scw_fr-par-3_${serverId}`,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true}),{code:"unmanaged_server"});
   assert.ok(!foreign.calls.some(call=>call.method==="DELETE"));
+});
+
+test("emergency deletion keeps the owner reminder on the page and provider status until explicit dismissal",async t=>{
+  const {createTestHost}=await import("./fakes.ts");const {registerRpc}=await import("../src/rpc.ts");const {providerStates}=await import("../src/provider-status.ts");
+  const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);f.sshExit(255);
+  const service=credentialService(f);await service.processMacLeases();
+  const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:(await import("node:url")).fileURLToPath(new URL("../src/providers/boat/fixtures/fake-boat.mjs",import.meta.url))}});t.after(()=>harness.lifecycle.dispose());
+  const runtime={bb,service,projects:{list:()=>[]},changed:()=>{},setup:null} as unknown as import("../src/runtime.ts").Runtime;
+  const view=providerHandlers(runtime);assert.equal(view.macUsage().notices!.length,1);
+  registerRpc(runtime);
+  await harness.callRpc("sandboxAction",{id:sandbox.id,action:"delete",withoutVerifiedCleanup:true,confirmRevokeGithubToken:true});
+  assert.equal(f.servers().length,0);assert.equal(f.store.macLeases.held().length,0);
+  const notice=view.macUsage().notices![0]!;assert.equal(notice.tokenRevocation,true);
+  assert.match(notice.text,/Revoke or rotate the GitHub token in GitHub settings; it may still be on the returned Mac/);
+  assert.equal(f.provider.releaseNotice!(),notice.text);
+  for(let n=0;n<3;n++)await service.processMacLeases();
+  assert.equal(view.macUsage().notices![0]!.id,notice.id);
+  const states=await providerStates({registry:service.sandboxProviders,projects:()=>[],machines:()=>new Set(),boatSetup:null,instabox:null});assert.equal(states.find(row=>row.id==="scaleway")!.problem,notice.text);
+  await assert.rejects(harness.callRpc("dismissCredentialNotice",{id:notice.id,confirmedTokenAction:false}));
+  assert.equal(view.macUsage().notices!.length,1);
+  await harness.callRpc("dismissCredentialNotice",{id:notice.id,confirmedTokenAction:true});
+  assert.deepEqual(view.macUsage().notices,[]);assert.equal(f.provider.releaseNotice!(),null);
+});
+test("the revocation reminder is recorded before the external delete, and failure to persist prevents deletion",async t=>{
+  const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);
+  f.sshExit(255);const service=credentialService(f);await service.processMacLeases();
+  const view=providerHandlers({service,projects:{list:()=>[]},setup:null} as unknown as import("../src/runtime.ts").Runtime);
+  const original=f.provider.deleteWithoutVerifiedCleanup!;
+  f.provider.deleteWithoutVerifiedCleanup=async(id,signal,beforeDelete)=>original(id,signal,()=>{beforeDelete!();assert.equal(f.store.macLeases.credentialNotices().length,1);const notices=view.macUsage().notices;assert.equal(notices.length,2);assert.equal(new Set(notices.map(notice=>notice.id)).size,2);assert.ok(!f.calls.some(call=>call.method==="DELETE"));});
+  await service.sandboxAction(sandbox.id,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true});
+  const failed=await fixture(t,26,rentedCredentials());const other=await failed.create();
+  failed.store.macLeases.recordCredentialNotice=()=>{throw new Error("test database unavailable");};
+  await assert.rejects(credentialService(failed).sandboxAction(other.id,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true}));
+  assert.ok(!failed.calls.some(call=>call.method==="DELETE"));
+});
+test("post-delete unmanaged_server from stale Scaleway visibility is already removed; other removal failures still surface",async t=>{
+  for(const code of ["unmanaged_server","test_other_failure"]){
+    const f=await fixture(t,26,rentedCredentials());const sandbox=await f.create();await f.provider.beforeRepo!(sandbox.id);const stale={...f.servers()[0]};
+    const chat=new FakeChat();const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as never),f.provider]),f.store,{chat,settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}}});
+    const task=await service.startTask({title:"Owner task",brief:"Check tools",role:"custom",runner:"boat"});f.store.update(task.id,{sandboxId:sandbox.id,sandboxProvider:"scaleway",hostId:"test_host",status:"idle"});
+    chat.removeMachine=async()=>{if(code==="unmanaged_server"){f.servers().push(stale);await f.provider.delete(sandbox.id);}else throw Object.assign(new Error("test cleanup failure"),{code});};
+    const action=service.sandboxAction(sandbox.id,"delete",0,undefined,{withoutVerifiedCleanup:true,confirmRevokeGithubToken:true});
+    if(code==="unmanaged_server")await action;else await assert.rejects(action,{code});
+    assert.equal(f.store.macLeases.held().length,0);assert.equal(f.store.macLeases.credentialNotices().length,1);
+    assert.equal(f.calls.filter(call=>call.method==="DELETE"&&call.path.includes("/servers/")).length,1);
+  }
 });

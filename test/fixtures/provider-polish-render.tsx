@@ -1,5 +1,6 @@
-import { CREDENTIAL_RISKS_URL, CLEANUP_NOTICE_PREFIX } from "../../credential-warnings";
-import { EmergencyDeleteWarning } from "../../web/mac-cleanup-actions";
+import { MacLeaseNotice } from "../../web/mac-lease-notices";
+import { CREDENTIAL_RISKS_URL, CLEANUP_NOTICE_PREFIX, TOKEN_REVOCATION_NOTICE_PREFIX } from "../../credential-warnings";
+import { EmergencyDeleteWarning, TokenRevocationDismissWarning } from "../../web/mac-cleanup-actions";
 import { StoppedSandboxActions } from "../../web/sandbox-row-actions";
 // Obviously fake provider/billing fixtures; never used by the installed plugin.
 import { renderToStaticMarkup } from "react-dom/server";
@@ -155,6 +156,11 @@ export const scaleway: SandboxProviderDto = {
   ],
 };
 export function scene(name: string) {
+  if(name === "credential-revocation") {
+    const text = `${TOKEN_REVOCATION_NOTICE_PREFIX} Revoke or rotate the GitHub token in GitHub settings; it may still be on the returned Mac (example-mac). This reminder remains until you dismiss it after taking action.`;
+    return <div className="space-y-4"><ProviderRow provider={{...scaleway,waitingTasks:0,releaseNotice:text,status:"Credential action required"}}/><MacLeaseNotice notice={{id:"token-revocation:example-lease",provider:"scaleway",label:"Scaleway",machineId:"example-mac",at:"2030-01-01T00:00:00Z",text,tokenRevocation:true}} action={<button type="button">Dismiss token reminder</button>}/><div className="rounded border border-border p-4"><h3>Have you revoked or rotated the GitHub token?</h3><TokenRevocationDismissWarning/><button type="button">I have taken action — dismiss reminder</button></div></div>;
+  }
+
   if(name === "credential-settings-ready") return <ProviderRow provider={{...scaleway,waitingTasks:0}}/>;
   if(name === "credential-emergency") return <div className="space-y-4"><ProviderRow provider={{...scaleway,releaseNotice:`${CLEANUP_NOTICE_PREFIX} Scaleway Mac example-mac keeps billing. The plugin will retry cleanup once SSH works. Open the Scaleway console → Apple silicon → select the Mac → Delete after its minimum. Revoke or rotate the GitHub token because it may still be on the Mac.`}}/><div className="rounded border border-border p-4"><h3>Delete without verified cleanup</h3><EmergencyDeleteWarning acknowledged={false} onChange={()=>{}}/><button type="button" disabled>Delete without cleanup</button></div></div>;
 

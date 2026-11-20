@@ -942,6 +942,12 @@ export function registerRpc(runtime: Runtime): void {
         return { ok: true as const };
       }),
 
+    dismissCredentialNotice: ({ id }) => refuse(async () => {
+      if (!service.store.macLeases.dismissCredentialNotice(id)) throw new experimental_PluginRpcRefusal({ code: "not_found", message: "No active token-revocation reminder has that ID." });
+      runtime.changed();
+      return { ok: true as const };
+    }),
+
     startOrchestrator: (input) =>
       refuse(async () => {
         const { threadId, movedTaskIds } = await runtime.startOrchestrator({

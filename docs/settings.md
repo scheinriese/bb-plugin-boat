@@ -380,7 +380,11 @@ For manual recovery, open [the Scaleway console](https://console.scaleway.com), 
 
 Alternatively, choose **Delete without verified cleanup** on the page’s cleanup-failure notice. Read the data-loss/token warning, tick **I understand that I must revoke or rotate the GitHub token after deletion**, then confirm. This deliberately skips SSH cleanup and deletes the hardware. It still enforces local ownership and the 24-hour minimum, and removes the enrolled bb machine when known. You must revoke or rotate the token afterward.
 
-CLI owners can use `bb boat sandbox delete <machine-id> --without-verified-cleanup --confirm-revoke-github-token`. Both flags are required. Existing `--force` and unshipped-work checks still apply to live tasks. The command prints the token-revocation warning after success, including in JSON output. Ordinary Delete and automatic hand-back always require cleanup when credential state is uncertain.
+Emergency deletion is **page-only**. The CLI has no emergency override; old override flags are rejected. Thread notices tell agents to ask the owner to review the page rather than suggest a command they can run themselves. Ordinary CLI Delete and automatic hand-back still require cleanup when credential state is uncertain.
+
+Before an emergency DELETE is sent, the plugin saves a separate token-revocation reminder in its database. It remains on the Cloud agents page and provider status after the lease ends, across restarts, and even if deletion's result is uncertain. **Revoke or rotate the GitHub token in GitHub settings; it may still be on the returned Mac.** Only then use **Dismiss token reminder** and confirm that you have taken action. Dismissing the reminder does not revoke the token. A reminder cannot be cleared by ordinary lease maintenance or compute deletion.
+
+If bb machine removal briefly sees a stale Scaleway server after hardware deletion and reports `unmanaged_server`, the plugin treats hardware as removed while core cleanup can retry. Real provider consistency timing and eventual host-bearer revocation still need a live-account check.
 
 ### Rented machine credential risks
 

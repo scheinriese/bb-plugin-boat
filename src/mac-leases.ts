@@ -11,6 +11,9 @@ export const MAC_LEASE_MIGRATIONS = [
   `CREATE TABLE mac_lease_tasks (lease_id TEXT NOT NULL REFERENCES mac_leases(id), task_id TEXT NOT NULL, attached_at TEXT NOT NULL, cpus INTEGER NOT NULL, memory_mib INTEGER NOT NULL, work_outcome TEXT, work_turns INTEGER, PRIMARY KEY(lease_id, task_id))`,
   `CREATE INDEX mac_lease_tasks_task ON mac_lease_tasks(task_id)`,
 ];
+// Appended separately in TaskStore.migrations so prior migration indexes stay stable.
+export const MAC_CREDENTIAL_NOTICES_MIGRATION = `CREATE TABLE mac_credential_notices (lease_id TEXT PRIMARY KEY REFERENCES mac_leases(id), created_at TEXT NOT NULL, text TEXT NOT NULL, dismissed_at TEXT)`;
+export interface MacCredentialNotice { id: string; provider: string; machineId: string; at: string; text: string }
 export type MacWorkOutcome = "clean" | "shipped" | "discarded" | "unshipped" | "unknown";
 export interface MacLease {
   id: string; provider: string; machineId: string; size: string; startedAt: string; paidUntil: string;
@@ -68,6 +71,18 @@ export class MacLeaseLedger {
   warn(id: string, now = Date.now(), repeat = false, pageText: string | null = null, immediate = false): boolean {
     if (pageText !== null) this.db().prepare(`UPDATE mac_leases SET notice_text=? WHERE id=? AND ended_at IS NULL`).run(pageText,id);
     return this.db().prepare(`UPDATE mac_leases SET notice_at=?,notice_text=COALESCE(?,notice_text) WHERE id=? AND ended_at IS NULL AND (?=1 OR notice_at IS NULL OR (?=1 AND notice_at<=?))`).run(iso(now),pageText,id,immediate ? 1 : 0,repeat ? 1 : 0,iso(now-LEASE_DAY_MS)).changes > 0;
+  }
+  /** Independent of lease state: ending/reconciling compute must not dismiss a token reminder. */
+  recordCredentialNotice(id: string, text: string, now = Date.now()): void {
+    this.db().prepare(`INSERT INTO mac_credential_notices (lease_id,created_at,text) VALUES (?,?,?) ON CONFLICT(lease_id) DO UPDATE SET text=excluded.text,dismissed_at=NULL`).run(id,iso(now),text);
+  }
+  credentialNotices(): MacCredentialNotice[] {
+    return this.db().prepare(`SELECT 'token-revocation:' || n.lease_id AS id,l.provider,l.machine_id AS machineId,n.created_at AS at,n.text FROM mac_credential_notices n JOIN mac_leases l ON l.id=n.lease_id WHERE n.dismissed_at IS NULL ORDER BY n.created_at,n.lease_id`).all() as MacCredentialNotice[];
+  }
+  dismissCredentialNotice(id: string, now = Date.now()): boolean {
+    if (!id.startsWith("token-revocation:")) return false;
+    const leaseId = id.slice("token-revocation:".length);
+    return this.db().prepare(`UPDATE mac_credential_notices SET dismissed_at=? WHERE lease_id=? AND dismissed_at IS NULL`).run(iso(now),leaseId).changes > 0;
   }
   private billableEnd(lease: MacLease, now: number): number {
     const minimumEnd = Date.parse(lease.paidUntil);

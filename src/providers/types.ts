@@ -644,7 +644,7 @@ export interface LaterMembers {
   /** Current persistent owner warning about credential cleanup during release. */
   releaseNotice?(): string | null;
   /** Only for a separate owner-confirmed emergency action; ordinary deletion must verify cleanup. */
-  deleteWithoutVerifiedCleanup?(sandboxId: string, signal?: AbortSignal): Promise<void>;
+  deleteWithoutVerifiedCleanup?(sandboxId: string, signal?: AbortSignal, beforeDelete?: () => void): Promise<void>;
   /** Allocate and record a lease quickly; readiness/bootstrap is a separate step outside the placement lock. */
   allocate?(options: CreateSandboxOptions): Promise<SandboxInfo>;
   waitReady?(sandboxId: string, signal?: AbortSignal): Promise<SandboxInfo>;
