@@ -659,7 +659,7 @@ export interface LaterMembers {
   allocate?(options: CreateSandboxOptions): Promise<SandboxInfo>;
   waitReady?(sandboxId: string, signal?: AbortSignal): Promise<SandboxInfo>;
   /** Verify credentials before allocation, or on an existing machine before reuse. */
-  assertTaskReady?(input: { agent: Provider; repos: readonly string[]; sandboxId?: string; signal?: AbortSignal; onWarning?: (message: string) => void }): Promise<void>;
+  assertTaskReady?(input: { runner?: "boat" | "chat"; system?: "linux" | "macos"; agent: Provider; repos: readonly string[]; sandboxId?: string; signal?: AbortSignal; onWarning?: (message: string) => void }): Promise<void>;
   /** Re-deliver this provider's configured GitHub source before expiry. */
   refreshGithubLogin?(sandboxId: string, signal?: AbortSignal): Promise<string | null>;
   /** Reconcile ambiguous creates against complete provider lists, clearing only absent recovery records. */

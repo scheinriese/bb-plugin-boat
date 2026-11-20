@@ -214,8 +214,8 @@ test("cancelling the source request during recovered chat spawn stops and archiv
   assert.deepEqual(env.calls.filter(call=>["create","delete","resume","extend","cancel-release"].includes(call)),["create"]);
 });
 
-async function legacyDeletedFixture(t:TestContext) {
-  const env=await fixture(),lease=env.record();
+async function legacyDeletedFixture(t:TestContext,repo:string|null=null) {
+  const env=await fixture(repo),lease=env.record();
   const db=(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db();
   // Neutral synthetic chronology: approval precedes allocation, then failed
   // admission and a legacy local deletion follow the same physical start.
@@ -494,4 +494,136 @@ test("legacy adoption refuses when a later real process read becomes cached",asy
   assert.equal(reads,2);assert.equal(env.chat.spawns.length,0);assert.equal(env.store.get(env.failed.id)!.status,"failed");
   assert.equal(env.store.macLeases.adoptions().length,0);assert.equal(env.store.macLeases.held().length,0);
   assert.deepEqual(env.store.macLeases.rawList(),rawBefore);assert.equal(env.store.macLeases.summary().month.costs.USD,10.8);box.assertReadsOnly();
+});
+
+async function preservedSetupFixture(t:TestContext) {
+  const env=await legacyDeletedFixture(t,"acme/web"),box=await processAdapter(env,t),harness=await publicHarness(env,t);
+  env.boat.prepareError=Object.assign(Error("Instabox: a sandbox of template macos (macOS or Windows) takes no Secrets: its guest setup is Linux-only"),{code:"bad_request"});
+  await assert.rejects(harness.callRpc("recoverAllocatedMac",{taskId:env.failed.id,machineId:env.machine().id,userApproved:true,adoptLegacyLease:env.adoption}),/guest setup is Linux-only/);
+  const failed=env.store.get(env.failed.id)!;
+  assert.equal(failed.status,"failed");assert.equal(failed.turns,0);assert.ok(failed.finishedAt);
+  for(const key of ["threadId","hostId","environmentId","repoPath","promptId","conversationId"] as const)assert.equal(failed[key],null);
+  assert.equal(failed.sandboxId,env.machine().id);assert.equal(env.chat.spawns.length,0);assert.equal(env.chat.machines.length,0);
+  assert.deepEqual(env.store.events(failed.id,1000).filter(event=>["mac-recovered","failed","mac-start-preserved"].includes(event.kind)).slice(-3).map(event=>event.kind),["mac-recovered","failed","mac-start-preserved"]);
+  assert.equal(env.store.macLeases.adoptions().length,1);assert.equal(env.store.macLeases.tasks(env.lease.id).length,1);
+  const before={raw:env.store.macLeases.rawList(),adoptions:env.store.macLeases.adoptions(),reservations:env.store.macLeases.tasks(env.lease.id)};
+  // A new service instance has no in-memory recovery/dispatch state. Only the
+  // original durable task, approval, adoption and attached reservation survive.
+  const hooks=(env.service as unknown as {hooks:import("../src/service.ts").ServiceHooks}).hooks;
+  env.service=new BoatService(createProviderRegistry([createBoatProvider(env.boat as unknown as BoatApi),env.provider]),env.store,hooks);
+  env.boat.prepareError=null;
+  return {...env,box,before};
+}
+
+test("public recovery continues the same preserved zero-turn setup after adoption across a fresh service",async t=>{
+  const env=await preservedSetupFixture(t),harness=await publicHarness(env,t);
+  assert.deepEqual(await harness.callRpc("recoverAllocatedMac",{taskId:env.failed.id,machineId:env.machine().id,userApproved:true}),{taskId:env.failed.id,machineId:env.machine().id});
+  const task=env.store.get(env.failed.id)!;
+  assert.equal(task.id,env.failed.id);assert.equal(task.turns,1);assert.equal(task.repo,"acme/web");assert.ok(task.repoPath);
+  assert.equal(task.sandboxId,env.machine().id);assert.equal(env.store.list({limit:10}).length,2);
+  assert.equal(env.chat.spawns.length,1);assert.equal(env.chat.machines.length,1);
+  assert.deepEqual(env.store.macLeases.rawList(),env.before.raw);assert.deepEqual(env.store.macLeases.adoptions(),env.before.adoptions);
+  assert.deepEqual(env.store.macLeases.tasks(env.lease.id),env.before.reservations,"reservation attachment is idempotent, including its timestamp and resource amounts");
+  assert.equal(env.store.macLeases.summary().month.costs.USD,10.8);assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);
+  env.box.assertReadsOnly();
+});
+
+test("another preserved zero-turn setup failure retains the original adoption and reservation",async t=>{
+  const env=await preservedSetupFixture(t);
+  env.boat.prepareError=Error("fake temporary repository setup failure");
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true),/temporary repository setup failure/);
+  assert.equal(env.store.get(env.failed.id)!.turns,0);assert.equal(env.chat.spawns.length,0);
+  assert.deepEqual(env.store.macLeases.rawList(),env.before.raw);assert.deepEqual(env.store.macLeases.adoptions(),env.before.adoptions);assert.deepEqual(env.store.macLeases.tasks(env.lease.id),env.before.reservations);
+  env.boat.prepareError=null;
+  assert.equal((await env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true)).turns,1);
+  assert.equal(env.store.macLeases.list().length,1);assert.equal(env.store.macLeases.list()[0]!.minimumCost,10.8);env.box.assertReadsOnly();
+});
+
+for (const scenario of ["missing approval","repeat adoption","missing reservation","worked reservation","conflicting reservation","changed reservation resources","assigned checkout","assigned host","assigned prompt","assigned environment","worker turns","cancelled task intent","changed task intent","changed effort","changed tier","changed delivery","kept lease","cancelled release schedule","ended overlay","new physical lease","cached process read"] as const) test(`preserved setup continuation refuses ${scenario} without re-adoption or provider mutation`,async t=>{
+  const env=await preservedSetupFixture(t),db=(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db();
+  if(scenario==="missing reservation")db.prepare("DELETE FROM mac_lease_tasks WHERE lease_id=?").run(env.lease.id);
+  if(scenario==="worked reservation")env.store.macLeases.resolveTask(env.lease.id,env.failed.id,"unknown",1);
+  if(scenario==="conflicting reservation")env.store.macLeases.attach(env.lease.id,"t_other_fake",1,512);
+  if(scenario==="changed reservation resources")db.prepare("UPDATE mac_lease_tasks SET cpus=1 WHERE lease_id=?").run(env.lease.id);
+  if(scenario==="assigned checkout")env.store.update(env.failed.id,{repoPath:"/work/fake-repo"});
+  if(scenario==="assigned host")env.store.update(env.failed.id,{hostId:"host_fake"});
+  if(scenario==="assigned prompt")env.store.update(env.failed.id,{promptId:"prompt_fake"});
+  if(scenario==="assigned environment")env.store.update(env.failed.id,{environmentId:"env_fake"});
+  if(scenario==="worker turns")env.store.update(env.failed.id,{turns:1});
+  if(scenario==="cancelled task intent")env.store.addEvent(env.failed.id,"cancelled","Fake owner cancellation");
+  if(scenario==="changed task intent")env.store.update(env.failed.id,{brief:"Different fake work"});
+  if(scenario==="changed effort")env.store.update(env.failed.id,{reasoningEffort:"low"});
+  if(scenario==="changed tier")env.store.update(env.failed.id,{tier:"light"});
+  if(scenario==="changed delivery")env.store.update(env.failed.id,{delivery:"push"});
+  if(scenario==="kept lease")env.store.macLeases.keep(env.lease.id);
+  if(scenario==="cancelled release schedule") {
+    env.store.macLeases.schedule(env.lease.id,null);
+    const state=env.box.state();state.machines[env.machine().id].deleteAt=null;env.box.patch({machines:state.machines});
+  }
+  if(scenario==="ended overlay")env.store.macLeases.end(env.lease.id,"deleted");
+  if(scenario==="new physical lease") {
+    const state=env.box.state();state.machines[env.machine().id].lease.id="different-fake-lease";env.box.patch({machines:state.machines});
+  }
+  if(scenario==="cached process read")env.box.patch({processSample:{...env.box.sample(),live:false,trigger:"suspend"}});
+  const before={raw:env.store.macLeases.rawList(),adoptions:env.store.macLeases.adoptions(),reservations:env.store.macLeases.tasks(env.lease.id)};
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,scenario!=="missing approval",scenario==="repeat adoption"?env.adoption:undefined));
+  assert.equal(env.chat.spawns.length,0);assert.equal(env.chat.machines.length,0);
+  assert.deepEqual(env.store.macLeases.rawList(),before.raw);assert.deepEqual(env.store.macLeases.adoptions(),before.adoptions);assert.deepEqual(env.store.macLeases.tasks(env.lease.id),before.reservations);
+  assert.equal(env.store.macLeases.summary().month.costs.USD,10.8);env.box.assertReadsOnly();
+});
+
+test("owner stop intent during a continuation read prevents dispatch and retains the adoption",async t=>{
+  const env=await preservedSetupFixture(t),info=env.provider.info;
+  let enter!:()=>void,finish!:()=>void;
+  const entered=new Promise<void>(resolve=>{enter=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});
+  env.provider.info=async(...args)=>{const machine=await info(...args);enter();await gate;return machine;};
+  const recovery=env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true);
+  await entered;env.store.macLeases.recordReleaseIntent(env.machine().id,"stop");finish();
+  await assert.rejects(recovery,{code:"mac_recovery_refused"});assert.equal(env.chat.spawns.length,0);
+  assert.deepEqual(env.store.macLeases.adoptions(),env.before.adoptions);assert.deepEqual(env.store.macLeases.tasks(env.lease.id),env.before.reservations);env.box.assertReadsOnly();
+});
+
+for(const change of ["release schedule","remaining time","physical lease","project routing","provider availability","agent routing","agent availability","conflicting app work","owner cancellation"] as const)test(`recovery rechecks ${change} after Mac enrollment before spawning a worker`,async t=>{
+  const env=await preservedSetupFixture(t),attach=env.chat.attachMachine.bind(env.chat);
+  env.chat.attachMachine=async args=>{
+    const result=await attach(args);
+    if(change==="release schedule" || change==="physical lease") {
+      const state=env.box.state(),machine=state.machines[env.machine().id];
+      if(change==="release schedule")machine.deleteAt=new Date(Date.now()+60_000).toISOString();
+      else machine.lease.id="different-fake-lease";
+      env.box.patch({machines:state.machines});
+    }
+    if(change==="remaining time")t.mock.timers.tick(24*3_600_000);
+    if(change==="project routing") {
+      const hooks=(env.service as unknown as {hooks:import("../src/service.ts").ServiceHooks}).hooks;
+      hooks.projects=()=>[{id:"p_fake_routing",name:"Fake project",machineType:null,repos:[{repo:"acme/web"}],sandboxSystem:"linux"}];
+    }
+    if(change==="provider availability") {
+      const registry=(env.service as unknown as {sandboxProviders:ReturnType<typeof createProviderRegistry>}).sandboxProviders,get=registry.get;
+      registry.get=id=>id==="instabox"?null:get(id);
+    }
+    if(change==="agent routing")env.provider.assertTaskReady=async()=>{throw Error("Fake native agent route unavailable");};
+    if(change==="agent availability") {
+      const hooks=(env.service as unknown as {hooks:import("../src/service.ts").ServiceHooks}).hooks;
+      hooks.settings=async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat",notConnectedAgents:[env.failed.provider]});
+    }
+    if(change==="conflicting app work")env.chat.busyMachines.add(result.hostId);
+    if(change==="owner cancellation")env.store.addEvent(env.failed.id,"cancelled","Fake owner cancellation during enrollment");
+    return result;
+  };
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true));
+  assert.equal(env.store.get(env.failed.id)!.turns,0);assert.equal(env.chat.spawns.length,0);assert.equal(env.chat.machines.length,1);assert.deepEqual(env.chat.removed,[]);
+  assert.deepEqual(env.store.macLeases.rawList(),env.before.raw);assert.deepEqual(env.store.macLeases.adoptions(),env.before.adoptions);assert.deepEqual(env.store.macLeases.tasks(env.lease.id),env.before.reservations);
+  assert.equal(env.store.macLeases.list().length,1);assert.equal(env.store.macLeases.list()[0]!.minimumCost,10.8);env.box.assertReadsOnly();
+});
+
+test("a reservation changed while fresh processes are sampled cannot dispatch recovered work",async t=>{
+  const env=await preservedSetupFixture(t),processes=env.provider.processes;let samples=0;
+  env.provider.processes=async(...args)=>{
+    const sample=await processes(...args);
+    if(++samples===4)env.store.macLeases.resolveTask(env.lease.id,env.failed.id,"unknown",0);
+    return sample;
+  };
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true),/reservation|uncertain/);
+  assert.equal(env.chat.spawns.length,0);assert.equal(env.store.get(env.failed.id)!.turns,0);env.box.assertReadsOnly();
 });

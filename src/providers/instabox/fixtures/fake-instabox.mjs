@@ -117,6 +117,7 @@ switch (command) {
       print({ items: state.secrets.map(({name, delivery, hosts}) => ({name, delivery, hosts})) });
     } else {
       const entry = machine(positionals(2)[0]);
+      if (entry.template?.id === "macos") fail(1, { code: "bad_request", message: "a sandbox of template macos (macOS or Windows) takes no Secrets: its guest setup is Linux-only", status: 400 });
       if (sub === "select") entry.secretSelection = flag("--secrets");
       else if (sub === "push") { running(entry); deliver(entry); }
       else fail(2, { code: "usage", message: "unknown secrets command" });
@@ -146,6 +147,7 @@ switch (command) {
     const snapshot = state.snapshots.find(s => s.name === flag("--snapshot") || s.id === flag("--snapshot"));
     const template = (state.templates ?? []).find(t => t.id === (flag("--template") ?? snapshot?.template?.id));
     const model = template?.models?.find(m => flag("--model") ? m.name === flag("--model") : m.defaultSpec.vcpus === snapshot?.defaultSpec?.vcpus && m.defaultSpec.memMiB === snapshot?.defaultSpec?.memMiB);
+    if (template?.os === "macos" && flag("--secrets") && flag("--secrets") !== "none") fail(1, { code: "bad_request", message: "a sandbox of template macos takes no Secrets: its guest setup is Linux-only", status: 400 });
     if (template?.os === "macos" && !has("--accept-24h-minimum")) fail(1,{code:"minimum_lease_required",message:"24 h consent required",status:400});
     const vcpus = Number(flag("--vcpus") ?? model?.defaultSpec?.vcpus ?? 4);
     const memMiB = Number(flag("--mem-mib") ?? model?.defaultSpec?.memMiB ?? 8192);
@@ -241,7 +243,7 @@ switch (command) {
     } else if (script.includes("BOAT_SETUP")) {
       const repo = /REPO='([^']+)'/.exec(script)?.[1] ?? "acme/web";
       const branch = /BRANCH='([^']+)'/.exec(script)?.[1] ?? "main";
-      stdout = entry.envNames?.includes("GH_TOKEN") ? `BOAT_ACCESS ok push=true\nBOAT_GH_EXPIRES unknown\nBOAT_SETUP path=/data/home/work/${repo.split("/")[1]} branch=${branch} base=main\n` : "BOAT_ACCESS nologin\n";
+      stdout = entry.envNames?.includes("GH_TOKEN") || entry.githubFileAuth === true ? `BOAT_ACCESS ok push=true\nBOAT_GH_EXPIRES unknown\nBOAT_SETUP path=${entry.template?.id === "macos" ? "/var/tmp/fake-mac-home" : "/data/home"}/work/${repo.split("/")[1]} branch=${branch} base=main\n` : "BOAT_ACCESS nologin\n";
     } else if (script.includes("BOAT_IBX")) {
       stdout = "BOAT_IBX linger on\nBOAT_IBX ca none\nBOAT_IBX node v22.23.3\n";
     } else if (script.includes("BOAT_LOGIN")) {

@@ -91,6 +91,9 @@ export async function startFakeInstaboxApi({ statePath, key }) {
         const machine = state.machines?.[decodeURIComponent(exec[1])];
         if (!machine || machine.state === "deleted") return json(404, { error: { code: "not_found", message: "no such machine" } });
         if (machine.state !== "running") return json(409, { error: { code: "machine_not_running", message: `it is ${machine.state}` } });
+        const cmd = parsed?.cmd ?? "";
+        if (cmd.includes("gh auth login") && parsed.stdin) write(fresh => { fresh.machines[machine.id].githubFileAuth = true; });
+        if (cmd.includes("gh auth logout")) write(fresh => { delete fresh.machines[machine.id].githubFileAuth; });
         const timedOut = state.execTimesOut === true;
         response.writeHead(200, { "content-type": "text/event-stream" });
         response.write(": ping\n\n");

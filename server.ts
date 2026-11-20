@@ -27,7 +27,7 @@ import { createBoatProvider } from "./src/providers/boat/provider.ts";
 import { createSandboxKeeper } from "./src/providers/boat/keeper.ts";
 import { createProviderRegistry } from "./src/providers/registry.ts";
 import { InstaboxCli, resolveInstaboxBinary } from "./src/providers/instabox/cli.ts";
-import { InstaboxRest } from "./src/providers/instabox/api.ts";
+import { InstaboxRest, apiUrl as instaboxApiUrl } from "./src/providers/instabox/api.ts";
 import { INSTABOX_PROVIDER_ID, createInstaboxProvider } from "./src/providers/instabox/provider.ts";
 import { createInstaboxSetup, instaboxPreflight } from "./src/providers/instabox/setup.ts";
 import { registerInstaboxMachine } from "./src/providers/instabox/machine.ts";
@@ -124,7 +124,14 @@ export default async function plugin(bb: BbPluginApi) {
   const providerSecrets = await defineProviderSecrets(bb);
   const instaboxCli = new InstaboxCli(async () => resolveInstaboxBinary((await settings.get()).instaboxPath), () => providerSecrets.instaboxKey());
   const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
-  const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases, enabled: () => instaboxOn, keyPresent: () => providerSecrets.instaboxKeyPresent(), secrets: async () => (await settings.get()).instaboxSecrets });
+  const instaboxGithubScope = createRentedMachineScope({ provider: "instabox", kv: bb.storage.kv, read: async () => ({ enabled: Boolean(await providerSecrets.rentedMachineGithubToken()), key: await providerSecrets.instaboxKey(), project: instaboxApiUrl() }) });
+  const instaboxScopeNotice = () => bb.log.warn("Instabox GitHub delivery is blocked; check the API-key fingerprint and re-enable the GitHub-token setting if intended.");
+  providerSecrets.onGithubTokenPresenceChange(enabled => { void instaboxGithubScope.tokenPresenceChanged(enabled).catch(instaboxScopeNotice); });
+  providerSecrets.onInstaboxKeyChange(() => { void instaboxGithubScope.configurationChanged("key").catch(instaboxScopeNotice); });
+  // Check lazily: Linux Instabox tasks still use OrgSecrets, and other
+  // providers do not require an Instabox account to deliver credentials.
+  const instaboxCredentials = createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), assertDeliveryAllowed: instaboxGithubScope.assertAllowed, agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) });
+  const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { credentials: instaboxCredentials, assertCredentialTransport: instaboxGithubScope.assertIdentity, ledger: store.macLeases, enabled: () => instaboxOn, keyPresent: () => providerSecrets.instaboxKeyPresent(), secrets: async () => (await settings.get()).instaboxSecrets });
   const githubScope = createRentedMachineScope({ kv: bb.storage.kv, read: async () => ({ enabled: Boolean(await providerSecrets.rentedMachineGithubToken()), key: await providerSecrets.scalewayKey(), project: (await settings.get()).scalewayProjectId }) });
   const scopeNotice = () => bb.log.warn("Rented-machine GitHub delivery is blocked; check the Scaleway key/project fingerprint and re-enable the GitHub-token setting if intended.");
   providerSecrets.onGithubTokenPresenceChange(enabled => { void githubScope.tokenPresenceChanged(enabled).catch(scopeNotice); });

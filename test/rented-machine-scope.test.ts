@@ -1,12 +1,64 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { createRentedMachineScope, RENTED_GITHUB_SCOPE_KEY } from "../src/rented-machine-scope.ts";
+import { createRentedMachineScope, INSTABOX_GITHUB_SCOPE_KEY, RENTED_GITHUB_SCOPE_KEY } from "../src/rented-machine-scope.ts";
 import { createCredentialSource } from "../src/credentials.ts";
 import { defineProviderSecrets } from "../src/provider-settings.ts";
 import { providerFailureCard } from "../provider-failure.ts";
+import { InstaboxRest } from "../src/providers/instabox/api.ts";
 
 const key = "fake_original_scaleway_key", project = "example_original_project", token = "fake_owner_github_token";
+
+test("Instabox delivery pins its own API key without a Scaleway account and latches key changes", async t => {
+  const {bb,harness}=createFakePluginHost({pluginId:"boat"});t.after(()=>harness.lifecycle.dispose());
+  const secrets=await defineProviderSecrets(bb);
+  const guard=createRentedMachineScope({provider:"instabox",kv:bb.storage.kv,read:async()=>({enabled:Boolean(await secrets.rentedMachineGithubToken()),key:await secrets.instaboxKey(),project:"https://api.instabox.sh"})});
+  secrets.onInstaboxKeyChange(()=>void guard.configurationChanged("key").catch(()=>{}));
+  secrets.onGithubTokenPresenceChange(enabled=>void guard.tokenPresenceChanged(enabled).catch(()=>{}));
+  await harness.setSettings({instaboxApiKey:"fake_instabox_original_key",rentedMachineGithubToken:token});
+  await guard.assertAllowed();
+  assert.equal(await bb.storage.kv.get(RENTED_GITHUB_SCOPE_KEY),undefined);
+  await harness.setSettings({scalewaySecretKey:key});await guard.assertAllowed();
+  await harness.setSettings({instaboxApiKey:"fake_instabox_changed_key"});
+  await assert.rejects(guard.assertAllowed(),/Instabox API key changed/);
+  await harness.setSettings({instaboxApiKey:"fake_instabox_original_key"});
+  const restarted=createRentedMachineScope({provider:"instabox",kv:bb.storage.kv,read:async()=>({enabled:true,key:await secrets.instaboxKey(),project:"https://api.instabox.sh"})});
+  await assert.rejects(restarted.assertAllowed(),/Instabox API key changed/);
+  const saved=JSON.stringify(await bb.storage.kv.get(INSTABOX_GITHUB_SCOPE_KEY));
+  for(const value of [token,key,"fake_instabox_original_key","fake_instabox_changed_key"])assert.ok(!saved.includes(value));
+  await harness.setSettings({rentedMachineGithubToken:null});await harness.setSettings({rentedMachineGithubToken:token});
+  await guard.assertAllowed();assert.deepEqual(harness.logEntries,[]);
+});
+
+test("Instabox delivery refuses missing account identity and corrupted scope storage", async t => {
+  const {bb,harness}=createFakePluginHost({pluginId:"boat"});t.after(()=>harness.lifecycle.dispose());
+  const guard=createRentedMachineScope({provider:"instabox",kv:bb.storage.kv,read:async()=>({enabled:true,key:null,project:"https://api.instabox.sh"})});
+  await assert.rejects(guard.assertAllowed(),/Configure the Instabox API key/);
+  await bb.storage.kv.set(INSTABOX_GITHUB_SCOPE_KEY,{bad:"fake"});
+  await assert.rejects(guard.assertAllowed(),/stored Instabox account fingerprint is invalid/);
+});
+
+test("Instabox endpoint changes block delivery even with the same key", async t => {
+  const {bb,harness}=createFakePluginHost({pluginId:"boat"});t.after(()=>harness.lifecycle.dispose());
+  let endpoint="https://api.instabox.sh";
+  const guard=createRentedMachineScope({provider:"instabox",kv:bb.storage.kv,read:async()=>({enabled:true,key:"fake_instabox_key",project:endpoint})});
+  await guard.assertAllowed();endpoint="https://example.invalid";
+  await assert.rejects(guard.assertAllowed(),/Instabox API endpoint changed/);
+  endpoint="https://api.instabox.sh";await assert.rejects(guard.assertAllowed(),/Instabox API endpoint changed/);
+});
+
+test("the exact REST credential transport snapshot must match its scope before any fetch", async t => {
+  const {bb,harness}=createFakePluginHost({pluginId:"boat"});t.after(()=>harness.lifecycle.dispose());
+  const current={enabled:true,key:"fake_pinned_instabox_key",project:"https://api.instabox.sh"};
+  const guard=createRentedMachineScope({provider:"instabox",kv:bb.storage.kv,read:async()=>current});
+  await guard.assertAllowed();let requests=0;
+  // Simulate key resolution racing a restore to the original configuration:
+  // an ordinary settings recheck sees the pin, but this request resolved another key.
+  const rest=new InstaboxRest({key:async()=>"fake_raced_instabox_key",baseUrl:()=>current.project,fetch:async()=>{requests++;return new Response("{}");}});
+  await assert.rejects(rest.execStream("m_example",{cmd:"true",stdin:"fake_private_stdin",timeoutSeconds:30,assertIdentity:guard.assertIdentity},()=>undefined),/credential transport changed/);
+  assert.equal(requests,0);
+  await assert.rejects(guard.assertAllowed(),/Instabox API key changed/);
+});
 for (const field of ["key", "project"] as const) test(`a changed Scaleway ${field} blocks private delivery, latches across restore/restart and stores only fingerprints`, async t => {
   const {bb,harness}=createFakePluginHost({pluginId:"boat"});t.after(()=>harness.lifecycle.dispose());
   let current={enabled:true,key,project};

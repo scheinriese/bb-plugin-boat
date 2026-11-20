@@ -58,6 +58,16 @@ test("preflight refuses missing, expiring, inaccessible and unrouted credentials
     assert.equal(f.spawns.length, 0);
   }
 });
+test("account changes during the provider delivery callback block private stdin", async () => {
+  let allowed = true, deliveries = 0;
+  const source = createCredentialSource({
+    githubToken: async () => token, agentAvailable: async () => true, now: () => now,
+    assertDeliveryAllowed: async () => { if (!allowed) throw Object.assign(new Error("Account changed"), { code: "task_credentials_missing" }); },
+    fetch: (async () => new Response("{}", { headers: { "github-authentication-token-expiration": new Date(now + 86400_000).toISOString() } })) as typeof fetch,
+  });
+  await assert.rejects(source.ensureGithub("mac", { exec: async () => { deliveries++; return { exitCode: 0 }; } }, undefined, false, async () => { allowed = false; }), { code: "task_credentials_missing" });
+  assert.equal(deliveries, 0);
+});
 test("secret-store, HTTP, body, and executor failures never appear in errors; failed delivery preserves other shared logins", async () => {
   for (const stage of ["store", "http", "body", "exec"] as const) {
     const recorded: string[] = [];

@@ -19,6 +19,7 @@ export interface ProviderSecrets {
   onChange(listener: () => void): void;
   onGithubTokenPresenceChange(listener: (configured: boolean) => void): void;
   onScalewayKeyChange(listener: () => void): void;
+  onInstaboxKeyChange(listener: () => void): void;
 }
 
 export async function defineProviderSecrets(bb: Pick<BbPluginApi, "settings">): Promise<ProviderSecrets> {
@@ -28,6 +29,7 @@ export async function defineProviderSecrets(bb: Pick<BbPluginApi, "settings">): 
   const listeners: (() => void)[] = [];
   const tokenListeners: ((configured: boolean) => void)[] = [];
   const keyListeners: (() => void)[] = [];
+  const instaboxKeyListeners: (() => void)[] = [];
   const read = async (): Promise<string | null> => {
     const values = await handle.get();
     const key = typeof values.instaboxApiKey === "string" ? values.instaboxApiKey.trim() : "";
@@ -42,6 +44,7 @@ export async function defineProviderSecrets(bb: Pick<BbPluginApi, "settings">): 
       const wasConfigured = typeof previous.rentedMachineGithubToken === "string" && previous.rentedMachineGithubToken.trim() !== "";
       const keyHash = (value: unknown) => scopeFingerprint(typeof value === "string" ? value.trim() : "");
       if (keyHash(next.scalewaySecretKey) !== keyHash(previous.scalewaySecretKey)) for (const listener of keyListeners) listener();
+      if (keyHash(next.instaboxApiKey) !== keyHash(previous.instaboxApiKey)) for (const listener of instaboxKeyListeners) listener();
       if (configured !== wasConfigured) for (const listener of tokenListeners) listener(configured);
     }
     void read()
@@ -67,5 +70,6 @@ export async function defineProviderSecrets(bb: Pick<BbPluginApi, "settings">): 
     onChange: (listener) => void listeners.push(listener),
     onGithubTokenPresenceChange: (listener) => void tokenListeners.push(listener),
     onScalewayKeyChange: (listener) => void keyListeners.push(listener),
+    onInstaboxKeyChange: (listener) => void instaboxKeyListeners.push(listener),
   };
 }

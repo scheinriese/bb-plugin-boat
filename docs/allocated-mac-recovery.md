@@ -163,6 +163,58 @@ prepaid time and provider release plan. Stopped, expired, ambiguous, occupied or
 partially started tasks are refused. A full machine quota does not require a new
 machine slot because recovery reuses the allocation.
 
+## Continue preserved setup on the same task
+
+After admission, repository preparation can fail before any worker starts. For
+example, the previous Instabox adapter sent Linux OrgSecrets to the macOS
+template, which rejects that guest setup. The task then records
+`mac-recovered`, `failed`, and `mac-start-preserved`; it still has zero turns,
+no checkout path, bb host, environment, chat or prompt, and its original held
+lease reservation. An existing legacy adoption overlay remains valid audit
+evidence; it must not be created again.
+
+After the reviewed plugin is installed by the operator, inspect the original
+task and current machine, then use the **basic command with the same IDs**:
+
+```sh
+bb boat task recover-mac t_example m_example --user-approved --json
+```
+
+Do not supply `--adopt-legacy-lease` again. Continuation requires the consumed
+original approval and unchanged work intent, the exact existing physical lease,
+one original zero-turn reservation, the preserved setup stages, and no owner
+stop, delete, cancel or discard intent. It refuses assigned workspaces or
+workers, other work, changed terms, a different lease, expired or insufficient
+prepaid time and changed release schedules. It survives a plugin/service restart
+using durable state. Reattaching the reservation keeps its original timestamp
+and resource amounts; neither the adoption nor the paid minimum is duplicated.
+
+The Mac path requires a configured scoped managed GitHub credential and the
+original agent's native bb Account Pooler route with bb Connect available.
+It checks that route and repository access before admission. macOS receives
+only the rented-machine GitHub credential over the private REST exec transport
+using stdin and `noHistory`; values are absent from scripts, arguments and
+events. OrgSecrets remains the Linux path. An explicit provider headless runner
+cannot use the native bb agent route and is refused. No Apple ID, signing
+identity or keychain setup is performed.
+
+The [official macOS guide](https://instabox.sh/docs/machines/macos) describes the
+administrator login and exec/SSH access; it promises Command Line Tools, not a
+complete Xcode installation. The [run commands guide](https://instabox.sh/docs/machines/run-commands)
+and [ExecRequest schema](https://api.instabox.sh/v1/openapi.json) document the
+exec transport. Setup uses the login user's home for checkout preparation,
+prepares bb's native macOS toolchain and enrollment without systemd, and checks
+the same lease and hand-back boundary again after enrollment, immediately before
+opening the worker chat. A failure preserves the existing Mac, credentials and
+release plan; it does not authorize another rental or an extension.
+
+Local public-RPC regressions recreate adoption followed by the Linux-only
+Secrets rejection, an attached reservation and the exact zero-turn preserved
+setup state, then continue through a fresh service instance with real adapter
+machine/process reads against fake CLI/REST transports. Live credential delivery,
+repository checkout, macOS toolchain installation, bb enrollment, native worker
+dispatch and GUI tooling on an owner's machine remain unverified milestones.
+
 Success keeps the task ID and approval, reserves the existing lease, and runs
 normal repository preparation, machine enrollment and agent dispatch for that
 task. Those setup steps can install tooling and deliver required credentials.

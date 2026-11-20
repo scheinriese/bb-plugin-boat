@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { sandboxDashboardUrl } from "../src/providers/dashboard.ts";
+import type { CredentialSource } from "../src/credentials.ts";
 import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { InstaboxCli, InstaboxError, redactKeys } from "../src/providers/instabox/cli.ts";
 import { InstaboxRest } from "../src/providers/instabox/api.ts";
@@ -27,7 +28,7 @@ import type { BoatApi } from "../src/providers/boat/api.ts";
 import { githubAccessSnippet, prepareRepo } from "../src/sandbox-repos.ts";
 import { BoatService, TaskError, type BoatSettings } from "../src/service.ts";
 import { normalizeProject, toOrchestratorProject } from "../src/projects.ts";
-import { FakeBoat, defaultSettings, memoryStore } from "./fakes.ts";
+import { FakeBoat, FakeChat, defaultSettings, memoryStore } from "./fakes.ts";
 import { hostCheck, worstCheck } from "../src/paid-resume.ts";
 import type { MachineType } from "../src/providers/types.ts";
 import type { RunsOnDto, SandboxProvidersResultDto } from "../contract-providers.ts";
@@ -57,7 +58,7 @@ async function instabox(t: { after(fn: () => unknown): void }, options: { key?: 
   const key = options.key === undefined ? KEY : options.key;
   const cli = new InstaboxCli(async () => FAKE_CLI, async () => key);
   const rest = new InstaboxRest({ key: async () => key, baseUrl: () => api.url });
-  const provider = createInstaboxProvider(cli, rest, { ledger: options.ledger, secrets: options.secrets, now: options.now });
+  const provider = createInstaboxProvider(cli, rest, { ledger: options.ledger, secrets: options.secrets, now: options.now, credentials: { githubConfigured: async () => true, agentAvailable: async () => true, assertGithubAccess: async () => {}, assertReady: async () => {}, ensureGithub: async () => null, cleanupGithub: async () => {}, cleanup: async () => {} } satisfies CredentialSource });
   const state = () => (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {}) as Record<string, any>;
   const setState = (patch: Record<string, unknown>) => writeFileSync(statePath, JSON.stringify({ ...state(), ...patch }));
   return { cli, rest, provider, api, state, setState, statePath };
@@ -730,13 +731,14 @@ async function macEnv(t: { after(fn: () => unknown): void }, overrides: Record<s
   const store=memoryStore();
   const box=await instabox(t,{ledger:store.macLeases,state:{templates:MAC_TEMPLATES,maxMachines:3}});
   const fakeBoat=new FakeBoat();
+  const chat=(overrides.chat as FakeChat | undefined) ?? new FakeChat();
   const notices:string[]=[];
   const registry=createProviderRegistry([createBoatProvider(fakeBoat as unknown as BoatApi),box.provider]);
   // These assertions count lease reminders; the fake owner's cost-card receipt is separate.
-  const service=new BoatService(registry,store,hooks({tell:async (_id:string,text:string)=>{if(!text.startsWith("::boat-task{"))notices.push(text)},...overrides}).hooks);
+  const service=new BoatService(registry,store,hooks({chat,settings:async()=>defaultSettings({maxActiveSandboxes:0,workerMode:"chat"}),tell:async (_id:string,text:string)=>{if(!text.startsWith("::boat-task{"))notices.push(text)},...overrides}).hooks);
   withFakeMacRentalConsent(service);
-  const start=(extra:Partial<import("../src/service.ts").StartTaskInput>={})=>service.startTask({title:"Mac task",brief:"Check tools",role:"custom",sandboxSystem:"macos",...extra});
-  return {box,store,service,start,notices,fakeBoat};
+  const start=(extra:Partial<import("../src/service.ts").StartTaskInput>={})=>service.startTask({title:"Mac task",brief:"Check tools",role:"custom",sandboxSystem:"macos",runner:"chat",confirmUntrustedChat:extra.repo?[extra.repo]:null,...extra});
+  return {box,store,service,start,notices,fakeBoat,chat};
 }
 test("Mac capability fails closed; prices and model sizes come from live templates",async t=>{
   const {box}=await macEnv(t);
@@ -780,8 +782,9 @@ test("Mac review auto never joins its busy parent's workspace",async t=>{
   assert.notEqual(review.sandboxId,parent.sandboxId);
 });
 test("empty Mac schedules hand-back at the minimum, then releases idempotently",async t=>{
-  const {start,service,store,box}=await macEnv(t);
+  const {start,service,store,box,chat}=await macEnv(t);
   const task=await start();
+  chat.finish(task.threadId!,"done");
   store.update(task.id,{status:"done"});
   const lease=store.macLeases.held()[0]!;const until=Date.parse(lease.paidUntil);
   await service.processMacLeases(until-31*60000);
@@ -802,13 +805,14 @@ test("empty Mac schedules hand-back at the minimum, then releases idempotently",
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,1);
 });
 test("idle open tasks get recurring paid-time heads-ups across restarts; running work is never deleted",async t=>{
-  const {start,service,store,notices,box}=await macEnv(t);
+  const {start,service,store,notices,box,chat}=await macEnv(t);
   const task=await start({orchestratorThreadId:"thread_1"});
   const lease=store.macLeases.held()[0]!;const until=Date.parse(lease.paidUntil);
   // Task updates and the simulated sweeps must use the CLI lease's timeline.
   t.mock.timers.enable({apis:["Date"],now:Date.parse(lease.startedAt)});
   await service.processMacLeases(until-29*60000);
   assert.equal(notices.length,0,"active work continues silently");
+  chat.finish(task.threadId!,"done");
   store.update(task.id,{status:"idle",unshipped:4});
   await service.processMacLeases(until-28*60000);
   await service.processMacLeases(until-27*60000);
@@ -904,8 +908,8 @@ test("a stopped Mac still inside its held minimum is resumed before creating ano
 });
 
 test("an empty Mac after its minimum is released on the next pass without a day extension",async t=>{
-  const {start,service,store,box}=await macEnv(t);
-  const task=await start();store.update(task.id,{status:"done"});
+  const {start,service,store,box,chat}=await macEnv(t);
+  const task=await start();chat.finish(task.threadId!,"done");store.update(task.id,{status:"done"});
   const lease=store.macLeases.held()[0]!, after=Date.parse(lease.paidUntil)+30_000;
   await service.processMacLeases(after);
   assert.equal(store.macLeases.held().length,0);
@@ -927,8 +931,8 @@ test("explicit keep_sandbox protects closed unpushed work across restarts and st
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
 });
 test("new work cancels a scheduled minimum-end release before reusing the paid Mac",async t=>{
-  const {start,service,store,box}=await macEnv(t);
-  const first=await start();store.update(first.id,{status:"done"});
+  const {start,service,store,box,chat}=await macEnv(t);
+  const first=await start();chat.finish(first.threadId!,"done");store.update(first.id,{status:"done"});
   const lease=store.macLeases.held()[0]!;
   await service.processMacLeases(Date.parse(lease.paidUntil)-29*60000);
   assert.equal(box.state().machines[first.sandboxId!].deleteAt,lease.paidUntil);
@@ -1033,7 +1037,7 @@ test("hand-back checks closed tasks in attachment history even without a prior k
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
 });
 test("keep-on-close setting releases a clean Mac instead of permanently exempting it",async t=>{
-  const {start,service,store,box}=await macEnv(t,{settings:async()=>defaultSettings({maxActiveSandboxes:0,deleteSandboxOnClose:false})});
+  const {start,service,store,box}=await macEnv(t,{settings:async()=>defaultSettings({maxActiveSandboxes:0,deleteSandboxOnClose:false,workerMode:"chat"})});
   const task=await start();await service.closeTask(task.id);
   const lease=store.macLeases.held()[0]!;assert.equal(lease.kept,false);
   await service.processMacLeases(Date.parse(lease.paidUntil)+1);
