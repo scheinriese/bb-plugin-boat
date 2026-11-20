@@ -8,7 +8,7 @@
 // is updated safely on a resume (src/bb-update.ts), where the caller passes
 // those.
 import { setTimeout as delay } from "node:timers/promises";
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import type { BbPluginApi, MachineExecutor } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { reviewerSchema } from "../../contract-review.ts";
 import { ACTIVE_STATES, isNotFound, type MachineType, type SandboxInfo, type SandboxProvider, type StopReport } from "./types.ts";
@@ -111,6 +111,26 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
     ...(deps.trimTimeoutMs === undefined ? {} : { stopStepTimeoutMs: deps.trimTimeoutMs }),
   }) ?? {};
   const beforeBootstrap = deps.quietLogins ?? hooks.beforeBootstrap ?? (async () => undefined);
+  async function checkRecovery(sandboxId: string, expected: z.infer<typeof recoveryLeaseSchema>, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const current = await provider.findInfo(sandboxId, signal);
+    signal.throwIfAborted();
+    assertRecoveryLease(provider, current, expected);
+  }
+  function setupExecutor(sandboxId: string, expected?: z.infer<typeof recoveryLeaseSchema>): MachineExecutor {
+    const target = executor!(sandboxId);
+    if (!expected) return target;
+    return {
+      async exec(request) {
+        // Core may install and enroll in separate commands. Each command must
+        // still target the original running allocation, even after long waits.
+        await checkRecovery(sandboxId, expected, request.signal);
+        const result = await target.exec(request);
+        await checkRecovery(sandboxId, expected, request.signal);
+        return result;
+      },
+    };
+  }
   async function bootstrapFailed(id: string, taskId?: string): Promise<void> {
     if (!hooks.bootstrapFailed) return;
     const cleanup = () => hooks.bootstrapFailed!(id);
@@ -191,14 +211,17 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
         report.log(words.created(sandbox.id));
         bootstrapSandbox = sandbox.id;
         bootstrapTask = parsed.success ? parsed.data.taskId : undefined;
+        if (recoveryLease) await checkRecovery(sandbox.id, recoveryLease, signal);
         await beforeBootstrap(sandbox.id, signal);
+        if (recoveryLease) await checkRecovery(sandbox.id, recoveryLease, signal);
         report.step("Installing bb on the sandbox");
         const { hostId } = await bb.experimental_machines.bootstrap({
           key,
-          executor: bootstrapExecutor(executor(sandbox.id), report),
+          executor: bootstrapExecutor(setupExecutor(sandbox.id, recoveryLease), report),
           report,
           signal,
         });
+        if (recoveryLease) await checkRecovery(sandbox.id, recoveryLease, signal);
         return { status: "created" as const, name: machine.machineLabel(sandbox.id, hostId), resource: { sandboxId: sandbox.id, key, ...(recoveryLease ? {recoveryLease} : {}), ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) } };
       } catch (error) {
         if (bootstrapSandbox !== null && !recoveryLease) { try { await bootstrapFailed(bootstrapSandbox, bootstrapTask); } catch { bb.log?.warn?.("Bootstrap credential cleanup failed; the tracked machine needs cleanup before release."); } }
@@ -278,13 +301,17 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
           woke = true;
         }
         try {
+          if (recoveryLease) await checkRecovery(sandboxId, recoveryLease, signal);
           await beforeBootstrap(sandboxId, signal);
+          if (recoveryLease) await checkRecovery(sandboxId, recoveryLease, signal);
           // bb's own update can hang on a disk the provider is still restoring: Boat updates it first, safely.
           // No check for a running turn: bb calls resume() only for a suspended machine, so no turn runs
           // there, and stopping bb's unit for the install interrupts nothing.
           await deps.prepareHost?.({ sandboxId, hostId: hostId ?? null, woke, signal, report });
+          if (recoveryLease) await checkRecovery(sandboxId, recoveryLease, signal);
           report.step("Restarting bb on the sandbox");
-          await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(executor(sandboxId), report), report, signal });
+          await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(setupExecutor(sandboxId, recoveryLease), report), report, signal });
+          if (recoveryLease) await checkRecovery(sandboxId, recoveryLease, signal);
         } catch (error) { try { if (!recoveryLease) await bootstrapFailed(sandboxId); } catch { bb.log?.warn?.("Bootstrap credential cleanup failed; the tracked machine needs cleanup before release."); } throw error; }
       });
       return { resource };

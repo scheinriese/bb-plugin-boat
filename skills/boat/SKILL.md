@@ -17,7 +17,7 @@ to the same handler and state. All `bb boat` examples still work; the companion'
 help uses `bb harbor`. `bb harbormaster` is not registered. If another plugin
 owns `bb harbor`, use `bb plugin run harbor …` to reach the companion explicitly.
 
-Projects can also run on Instabox. GitHub tasks there need an org proxy
+Projects can also run on Instabox. Linux GitHub tasks there need an org proxy
 Secret named `GH_TOKEN`, scoped to both `github.com` and `api.github.com`.
 `instaboxSecrets` (Advanced settings) defaults to `all`; use `none` or
 comma-separated names to change the selection. GitHub work requires
@@ -25,6 +25,11 @@ comma-separated names to change the selection. GitHub work requires
 and refreshes older machines missing the placeholder before repo prep.
 Enter token values only in Instabox's dashboard or its secure CLI prompt,
 never in chat. Setup and permissions: [settings](../../docs/settings.md#sandbox-providers).
+
+Instabox Macs use **GitHub token for rented machines** from bb secret settings
+and the selected agent's Account Pooler route through bb Connect. Org Secrets
+are Linux-only; do not apply them to macOS. Preparation installs the Mac tools
+before repository checkout and enrolls the daemon over private exec stdin.
 
 Mac tasks also have **Your Mac** (`ownmac`), off by default: an isolated macOS
 VM or a separate standard user reached through an SSH Host alias. The bb
@@ -55,6 +60,11 @@ deletion just after failed admission has an explicit `--adopt-legacy-lease`
 evidence path: verify the same physical lease and owner intent, preserve the
 original end, and count the existing minimum once. Never invent proof or approve
 another rental. See [recovery details](../../docs/allocated-mac-recovery.md).
+If that same recovery failed during setup before any task chat, host, repository,
+prompt or worker turn was assigned, the basic recovery command can continue the
+same task using its existing reservation and adoption. Do not repeat legacy
+adoption proof. The same lease, remaining paid time and original intent must
+still pass every recovery check.
 Waiting tasks that never started can resume when
 Your Mac returns. Never blindly replay work after a disconnect. Close/cancel
 removes task credentials and revokes proxy access. A failed check automatically
