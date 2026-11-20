@@ -637,7 +637,7 @@ export interface LaterMembers {
   macLeaseKind?: "monthly" | "day";
   closeTaskCredentials?(sandboxId: string, signal?: AbortSignal, machineRemoved?: boolean): Promise<void>;
   ownMacCleanup?(): import("../../contract-ownmac.ts").OwnMacFacts["cleanup"];
-  ownMacTargetNotice?(): {id:string;text:string;deliveredTo:string[]}|null;
+  ownMacTargetNotice?(): {id:string;text:string;at?:string;deliveredTo:string[]}|null;
   acknowledgeOwnMacTargetNotice?(id:string,threadId:string):Promise<void>;
   testOwnMacConnection?(): Promise<import("../../contract-ownmac.ts").OwnMacFacts>;
   ownMacSetupStep?(step:number):Promise<void>;

@@ -3,7 +3,9 @@ import { PLUGIN_SETTINGS, settingProblem } from "../src/settings.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { ownMacTargetChangedNotice } from "../contract-ownmac.ts";
+import { DEFAULT_PROTOCOL } from "../src/default-protocol.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginKvStorage } from "@get-bb/plugin-sdk";
@@ -158,6 +160,7 @@ for (const [name, remote, expected] of [
 for (const [state, patch] of [
   ["Available", {}],
   ["On battery", { ac: false }],
+  ["Power state unknown", { ac: null }],
   ["No logged-in session", { session: false }],
   ["Not enough free memory", { freeMiB: 1024 }],
   ["Not enough free CPU", { load: 9 }],
@@ -169,7 +172,7 @@ for (const [state, patch] of [
 test("malformed and missing probe fields fail closed", () => {
   for (const value of [
     "",
-    output(reading).replace("ac=1", "ac=unknown"),
+    output(reading).replace("ac=1", "ac=fake-invalid"),
     output(reading).replace("freeMiB=24576", "freeMiB=NaN"),
     output(reading).replace(/hardware=.*/, "hardware="),
   ])
@@ -435,12 +438,13 @@ test("automatic Mac routing chooses Your Mac before a held rental", async () => 
   assert.equal(env.store.macLeases.tasks("fake-lease").length, 0);
   assert.equal(env.store.macLeases.held().length, 1);
 });
-for (const state of ["paused", "battery", "full"] as const)
+for (const state of ["paused", "battery", "power", "full"] as const)
   test(`Mac routing falls back to held capacity when Your Mac is ${state}`, async () => {
     const env = await routingFixture();
     env.held();
     if (state === "paused") env.config.ownMacPaused = true;
     if (state === "battery") env.set({ ac: false });
+    if (state === "power") env.set({ ac: null });
     if (state === "full") await env.provider.create(input);
     const task = await env.start();
     assert.equal(task.sandboxProvider, "fake-rental");
@@ -663,7 +667,7 @@ for(const [name,patch] of Object.entries({user:{user:"fake-other"},uid:{uid:503}
   await assert.rejects(env.provider.assertTaskReady!({agent:"claude",repos:[]}),/Test connection again/);
   await assert.rejects(env.provider.allocate!(input),/Test connection again/);
   assert.ok(env.calls.every(call=>call.request.command.at(-1)===AVAILABILITY_SCRIPT));
-  assert.match(env.provider.ownMacTargetNotice!()!.text,/Your Mac target changed; Test connection again before tasks run there/);
+  assert.equal(env.provider.ownMacTargetNotice!()!.text,ownMacTargetChangedNotice(new Date(0).toISOString()));
   assert.equal((await env.provider.testOwnMacConnection!()).code,"available");
   const pinned=await env.kv.get<any>("ownMacSetupV1");for(const [key,value] of Object.entries(patch))assert.equal(pinned.target[key],value);
   await env.provider.allocate!(input);
@@ -695,8 +699,10 @@ test("a task-start check verifies the recorded VM flag and current pin",async()=
 
 test("target-change notices reach orchestrators, deduplicate, and survive restart",async()=>{
   const env=await routingFixture();env.store.addOrchestrator("fake-orchestrator");env.store.addOrchestrator("fake-retired");env.store.removeOrchestrator("fake-retired");
-  env.config.ownMacAlias="fake-other";await env.service.maintainOwnMac();
-  assert.deepEqual(env.told,[{threadId:"fake-orchestrator",text:"Your Mac target changed; Test connection again before tasks run there"}]);
+  env.tick();env.config.ownMacAlias="fake-other";await env.service.maintainOwnMac();
+  const at=new Date(45001).toISOString();
+  assert.equal(env.provider.ownMacTargetNotice!()!.at,at);
+  assert.deepEqual(env.told,[{threadId:"fake-orchestrator",text:ownMacTargetChangedNotice(at)}]);
   await env.service.maintainOwnMac();assert.equal(env.told.length,1);
   const reloaded=await createOwnMacProvider(env.options);assert.deepEqual(reloaded.ownMacTargetNotice!()!.deliveredTo,["fake-orchestrator"]);
   await reloaded.testOwnMacConnection!();env.set({uid:503});await reloaded.ownMacStatus!(true);
@@ -738,4 +744,47 @@ test("restoring an edited alias still requires a new test after the change was o
   assert.equal((await env.provider.ownMacStatus!()).code,"target");env.config.ownMacAlias="fake-mac";
   assert.equal((await env.provider.ownMacStatus!()).code,"target");await assert.rejects(env.provider.allocate!(input),/Test connection again/);
   await env.provider.testOwnMacConnection!();assert.equal((await env.provider.ownMacStatus!()).code,"available");
+});
+
+test("a successful owner re-test clears the change notice before a later orchestrator joins",async()=>{
+  const env=await routingFixture();env.config.ownMacAlias="fake-other";await env.provider.ownMacStatus!();
+  assert.ok(env.provider.ownMacTargetNotice!());await env.provider.testOwnMacConnection!();
+  assert.equal(env.provider.ownMacTargetNotice!(),null);
+  const saved=await env.kv.get<any>("ownMacSetupV1");assert.equal(saved.targetNotice,undefined);
+  const reloaded=await createOwnMacProvider(env.options);assert.equal(reloaded.ownMacTargetNotice!(),null);
+  env.store.addOrchestrator("fake-later-orchestrator");await env.service.deliverOwnMacTargetNotice();assert.deepEqual(env.told,[]);
+});
+
+test("resolved legacy notices are removed; unresolved legacy notices address the owner",async()=>{
+  const env=await fixture(),saved=await env.kv.get<any>("ownMacSetupV1");
+  const targetNotice={id:"fake-notice",text:"fake legacy notice",deliveredTo:[]};
+  await env.kv.set("ownMacSetupV1",{...saved,targetNotice});
+  const resolved=await createOwnMacProvider(env.options);assert.equal(resolved.ownMacTargetNotice!(),null);
+  await env.kv.set("ownMacSetupV1",{...saved,changedTarget:"fake unresolved change",targetNotice});
+  const unresolved=await createOwnMacProvider(env.options);
+  assert.equal(unresolved.ownMacTargetNotice!()!.text,ownMacTargetChangedNotice());
+  assert.match(unresolved.ownMacTargetNotice!()!.text,/Agents must not run Test connection or change Your Mac settings/);
+});
+
+test("delivery stops if an owner resolves the change while the notice is being delivered",async()=>{
+  const env=await routingFixture();env.store.addOrchestrator("fake-first");env.store.addOrchestrator("fake-second");
+  env.config.ownMacAlias="fake-other";await env.provider.ownMacStatus!();const delivered:string[]=[];
+  const service=new BoatService(env.service.sandboxProviders,env.store,{settings:async()=>defaultSettings(),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},log:{info:()=>{},warn:()=>{}},tell:async id=>{delivered.push(id);await env.provider.testOwnMacConnection!();}});
+  await service.deliverOwnMacTargetNotice();assert.equal(delivered.length,1);assert.equal(env.provider.ownMacTargetNotice!(),null);
+});
+
+test("unknown power stays reachable, refuses admission and does not prevent credential cleanup",async()=>{
+  const env=await fixture(),task=await env.provider.allocate!(input);env.set({ac:null});
+  const state=await env.provider.ownMacStatus!(true);assert.equal(state.code,"power");assert.equal(state.onPower,null);
+  await assert.rejects(env.provider.allocate!(input),/Power state unknown/);
+  const result=await env.provider.testOwnMacConnection!();assert.equal(result.testResult!.ok,true);assert.match(result.testResult!.detail,/power state unknown/);
+  await env.provider.closeTaskCredentials!(task.id);assert.deepEqual(env.cleaned,[task.id]);
+});
+
+test("agent-facing guidance reserves Your Mac tests and settings for the owner",()=>{
+  const rule="Agents must not run Test connection or change Your Mac settings";
+  assert.ok(DEFAULT_PROTOCOL.includes(rule));
+  for(const file of ["../skills/boat/SKILL.md","../src/tools.ts"])assert.ok(readFileSync(new URL(file,import.meta.url),"utf8").replace(/\n/g," ").includes(rule),file);
+  const text=ownMacTargetChangedNotice("2030-01-01T12:34:56.000Z");
+  assert.equal(text,"Your Mac's target changed at 2030-01-01T12:34:56.000Z. The owner must run Test connection again in Settings before tasks run there. Agents must not run Test connection or change Your Mac settings.");
 });

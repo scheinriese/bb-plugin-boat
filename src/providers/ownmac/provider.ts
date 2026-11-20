@@ -1,6 +1,6 @@
 import {
   OWN_MAC_MIN_FREE_GB,
-  OWN_MAC_TARGET_CHANGED,
+  ownMacTargetChangedNotice,
   ownMacFactsSchema,
   type OwnMacFacts,
 } from "../../../contract-ownmac.ts";
@@ -128,6 +128,7 @@ export async function createOwnMacProvider(options: {
       .object({
         id: z.string(),
         text: z.string(),
+        at: z.string().datetime().optional(),
         deliveredTo: z.array(z.string()),
       })
       .optional(),
@@ -146,6 +147,10 @@ export async function createOwnMacProvider(options: {
   });
   let setup = setupSchema.parse((await options.kv.get<unknown>(metaKey)) ?? {});
   const saveSetup = () => options.kv.set(metaKey, setup);
+  if (!setup.changedTarget && setup.targetNotice) {
+    delete setup.targetNotice;
+    await saveSetup();
+  }
   if (setup.observedAlias === undefined) {
     setup.observedAlias =
       setup.target?.alias ??
@@ -169,9 +174,11 @@ export async function createOwnMacProvider(options: {
   async function targetChanged(fingerprint: string) {
     if (setup.changedTarget !== fingerprint) {
       setup.changedTarget = fingerprint;
+      const at = new Date(now()).toISOString();
       setup.targetNotice = {
         id: randomUUID(),
-        text: OWN_MAC_TARGET_CHANGED,
+        at,
+        text: ownMacTargetChangedNotice(at),
         deliveredTo: [],
       };
       await saveSetup();
@@ -384,13 +391,15 @@ export async function createOwnMacProvider(options: {
           ? "admin"
           : status === "On battery"
             ? "battery"
-            : status === "No logged-in session"
-              ? "session"
-              : status === "Not enough free memory"
-                ? "memory"
-                : status === "At task limit" || status.includes("CPU")
-                  ? "busy"
-                  : "available";
+            : status === "Power state unknown"
+              ? "power"
+              : status === "No logged-in session"
+                ? "session"
+                : status === "Not enough free memory"
+                  ? "memory"
+                  : status === "At task limit" || status.includes("CPU")
+                    ? "busy"
+                    : "available";
       return { ...facts(config, status, code), reading: cached!.reading };
     } catch {
       cached = null;
@@ -425,11 +434,12 @@ export async function createOwnMacProvider(options: {
       setup.testedAlias = config.ownMacAlias;
       setup.target = targetOf(config.ownMacAlias, value.reading);
       delete setup.changedTarget;
+      delete setup.targetNotice;
       const r = value.reading;
       setup.testResult = {
         ok: true,
         title: `Connected as ${r.user}`,
-        detail: `${r.admin ? "Admin inside a VM" : "Standard user, not you"} · ${r.vm === true ? "macOS VM" : r.vm === false ? "Separate macOS user" : "Isolation not detected"} · ${Math.floor(r.freeMiB / 1024)} GB free · ${r.ac ? "on power" : "on battery"}${r.session ? "" : " · not logged in"}`,
+        detail: `${r.admin ? "Admin inside a VM" : "Standard user, not you"} · ${r.vm === true ? "macOS VM" : r.vm === false ? "Separate macOS user" : "Isolation not detected"} · ${Math.floor(r.freeMiB / 1024)} GB free · ${r.ac === null ? "power state unknown" : r.ac ? "on power" : "on battery"}${r.session ? "" : " · not logged in"}`,
         checkedAt: new Date(now()).toISOString(),
       };
       await saveSetup();
@@ -671,9 +681,10 @@ export async function createOwnMacProvider(options: {
       return state;
     },
     ownMacTargetNotice: () =>
-      setup.targetNotice
+      setup.changedTarget && setup.targetNotice
         ? {
             ...setup.targetNotice,
+            text: ownMacTargetChangedNotice(setup.targetNotice.at),
             deliveredTo: [...setup.targetNotice.deliveredTo],
           }
         : null,

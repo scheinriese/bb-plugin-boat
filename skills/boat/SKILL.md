@@ -40,9 +40,11 @@ copy the exact manual steps, with no one-click removal. See
 [Your Mac setup](../../docs/settings.md#your-mac). Internal tool and CLI names
 remain `boat_*` and `bb boat`.
 
-Test connection pins the alias and Mac account identity. A change requires a new
-test and posts an orchestrator notice. Leave re-testing and re-pinning to the
-owner. Inside a VM, power checks read the guest and may miss a host on battery;
+Test connection pins the alias and Mac account identity. A change posts a timed
+notice addressed to the owner. Agents must not run Test connection or change
+Your Mac settings. The owner must re-test in Settings; use the next approved
+route meanwhile. Resolved changes do not notify later orchestrators.
+Inside a VM, power checks read the guest and may miss a host on battery;
 the owner must keep the physical host on mains power.
 
 ## Words to use with the user

@@ -1,8 +1,9 @@
 import { z } from "zod";
 export const OWN_MAC_MIN_FREE_GB = 6;
 export const OWN_MAC_TAG = "boat:ownmac";
-export const OWN_MAC_TARGET_CHANGED =
-  "Your Mac target changed; Test connection again before tasks run there";
+export function ownMacTargetChangedNotice(at?: string) {
+  return `Your Mac's target changed at ${at ?? "an unknown time"}. The owner must run Test connection again in Settings before tasks run there. Agents must not run Test connection or change Your Mac settings.`;
+}
 export const OWN_MAC_VM_POWER_HELP =
   "Inside a VM, power is read from the guest. Keep the host Mac on mains power; host battery use may not be detected.";
 export const OWN_MAC_GUIDE =
@@ -15,6 +16,7 @@ export const ownMacCodeSchema = z.enum([
   "paused",
   "unreachable",
   "battery",
+  "power",
   "memory",
   "session",
   "personal",
@@ -31,7 +33,7 @@ export const ownMacFactsSchema = z.object({
   max: z.number(),
   vm: z.boolean().nullable().optional(),
   freeMiB: z.number().optional(),
-  onPower: z.boolean().optional(),
+  onPower: z.boolean().nullable().optional(),
   loggedIn: z.boolean().optional(),
   runningTitles: z.array(z.string()).optional(),
   account: z.string().optional(),

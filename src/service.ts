@@ -2703,8 +2703,10 @@ export class BoatService {
       const own=this.sandboxProviders.all.find(p=>p.id==="ownmac"),notice=own?.ownMacTargetNotice?.();
       if(!notice || !this.hooks.tell)return;
       for(const threadId of this.store.orchestratorThreadIds().current) {
-        if(notice.deliveredTo.includes(threadId))continue;
-        await this.hooks.tell(threadId,notice.text);
+        const current=own?.ownMacTargetNotice?.();
+        if(!current || current.id!==notice.id)return;
+        if(current.deliveredTo.includes(threadId))continue;
+        await this.hooks.tell(threadId,current.text);
         await own?.acknowledgeOwnMacTargetNotice?.(notice.id,threadId);
       }
     };

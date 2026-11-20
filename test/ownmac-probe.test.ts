@@ -70,7 +70,9 @@ for (const [power, expected] of [
     );
   });
 test("unknown pmset output fails closed", () => {
-  assert.throws(() => probe("fake unknown"));
+  const reading=probe("fake unknown");
+  assert.equal(reading.ac,null);
+  assert.equal(availability(reading,{hardware:null,user:"fake-owner",uid:501},0,1),"Power state unknown");
 });
 test("passwordless sudo counts as admin, with the VM exception", () => {
   const physical = probe("AC Power", true),

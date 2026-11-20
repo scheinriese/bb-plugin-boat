@@ -16,7 +16,7 @@ export interface Identity {
 export interface Reading extends Identity {
   admin: boolean;
   vm: boolean | null;
-  ac: boolean;
+  ac: boolean | null;
   session: boolean;
   memoryMiB: number;
   freeMiB: number;
@@ -33,7 +33,7 @@ vm=$(sysctl -n kern.hv_vmm_present 2>/dev/null || echo unknown)
 groups=$(id -Gn)
 admin=$(case " $groups " in (*' admin '*) echo 1 ;; (*) echo 0 ;; esac)
 if sudo -n true </dev/null >/dev/null 2>&1; then admin=1; fi
-ac=$(case "$(pmset -g batt)" in (*"AC Power"*) echo 1 ;; (*"Battery Power"*|*"UPS Power"*) echo 0 ;; (*) exit 1 ;; esac)
+ac=$(case "$(pmset -g batt)" in (*"AC Power"*) echo 1 ;; (*"Battery Power"*|*"UPS Power"*) echo 0 ;; (*) echo unknown ;; esac)
 console=$(stat -f %Su /dev/console)
 session=0
 if [ "$console" = "$(id -un)" ]; then session=1; fi
@@ -54,7 +54,9 @@ const readingSchema = z.object({
     .default("unknown")
     .transform((value) => (value === "unknown" ? null : value === "1")),
   admin: z.enum(["0", "1"]).transform((v) => v === "1"),
-  ac: z.enum(["0", "1"]).transform((v) => v === "1"),
+  ac: z
+    .enum(["0", "1", "unknown"])
+    .transform((v) => (v === "unknown" ? null : v === "1")),
   session: z.enum(["0", "1"]).transform((v) => v === "1"),
   memoryMiB: z.coerce.number().positive(),
   freeMiB: z.coerce.number().nonnegative(),
@@ -91,6 +93,7 @@ export function availability(
   const reason = refusal(reading, local);
   if (reason) return reason;
   if (!reading.session) return "No logged-in session";
+  if (reading.ac === null) return "Power state unknown";
   if (!reading.ac) return "On battery";
   if (reading.freeMiB < OWN_MAC_MIN_FREE_GB * 1024)
     return "Not enough free memory";
