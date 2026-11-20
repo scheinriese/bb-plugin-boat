@@ -182,7 +182,7 @@ interface Saved {
 export function createResetPacing(deps: ResetPacingDeps): ResetPacing {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? (() => undefined);
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.()));
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const lane = new ResetLane();
   const saved: Saved = { handled: {}, resumed: {} };
   /** What Boat declined (request id → the thread and provider retry's planned time). */

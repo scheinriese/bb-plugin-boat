@@ -13,19 +13,20 @@ permissions:
 
 jobs:
   test:
-    name: Typecheck and test (SDK ${{ matrix.sdk }})
+    name: Typecheck and test (Node ${{ matrix.node }}, SDK ${{ matrix.sdk }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         sdk: ["0.6.104", "0.6.132"]
+        node: [22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
           cache: npm
       # No install scripts, except for the one native module the tests use.
       - run: npm ci --ignore-scripts
