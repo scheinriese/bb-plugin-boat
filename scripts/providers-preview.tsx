@@ -41,7 +41,7 @@ function NamePreview() {
   </>;
 }
 const allScenes = [
-  "ownmac-available", "ownmac-states", "ownmac-busy", "ownmac-logged-out", "ownmac-setup-test-failed", "ownmac-setup-success", "ownmac-setup-battery", "ownmac-refusals", "ownmac-cleanup", "ownmac-cleanup-card", "ownmac-cleanup-removed", "ownmac-fallback", "ownmac-receipt", "ownmac-waiting", "ownmac-footer", "ownmac-mobile", "ownmac-off", "ownmac-user", "ownmac-asleep", "ownmac-refused-admin", "ownmac-memory", "ownmac-fallback", "ownmac-paused", "ownmac-battery", "ownmac-refused-personal-login", "ownmac-not-set-up",
+  "ownmac-explicit-rental", "ownmac-target-changed", "ownmac-available", "ownmac-states", "ownmac-busy", "ownmac-logged-out", "ownmac-setup-test-failed", "ownmac-setup-success", "ownmac-setup-battery", "ownmac-refusals", "ownmac-cleanup", "ownmac-cleanup-card", "ownmac-cleanup-removed", "ownmac-fallback", "ownmac-receipt", "ownmac-waiting", "ownmac-footer", "ownmac-mobile", "ownmac-off", "ownmac-user", "ownmac-asleep", "ownmac-refused-admin", "ownmac-memory", "ownmac-fallback", "ownmac-paused", "ownmac-battery", "ownmac-refused-personal-login", "ownmac-not-set-up",
   "monthly-chat",
   "monthly-today",
   "monthly-today-alone",

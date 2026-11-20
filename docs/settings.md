@@ -424,6 +424,11 @@ fine). In Sharing → Remote Login, allow only that user. An admin on a physical
 Mac is refused. A separate user shares the Mac's kernel and is weaker isolation
 than a VM; use a VM for untrusted work.
 
+Make your personal home folder private before using the separate account.
+macOS can allow other users to read it by default. In your personal account,
+run `chmod 700 ~`, or open your home folder's Get Info → Sharing & Permissions
+and remove “everyone” read access. Harbormaster never changes these permissions.
+
 Authorize a public SSH key for the execution user and keep the private key in
 your own SSH agent. Verify the guest/account's host key with an initial SSH
 connection, then add a Host alias in your SSH config:
@@ -462,10 +467,23 @@ bypass the admin refusal. When bb runs elsewhere, it cannot identify which
 remote standard account is the personal login: the owner must choose a dedicated
 execution account.
 
+A successful **Test connection** pins the SSH alias, hardware-UUID hash,
+username, uid and detected VM flag in plugin storage. Admission and allocation
+refuse any mismatch with **Test connection again**. Alias or identity changes
+also post “Your Mac target changed; Test connection again before tasks run
+there” in the orchestrator chats. Re-testing accepts and pins the checked
+identity again. bb cannot distinguish the owner from an agent: an agent that
+can run Test connection can re-pin too. The chat notice is the safeguard.
+
 Availability needs a recent read-only SSH heartbeat, mains power, a logged-in
 execution session, **6 GB free memory**, CPU headroom, and a free task slot. The
 memory threshold is one named constant, `OWN_MAC_MIN_FREE_GB`, shared by the probe
 and UI copy. Settings caches readings for 45 seconds; admission checks again.
+Inside a VM, `pmset` reports the guest's power, so it may not detect the physical
+host running on battery. Keep the host on mains power and verify this behavior
+on the actual VM; the guest reading is not proof of host mains power. UPS power
+means mains power was lost and is treated as On battery. Passwordless sudo is
+treated as admin access, with the same detected-VM exception as the group check.
 Idle tasks can release their execution slot while retaining their task home and
 credentials until close or cancel. Battery, memory and Pause never move or kill
 running work. After a mid-task disconnect, inspect the task before retrying;
@@ -477,7 +495,7 @@ from a lost network. Harbormaster never wakes the Mac or changes power, sleep,
 login or disk-protection settings. Keep Awake is only a suggestion; these remain
 the owner's choices.
 
-Mac tasks try Your Mac first, then existing monthly capacity, then a held rental,
+Automatic Mac routing tries Your Mac first, then existing monthly capacity, then a held rental,
 then a new rental. Unavailable, full and refused Macs are skipped. When only a
 new rental remains, the task waits at a cost card with live prices in the
 provider's currency; nothing is rented until the owner chooses **Rent for …**.
@@ -486,6 +504,10 @@ The quote is checked again before allocation and cannot silently increase.
 Mac returns before an answer, that pending task starts there at $0 rent. Linux
 routing is unchanged. Monthly enrollment remains the existing adapter seam;
 this change adds no monthly machine provisioning UI.
+An explicit project Runs-on choice of Scaleway or Instabox takes precedence over
+Your Mac. Every new day rental still needs a cost confirmation.
+To wait for Your Mac instead, first change that explicit Runs-on choice. A
+returning owner Mac never restarts a task that is pinned to a rental route.
 
 Repository tasks reuse **GitHub token for rented machines** from bb secrets:
 selected repositories; Contents, Pull requests and Workflows read and write;

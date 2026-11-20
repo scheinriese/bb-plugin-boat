@@ -3,6 +3,7 @@ import type { SandboxProviderDto, OwnMacDto } from "../contract-providers";
 import {
   OWN_MAC_MIN_FREE_GB,
   OWN_MAC_GUIDE,
+  OWN_MAC_VM_POWER_HELP,
   type OwnMacFacts,
 } from "../contract-ownmac";
 import { cn } from "@/lib/utils";
@@ -22,7 +23,7 @@ export function OwnMacDot({ code }: { code?: OwnMacFacts["code"] }) {
         "size-1.5 shrink-0 rounded-full",
         code === "cleanup"
           ? "bg-[#E06C6C]"
-          : code === "personal" || code === "admin"
+          : code === "personal" || code === "admin" || code === "target"
             ? "bg-[#F0B135]"
             : code === "setup"
               ? "bg-[#7AA7FF]"
@@ -66,6 +67,8 @@ export function ownMacDescription(f: OwnMacFacts) {
       return `${f.alias} signs in as you on this Mac. Agents never run in your own login: they could read your files, keychain and browser. Mac tasks go to the next Mac in line until this is fixed.`;
     case "admin":
       return `${f.alias} signs in as ${f.account ?? "an account"}, which is an admin on your physical Mac. An admin agent could change settings or install software for everyone on this Mac. Mac tasks go to the next Mac in line until this is fixed.`;
+    case "target":
+      return "Your Mac target changed; Test connection again before tasks run there. Mac tasks go to the next Mac in line until this is checked.";
     case "cleanup":
       return "Login cleanup couldn't be verified. Your Mac is automatically paused for new tasks until Check again passes. Running tasks are not moved or stopped.";
     case "off":
@@ -472,7 +475,8 @@ export function OwnMacRow({
     };
   const [expanded, setExpanded] = useState(f.code === "available"),
     [showCleanup, setShowCleanup] = useState(false);
-  const refusal = f.code === "personal" || f.code === "admin",
+  const refusal =
+      f.code === "personal" || f.code === "admin" || f.code === "target",
     setup =
       (!f.tested || (!value.ownMacEnabled && (f.setupSteps ?? 0) < 7)) &&
       !refusal &&
@@ -528,17 +532,23 @@ export function OwnMacRow({
         ) : refusal ? (
           <>
             <dl className="mt-2 grid grid-cols-1 gap-x-2 gap-y-1.5 rounded-lg border border-[#262626] bg-[#151515] px-3 py-2.5 text-xs leading-4 sm:grid-cols-[72px_1fr]">
-              <dt className="text-[#6E6E6E]">Signs in as</dt>
+              <dt className="text-[#6E6E6E]">
+                {f.code === "target" ? "Check" : "Signs in as"}
+              </dt>
               <dd className="text-[#D6D6D6]">
-                {f.code === "personal"
-                  ? "you (the user running bb)"
-                  : `${f.account ?? "The account"} · Administrator`}
+                {f.code === "target"
+                  ? "The SSH alias or tested Mac account changed."
+                  : f.code === "personal"
+                    ? "you (the user running bb)"
+                    : `${f.account ?? "The account"} · Administrator`}
               </dd>
               <dt className="text-[#6E6E6E]">Fix</dt>
               <dd className="text-[#D6D6D6]">
-                {f.code === "personal"
-                  ? `Create a macOS VM or a separate standard user, then point ${value.ownMacAlias} at it.`
-                  : `Make ${f.account ?? "the account"} a standard user: System Settings › Users & Groups, turn off “Allow this user to administer this computer”. Or use a VM.`}
+                {f.code === "target"
+                  ? "Test connection again to review and accept this Mac account."
+                  : f.code === "personal"
+                    ? `Create a macOS VM or a separate standard user, then point ${value.ownMacAlias} at it.`
+                    : `Make ${f.account ?? "the account"} a standard user: System Settings › Users & Groups, turn off “Allow this user to administer this computer”. Or use a VM.`}
               </dd>
             </dl>
             <div className="mt-2 flex gap-2">
@@ -614,6 +624,9 @@ export function OwnMacRow({
                 >
                   <Isolation value={enriched} onSave={onSave} busy={busy} />
                 </Setting>
+                <p className="text-xs leading-[17px] text-[#8A8A8A]">
+                  {OWN_MAC_VM_POWER_HELP}
+                </p>
                 <Setting
                   label="Tasks at once"
                   help="More tasks than this go to the next Mac in line."

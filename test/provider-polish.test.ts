@@ -281,3 +281,13 @@ test("refusal, fallback and consent cards use the supplied style and real quote 
 test("footer and usage include task counts, no meter and zero rent",()=>{
   const html=renderScene("ownmac-footer");for(const text of ["7 on","Running 1 of 1","$0 · fake-mac-agents · on power","9 tasks this month","$0 rent","Your Mac · VM"])assert.ok(html.includes(text),text);
 });
+
+test("a changed Your Mac target uses the existing amber refusal style",()=>{
+  const html=renderScene("ownmac-target-changed");assert.match(html,/Test connection again/);assert.match(html,/bg-\[#F0B135\]/);assert.doesNotMatch(html,/Setting up|Administrator/);
+});
+test("Your Mac UI explains guest power cannot prove the host is on mains",()=>{
+  const html=renderScene("ownmac-available");assert.match(html,/power is read from the guest/);assert.match(html,/host battery use may not be detected/);
+});
+test("an explicit rental choice does not offer automatic Your Mac waiting",()=>{
+  const html=renderScene("ownmac-explicit-rental");assert.match(html,/Runs on selects a rented Mac/);assert.match(html,/Choose Your Mac in Runs on/);assert.doesNotMatch(html,/Wait for your Mac/);assert.match(html,/Rent for \$10.80/);
+});

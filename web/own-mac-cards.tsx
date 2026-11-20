@@ -32,7 +32,11 @@ export function OwnMacFallbackLine({ notice }: { notice: OwnMacNotice }) {
         <InfoIcon />
       </span>
       <span>
-        Your Mac is {notice.reason}, so “{notice.title}” runs on{" "}
+        Your Mac{" "}
+        {notice.reason === "can't be used"
+          ? "can't be used"
+          : `is ${notice.reason}`}
+        , so “{notice.title}” runs on{" "}
         {notice.fallback.monthly
           ? "your monthly Mac"
           : `the ${notice.fallback.label} Mac you already rented`}
@@ -236,12 +240,10 @@ export function OwnMacRentalCard({
           Rent a Mac for “{notice.title}”?
         </h3>
         <p className="mt-1 text-[13px] leading-5 text-[#A8A8A8]">
-          Your Mac{" "}
-          {notice.reason === "can't be used"
-            ? "can't be used"
-            : `is ${notice.reason}`}
-          , and no monthly or rented Mac is free. The task waits until you
-          choose; nothing is rented yet.
+          {notice.canWaitForOwnMac === false
+            ? "The project's Runs on selects a rented Mac."
+            : `Your Mac ${notice.reason === "can't be used" ? "can't be used" : `is ${notice.reason}`}, and no monthly or rented Mac is free.`}{" "}
+          The task waits until you choose; nothing is rented yet.
         </p>
       </div>
       <div className="overflow-x-auto px-3.5 pt-1">
@@ -273,23 +275,27 @@ export function OwnMacRentalCard({
                 Runs now; other Mac tasks can share it
               </td>
             </tr>
-            <tr>
-              <td className="py-2.5 pr-4 text-[#D0D0D0]">
-                <p>Wait for your Mac</p>
-                <p className="text-xs text-[#8A8A8A]">
-                  {notice.alias} · {notice.reason}
-                </p>
-              </td>
-              <td className="text-[#C1C1C1]">$0</td>
-              <td className="text-[#C1C1C1]">when it's back</td>
-              <td className="text-[#FC8C45]">Could be hours</td>
-            </tr>
+            {notice.canWaitForOwnMac !== false && (
+              <tr>
+                <td className="py-2.5 pr-4 text-[#D0D0D0]">
+                  <p>Wait for your Mac</p>
+                  <p className="text-xs text-[#8A8A8A]">
+                    {notice.alias} · {notice.reason}
+                  </p>
+                </td>
+                <td className="text-[#C1C1C1]">$0</td>
+                <td className="text-[#C1C1C1]">when it's back</td>
+                <td className="text-[#FC8C45]">Could be hours</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
       <p className="px-3.5 pt-2.5 text-xs leading-4 text-[#8A8A8A]">
         Harbormaster never rents without asking. {q.label} bills at least{" "}
         {q.minimumHours} h; you can hand the Mac back after that.
+        {notice.canWaitForOwnMac === false &&
+          " Choose Your Mac in Runs on to wait for it."}
       </p>
       <div className="flex flex-wrap items-center gap-2 p-3.5">
         <button
@@ -299,13 +305,15 @@ export function OwnMacRentalCard({
         >
           Rent for {price}
         </button>
-        <button
-          className={secondary}
-          disabled={busy || !onAnswer}
-          onClick={() => onAnswer?.("wait")}
-        >
-          Wait for your Mac
-        </button>
+        {notice.canWaitForOwnMac !== false && (
+          <button
+            className={secondary}
+            disabled={busy || !onAnswer}
+            onClick={() => onAnswer?.("wait")}
+          >
+            Wait for your Mac
+          </button>
+        )}
         {onOwnWords && (
           <button
             className="ml-auto text-xs text-[#8A8A8A]"

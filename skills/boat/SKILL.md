@@ -29,8 +29,9 @@ the plugin never wakes the Mac or changes those settings. New starts need
 mains power, a logged-in execution session, 6 GB free memory and a free task
 slot (default 1). Running work is not moved or killed when availability changes.
 
-Mac routing prefers Your Mac, existing monthly capacity, a held rental, then a
-new rental. A new rental shows its live cost and waits for the owner's choice;
+Automatic Mac routing prefers Your Mac, existing monthly capacity, a held rental,
+then a new rental. Explicit Scaleway or Instabox Runs-on choices take precedence.
+A new rental shows its live cost and waits for the owner's choice;
 never approve it yourself. Waiting tasks that never started can resume when
 Your Mac returns. Never blindly replay work after a disconnect. Close/cancel
 removes task credentials and revokes proxy access. A failed check automatically
@@ -38,6 +39,11 @@ pauses new starts until the read-only **Check again** passes; the owner can
 copy the exact manual steps, with no one-click removal. See
 [Your Mac setup](../../docs/settings.md#your-mac). Internal tool and CLI names
 remain `boat_*` and `bb boat`.
+
+Test connection pins the alias and Mac account identity. A change requires a new
+test and posts an orchestrator notice. Leave re-testing and re-pinning to the
+owner. Inside a VM, power checks read the guest and may miss a host on battery;
+the owner must keep the physical host on mains power.
 
 ## Words to use with the user
 
