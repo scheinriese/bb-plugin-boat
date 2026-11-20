@@ -213,19 +213,16 @@ test("Settings exposes the pooled quota risk and a working documentation anchor 
   assert.match(html,/Any process on the Mac can use your pooled AI quota until bb removes the machine/);
   assert.match(html,/href="https:\/\/github.com\/scheinriese\/bb-plugin-boat\/blob\/main\/docs\/settings.md#rented-machine-credential-risks"/);
 });
-test("emergency delete warning requires acknowledgement and states token revocation and data loss",()=>{
-  const html=renderScene("credential-emergency");
-  assert.match(html,/role="alert"/);assert.match(html,/keeps billing/);assert.match(html,/retry cleanup once SSH works/);
-  assert.match(html,/permanently removes this Mac and its files/);assert.match(html,/must revoke or rotate/);
-  assert.match(html,/type="checkbox"/);assert.doesNotMatch(html,/checked=""/);
-  assert.match(html,/disabled=""/);
-  assert.match(html,/Owner approval in chat is required/);assert.match(html,/I approve deleting example-mac without verified cleanup for lease example-lease/);
+test("cleanup failure explains manual console recovery without a plugin bypass",()=>{
+  const html=renderScene("credential-cleanup");
+  assert.match(html,/keeps billing/);assert.match(html,/retry cleanup once SSH works/);
+  assert.match(html,/Scaleway console/);assert.match(html,/Revoke or rotate/);
+  assert.doesNotMatch(html,/Delete without verified cleanup|Owner approval|type="checkbox"/);
 });
 
-test("post-deletion owner reminder explains revocation and explicit dismissal rather than another delete",()=>{
+test("post-deletion token reminder shows expiry without a dismissal action",()=>{
   const html=renderScene("credential-revocation");
-  assert.match(html,/GitHub token action required/);assert.match(html,/may still be on the returned Mac/);
-  assert.match(html,/Dismiss token reminder/);assert.match(html,/This only dismisses the reminder/);
-  assert.match(html,/Owner approval in chat is required/);assert.match(html,/I have revoked or rotated the GitHub token for example-mac, lease example-lease/);
-  assert.doesNotMatch(html,/Delete without verified cleanup/);
+  assert.match(html,/GitHub token action required/);assert.match(html,/returned hardware/);
+  assert.match(html,/recorded token expiry/);assert.match(html,/2030-04-01/);
+  assert.doesNotMatch(html,/Dismiss|Delete without|Owner approval/);
 });

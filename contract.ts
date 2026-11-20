@@ -869,19 +869,8 @@ export const rpcContract = defineRpcContract({
     output: z.object({ sandbox: sandboxSchema }),
   },
   sandboxAction: {
-    // Both booleans prevent UI mistakes only; emergency deletion also requires
-    // server-verified owner chat approval, regardless of RPC caller kind.
-    input: z.object({ id: z.string(), action: z.enum(["stop", "resume", "delete"]), withoutVerifiedCleanup: z.boolean().optional(), confirmRevokeGithubToken: z.boolean().optional() }),
+    input: z.strictObject({ id: z.string(), action: z.enum(["stop", "resume", "delete"]) }),
     output: ok,
-  },
-  dismissCredentialNotice: {
-    // UI acknowledgement only. Server-side owner chat approval is the authority.
-    input: z.object({ id: z.string().min(1), confirmedTokenAction: z.literal(true) }),
-    output: ok,
-  },
-  credentialOwnerApproval: {
-    input: z.object({ action: z.enum(["delete-without-cleanup", "dismiss-token-reminder"]), id: z.string().min(1) }),
-    output: z.object({ sentence: z.string(), threadIds: z.array(z.string()) }),
   },
   /** Save a sandbox's state under a name (a project's "start from"); not for sandboxes that run bb. */
   saveSnapshot: {

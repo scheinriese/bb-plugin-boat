@@ -44,7 +44,7 @@ const allScenes = [
   "name",
   "usage",
   "credential-settings-ready",
-  "credential-emergency",
+  "credential-cleanup",
   "credential-revocation",
   "sandbox-actions",
   "running-only",

@@ -1,4 +1,5 @@
 import { createCredentialSource, createAgentRouteCheck } from "./src/credentials.ts";
+import { createRentedMachineScope } from "./src/rented-machine-scope.ts";
 import { createProviderRecovery } from "./src/provider-recovery.ts";
 import { ScalewayApi } from "./src/providers/scaleway/api.ts";
 import { ScalewayKeys } from "./src/providers/scaleway/ssh.ts";
@@ -121,7 +122,13 @@ export default async function plugin(bb: BbPluginApi) {
   const instaboxCli = new InstaboxCli(async () => resolveInstaboxBinary((await settings.get()).instaboxPath), () => providerSecrets.instaboxKey());
   const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
   const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases, enabled: () => instaboxOn, keyPresent: () => providerSecrets.instaboxKeyPresent(), secrets: async () => (await settings.get()).instaboxSecrets });
-  const machineCredentials = createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) });
+  const githubScope = createRentedMachineScope({ kv: bb.storage.kv, read: async () => ({ enabled: Boolean(await providerSecrets.rentedMachineGithubToken()), key: await providerSecrets.scalewayKey(), project: (await settings.get()).scalewayProjectId }) });
+  const scopeNotice = () => bb.log.warn("Rented-machine GitHub delivery is blocked; check the Scaleway key/project fingerprint and re-enable the GitHub-token setting if intended.");
+  providerSecrets.onGithubTokenPresenceChange(enabled => { void githubScope.tokenPresenceChanged(enabled).catch(scopeNotice); });
+  providerSecrets.onScalewayKeyChange(() => { void githubScope.configurationChanged("key").catch(scopeNotice); });
+  settings.onChange(keys => { if (keys.includes("scalewayProjectId")) void githubScope.configurationChanged("project").catch(scopeNotice); });
+  await githubScope.assertAllowed().catch(scopeNotice);
+  const machineCredentials = createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), assertDeliveryAllowed: githubScope.assertAllowed, agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) });
   const scaleway = createScalewayProvider({ credentials: machineCredentials, api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(dirname(bb.storage.database().name), "scaleway-keys")), ledger: store.macLeases });
   scaleway.configured = async () => Boolean((await settings.get()).scalewayProjectId) || providerSecrets.scalewayKeyPresent();
   let scalewayOn = Boolean((await settings.get()).scalewayProjectId);
@@ -367,7 +374,6 @@ export default async function plugin(bb: BbPluginApi) {
     sizePlan: async (options) => (await setup.reading({ force: options?.fresh === true }).catch(() => null))?.plan?.machineTypes ?? null,
     sizePlanNow: () => setup.peek()?.facts.plan?.machineTypes ?? null,
     tell: (threadId, text) => runtimeRef?.tellOrchestrator(threadId, text) ?? Promise.resolve(),
-    credentialApproval: (threadId, request) => runtimeRef?.chatApproval(threadId, request) ?? Promise.resolve({ ok: false, reason: "The owner approval reader is unavailable." }),
     resumeNote: {
       peek: (taskId) => watchdogRef?.noteFor(taskId) ?? Promise.resolve(null),
       sent: (taskId) => watchdogRef?.noteSent(taskId) ?? Promise.resolve(),
@@ -996,6 +1002,9 @@ export default async function plugin(bb: BbPluginApi) {
           keepAwake: () => sandboxProviders.get(INSTABOX_PROVIDER_ID) !== null ? keepInstaboxAwake?.() ?? Promise.resolve() : Promise.resolve(),
           warn: (line) => bb.log.warn(line),
         });
+        // Expiry can clear a reminder after the last lease has ended; refresh
+        // open page/provider reads even when there is no compute to maintain.
+        service.refreshCredentialNotices();
         try {
           await watchdog.tick();
         } catch (error) {

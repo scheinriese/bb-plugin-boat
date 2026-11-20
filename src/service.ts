@@ -1,5 +1,4 @@
-import { CLEANUP_NOTICE_PREFIX, TOKEN_REVOCATION_NOTICE_PREFIX, UNSAFE_DELETE_WARNING } from "../credential-warnings.ts";
-import { credentialApprovalSentence, type CredentialOwnerAction, type CredentialApprovalRequest, type OwnerApproval } from "./credential-approval.ts";
+import { CLEANUP_NOTICE_PREFIX, tokenExposureNotice } from "../credential-warnings.ts";
 import { createCodexHealthCheck } from "./codex-health.ts";
 import { providerFailureCard } from "../provider-failure.ts";
 import { canHostMac, macTaskResources } from "./providers/types.ts";
@@ -201,8 +200,6 @@ export interface Notification {
 }
 
 export interface ServiceHooks {
-  /** Server-owned chat reader, shared by every entry point. Missing fails closed. */
-  credentialApproval?(threadId: string, request: CredentialApprovalRequest): Promise<OwnerApproval>;
   settings(): Promise<BoatSettings>;
   /** Aborted when the plugin unloads; background work stops with it. */
   lifecycle: AbortSignal;
@@ -690,6 +687,7 @@ export class BoatService {
   private readonly codexHealth = createCodexHealthCheck();
   /** Last observed sandbox state; views never start or resume a sandbox. */
   private readonly observedSandboxStates = new Map<string, string>();
+  private credentialNoticeSnapshot = "";
   private readonly settlingReviews = new Set<string>();
 
   publicStatus(task: Task, context: StatusContext = {}): TaskPublicStatus {
@@ -2672,6 +2670,7 @@ export class BoatService {
   }
 
   private async credentialCleanupNotice(lease: MacLease, now: number): Promise<void> {
+    this.store.macLeases.recordCredentialNotice(lease.id, tokenExposureNotice(lease.machineId), now);
     const rate = new Intl.NumberFormat("en-US", { style: "currency", currency: lease.currency }).format(lease.hourPrice);
     const parts = lease.machineId.split("_");
     const text = `${CLEANUP_NOTICE_PREFIX} Scaleway Mac ${lease.machineId} keeps billing at ${rate}/hour (the 24 h minimum still applies). Restore SSH access; the plugin will retry cleanup once SSH works. To delete manually: open https://console.scaleway.com → Apple silicon → ${parts[1] ?? "the recorded zone"} → server ${parts[2] ?? lease.machineId} → Delete after the minimum. Revoke or rotate the GitHub token in GitHub because it may still be on this Mac. Ask the owner to review the Cloud agents page and decide how to recover this Mac.`;
@@ -2683,6 +2682,15 @@ export class BoatService {
     for (const task of tasks.values()) this.store.addEvent(task.id, "credential-cleanup", text);
     const threads = [...new Set([...tasks.values()].map(task => task.orchestratorThreadId).filter((id): id is string => id !== null))];
     if (this.hooks.tell) for (const thread of threads) await this.hooks.tell(thread, text).catch(() => undefined);
+  }
+
+  /** Clock-dependent reminders must refresh even with no remaining leases. */
+  refreshCredentialNotices(now = Date.now()): void {
+    const snapshot = JSON.stringify(this.store.macLeases.credentialNotices(now));
+    if (snapshot !== this.credentialNoticeSnapshot) {
+      this.credentialNoticeSnapshot = snapshot;
+      this.hooks.changed([]);
+    }
   }
 
   /** Provider-neutral minimum/rate policy. No local extension of paid time. */
@@ -3748,76 +3756,14 @@ export class BoatService {
     }
   }
 
-  credentialOwnerApproval(action: CredentialOwnerAction, id: string): CredentialApprovalRequest {
-    const notice = action === "dismiss-token-reminder" ? this.store.macLeases.credentialNotices().find(notice => notice.id === id) : undefined;
-    const lease = action === "delete-without-cleanup" ? this.store.macLeases.held(id)[0] : notice ? this.store.macLeases.list().find(lease => `token-revocation:${lease.id}` === notice.id) : undefined;
-    if (!lease || lease.provider !== "scaleway") throw new TaskError("No tracked Scaleway lease or active token reminder has that ID.", "not_found");
-    const current = this.store.orchestrators().map(row => row.threadId);
-    const tasks = new Set([...this.store.macLeases.tasks(lease.id).map(task => task.taskId), ...this.store.sandboxTasks(lease.machineId).map(task => task.id)]);
-    const attached = [...tasks].flatMap(id => { const task = this.store.get(id); return task?.orchestratorThreadId && current.includes(task.orchestratorThreadId) ? [task.orchestratorThreadId] : []; });
-    // Page-started tasks may have no orchestrator; the owner can use an existing
-    // registered orchestrator. RPC callers cannot choose a thread or approval text.
-    const threadIds = [...new Set(attached.length ? attached : current)];
-    return { kind: "credential", action, leaseId: lease.id, machineId: lease.machineId, since: Date.parse(notice?.at ?? lease.noticeAt ?? lease.startedAt), threadIds, sentence: credentialApprovalSentence(action, lease.machineId, lease.id) };
-  }
-
-  private async requireCredentialOwnerApproval(request: CredentialApprovalRequest): Promise<void> {
-    for (const threadId of request.threadIds) {
-      const approval = await this.hooks.credentialApproval?.(threadId, request);
-      if (approval?.ok) return;
-    }
-    throw new TaskError(`Owner approval required. Type this exact sentence in ${request.threadIds.length ? `the orchestrator chat (${request.threadIds.join(", ")})` : "an orchestrator chat after starting one"}, then retry within 30 minutes: ${request.sentence}`, "owner_approval_required");
-  }
-
-  async dismissCredentialNotice(id: string): Promise<void> {
-    const request = this.credentialOwnerApproval("dismiss-token-reminder", id);
-    await this.requireCredentialOwnerApproval(request);
-    const current = this.store.macLeases.credentialNotices().find(notice => notice.id === id);
-    if (current && Date.parse(current.at) !== request.since) throw new TaskError("The token reminder changed. Get fresh owner approval before dismissing it.", "owner_approval_required");
-    if (!this.store.macLeases.dismissCredentialNotice(id)) throw new TaskError("No active token reminder has that ID.", "not_found");
-    this.hooks.changed([]);
-  }
-
   /** keepPlan: a resume the plugin makes itself (a ship), not someone asking: the sandbox's retry plan stays. */
-  async sandboxAction(sandboxId: string, action: "stop" | "resume" | "delete", ttlSeconds: number, signal?: AbortSignal, options: { keepPlan?: boolean; withoutVerifiedCleanup?: boolean; confirmRevokeGithubToken?: boolean } = {}): Promise<void> {
-    const emergency = options.withoutVerifiedCleanup === true || options.confirmRevokeGithubToken === true;
-    if (emergency && (action !== "delete" || options.withoutVerifiedCleanup !== true || options.confirmRevokeGithubToken !== true)) throw new TaskError(UNSAFE_DELETE_WARNING, "confirmation_required");
+  async sandboxAction(sandboxId: string, action: "stop" | "resume" | "delete", ttlSeconds: number, signal?: AbortSignal, options: { keepPlan?: boolean } = {}): Promise<void> {
     if (this.macCleaning.has(sandboxId)) throw new TaskError("This Mac is cleaning up a failed start. Try again once cleanup finishes.", "sandbox_busy");
     if (this.isMovingSandbox(sandboxId)) {
       throw new TaskError(`A task is moving to a task chat in sandbox ${sandboxId}.`, "task_busy", "Try again once the chat is open (in about a minute).");
     }
     this.sizes.assertSandboxNotResizing(sandboxId); // sizes
     const hostId = this.hooks.chat === undefined ? null : this.store.hostForSandbox(sandboxId);
-    if (emergency) {
-      const provider = this.sandboxProvider(sandboxId);
-      if (provider.id !== "scaleway" || !provider.deleteWithoutVerifiedCleanup) throw new TaskError("Emergency deletion is available only for a managed Scaleway Mac.", "unsupported");
-      const approval = this.credentialOwnerApproval("delete-without-cleanup", sandboxId);
-      await this.requireCredentialOwnerApproval(approval);
-      await provider.deleteWithoutVerifiedCleanup(sandboxId, signal, () => {
-        const lease = this.store.macLeases.held(sandboxId)[0];
-        if (!lease || lease.id !== approval.leaseId) throw new TaskError("The lease changed. Get owner approval for the current lease before emergency deletion.", "owner_approval_required");
-        // Persist before the external DELETE so a crash or ambiguous response
-        // cannot hand hardware back without retaining the owner's reminder.
-        this.store.macLeases.recordCredentialNotice(lease.id, `${TOKEN_REVOCATION_NOTICE_PREFIX} Revoke or rotate the GitHub token in GitHub settings; it may still be on the returned Mac (${sandboxId}). Emergency deletion was requested. If its result is uncertain, check the Mac in the Scaleway console. This reminder stays until you dismiss it after taking action.`);
-        this.hooks.changed([]);
-      });
-      for (const task of this.store.sandboxTasks(sandboxId)) this.store.addEvent(task.id, "credential-warning", UNSAFE_DELETE_WARNING);
-      this.hooks.log.warn(UNSAFE_DELETE_WARNING);
-      if (hostId !== null && this.hooks.chat) {
-        for (const task of this.store.liveSandboxTasks(sandboxId)) for (const thread of this.store.chatThreads(task.id)) await this.hooks.chat.archive(thread).catch(() => undefined);
-        try { await this.hooks.chat.removeMachine(hostId); }
-        catch (error) {
-          // Hardware deletion succeeded. Core's machine cleanup may briefly see
-          // a stale server after its ownership key and active lease are gone.
-          if ((error as { code?: string }).code !== "unmanaged_server") throw error;
-          this.hooks.log.warn("Scaleway hardware was deleted; bb machine removal may retry while the provider listing converges.");
-        }
-        await this.dropMachineSources(hostId);
-      }
-      this.store.expirePreviewsForSandbox(sandboxId);
-      this.observedSandboxStates.set(sandboxId, "deleted");
-      return;
-    }
     // Asked for explicitly: the sandbox's retry plan starts over (src/wake-retry.ts).
     if (action === "resume" && options.keepPlan !== true) await this.hooks.wakes?.forget(sandboxId);
     if (hostId === null) {

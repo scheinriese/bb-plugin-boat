@@ -1,4 +1,4 @@
-import { CLEANUP_NOTICE_PREFIX, CREDENTIAL_RISKS_URL } from "../../../credential-warnings.ts";
+import { CLEANUP_NOTICE_PREFIX, CREDENTIAL_RISKS_URL, tokenExposureNotice } from "../../../credential-warnings.ts";
 import type { MachineExecutor } from "@get-bb/plugin-sdk";
 import { createCredentialSource, type CredentialSource } from "../../credentials.ts";
 import { setTimeout as delay } from "node:timers/promises";
@@ -82,7 +82,13 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
         // failure or process restart must not turn an uncertain delivery into none.
         await keys.save({ ...record, credentialDeliveryAttempted: true, pluginGithubAttempted: true });
         return executor(id).exec(request);
-      } }, signal);
+      } }, signal, false, async expiresAt => {
+        const lease = ledger.held(id)[0];
+        if (!lease) throw fail("A tracked lease is required before GitHub delivery.", "lease_missing");
+        const record = await keyFor(server);
+        if (record?.credentialDeliveryAttempted !== false && !ledger.hasGithubDeliveryRecord(lease.id)) ledger.recordUnknownGithubExpiry(lease.id);
+        ledger.recordGithubDelivery(lease.id, expiresAt);
+      });
     });
   }
   async function cleanupCredentials(id: string, signal?: AbortSignal, pluginOnly = false) {
@@ -91,17 +97,21 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     const record = (await keys.records()).find(record => record.serverId === uuid(id));
     if (pluginOnly && record?.pluginGithubAttempted !== true) return;
     if (!pluginOnly && record?.credentialDeliveryAttempted === false && !record.localLoginsObserved) return;
-    if (pluginOnly) await credentials.cleanupGithub(id, executor(id), signal);
-    else await credentials.cleanup(id, executor(id), signal);
+    try {
+      if (pluginOnly) await credentials.cleanupGithub(id, executor(id), signal);
+      else await credentials.cleanup(id, executor(id), signal);
+    } catch (error) {
+      for (const lease of ledger.held(id)) ledger.recordCredentialNotice(lease.id, tokenExposureNotice(id));
+      throw error;
+    }
     if (record) await keys.save({ ...record, pluginGithubAttempted: false, credentialDeliveryAttempted: pluginOnly ? record.localLoginsObserved === true : false });
   }
-  async function deleteMachine(id: string, signal?: AbortSignal, endOptions?: { leaseEndReason?: "handed back" | "deleted" | "failed"; leaseEndAt?: number }, withoutCleanup = false, beforeDelete?: () => void) {
+  async function deleteMachine(id: string, signal?: AbortSignal, endOptions?: { leaseEndReason?: "handed back" | "deleted" | "failed"; leaseEndAt?: number }) {
     let server: Server;
     try { server = await raw(id,signal); } catch (error) { if (!isNotFound(error)) throw error; return; }
     await view(server,signal);
     if (Date.now() < Date.parse(server.deletable_at)) throw fail("Scaleway cannot release this Mac before its 24 h minimum ends.", "minimum_lease");
-    if (!withoutCleanup) await cleanupCredentials(id, signal);
-    beforeDelete?.();
+    await cleanupCredentials(id, signal);
     await api.request("DELETE", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, undefined, signal);
     const record = await keyFor(server);
     if (record) await forgetKey(record,signal);
@@ -206,7 +216,12 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
         catch (error) { if (!isNotFound(error)) throw error; }
       }
       if (found) { if (!record.serverId && reconcile) { await keyFor(found); recovered++; } }
-      else if (reconcile) { await forgetKey(record,signal); cleared++; }
+      else {
+        if (record.serverId && (record.credentialDeliveryAttempted !== false || record.localLoginsObserved)) for (const lease of ledger.held()) {
+          if (lease.provider === "scaleway" && lease.machineId.endsWith(`_${record.serverId}`)) ledger.recordCredentialNotice(lease.id, tokenExposureNotice(lease.machineId));
+        }
+        if (reconcile) { await forgetKey(record,signal); cleared++; }
+      }
     }
     const ids = new Set(records.map(record => record.serverId).filter(Boolean));
     const names = new Set(records.filter(record => !record.serverId).map(record => `${NAME_PREFIX}${record.token}`));
@@ -268,12 +283,13 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
         else if(code!=="provider_unavailable")detail="Check Scaleway secret key and project access";
       }
       const github = await credentials.githubConfigured();
+      const githubProblem = github ? await credentials.githubDeliveryProblem?.() : null;
       const routes = await Promise.all((["claude", "codex"] as const).map(agent => credentials.agentAvailable(agent, signal)));
       const agent = routes.some(Boolean);
       return { steps: [
         {id:"api",label:"API access",done:accepted,possible:true,detail},
         {id:"project",label:"Project found",done:project,possible:true,detail:project ? "Paris Apple silicon" : detail},
-        {id:"rented-github",required:false,label:"GitHub token stored",done:github,possible:true,detail:github ? "Selected repository access is checked before rental; optional for tasks without a repo" : "Only repository tasks need GitHub token for rented machines in bb secret settings: selected repos; Contents, Pull requests and Workflows read and write; 90-day expiry"},
+        {id:"rented-github",required:false,label:"GitHub token stored",done:github && !githubProblem,possible:true,detail:githubProblem ?? (github ? "Selected repository access and the Scaleway account fingerprint are checked before delivery; optional for tasks without a repo" : "Only repository tasks need GitHub token for rented machines in bb secret settings: selected repos; Contents, Pull requests and Workflows read and write; 90-day expiry")},
         {id:"agent-route",label:"Agent route available",done:agent,possible:true,docsUrl:CREDENTIAL_RISKS_URL,detail:(agent ? `Account Pooler via bb Connect: ${[routes[0] ? "Claude" : "", routes[1] ? "Codex" : ""].filter(Boolean).join(", ")}. ` : "Enable an available agent route and bb Connect. ") + "Any process on the Mac can use your pooled AI quota until bb removes the machine. Held local Keychain logins need separate verification."},
         {id:"logins",label:"Logins on fresh Macs",done:agent,possible:true,detail:agent ? "Agent traffic through the owner server; repository tasks also need the GitHub token" : "Complete the agent route check above"},
         {id:"enabled",label:"On",done:accepted && project && agent,possible:true,detail:"Credentials are checked for the chosen agent and repositories before rental"},
@@ -355,7 +371,6 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     waitReady: prepare,
     async create(input) { const server = await provider.allocate!(input); return prepare(server.id,input.signal); },
     delete: (id, signal, endOptions) => withCredentialsLock(id, () => deleteMachine(id, signal, endOptions)),
-    deleteWithoutVerifiedCleanup: (id, signal, beforeDelete) => withCredentialsLock(id, () => deleteMachine(id, signal, undefined, true, beforeDelete)),
     scheduleLeaseRelease: (id, at, signal) => withCredentialsLock(id, async () => {
       const server = await raw(id,signal);
       await view(server,signal);

@@ -489,9 +489,6 @@ export function buildCli(runtime: Runtime) {
         },
         async run({ positionals, options }, ctx) {
           return guard(async () => {
-            // Reject legacy flags explicitly even if a caller bypasses CLI parsing.
-            const legacyOptions: Record<string, unknown> = { ...options };
-            if (legacyOptions["without-verified-cleanup"] || legacyOptions["confirm-revoke-github-token"]) throw new PluginCliError("Emergency deletion is available only to the owner on the Cloud agents page. Ask the owner to review the cleanup notice there.", { code: "owner_action_required" });
             const live = service.store.liveSandboxTasks(positionals.id);
             if (live.length > 0 && !options.force) {
               throw new PluginCliError(`Open tasks use ${positionals.id}: ${live.map((task) => task.id).join(", ")}.`, {

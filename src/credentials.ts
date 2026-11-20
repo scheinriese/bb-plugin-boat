@@ -42,10 +42,11 @@ for file in "$HOME/.claude/.credentials.json" "$HOME/.codex/auth.json"; do test 
 
 export interface CredentialSource {
   githubConfigured(): Promise<boolean>;
+  githubDeliveryProblem?(): Promise<string | null>;
   agentAvailable(agent: Provider, signal?: AbortSignal): Promise<boolean>;
   assertGithubAccess(repos: readonly string[], signal?: AbortSignal): Promise<void>;
   assertReady(agent: Provider, repos: readonly string[], signal?: AbortSignal): Promise<void>;
-  ensureGithub(id: string, executor: MachineExecutor, signal?: AbortSignal, force?: boolean): Promise<string | null>;
+  ensureGithub(id: string, executor: MachineExecutor, signal?: AbortSignal, force?: boolean, beforeDelivery?: (expiresAt: string) => void | Promise<void>): Promise<string | null>;
   cleanupGithub(id: string, executor: MachineExecutor, signal?: AbortSignal): Promise<void>;
   cleanup(id: string, executor: MachineExecutor, signal?: AbortSignal): Promise<void>;
 }
@@ -74,6 +75,7 @@ export function createAgentRouteCheck(bb: Pick<BbPluginApi, "sdk">, connect: Con
 export function createCredentialSource(options: {
   githubToken(): Promise<string | null>;
   agentAvailable(agent: Provider, signal?: AbortSignal): Promise<boolean>;
+  assertDeliveryAllowed?(): Promise<void>;
   fetch?: typeof fetch;
   now?: () => number;
 }): CredentialSource {
@@ -117,19 +119,26 @@ export function createCredentialSource(options: {
   }
   const source: CredentialSource = {
     async githubConfigured() { try { await token(); return true; } catch { return false; } },
+    async githubDeliveryProblem() {
+      try { await options.assertDeliveryAllowed?.(); return null; }
+      catch (error) { return (error as {code?:string} | null)?.code === "task_credentials_missing" ? (error as Error).message : "GitHub delivery is blocked because the Scaleway account fingerprint could not be verified."; }
+    },
     agentAvailable: options.agentAvailable,
-    async assertGithubAccess(repos, signal) { await access(await token(), repos, signal); },
+    async assertGithubAccess(repos, signal) { await options.assertDeliveryAllowed?.(); await access(await token(), repos, signal); },
     async assertReady(agent, repos, signal) {
       if (repos.length) await source.assertGithubAccess(repos, signal);
       if (!(await options.agentAvailable(agent, signal))) throw problem(`Task credentials are not configured for ${agent}. Enable an available ${agent} route in Account Pooler and bb Connect on the owner server. Nothing was rented.`);
     },
-    async ensureGithub(id, executor, signal, force = false) {
+    async ensureGithub(id, executor, signal, force = false, beforeDelivery) {
+      await options.assertDeliveryAllowed?.();
       const value = await token();
       const fingerprint = createHash("sha256").update(value).digest("hex");
       const previous = delivered.get(id);
-      if (!force && previous?.fingerprint === fingerprint && Date.parse(previous.expiresAt) - now() > REFRESH_MARGIN) return previous.expiresAt;
+      if (!force && previous?.fingerprint === fingerprint && Date.parse(previous.expiresAt) - now() > REFRESH_MARGIN) { await beforeDelivery?.(previous.expiresAt); return previous.expiresAt; }
       delivered.delete(id);
       const expiry = await access(value, [], signal);
+      await options.assertDeliveryAllowed?.();
+      await beforeDelivery?.(expiry);
       if (!(await execute(executor, ["bash", "-c", GITHUB_LOGIN_SCRIPT], `${value}\n`, signal))) {
         // A shared machine may still serve other tasks. Its lifecycle owner
         // records the attempt and cleans up once no live task needs its logins.

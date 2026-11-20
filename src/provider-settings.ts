@@ -5,6 +5,7 @@
 // INSTABOX_API_KEY variable of its CLI, the X-API-Key header of its API).
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { SECRET_SETTINGS } from "./settings.ts";
+import { scopeFingerprint } from "./rented-machine-scope.ts";
 
 export interface ProviderSecrets {
   rentedMachineGithubToken(): Promise<string | null>;
@@ -16,6 +17,8 @@ export interface ProviderSecrets {
   instaboxKeyPresent(): boolean;
   /** After the owner stores, changes or removes a key. */
   onChange(listener: () => void): void;
+  onGithubTokenPresenceChange(listener: (configured: boolean) => void): void;
+  onScalewayKeyChange(listener: () => void): void;
 }
 
 export async function defineProviderSecrets(bb: Pick<BbPluginApi, "settings">): Promise<ProviderSecrets> {
@@ -23,6 +26,8 @@ export async function defineProviderSecrets(bb: Pick<BbPluginApi, "settings">): 
   let present = false;
   let scalewayPresent = false;
   const listeners: (() => void)[] = [];
+  const tokenListeners: ((configured: boolean) => void)[] = [];
+  const keyListeners: (() => void)[] = [];
   const read = async (): Promise<string | null> => {
     const values = await handle.get();
     const key = typeof values.instaboxApiKey === "string" ? values.instaboxApiKey.trim() : "";
@@ -31,7 +36,14 @@ export async function defineProviderSecrets(bb: Pick<BbPluginApi, "settings">): 
     return present ? key : null;
   };
   await read().catch(() => { present = false; scalewayPresent = false; return null; });
-  handle.onChange(() => {
+  handle.onChange((next, previous) => {
+    if (next && previous) {
+      const configured = typeof next.rentedMachineGithubToken === "string" && next.rentedMachineGithubToken.trim() !== "";
+      const wasConfigured = typeof previous.rentedMachineGithubToken === "string" && previous.rentedMachineGithubToken.trim() !== "";
+      const keyHash = (value: unknown) => scopeFingerprint(typeof value === "string" ? value.trim() : "");
+      if (keyHash(next.scalewaySecretKey) !== keyHash(previous.scalewaySecretKey)) for (const listener of keyListeners) listener();
+      if (configured !== wasConfigured) for (const listener of tokenListeners) listener(configured);
+    }
     void read()
       .catch(() => { present = false; scalewayPresent = false; })
       .then(() => {
@@ -53,5 +65,7 @@ export async function defineProviderSecrets(bb: Pick<BbPluginApi, "settings">): 
     instaboxKey: read,
     instaboxKeyPresent: () => present,
     onChange: (listener) => void listeners.push(listener),
+    onGithubTokenPresenceChange: (listener) => void tokenListeners.push(listener),
+    onScalewayKeyChange: (listener) => void keyListeners.push(listener),
   };
 }

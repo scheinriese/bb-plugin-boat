@@ -13,7 +13,8 @@ export const MAC_LEASE_MIGRATIONS = [
 ];
 // Appended separately in TaskStore.migrations so prior migration indexes stay stable.
 export const MAC_CREDENTIAL_NOTICES_MIGRATION = `CREATE TABLE mac_credential_notices (lease_id TEXT PRIMARY KEY REFERENCES mac_leases(id), created_at TEXT NOT NULL, text TEXT NOT NULL, dismissed_at TEXT)`;
-export interface MacCredentialNotice { id: string; provider: string; machineId: string; at: string; text: string }
+export const MAC_CREDENTIAL_EXPIRIES_MIGRATION = `CREATE TABLE mac_credential_expiries (lease_id TEXT PRIMARY KEY REFERENCES mac_leases(id), expires_at TEXT, unknown_expiry INTEGER NOT NULL DEFAULT 0)`;
+export interface MacCredentialNotice { id: string; provider: string; machineId: string; at: string; text: string; expiresAt: string | null }
 export type MacWorkOutcome = "clean" | "shipped" | "discarded" | "unshipped" | "unknown";
 export interface MacLease {
   id: string; provider: string; machineId: string; size: string; startedAt: string; paidUntil: string;
@@ -72,17 +73,24 @@ export class MacLeaseLedger {
     if (pageText !== null) this.db().prepare(`UPDATE mac_leases SET notice_text=? WHERE id=? AND ended_at IS NULL`).run(pageText,id);
     return this.db().prepare(`UPDATE mac_leases SET notice_at=?,notice_text=COALESCE(?,notice_text) WHERE id=? AND ended_at IS NULL AND (?=1 OR notice_at IS NULL OR (?=1 AND notice_at<=?))`).run(iso(now),pageText,id,immediate ? 1 : 0,repeat ? 1 : 0,iso(now-LEASE_DAY_MS)).changes > 0;
   }
-  /** Independent of lease state: ending/reconciling compute must not dismiss a token reminder. */
+  /** Record before stdin can reach a machine, including uncertain deliveries.
+   * Rotation cannot shorten the lifetime of an older potentially exposed token. */
+  recordGithubDelivery(id: string, expiresAt: string): void {
+    if (!Number.isFinite(Date.parse(expiresAt))) throw new Error("Invalid GitHub token expiry");
+    this.db().prepare(`INSERT INTO mac_credential_expiries (lease_id,expires_at) VALUES (?,?) ON CONFLICT(lease_id) DO UPDATE SET expires_at=MAX(COALESCE(expires_at,excluded.expires_at),excluded.expires_at)`).run(id,iso(Date.parse(expiresAt)));
+  }
+  hasGithubDeliveryRecord(id: string): boolean { return Boolean(this.db().prepare(`SELECT 1 FROM mac_credential_expiries WHERE lease_id=?`).get(id)); }
+  recordUnknownGithubExpiry(id: string): void {
+    this.db().prepare(`INSERT INTO mac_credential_expiries (lease_id,unknown_expiry) VALUES (?,1) ON CONFLICT(lease_id) DO UPDATE SET unknown_expiry=1`).run(id);
+  }
+  /** Independent of lease state: compute release and settings writes cannot clear it. */
   recordCredentialNotice(id: string, text: string, now = Date.now()): void {
-    this.db().prepare(`INSERT INTO mac_credential_notices (lease_id,created_at,text) VALUES (?,?,?) ON CONFLICT(lease_id) DO UPDATE SET created_at=excluded.created_at,text=excluded.text,dismissed_at=NULL`).run(id,iso(now),text);
+    this.db().prepare(`INSERT INTO mac_credential_notices (lease_id,created_at,text) VALUES (?,?,?) ON CONFLICT(lease_id) DO UPDATE SET text=excluded.text`).run(id,iso(now),text);
   }
-  credentialNotices(): MacCredentialNotice[] {
-    return this.db().prepare(`SELECT 'token-revocation:' || n.lease_id AS id,l.provider,l.machine_id AS machineId,n.created_at AS at,n.text FROM mac_credential_notices n JOIN mac_leases l ON l.id=n.lease_id WHERE n.dismissed_at IS NULL ORDER BY n.created_at,n.lease_id`).all() as MacCredentialNotice[];
-  }
-  dismissCredentialNotice(id: string, now = Date.now()): boolean {
-    if (!id.startsWith("token-revocation:")) return false;
-    const leaseId = id.slice("token-revocation:".length);
-    return this.db().prepare(`UPDATE mac_credential_notices SET dismissed_at=? WHERE lease_id=? AND dismissed_at IS NULL`).run(iso(now),leaseId).changes > 0;
+  credentialNotices(now = Date.now()): MacCredentialNotice[] {
+    // Ignore the retired dismissed_at field, including reminders dismissed by
+    // older versions. Only recorded expiry can make an exposure reminder safe.
+    return this.db().prepare(`SELECT 'token-revocation:' || n.lease_id AS id,l.provider,l.machine_id AS machineId,n.created_at AS at,n.text,CASE WHEN e.unknown_expiry=1 THEN NULL ELSE e.expires_at END AS expiresAt FROM mac_credential_notices n JOIN mac_leases l ON l.id=n.lease_id LEFT JOIN mac_credential_expiries e ON e.lease_id=n.lease_id WHERE e.unknown_expiry=1 OR e.expires_at IS NULL OR e.expires_at>? ORDER BY n.created_at,n.lease_id`).all(iso(now)) as MacCredentialNotice[];
   }
   private billableEnd(lease: MacLease, now: number): number {
     const minimumEnd = Date.parse(lease.paidUntil);

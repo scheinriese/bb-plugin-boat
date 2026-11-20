@@ -58,7 +58,6 @@ import { START_QUEUE_TAG } from "../contract-start-queue.ts";
 import { CONTINUATION_GOAL, continuationGoalSchema, continuationGoalText, readContinuationGoal, type ContinuationGoal } from "./goal-handoff.ts";
 import type { ProviderState } from "./provider-status.ts";
 import type { InstaboxSetupStatus } from "./providers/instabox/setup.ts";
-import { credentialChatApproval, type CredentialApprovalRequest } from "./credential-approval.ts";
 
 /** How a caller names a project: a configured one, or a local bb project. */
 export type ProjectRef = { kind: "boat"; id: string } | { kind: "local"; bbProjectId: string };
@@ -122,10 +121,8 @@ export interface Runtime {
    * enough, and worker output can't produce a user message.) `discard`:
    * throwing unshipped work away; a ship's refusal says when a newer turn
    * needs a new OK.
-   * Credential actions instead require an exact, recent owner sentence and
-   * core message provenance for the server-selected lease and orchestrators.
    */
-  chatApproval(threadId: string | null | undefined, task: Task | CredentialApprovalRequest, action?: "ship" | "discard"): Promise<{ ok: boolean; reason: string }>;
+  chatApproval(threadId: string | null | undefined, task: Task, action?: "ship" | "discard"): Promise<{ ok: boolean; reason: string }>;
   /** Tell an orchestrator something (a ship from the overview, …). */
   tellOrchestrator(threadId: string, text: string): Promise<void>;
   /** A chat in a hand-over: worker notices wait for its successor. */
@@ -764,8 +761,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
   }
 
   /** A chat being handed over (asked for its note, or mid-switch): notices wait for the successor. */
-  async function chatApproval(threadId: string | null | undefined, task: Task | CredentialApprovalRequest, action: "ship" | "discard" = "ship"): Promise<{ ok: boolean; reason: string }> {
-    if ("kind" in task) return credentialChatApproval(bb, threadId, task);
+  async function chatApproval(threadId: string | null | undefined, task: Task, action: "ship" | "discard" = "ship"): Promise<{ ok: boolean; reason: string }> {
     const taskId = task.id;
     if (!threadId) return { ok: false, reason: "only the task's orchestrator chat can ship or discard it (or the user, with the buttons on the overview)" };
     if (threadId !== task.orchestratorThreadId) return { ok: false, reason: "this chat isn't the task's orchestrator" };

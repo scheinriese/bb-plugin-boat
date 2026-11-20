@@ -174,8 +174,13 @@ test("token reminders survive lease end, reconciliation, database reopen and unr
   ledger.end("scaleway:test","deleted",at+LEASE_DAY_MS);ledger.clearNotice("scaleway:test");ledger.reconcile("scaleway",new Set());
   db.close();db=new DatabaseSync(path);t.after(()=>db.close());ledger=new MacLeaseLedger(()=>db as unknown as Database.Database);
   assert.equal(ledger.held().length,0);assert.deepEqual(ledger.credentialNotices(),[first]);
-  assert.equal(ledger.dismissCredentialNotice("scaleway:test"),false,"ordinary lease ids cannot dismiss token reminders");
-  assert.equal(ledger.dismissCredentialNotice(first.id),true);assert.deepEqual(ledger.credentialNotices(),[]);
+  ledger.recordGithubDelivery("scaleway:test",new Date(at+2*LEASE_DAY_MS).toISOString());
+  ledger.recordGithubDelivery("scaleway:test",new Date(at+LEASE_DAY_MS).toISOString());
+  assert.equal(ledger.credentialNotices(at+2*LEASE_DAY_MS-1).length,1,"rotation must not shorten an older token's expiry");
+  assert.deepEqual(ledger.credentialNotices(at+2*LEASE_DAY_MS),[],"only expiry clears the reminder");
+  ledger.recordUnknownGithubExpiry("scaleway:test");
+  assert.equal(ledger.credentialNotices(at+1000*LEASE_DAY_MS).length,1,"unknown historical expiry remains unknown after redelivery");
+  db.prepare(`UPDATE mac_credential_notices SET dismissed_at=?`).run(new Date(at).toISOString());
   db.close();db=new DatabaseSync(path);ledger=new MacLeaseLedger(()=>db as unknown as Database.Database);
-  assert.deepEqual(ledger.credentialNotices(),[],"dismissal also persists");
+  assert.equal(ledger.credentialNotices(at+1000*LEASE_DAY_MS).length,1,"legacy dismissal cannot clear a token reminder");
 });

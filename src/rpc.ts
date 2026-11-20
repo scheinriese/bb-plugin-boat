@@ -921,17 +921,17 @@ export function registerRpc(runtime: Runtime): void {
 
     saveSnapshot: ({ sandboxId, name }) => refuse(async () => { const saved = await service.saveSnapshot(sandboxId, name); runtime.changed(); return saved; }),
 
-    sandboxAction: ({ id, action, withoutVerifiedCleanup, confirmRevokeGithubToken }) =>
+    sandboxAction: ({ id, action }) =>
       refuse(async () => {
         if (action !== "delete") {
           const settings = await service.settings();
           const { limits } = await service.capacity(undefined, id);
           const hours = autoStopHours(settings.sandboxTtlHours, limits?.autoStopCapHours ?? null);
-          await service.sandboxAction(id, action, Math.round(hours * 3600), undefined, { withoutVerifiedCleanup, confirmRevokeGithubToken });
+          await service.sandboxAction(id, action, Math.round(hours * 3600));
         }
         else {
           const live = service.store.liveSandboxTasks(id);
-          await service.sandboxAction(id, "delete", 0, undefined, { withoutVerifiedCleanup, confirmRevokeGithubToken });
+          await service.sandboxAction(id, "delete", 0);
           for (const task of live) {
             service.store.update(task.id, { status: "cancelled", finishedAt: new Date().toISOString() });
             service.store.expirePreviews(task.id);
@@ -941,14 +941,6 @@ export function registerRpc(runtime: Runtime): void {
         runtime.changed();
         return { ok: true as const };
       }),
-
-    credentialOwnerApproval: ({ action, id }) => refuse(async () => service.credentialOwnerApproval(action, id)),
-
-    dismissCredentialNotice: ({ id }) => refuse(async () => {
-      await service.dismissCredentialNotice(id);
-      runtime.changed();
-      return { ok: true as const };
-    }),
 
     startOrchestrator: (input) =>
       refuse(async () => {
