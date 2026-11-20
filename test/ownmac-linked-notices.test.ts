@@ -33,3 +33,20 @@ test("the original approval exposes recorded minimum and handback without claimi
   assert.equal(notice.answer,"rent","native approval remains consumed");
   assert.equal(notice.replacementId,linked.id);
 });
+
+test("a failed linked task cannot borrow a later physical lease's billing terms",async()=>{
+  const {store,source,linked}=await fixture();
+  const old={id:`instabox:${linked.sandboxId}:fake-old:${Date.parse("2030-01-01T12:00:00Z")}`,provider:"instabox",machineId:linked.sandboxId!,size:"m2",startedAt:"2030-01-01T12:00:00Z",paidUntil:"2030-01-02T12:00:00Z",minimumCost:10.8,hourPrice:.45,currency:"USD",cpus:8,memoryMiB:12288};
+  store.macLeases.record(old);store.macLeases.end(old.id,"handed back",Date.parse(old.paidUntil));
+  store.macLeases.record({...old,id:`instabox:${linked.sandboxId}:fake-new:${Date.parse("2030-01-03T12:00:00Z")}`,startedAt:"2030-01-03T12:00:00Z",paidUntil:"2030-01-04T12:00:00Z",minimumCost:20,hourPrice:1});
+  store.addOwnMacEvent(linked.id,"ownmac-allocation","Fake physical allocation",{machineId:linked.sandboxId,provider:"instabox",leaseId:"fake-old"});
+  const notice=ownMacTaskNotice(store,source)!;
+  assert.equal(notice.linkedTask?.lease?.minimumCost,10.8);
+  assert.equal(notice.linkedTask?.lease?.paidUntil,old.paidUntil);
+  store.addOwnMacEvent(linked.id,"ownmac-allocation","Precise physical allocation",{machineId:linked.sandboxId,provider:"instabox",leaseId:"fake-old",startedAt:old.startedAt,ledgerLeaseId:old.id});
+  assert.equal(ownMacTaskNotice(store,source)!.linkedTask?.lease?.paidUntil,old.paidUntil);
+  store.addOwnMacEvent(linked.id,"ownmac-allocation","Unknown precise identity must not fall back",{machineId:linked.sandboxId,provider:"instabox",ledgerLeaseId:"instabox:missing-physical-lease"});
+  assert.equal(ownMacTaskNotice(store,source)!.linkedTask?.lease,undefined);
+  store.addOwnMacEvent(linked.id,"ownmac-allocation","Legacy allocation lacks physical identity",{machineId:linked.sandboxId,provider:"instabox"});
+  assert.equal(ownMacTaskNotice(store,source)!.linkedTask?.lease,undefined,"ambiguous history must remain unconfirmed");
+});

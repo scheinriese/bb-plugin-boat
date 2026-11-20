@@ -41,14 +41,25 @@ export function ownMacTaskNotice(
   } | null;
   const fallback = data(store, task.id, "ownmac-fallback");
   const linked = answer?.replacementId ? store.get(answer.replacementId) : null;
-  const allocation = linked ? data(store, linked.id, "ownmac-allocation") as {machineId?:unknown;provider?:unknown;leaseId?:unknown}|null : null;
+  const allocation = linked ? data(store, linked.id, "ownmac-allocation") as {machineId?:unknown;provider?:unknown;leaseId?:unknown;ledgerLeaseId?:unknown;startedAt?:unknown}|null : null;
   const machineId = linked?.sandboxId ?? (typeof allocation?.machineId === "string" ? allocation.machineId : null);
-  // Prefer this task's attachment over the machine's later rental. An ended
-  // local row is still useful evidence; it does not confirm provider handback.
+  // Bind billing facts to this task's physical allocation. A later lease on
+  // the same VM must never become the failed task's apparent paid minimum.
   const snapshot = linked && machineId ? store.macLeases.snapshot() : null;
+  const history = snapshot?.leases.filter(entry => entry.machineId === machineId && entry.provider === linked?.sandboxProvider) ?? [];
   const attached = snapshot?.tasks.find(entry => entry.taskId === linked?.id)?.leaseId;
-  const lease = snapshot?.leases.find(entry => entry.id === (attached ?? allocation?.leaseId))
-    ?? snapshot?.leases.filter(entry => entry.machineId === machineId && entry.provider === linked?.sandboxProvider).at(-1);
+  const exactId = attached ?? (typeof allocation?.ledgerLeaseId === "string" ? allocation.ledgerLeaseId : undefined);
+  let candidates = exactId ? history.filter(entry => entry.id === exactId) : history;
+  if (!exactId && typeof allocation?.leaseId === "string") {
+    const raw = allocation.leaseId;
+    candidates = candidates.filter(entry => entry.id === `instabox:${raw}` || entry.id.startsWith(`instabox:${machineId}:${raw}:`));
+  }
+  const allocationStart = typeof allocation?.startedAt === "string" ? Date.parse(allocation.startedAt) : null;
+  if (allocationStart !== null) candidates = candidates.filter(entry => Date.parse(entry.startedAt) === allocationStart);
+  if ((typeof allocation?.machineId === "string" && allocation.machineId !== machineId) || (typeof allocation?.provider === "string" && allocation.provider !== linked?.sandboxProvider)) candidates = [];
+  // Older allocations may lack a physical identity. Only a unique historical
+  // row is usable then; ambiguous or missing evidence stays unconfirmed.
+  const lease = candidates.length === 1 ? candidates[0] : undefined;
   const linkedTask = linked ? {
     taskId: linked.id, status: linked.status, turns: linked.turns, error: linked.error,
     machineId,
