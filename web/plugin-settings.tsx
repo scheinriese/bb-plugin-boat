@@ -1,3 +1,4 @@
+import { ClaudeDesignSetting } from "./claude-design";
 import { hours as providerHours } from "./provider-format";
 // The plugin's own settings sections (Settings → Plugins → Boat Cloud
 // Agents, below bb's list): Setup, Usage limits, Models, Orchestrators
@@ -599,6 +600,7 @@ function EverydaySettingRow({ row, saver, sizes, master }: { row: SettingDto; sa
       : (row.options ?? []).map((option) => ({...option, label: row.key === "machineType" ? option.label.split(" (")[0]! : option.label}));
     control = <Select value={String(row.value)} disabled={disabled} onValueChange={(value) => void saver.run(row.key, row.key === "stopIdleAfterMinutes" ? Number(value) : value)}><SelectTrigger id={id} aria-label={label} className={selectClass}><SelectValue /></SelectTrigger><SelectContent>{options.map((option) => <SelectItem key={option.value} value={option.value} disabled={row.key === "machineType" && sizes?.some((size) => size.type === option.value && !size.available) && option.value !== row.value}>{option.label}</SelectItem>)}</SelectContent></Select>;
   } else control = <Input id={id} aria-label={label} type="number" min={row.min ?? undefined} max={row.max ?? undefined} value={draft ?? String(row.value)} disabled={disabled} className={selectClass} onChange={(event) => setDraft(event.target.value)} onBlur={() => { if (draft !== null && Number(draft) !== row.value) void saver.run(row.key, draft.trim() === "" ? null : Number(draft)); setDraft(null); }} />;
+  if (row.key === "preferClaudeForDesign") return <div><ClaudeDesignSetting checked={row.value === true} disabled={disabled} onChange={checked=>void saver.run(row.key,checked)}/>{error && <p role="alert" className="px-3.5 text-xs text-destructive">{error}</p>}</div>;
   return <div className="flex items-start gap-6 px-3.5 py-3"><div className="min-w-0 flex-1"><label htmlFor={id} className="block text-[13px] font-normal leading-[18px] text-[var(--boat-label)]">{label}</label><p className="mt-0.5 text-xs leading-[17px] text-muted-foreground">{description}</p>{error ? <p role="alert" className="mt-1 text-xs text-[#E06C6C]">{error}</p> : null}</div><div className="shrink-0">{control}</div></div>;
 }
 

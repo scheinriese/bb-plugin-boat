@@ -1,3 +1,4 @@
+import { TaskDesignControl } from "./design-task-control";
 import { LiveOwnMacNotices } from "./own-mac-live";
 import { runsOnDetail } from "./providers-logic";
 import { RunsOnLine } from "./providers";
@@ -104,7 +105,7 @@ export function ThreadSegmentSummary({ threadId, isExpanded, onToggle }: Experim
   </button>;
 }
 /** SDK action renders at the row end, after all native segments. */
-export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentProps){
+export function ThreadSegmentAction({threadId,onToggle,isExpanded}:ExperimentalThreadContextSegmentProps){
   const {data}=useBoard(threadId);const own=useThreadTask(threadId);
   const power=useSandboxPower(own?.sandboxId ? threadId : "");
   const setup=useSetup().data;
@@ -117,8 +118,10 @@ export function ThreadSegmentAction({threadId}:ExperimentalThreadContextSegmentP
   if(queued.length){
     return <UsageLink className="boat-ui ml-auto hidden text-[12px] text-[#FC8C45] md:inline">{relay?.agents.filter(agent=>agent.usedPercent!==null).map(agent=>`${agent.provider==='claude'?'Claude':'Codex'} ${Math.round(agent.usedPercent!)}%`).join(' · ')||'Running work continues'}</UsageLink>;
   }
+  if (own && (own.designClaudePreference || own.claudePaidContinuation || own.claudePaidContinuationRevoked))
+    return <button type="button" onClick={onToggle} aria-expanded={isExpanded} className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground hover:underline" title="Open this task’s provider preference and paid continuation controls"><AgentLogo provider="claude" className="size-3"/>{own.claudePaidContinuationRevoked ? "Claude paid permission revoked" : own.claudePaidContinuation ? "Claude paid continuation approved" : "Claude preferred for design"}</button>;
   if((own?.provider??currentAgent)==='claude'&&relay?.paidClaudeAvailable)
-    return <UsageLink className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title="Included allowances are near their limits. Automatic Claude extra usage is authorized; Claude's billing controls apply. Harbormaster cannot read your money balance."><AgentLogo provider="claude" className="size-3"/>Claude extra usage available</UsageLink>;
+    return <UsageLink className="boat-ui ml-auto inline-flex items-center gap-1.5 text-[12px] text-muted-foreground" title="Included allowances are near their limits. Automatic Claude extra usage is authorized; Claude's billing controls apply. Harbormaster cannot read your money balance."><AgentLogo provider="claude" className="size-3"/>Claude paid attempts authorized</UsageLink>;
   if((own?.provider??currentAgent)==='claude'&&relay?.paidClaudeFallback&&usage?.provider==='claude'&&usage.usedPercent!==null&&usage.usedPercent>=relay.switchAtPercent){
     const line=claudeExtraUsageLine(relay.claudeExtraUsage,false);
     return <UsageLink className="boat-ui ml-auto hidden items-center gap-1.5 text-[12px] text-muted-foreground md:inline-flex" title={`${line}. Harbormaster sees only allowed or blocked, never a balance or spending cap.`}><AgentLogo provider="claude" className="size-3"/>{line.replace(/^Claude extra usage: /,'Claude extra usage ').replace(' by the Account Pooler','')}</UsageLink>;
@@ -146,7 +149,7 @@ export function ThreadSegmentDetails({ threadId, isExpanded }: ExperimentalThrea
   const tasks = own ? [own] : [...data.ready, ...data.running, ...data.done];
   if (data.needsYou.length === 0 && tasks.length === 0) return null;
   return (
-    <><LiveOwnMacNotices threadId={threadId}/><ul aria-label="Cloud agents" className="max-h-64 space-y-px overflow-y-auto py-1">
+    <><LiveOwnMacNotices threadId={threadId}/>{own && <TaskDesignControl task={own}/>}<ul aria-label="Cloud agents" className="max-h-64 space-y-px overflow-y-auto py-1">
       {data.needsYou.map((decision) => (
         <CompactDecisionRow key={decision.id} decision={decision} threadId={threadId} />
       ))}
@@ -249,6 +252,7 @@ export function ThreadCardSection({ threadId }: ExperimentalThreadContextCardPro
   const decisionsLabel = `${plural(decisions, "decision")} ${decisions === 1 ? "needs" : "need"} you`;
   return (
     <>
+      {own && <TaskDesignControl task={own}/>}
       <ThreadContextCardRow icon="ComputerCloud" label={contextCounts(tasks, decisions, board?.needsYou.flatMap(item => item.taskIds))} action={tasks.find(task => ["ready", "stopped"].includes(cardStatus(task).status)) ? <TaskContextAction task={tasks.find(task => ["ready", "stopped"].includes(cardStatus(task).status))!} /> : undefined} onClick={openDecisions} />
       {decisions > 0 ? (
         <ThreadContextCardRow
