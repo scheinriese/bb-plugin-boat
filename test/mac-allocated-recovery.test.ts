@@ -4,7 +4,7 @@ import { FakeBoat, FakeChat, fakeRepos, defaultSettings, memoryStore } from "./f
 import { createBoatProvider } from "../src/providers/boat/provider.ts";
 import type { BoatApi } from "../src/providers/boat/api.ts";
 import { createProviderRegistry } from "../src/providers/registry.ts";
-import { machineName } from "../src/providers/instabox/provider.ts";
+import { machineName, instaboxLeaseInput } from "../src/providers/instabox/provider.ts";
 import { BoatService } from "../src/service.ts";
 import type { SandboxInfo, SandboxProvider } from "../src/providers/types.ts";
 
@@ -30,7 +30,7 @@ async function fixture(repo:string|null=null) {
 test("lease admission failure preserves allocated physical Mac and durable task binding",async()=>{
   const env=await fixture();assert.equal(env.failed.turns,0);assert.equal(env.failed.threadId,null);
   assert.deepEqual(env.calls.filter(call=>["create","delete","resume","extend","cancel-release"].includes(call)),["create"]);
-  assert.deepEqual(env.store.ownMacEventData(env.failed.id,"ownmac-allocation"),{machineId:env.machine().id,provider:"instabox",leaseId:"fake-lease"});
+  assert.deepEqual(env.store.ownMacEventData(env.failed.id,"ownmac-allocation"),{machineId:env.machine().id,provider:"instabox",leaseId:"fake-lease",startedAt:env.machine().mac!.startedAt,ledgerLeaseId:instaboxLeaseInput(env.store.macLeases,env.machine())!.id});
 });
 
 test("explicit recovery starts the same task on its active paid Mac without changing release or renting",async()=>{

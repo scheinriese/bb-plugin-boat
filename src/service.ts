@@ -2790,7 +2790,7 @@ export class BoatService {
       }
       throw error;
     }
-    ownMacEvent(this.store,task.id,"ownmac-allocation",{machineId:sandbox.id,provider:provider.id,...(sandbox.mac?{leaseId:sandbox.mac.leaseId}:{})},"The provider allocated this Mac. App startup has not completed.");
+    ownMacEvent(this.store,task.id,"ownmac-allocation",{machineId:sandbox.id,provider:provider.id,...(sandbox.mac?{leaseId:sandbox.mac.leaseId,startedAt:sandbox.mac.startedAt,ledgerLeaseId:instaboxLeaseInput(this.store.macLeases,sandbox)?.id}:{})},"The provider allocated this Mac. App startup has not completed.");
     this.store.update(task.id,{sandboxProvider:provider.id});
     return sandbox;
   }
