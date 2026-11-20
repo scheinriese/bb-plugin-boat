@@ -142,7 +142,11 @@ approval or a generic retry. After the user requests recovery on that same Mac,
 use `bb boat task recover-mac <failed-task-id> <existing-machine-id> --user-approved --json`.
 This public operation verifies the consumed approval and current fixed lease,
 preserves the release schedule, and refuses uncertain/partially started work.
-It never creates, resumes or extends a physical lease. See
+It never creates, resumes or extends a physical lease. Basic recovery does not
+adopt ambiguous legacy ends. The explicit `--adopt-legacy-lease` proof path is
+limited to a verified legacy deletion just after failed admission; it preserves
+the original end and requires the same physical lease and no owner release
+intent. Never infer or fabricate that proof. See
 [allocated Mac recovery](../../docs/allocated-mac-recovery.md) for supported
 states, side effects and legacy-end limits.
 

@@ -47,8 +47,86 @@ bb boat task recover-mac t_example m_example --user-approved --json
 The public plugin RPC is `recoverAllocatedMac` with input
 `{"taskId":"t_example","machineId":"m_example","userApproved":true}`.
 Its result contains the same `taskId` and `machineId`. The rental card's
-explicit recovery action uses this operation. There is no separate agent tool;
+recovery action uses the basic operation. It never opts into legacy adoption.
+There is no separate agent tool;
 agents can use the CLI only when the user authorized this same-machine start.
+
+## Explicit adoption of a legacy deletion after failed admission
+
+The basic command still refuses an ambiguous legacy end. A reviewed, explicit
+adoption can admit one narrow case: the original `lease_unknown` task never
+started, its existing lease has a legacy `deleted` timestamp after the failure
+and no more than 10 seconds later, and the provider still confirms the exact
+same physical lease before its original minimum ends. This recognizes current
+provider evidence without asserting what caused the historical admission failure
+or the local deletion record.
+
+Gather evidence through supported reads. The `macUsage` RPC with `null` input
+returns `legacyEnded`, up to 100 recent raw legacy deletion rows; this is history,
+not a list of eligible recoveries. Match its `machineId` to the existing machine.
+`sandbox info` supplies the physical `mac.leaseId`, `startedAt`, `chargeUntil`,
+model, terms and `scheduledReleaseAt`. `task show` supplies the failed linked
+task's `finishedAt` and failure cause. The consumed original rental notice links
+the source request to that task and retains its original approved quote.
+
+Copy the strings exactly, including microseconds. `failedAt` means the task's
+`finishedAt`; the recorded `lease_unknown` event must follow it within one second.
+The provider's current release schedule must equal the original `paidUntil`.
+The original row must have `releaseAt: null` and no explicit keep. Any recorded
+stop/delete intent or source/task cancellation prevents adoption, including a
+failed provider deletion. The operator must additionally confirm that no owner
+release was requested; missing historical intent records alone do not prove this.
+
+Example with **fake IDs and times**; replace every value with the inspected
+evidence. `--user-approved` authorizes recovery of this task on this Mac and
+`noReleaseRequested` records the intent check. Neither approves another rental:
+
+```sh
+bb boat task recover-mac t_example m_example --user-approved --json \
+  --adopt-legacy-lease '{"ledgerId":"instabox:73","leaseId":"73","sourceTaskId":"t_request","startedAt":"2030-01-01T12:00:27.670853Z","paidUntil":"2030-01-02T12:00:27.670853Z","endedAt":"2030-01-01T12:00:32.793Z","failedAt":"2030-01-01T12:00:31.299Z","noReleaseRequested":true}'
+```
+
+The equivalent public RPC is `recoverAllocatedMac`:
+
+```json
+{
+  "taskId": "t_example",
+  "machineId": "m_example",
+  "userApproved": true,
+  "adoptLegacyLease": {
+    "ledgerId": "instabox:73",
+    "leaseId": "73",
+    "sourceTaskId": "t_request",
+    "startedAt": "2030-01-01T12:00:27.670853Z",
+    "paidUntil": "2030-01-02T12:00:27.670853Z",
+    "endedAt": "2030-01-01T12:00:32.793Z",
+    "failedAt": "2030-01-01T12:00:31.299Z",
+    "noReleaseRequested": true
+  }
+}
+```
+
+The service validates this proof against the original linked approval, task,
+machine, raw ledger row and repeated fresh provider reads. It also rechecks
+credentials, account/subscription room, trust, project intent, physical work,
+resources, cancellation and remaining prepaid time. Confirmed terminations,
+different/replaced/expired leases, changed terms, conflicting work, release or
+keep intent, missing approval, stale observations and incomplete proof refuse.
+
+Success atomically records an adoption overlay and transitions the **same task**
+to starting. The original ended row, including its deletion timestamp, reason,
+provenance and release field, remains intact. The overlay uses the original lease
+ID for held capacity, reservations and billing, so the minimum is counted once.
+It records the operator proof, observed physical identity/terms/release schedule
+and adoption time. `macUsage.adoptions` exposes that audit and the public notice
+explains the reconciliation. Later provider termination ends the overlay;
+it does not erase the historical record or allow stale reads to adopt it again.
+
+These are local accounting/application writes. No create, start, resume, renew,
+reimage, extend, schedule cancellation or settings write is performed. The
+provider release plan remains in force. Repository/tooling preparation and bb
+enrollment then proceed as for basic recovery; a later setup failure preserves
+the adoption audit, physical machine, credentials and release plan.
 
 Recovery validates the consumed original quote, project/work intent, failed
 zero-turn state, current provider and agent availability, account access,
@@ -76,8 +154,10 @@ read can repair a matching list-inferred end without recording another minimum;
 confirmed local termination remains terminal.
 
 Older ledger rows did not record whether an end came from a list or an explicit
-release. Their provenance is unknown on upgrade. Recovery refuses an ambiguous
-legacy end, except when the recorded end predates the physical lease's start.
+release. Their provenance is unknown on upgrade. Ordinary reads and basic
+recovery refuse an ambiguous legacy end, except when its timestamp predates the
+physical lease's start. The explicit evidence-bound adoption above is separate
+and preserves the original end rather than automatically rewriting it.
 When current provider data contradicts a terminal local row, a persistent public
 notice shows the discrepancy, minimum, paid-until time and observed release
 schedule. That notice does not claim billing ended. Credentials, attachments,

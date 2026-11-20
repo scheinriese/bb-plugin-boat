@@ -50,8 +50,11 @@ and machine. The supported recovery is
 only when the user requested that same-machine start. It validates the original
 approval and current paid lease, preserves the provider release schedule, and
 refuses uncertain or partially started work. It cannot create, resume or extend
-a physical lease. An ambiguous legacy ledger end may require further read-only
-diagnosis and be refused. See [recovery details](../../docs/allocated-mac-recovery.md).
+a physical lease. Ambiguous legacy ends refuse basic recovery. A narrow legacy
+deletion just after failed admission has an explicit `--adopt-legacy-lease`
+evidence path: verify the same physical lease and owner intent, preserve the
+original end, and count the existing minimum once. Never invent proof or approve
+another rental. See [recovery details](../../docs/allocated-mac-recovery.md).
 Waiting tasks that never started can resume when
 Your Mac returns. Never blindly replay work after a disconnect. Close/cancel
 removes task credentials and revokes proxy access. A failed check automatically

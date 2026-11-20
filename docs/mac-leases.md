@@ -152,6 +152,11 @@ A failed start does not prove a Mac was released. Linked rental cards show the
 existing task's failure and allocation separately, keep ambiguous allocations
 out of automatic retries, and warn that billing may continue. A terminal local
 row contradicted by a current provider lease gets a visible discrepancy notice.
+Explicit evidence-bound recovery can adopt a narrowly verified legacy deletion
+after failed admission. It preserves the raw ended row and records an audit
+overlay under the same lease ID; held capacity and billing count that physical
+lease once. Ordinary list/info reads never activate an adoption. Public
+`macUsage.legacyEnded` and `macUsage.adoptions` expose the history and decision.
 See [allocated Mac recovery](allocated-mac-recovery.md) for the supported same
 task and same machine operation, refusal conditions and fake-test limitations.
 `no_capacity` has no scheduled retry; **Try now** is an explicit retry.
