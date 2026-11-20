@@ -176,7 +176,7 @@ export function ThisMonthUsage({
       className="provider-usage mb-[27px] text-[13px] leading-[18px] tabular-nums"
       aria-label="Usage"
     >
-      <style>{`.provider-usage{container-type:inline-size}.provider-usage table{table-layout:fixed;min-width:610px}.provider-usage th:first-child{min-width:180px}.provider-usage-meter{width:316px}@container(max-width:950px){.provider-usage-meter{display:none}}`}</style>
+      <style>{`.provider-usage{container-type:inline-size}.provider-usage table{table-layout:fixed;min-width:610px}.provider-usage th:first-child{min-width:180px}.provider-usage-meter{width:316px}@container(max-width:820px){.provider-usage-meter{display:none}}`}</style>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h3 className="font-medium text-[#EDEDED]">Usage</h3>
         <span className="text-xs text-[color:var(--boat-faint)]">
@@ -252,7 +252,7 @@ export function ThisMonthUsage({
                     : [
                         instabox.hours === null
                           ? null
-                          : `${hours(instabox.hours)} h`,
+                          : `${hours(instabox.hours)} h${instabox.hoursScope==="running-machines" ? " · running machines only" : ""}`,
                         instabox.active === null
                           ? null
                           : `${instabox.active} sandbox${instabox.active === 1 ? "" : "es"} on`,

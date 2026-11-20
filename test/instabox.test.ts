@@ -1422,3 +1422,37 @@ test("a failed provider dispatch returns the real task's live blocked card to th
  assert.equal(typeof result,"object");assert.ok(JSON.stringify(result).includes("boat-problem"));assert.ok(JSON.stringify(result).includes(id));
  assert.equal(store.get(id)!.sandboxId,null);
 });
+
+test("repeated failed retries supersede the old block and preserve size and confirmed repositories",async t=>{
+ const f=await instabox(t,{state:{secrets:[]}}),store=memoryStore();
+ const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi),f.provider]),store,hooks({projects:()=>[WEB]}).hooks);
+ const project=toOrchestratorProject(normalizeProject(WEB));
+ await assert.rejects(service.startTask({title:"Repeated blocked fixture",role:"custom",brief:"Read repo",repo:"acme/web",project,machineType:"small",confirmUntrustedChat:["acme/web"]}),/GitHub/);
+ let blocked=store.list({limit:1})[0]!;
+ assert.deepEqual(store.get(blocked.id)!.startOptions,{machineType:"small",confirmUntrustedChat:["acme/web"]});
+ const {createTestHost}=await import("./fakes.ts"),{registerRpc}=await import("../src/rpc.ts"),{rpcErrorInfo}=await import("../contract.ts");
+ const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:"/fake/boat"}});t.after(()=>harness.lifecycle.dispose());
+ const runtime={bb,service,settings:{},projects:{list:()=>[]},changed:()=>{},wake:()=>{},launchWaitMs:10000,resolveProject:async()=>project,launchTask:async(input:import("../src/service.ts").StartTaskInput)=>{
+   assert.equal(input.machineType,"small");assert.deepEqual(input.confirmUntrustedChat,["acme/web"]);
+   return {kind:"started",...await service.launchTask(input,10000)};
+ }} as unknown as import("../src/runtime.ts").Runtime;
+ registerRpc(runtime);
+ const {providerHandlers}=await import("../src/rpc-providers.ts");const providers=providerHandlers(runtime);
+ for(let i=0;i<3;i++){
+   let nextId:string|undefined;
+   await assert.rejects(harness.callRpc("retryProviderStart",{id:blocked.id}),error=>{nextId=rpcErrorInfo(error).taskId;assert.match(rpcErrorInfo(error).message,/GitHub/);return true;});
+   assert.ok(nextId);assert.notEqual(nextId,blocked.id);assert.equal(store.get(blocked.id)!.status,"cancelled");
+   const failures=store.list({statuses:["failed"],limit:50});assert.equal(failures.length,1);assert.equal(failures[0]!.id,nextId);
+   assert.equal((await providers.sandboxProviders()).providers.find(p=>p.id==="instabox")!.waitingTasks,1);
+   await assert.rejects(harness.callRpc("retryProviderStart",{id:blocked.id}),/Check the provider machine list/);
+   blocked=failures[0]!;
+ }
+});
+
+test("Linux hours include classified deleted usage, or explicitly fall back to running machines",async()=>{
+ let machines:unknown[]=[{id:"old-linux",os:"linux",runningSeconds:7200},{id:"current",runningSeconds:3600},{id:"old-mac",os:"macos",runningSeconds:86400}];
+ const rest=new InstaboxRest({key:async()=>KEY,fetch:async()=>new Response(JSON.stringify({machines,total:machines.length}))});
+ assert.deepEqual(await rest.linuxHours(new Set(["current"]),new Set()),{hours:3,scope:"period"});
+ machines=[{id:"old-unknown",runningSeconds:7200},{id:"current",runningSeconds:3600}];
+ assert.deepEqual(await rest.linuxHours(new Set(["current"]),new Set()),{hours:1,scope:"running-machines"});
+});

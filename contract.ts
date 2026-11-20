@@ -164,6 +164,7 @@ export type SetupStatusDto = z.infer<typeof setupStatusSchema>;
  * in its issues.
  */
 export interface RpcErrorInfo {
+  taskId?: string;
   code: string | null;
   message: string;
   hint: string | null;
@@ -180,7 +181,8 @@ export function rpcErrorInfo(error: unknown): RpcErrorInfo {
     );
     return typeof found?.message === "string" ? found.message : null;
   };
-  return { code: part("code"), message: part("message") ?? message, hint: part("hint") };
+  const taskId=part("taskId");
+  return { ...(taskId ? {taskId} : {}), code: part("code"), message: part("message") ?? message, hint: part("hint") };
 }
 
 export const projectRepoSchema = z.object({ repo: z.string(), baseBranch: z.string() });

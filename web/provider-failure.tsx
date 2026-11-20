@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { experimental_useRpcMutation } from "@get-bb/plugin-sdk/app";
-import { rpcContract, type TaskDto } from "../contract";
+import { rpcContract, rpcErrorInfo, type TaskDto } from "../contract";
 import { providerFailureCard, type ProviderFailure } from "../provider-failure";
 import { INSTABOX_SECRETS_URL, SecretDetails } from "./provider-setup";
 import { useCloudAgentsNavigation } from "./hooks";
@@ -44,7 +44,7 @@ export function ProviderFailureCard({
             ? "Something went wrong"
             : "Provider unavailable"}
         <span className="text-[#6E6E6E]">
-          {failure.provider === "instabox" ? "Instabox" : "Scaleway"} setup
+          {failure.provider === "instabox" ? "Instabox" : "Scaleway"}{broken ? " · Mac start" : " setup"}
         </span>
       </div>
       <div className="flex gap-3">
@@ -128,6 +128,7 @@ export function TaskProviderFailure({ task }: { task: TaskDto }) {
     method: "retryProviderStart",
   });
   const { openTask } = useCloudAgentsNavigation();
+  const failedRetry=(error:unknown)=>{const id=rpcErrorInfo(error).taskId;if(id)openTask(id);showError(error);};
   const [checked, setChecked] = useState(false);
   if (
     !task.providerFailure ||
@@ -156,7 +157,7 @@ export function TaskProviderFailure({ task }: { task: TaskDto }) {
                   if ("task" in result) openTask(result.task.id);
                 });
             })
-            .catch(showError)
+            .catch(failedRetry)
         }
         onRetry={() =>
           void retry
@@ -164,7 +165,7 @@ export function TaskProviderFailure({ task }: { task: TaskDto }) {
             .then((result) => {
               if ("task" in result) openTask(result.task.id);
             })
-            .catch(showError)
+            .catch(failedRetry)
         }
         onLog={() => openTask(task.id)}
       />

@@ -473,3 +473,11 @@ test("each Mac fallback provider runs its own agent preflight before models or a
   assert.deepEqual(checked,["instabox","scaleway","scaleway"]);
   assert.ok(f.store.events(task.id).some(e=>e.text.includes("Instabox isn't ready")));
 });
+
+test("providers CLI leaves an unconfigured Scaleway off without making provider reads",async()=>{
+ const {providerStates}=await import("../src/provider-status.ts");let reads=0;
+ const scw={...unavailableProvider("scaleway"),presentation:async()=>{reads++;return {steps:[]};}};
+ const registry=createProviderRegistry([createBoatProvider(new FakeBoat() as never),scw],{isEnabled:p=>p.id!=="scaleway"});
+ const states=await providerStates({registry,projects:()=>[],machines:()=>new Set(),boatSetup:null,instabox:null});
+ const row=states.find(p=>p.id==="scaleway")!;assert.equal(row.status,"off");assert.equal(row.turnedOn,false);assert.equal(row.problem,null);assert.equal(reads,0);
+});

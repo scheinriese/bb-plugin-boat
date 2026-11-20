@@ -9,7 +9,7 @@ import { START_QUEUE_MIGRATIONS } from "./start-queue-migrations.ts";
 import { CHAT_RECOVERY_MIGRATIONS } from "./chat-recovery-migrations.ts";
 import { PAID_RESUME_MIGRATIONS } from "./paid-resume-migrations.ts";
 import type Database from "better-sqlite3";
-import { DEFAULT_PROVIDER_ID } from "./providers/types.ts";
+import { DEFAULT_PROVIDER_ID, MACHINE_TYPES, type MachineType } from "./providers/types.ts";
 import { normalizeDecisionOptions, type DecisionOption, type DecisionOptionInput, historyInputSchema, type HistoryEventDto } from "../contract-fidelity.ts";
 
 export const TASK_ROLES = ["implement", "review", "custom"] as const;
@@ -110,6 +110,7 @@ export interface Task {
    */
   sandboxProvider?: string;
   sandboxSystem?: "linux" | "macos";
+  startOptions?: { machineType: MachineType; confirmUntrustedChat: string[] | null };
 }
 
 /** "What changed since you approved": compared in the sandbox after the turn that followed a conflict. */
@@ -413,6 +414,7 @@ const COLUMN_BY_FIELD: Record<keyof Task, string> = {
   shipApproval: "ship_approval",
   sandboxProvider: "sandbox_provider",
   sandboxSystem: "sandbox_system",
+  startOptions: "start_options",
 };
 
 function nullableString(value: unknown): string | null {
@@ -420,6 +422,7 @@ function nullableString(value: unknown): string | null {
 }
 
 function toTask(row: Row): Task {
+  const startOptions = parseStartOptions(row.start_options);
   return {
     id: String(row.id),
     title: String(row.title),
@@ -464,10 +467,22 @@ function toTask(row: Row): Task {
     notifiedAt: nullableString(row.notified_at),
     unshipped: row.unshipped === null || row.unshipped === undefined ? null : Number(row.unshipped),
     shipApproval: parseShipApproval(row.ship_approval),
-    // Only another provider's: a task on boat.dev reads as it did before the column.
+    ...(startOptions ? { startOptions } : {}),
     ...(row.sandbox_system === "macos" ? { sandboxSystem: "macos" as const } : {}),
+    // Only another provider's: a task on boat.dev reads as it did before the column.
     ...(typeof row.sandbox_provider === "string" && row.sandbox_provider !== DEFAULT_PROVIDER_ID ? { sandboxProvider: row.sandbox_provider } : {}),
   };
+}
+
+function parseStartOptions(raw: unknown): Task["startOptions"] {
+  if (typeof raw !== "string") return undefined;
+  try {
+    const value = JSON.parse(raw);
+    if (!value || !MACHINE_TYPES.includes(value.machineType)) return undefined;
+    const confirmed = value.confirmUntrustedChat;
+    if (confirmed !== null && (!Array.isArray(confirmed) || !confirmed.every((repo: unknown) => typeof repo === "string"))) return undefined;
+    return { machineType: value.machineType, confirmUntrustedChat: confirmed };
+  } catch { return undefined; }
 }
 
 function parseShipApproval(value: unknown): ShipApproval | null {
@@ -520,6 +535,7 @@ function toColumnValue(field: keyof Task, value: unknown): unknown {
   if (field === "ownsSandbox") return value === true ? 1 : 0;
   if (field === "sandboxSystem") return value === "macos" ? "macos" : "linux";
   if (field === "sandboxProvider") return typeof value === "string" && value !== "" ? value : DEFAULT_PROVIDER_ID;
+  if (field === "startOptions") return value === undefined ? null : JSON.stringify(value);
   if (field === "extraRepos") return JSON.stringify(Array.isArray(value) ? value : []);
   if (field === "shipApproval") return value === null || value === undefined ? null : JSON.stringify(value);
   return value ?? null;
@@ -547,7 +563,8 @@ export class TaskStore {
 
   static migrations(): string[] {
     return [...MIGRATIONS, ...MAC_LEASE_MIGRATIONS, `ALTER TABLE tasks ADD COLUMN sandbox_system TEXT NOT NULL DEFAULT 'linux'`,
-      `ALTER TABLE mac_leases ADD COLUMN billing_increment_seconds INTEGER NOT NULL DEFAULT 1`];
+      `ALTER TABLE mac_leases ADD COLUMN billing_increment_seconds INTEGER NOT NULL DEFAULT 1`,
+      `ALTER TABLE tasks ADD COLUMN start_options TEXT`];
   }
 
   insert(task: Task): Task {

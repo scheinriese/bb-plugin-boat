@@ -490,7 +490,7 @@ export function Today() {
                         {new Date(event.at)
                           .toLocaleTimeString("en-US", {
                             hour: "numeric",
-                            minute: "2-digit",
+                            minute: "2-digit", hourCycle:"h23",
                           })
                           .toLowerCase()}
                       </time>

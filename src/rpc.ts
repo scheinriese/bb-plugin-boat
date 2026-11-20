@@ -194,13 +194,14 @@ function message(error: unknown): string {
  * show it as is); the plugin's code, the message and the hint ride in its
  * issues as paths ["code"], ["message"], ["hint"] (contract.ts rpcErrorInfo).
  */
-export function refusal(code: "conflict" | "forbidden" | "invalid" | "not_found", error: ExplainedError): experimental_PluginRpcRefusal {
+export function refusal(code: "conflict" | "forbidden" | "invalid" | "not_found", error: ExplainedError & {taskId?:string}): experimental_PluginRpcRefusal {
   return new experimental_PluginRpcRefusal({
     code,
     message: error.hint ? `${error.message} ${error.hint}` : error.message,
     issues: [
       { message: error.code, path: ["code"] },
       { message: error.message, path: ["message"] },
+      ...(error.taskId ? [{message:error.taskId,path:["taskId"]}] : []),
       ...(error.hint ? [{ message: error.hint, path: ["hint"] }] : []),
     ],
   });
@@ -211,10 +212,12 @@ export async function refuse<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
+    const taskId=typeof (error as {taskId?:unknown} | null)?.taskId==="string" ? (error as {taskId:string}).taskId : undefined;
     if (error instanceof TaskError) {
-      throw refusal(error.code === "task_not_found" ? "not_found" : "conflict", { code: error.code, message: error.message, hint: error.hint ?? null });
+      throw refusal(error.code === "task_not_found" ? "not_found" : "conflict", { code: error.code, message: error.message, hint: error.hint ?? null, taskId });
     }
-    if (error instanceof ProviderError) throw refusal(error.status === 404 ? "not_found" : "conflict", error.explain());
+    if (error instanceof ProviderError) throw refusal(error.status === 404 ? "not_found" : "conflict", {...error.explain(),taskId});
+    if (taskId) throw refusal("conflict", {code:"provider_failed",message:message(error),hint:null,taskId});
     throw error;
   }
 }
@@ -704,11 +707,19 @@ export function registerRpc(runtime: Runtime): void {
       retrying.add(task.id);
       try {
         const project=task.boatProject ? await runtime.resolveProject({kind:"boat",id:task.boatProject}) : null;
-        const result=await runtime.launchTask({title:task.title,brief:task.brief,role:task.role,parentTaskId:task.parentTaskId,repo:task.repo,branch:task.branch,baseBranch:task.baseBranch,provider:task.provider,model:task.model,tier:task.tier as import("./tiers.ts").Tier | null,reasoningEffort:task.reasoningEffort,userApproved:true,runner:task.runner,project,orchestratorThreadId:task.orchestratorThreadId,sandboxSystem:task.sandboxSystem,environment:task.environment,snapshot:task.snapshot},runtime.launchWaitMs);
+        const result=await runtime.launchTask({title:task.title,brief:task.brief,role:task.role,parentTaskId:task.parentTaskId,repo:task.repo,branch:task.branch,baseBranch:task.baseBranch,provider:task.provider,model:task.model,tier:task.tier as import("./tiers.ts").Tier | null,reasoningEffort:task.reasoningEffort,userApproved:true,runner:task.runner,project,orchestratorThreadId:task.orchestratorThreadId,sandboxSystem:task.sandboxSystem,environment:task.environment,snapshot:task.snapshot,machineType:task.startOptions?.machineType ?? service.sizes.knownSize(task)?.type ?? null,confirmUntrustedChat:task.startOptions?.confirmUntrustedChat ?? null},runtime.launchWaitMs);
         service.store.transition(task.id,["failed"],{status:"cancelled"});
         runtime.changed();runtime.wake();
         if(result.kind==="queued")return {queued:result.request,pending:true as const};
         return {task:await single(result.task),pending:result.pending};
+      } catch (error) {
+        const replacementId=(error as {taskId?:unknown} | null)?.taskId;
+        const replacement=typeof replacementId==="string" ? service.store.get(replacementId) : null;
+        if(replacement && replacement.id!==task.id && replacement.status==="failed") {
+          service.store.transition(task.id,["failed"],{status:"cancelled"});
+          runtime.changed();runtime.wake();
+        }
+        throw error;
       } finally {retrying.delete(task.id);}
     }),
 

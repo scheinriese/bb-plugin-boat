@@ -1,3 +1,4 @@
+import { StoppedSandboxActions } from "../../web/sandbox-row-actions";
 // Obviously fake provider/billing fixtures; never used by the installed plugin.
 import { renderToStaticMarkup } from "react-dom/server";
 import { ThisMonthUsage } from "../../web/mac-usage";
@@ -45,7 +46,7 @@ export const steps = [
     label: "Plan detected",
     done: true,
     possible: true,
-    detail: "Pro · $20.00 monthly credit · resets Dec 1",
+    detail: "Pro · $20 monthly credit · resets Dec 1",
   },
   {
     id: "github",
@@ -149,6 +150,9 @@ export const scaleway: SandboxProviderDto = {
   ],
 };
 export function scene(name: string) {
+  if(name==="sandbox-actions")return <div className="space-y-3">{[false,true].map(unowned=><div key={String(unowned)} data-owner={unowned ? "unowned" : "task"} className="group flex items-center justify-between rounded-lg border border-[#262626] bg-[#181818] p-3.5 text-[13px]"><span>{unowned ? "Not from a task" : "Rewrite the quickstart guide"}<span className="ml-6 text-[#A8A8A8]">boat.dev · Small</span><span className="ml-6 text-[#8A8A8A]">{unowned ? "Stopped · not resumable" : "Stopped · nothing lost"}</span></span><div className="flex gap-2"><StoppedSandboxActions unowned={unowned} deleteButton={<button className="rounded-md border border-[#333333] px-2.5 py-1">Delete</button>} resumeButton={<button className="rounded-md border border-[#333333] px-2.5 py-1">Resume</button>}/></div></div>)}</div>;
+  if(name==="running-only")return <ThisMonthUsage plan={plan} instabox={{...linux,hoursScope:"running-machines"}}/>;
+  if(name==="multi-lease-footer")return <div className="w-[298px] space-y-3 rounded-xl border border-[#303030] bg-[#202020] p-3.5"><FooterUsage plan={plan} providers={[instabox]} mac={{...mac,held:[held,{...held,machineId:"fake_mac_2",size:"M4",minimumCost:18,hourPrice:0.75}]}} boatOn={3} cap={300} day={{dollars:0.92,hours:1.6}}/></div>;
   if (name === "usage")
     return (
       <ThisMonthUsage

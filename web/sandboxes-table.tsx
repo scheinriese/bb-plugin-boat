@@ -1,3 +1,4 @@
+import { StoppedSandboxActions } from "./sandbox-row-actions";
 import { hours as providerHours } from "./provider-format";
 import { Fragment } from "react";
 import { ThisMonthUsage } from "./mac-usage";
@@ -493,16 +494,9 @@ function SandboxTableRow({
               Resume on {memory.next?.label ?? "Large"}
             </Button>
           ) : stopped ? (
-            <>
-              {unowned && <span>
-                <SandboxActionButton
-                  sandbox={sandbox}
-                  action="delete"
-                  compact
-                />
-              </span>}
-              {!unowned && <SandboxActionButton sandbox={sandbox} action="resume" compact />}
-            </>
+            <StoppedSandboxActions unowned={unowned}
+              deleteButton={<SandboxActionButton sandbox={sandbox} action="delete" compact/>}
+              resumeButton={<SandboxActionButton sandbox={sandbox} action="resume" compact/>}/>
           ) : canStopSandbox(sandbox.state) ? (
             <SandboxActionButton sandbox={sandbox} action="stop" compact />
           ) : null}

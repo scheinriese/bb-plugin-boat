@@ -22,7 +22,7 @@ export function dayTime(iso: string, now: number): string | null {
   if (!Number.isFinite(at)) return null;
   const date = new Date(at);
   const day = Math.abs(at - now) > 6 * 86_400_000 ? date.toLocaleDateString("en-US", { month: "short", day: "numeric" }) : date.toLocaleDateString("en-US", { weekday: "short" });
-  return `${day} ${date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}`;
+  return `${day} ${date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle:"h23" })}`;
 }
 
 /** "resets Thu 01:00", or "reset was due Thu 01:00" when the reading is older than its reset. */

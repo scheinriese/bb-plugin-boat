@@ -235,7 +235,7 @@ function NativeTranscriptMilestone({ task, milestone, query, initialOpen, loadin
 }
 function taskClock(value: string | number | null) {
   if (value === null) return "";
-  return new Date(value).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).toLowerCase();
+  return new Date(value).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hourCycle:"h23" }).toLowerCase();
 }
 
 function Search({ id, query, onChange }: { id: string; query: string; onChange(value: string): void }) {

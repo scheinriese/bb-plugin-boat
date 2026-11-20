@@ -305,13 +305,15 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         catch (error) { problem = ["unauthenticated", "unauthorized", "invalid_key"].includes((error as {code?:string}).code ?? "") ? "Instabox rejected the key" : "Could not check Instabox; try again"; }
       }
       const cost = rec(raw?.cost);
+      let hoursScope:"period"|"running-machines"|undefined;
       let linuxHours: number | null = null, active: number | null = null;
       if (raw) try {
         const listed = machineList((await cli.run(["ls","--json"],{signal})).value).map(toSandbox);
         const machines = listed.filter(m=>m.system!=="macos");
         active=machines.filter(m=>ACTIVE_STATES.has(m.state)).length;
         const knownMac=new Set([...(options.ledger?.list().filter(l=>l.provider==="instabox").map(l=>l.machineId) ?? []),...listed.filter(m=>m.system==="macos").map(m=>m.id)]);
-        linuxHours=await rest.linuxHours(new Set(machines.map(m=>m.id)),knownMac,signal).catch(()=>null);
+        const usageHours=await rest.linuxHours(new Set(machines.map(m=>m.id)),knownMac,signal,new Set(machines.filter(m=>ACTIVE_STATES.has(m.state)).map(m=>m.id))).catch(()=>null);
+        linuxHours=usageHours?.hours ?? null;hoursScope=usageHours?.scope;
       } catch { /* Billing metadata still stands when machine usage is unavailable. */ }
       let github = false;
       if (raw) {
@@ -325,11 +327,11 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         steps: [
           { id: "cli", label: "Instabox CLI installed", done: cliFound, possible: true, detail: cliFound ? "found on this host" : "Install the Instabox CLI on this host" },
           { id: "key", label: "API key stored", done: key && problem !== "Instabox rejected the key", possible: true, detail: problem === "Instabox rejected the key" ? problem : key ? "in bb secrets · Change" : "Add Instabox API key in bb secrets" },
-          { id: "plan", label: "Plan detected", done: raw !== null, possible: true, detail: problem ?? [plan ? `${plan} plan` : "Plan checked", credit === null ? null : `$${credit.toFixed(2)} monthly credit`, resetsAt ? `resets ${new Intl.DateTimeFormat("en-US", {month:"short",day:"numeric",timeZone:"UTC"}).format(new Date(resetsAt))}` : null].filter(Boolean).join(" · ") },
+          { id: "plan", label: "Plan detected", done: raw !== null, possible: true, detail: problem ?? [plan ? `${plan.toLowerCase().replace(/\b\w/g,letter=>letter.toUpperCase())} plan` : "Plan checked", credit === null ? null : `${new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2,minimumFractionDigits:credit%1===0 ? 0 : 2}).format(credit)} monthly credit`, resetsAt ? `resets ${new Intl.DateTimeFormat("en-US", {month:"short",day:"numeric",timeZone:"UTC"}).format(new Date(resetsAt))}` : null].filter(Boolean).join(" · ") },
           { id: "github", label: "GitHub Secret present", done: github, possible: true, detail: "GH_TOKEN · proxy Secret · github.com, api.github.com" },
           { id: "enabled", label: "Turned on", done: options.enabled?.() ?? true, possible: true, detail: "Linux and Mac tasks can then run here" },
         ],
-        linuxUsage: { plan, used: num(cost?.costUSD), credit, remaining: num(cost?.creditRemainingUSD), resetsAt, hours: linuxHours, active, error: problem, accountCredit:(num(cost?.macosUSD) ?? 0)>0 },
+        linuxUsage: { plan, used: num(cost?.costUSD), credit, remaining: num(cost?.creditRemainingUSD), resetsAt, hours: linuxHours, ...(hoursScope ? {hoursScope} : {}), active, error: problem, accountCredit:(num(cost?.macosUSD) ?? 0)>0 },
       };
     },
     classifiesCreateErrors: true,

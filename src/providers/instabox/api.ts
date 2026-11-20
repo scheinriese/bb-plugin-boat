@@ -193,14 +193,22 @@ export class InstaboxRest {
     }
   }
 
-  /** Complete provider period, including deleted Linux machines when their OS is known. */
-  async linuxHours(knownLinux:ReadonlySet<string>, knownMac:ReadonlySet<string>, signal?:AbortSignal):Promise<number|null> {
-    let total=0;
+  /** Use the provider's complete period when its OS data is sufficient;
+   * otherwise report only the currently running Linux machines explicitly. */
+  async linuxHours(knownLinux:ReadonlySet<string>, knownMac:ReadonlySet<string>, signal?:AbortSignal, runningLinux=knownLinux):Promise<{hours:number;scope:"period"|"running-machines"}|null> {
+    let total=0,running=0,complete=true;
     for(let offset=0;offset<1000;offset+=100){
       const record=await this.json("GET",`/v1/usage/machines?limit=100&offset=${offset}`,{signal});
       if(!Array.isArray(record.machines) || num(record.total)===null)return null;
-      for(const value of record.machines){const row=rec(value),id=str(row?.id);if(id && knownMac.has(id))continue;if(!id || !knownLinux.has(id) || num(row?.runningSeconds)===null)return null;total+=num(row?.runningSeconds)!/3600;}
-      if(offset+record.machines.length>=num(record.total)!)return total;
+      for(const value of record.machines){
+        const row=rec(value),id=str(row?.id),seconds=num(row?.runningSeconds);
+        if(id && (knownMac.has(id) || row?.os==="macos" || row?.system==="macos"))continue;
+        if(!id || seconds===null)return null;
+        if(runningLinux.has(id))running+=seconds/3600;
+        if(knownLinux.has(id) || row?.os==="linux" || row?.system==="linux")total+=seconds/3600;
+        else complete=false;
+      }
+      if(offset+record.machines.length>=num(record.total)!)return {hours:complete ? total : running,scope:complete ? "period" : "running-machines"};
       if(record.machines.length===0)return null;
     }
     return null;

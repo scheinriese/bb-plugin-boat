@@ -148,11 +148,12 @@ test("Scaleway bills its minimum plus begun hours, split across UTC months with 
 test("upgrading the main lease schema preserves existing Instabox billing",()=>{
   const db=new DatabaseSync(":memory:");
   const migrations=TaskStore.migrations();
-  for(const sql of migrations.slice(0,-1))db.exec(sql);
+  const upgrade=migrations.findIndex(sql=>sql.includes("ADD COLUMN billing_increment_seconds"));
+  for(const sql of migrations.slice(0,upgrade))db.exec(sql);
   db.prepare(`INSERT INTO mac_leases (id,provider,machine_id,size,started_at,paid_until,minimum_cost,hour_price,currency,cpus,memory_mib)
     VALUES ('instabox:existing','instabox','existing','m2',?,?,10.8,0.45,'USD',8,16384)`)
     .run(new Date(at).toISOString(),new Date(at+LEASE_DAY_MS).toISOString());
-  db.exec(migrations.at(-1)!);
+  for(const sql of migrations.slice(upgrade))db.exec(sql);
   const ledger=new MacLeaseLedger(()=>db as unknown as Database.Database);
   const lease=ledger.held()[0]!;
   assert.equal(lease.billingIncrementSeconds,1);

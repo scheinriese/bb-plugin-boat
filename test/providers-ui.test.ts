@@ -365,3 +365,21 @@ test("the plugin answers with providers, Runs on, and where its tasks and sandbo
   const sandboxes = (await harness.callRpc("sandboxes", { all: true })) as { sandboxes: { id: string; runsOn?: { label: string } }[] };
   assert.equal(sandboxes.sandboxes.find((row) => row.id === started.task.sandboxId)?.runsOn?.label, "boat.dev");
 });
+
+test("provider presentation is shared for 60 seconds; only Check again bypasses it",async()=>{
+ let now=0;const reads={plan:0,capacity:0,presentation:0};let entered!:()=>void,release!:()=>void;
+ const gate=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r);
+ const boat={...BOAT,usagePlan:async()=>{reads.plan++;return null;}};
+ const instabox={...INSTABOX,capacity:async()=>{reads.capacity++;return {} as never;},presentation:async()=>{reads.presentation++;entered();await gate;return {steps:[]};}};
+ const {runtime,projects}=fakeRuntime(createProviderRegistry([boat,instabox]));
+ const {memoryStore}=await import("./fakes.ts");Object.assign(runtime.service,{store:memoryStore()});
+ runtime.setup={peek:()=>({facts:SIGNED_IN})} as unknown as Runtime["setup"];
+ const handlers=providerHandlers(runtime,()=>now);
+ const first=handlers.sandboxProviders();await started;
+ const second=handlers.sandboxProviders();release();await Promise.all([first,second]);
+ assert.deepEqual(reads,{plan:1,capacity:1,presentation:1});
+ projects.save(STOREFRONT);assert.equal((await handlers.sandboxProviders()).projects.length,1);
+ now=59_999;await handlers.sandboxProviders();assert.equal(reads.presentation,1);
+ now=60_001;await handlers.sandboxProviders();assert.deepEqual(reads,{plan:2,capacity:2,presentation:2});
+ await handlers.checkSandboxProviders();await handlers.sandboxProviders();assert.deepEqual(reads,{plan:3,capacity:3,presentation:3});
+});

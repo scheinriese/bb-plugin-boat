@@ -1,3 +1,4 @@
+import { createProviderRecovery } from "./src/provider-recovery.ts";
 import { ScalewayApi } from "./src/providers/scaleway/api.ts";
 import { ScalewayKeys } from "./src/providers/scaleway/ssh.ts";
 import { createScalewayProvider } from "./src/providers/scaleway/provider.ts";
@@ -120,6 +121,7 @@ export default async function plugin(bb: BbPluginApi) {
   const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
   const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases, enabled: () => instaboxOn, keyPresent: () => providerSecrets.instaboxKeyPresent(), secrets: async () => (await settings.get()).instaboxSecrets });
   const scaleway = createScalewayProvider({ api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(dirname(bb.storage.database().name), "scaleway-keys")), ledger: store.macLeases });
+  scaleway.configured = async () => Boolean((await settings.get()).scalewayProjectId) || providerSecrets.scalewayKeyPresent();
   let scalewayOn = Boolean((await settings.get()).scalewayProjectId);
   settings.onChange(() => { void settings.get().then(values => { scalewayOn = Boolean(values.scalewayProjectId); }); });
   let instaboxOn = (await settings.get()).instaboxEnabled;
@@ -942,6 +944,7 @@ export default async function plugin(bb: BbPluginApi) {
   })().catch((error: unknown) => bb.log.warn(`queue guards on start: ${error instanceof Error ? error.message : String(error)}`));
 
   // Monitor: check running tasks, collect results, notify, stop idle sandboxes.
+  const recoverProviders=createProviderRecovery({providers:()=>sandboxProviders.enabled,keyPresent:id=>id!=="scaleway" || providerSecrets.scalewayKeyPresent(),signal:lifecycle.signal,warn:message=>bb.log.warn(message)});
   bb.background.service("monitor", {
     async start(signal) {
       // bb stops services (with a short grace) before dispose hooks run, so
@@ -983,10 +986,7 @@ export default async function plugin(bb: BbPluginApi) {
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-        for (const provider of sandboxProviders.enabled) {
-          try { await provider.recoverCreations?.(lifecycle.signal); }
-          catch (error) { bb.log.warn(`${provider.displayName} recovery: ${error instanceof Error ? error.message : String(error)}`); }
-        }
+        await recoverProviders();
         await maintainLeasesAndKeepAwake({
           hasMacLeases: () => store.macLeases.held().length > 0,
           mac: () => service.processMacLeases(),

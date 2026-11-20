@@ -1590,6 +1590,7 @@ export class BoatService {
       notifiedAt: null,
       unshipped: null,
       shipApproval: null,
+      startOptions: {machineType:sizing.type,confirmUntrustedChat:input.confirmUntrustedChat ?? null},
     };
     if (input.subscriptionGuard) await input.subscriptionGuard.check(provider, settings, runner);
     const paidFallback = settings.relay.paidClaudeFallback === true && !input.queuedStart?.paidApproved && await this.assertSubscriptionRoom(provider, { settings, signal: input.signal, runner });

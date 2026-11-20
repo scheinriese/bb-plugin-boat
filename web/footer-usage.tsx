@@ -108,7 +108,7 @@ export function FooterUsage({
           key={lease.machineId}
           label={`Mac · ${lease.provider === "scaleway" ? "Scaleway" : "Instabox"}`}
           value={leaseState(lease).text}
-          detail={`1 held · ${lease.size.toUpperCase()} · ${money(lease.minimumCost, lease.currency)} minimum, then ${money(lease.hourPrice, lease.currency)} / h`}
+          detail={`1 on · ${lease.size.toUpperCase()} · ${money(lease.minimumCost, lease.currency)} minimum, then ${money(lease.hourPrice, lease.currency)} / h`}
         />
       ))}
       <div className="border-t border-[#2A2A2A] pt-2.5">

@@ -178,3 +178,17 @@ test("per-second task lines, sharers, and hourly Scaleway state", () => {
   })!;
   assert.doesNotMatch(unknown.body, /released it/);
 });
+
+test("owned stopped rows retain hover Delete beside Resume; unowned rows only show Delete",()=>{
+ const html=renderScene("sandbox-actions");
+ const owned=html.split('data-owner="task"')[1]!.split('data-owner="unowned"')[0]!;
+ const unowned=html.split('data-owner="unowned"')[1]!;
+ assert.match(owned,/>Delete</);assert.match(owned,/>Resume</);assert.match(owned,/group-hover:opacity-100/);
+ assert.match(unowned,/>Delete</);assert.doesNotMatch(unowned,/>Resume<|group-hover:opacity-100/);
+});
+test("footer has one on block per Mac lease; fallback hours and failed mobile headers are explicit",()=>{
+ const html=renderScene("multi-lease-footer");assert.equal((html.match(/1 on ·/g) ?? []).length,2);assert.doesNotMatch(html,/1 held/);
+ assert.match(renderScene("running-only"),/running machines only/);
+ const failed=renderScene("failed");assert.match(failed,/Mac start/);assert.doesNotMatch(failed,/Instabox setup/);
+ assert.doesNotMatch(renderScene("settings"),/\$20.00 monthly/);
+});

@@ -1,3 +1,4 @@
+import { createBlockedStart } from "./blocked-start";
 import { ProviderFailureCard } from "./provider-failure";
 // Dialogs: new task / sandbox / orchestrator, review, close task, and a
 // generic confirm. Each dialog mounts its form only while open, so every
@@ -238,7 +239,9 @@ export function NewTaskForm({
   const testTask = experimental_useRpcMutation({ contract: rpcContract, method: "startTestTask" });
   const { openTask } = useCloudAgentsNavigation();
 
-  const [providerFailure,setProviderFailure] = useState<{code:string;message:string}|null>(null);
+  const [providerFailure,setProviderFailure] = useState<{code:string;message:string;taskId?:string}|null>(null);
+  const submitStart=useRef(createBlockedStart());
+  const retryStart=experimental_useRpcMutation({contract:rpcContract,method:"retryProviderStart"});
   const checkProviders=experimental_useRpcMutation({contract:rpcContract,method:"checkSandboxProviders"});
   const [starter, setStarter] = useState<StarterId | null>(null);
   const [chosenProject, setChosenProject] = useState<string | null>(null);
@@ -361,7 +364,7 @@ export function NewTaskForm({
   const submit = async (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
     setProviderFailure(null);
-    if (!canSubmit) return;
+    if (!canSubmit || start.isPending || retryStart.isPending || testTask.isPending) return;
     try {
       if (testing) {
         const { task } = await testTask.mutate({ notifyThreadId: null, provider: onlyAgent ?? provider });
@@ -370,7 +373,7 @@ export function NewTaskForm({
         openTask(task.id);
         return;
       }
-      const result = await start.mutate({
+      const request = {
         title: effectiveTitle,
         brief: brief.trim(),
         role,
@@ -389,7 +392,8 @@ export function NewTaskForm({
         confirmUntrustedChat: chat.confirmUntrustedChat,
         // The repo check measures its peak memory and recommends a size.
         measureMemory: starter === "check-repo",
-      });
+      };
+      const result=await submitStart.current(request,input=>start.mutate(input),id=>retryStart.mutate({id}));
       if ("queued" in result) {
         toast("Waiting for a usage reset", { description: "No sandbox has been created. This request will retry when an agent has room." });
         onStarted?.(); onDone(); return;
@@ -400,14 +404,15 @@ export function NewTaskForm({
       onDone();
       openTask(task.id);
     } catch (error) {
-      const info=rpcErrorInfo(error);setProviderFailure({code:info.code ?? "provider_failed",message:info.message});
+      const info=rpcErrorInfo(error);
+      setProviderFailure({code:info.code ?? "provider_failed",message:info.message,taskId:info.taskId});
       showError(error);
     }
   };
 
   return (
     <form onSubmit={submit} className="@container grid gap-4">
-      {providerFailure && <ProviderFailureCard failure={{code:providerFailure.code,provider:project?.sandboxProvider ?? "boat",mac:project?.sandboxSystem==="macos",released:false,canRetry:!["creation_unknown","creation_allocated"].includes(providerFailure.code)}} message={providerFailure.message} onCheck={()=>void checkProviders.mutate(null).catch(showError)} onRetry={()=>void submit()} busy={start.isPending || checkProviders.isPending}/>}
+      {providerFailure && <ProviderFailureCard failure={{code:providerFailure.code,provider:project?.sandboxProvider ?? "boat",mac:project?.sandboxSystem==="macos",released:false,canRetry:!["creation_unknown","creation_allocated"].includes(providerFailure.code)}} message={providerFailure.message} onCheck={()=>void checkProviders.mutate(null).catch(showError)} onRetry={()=>void submit()} busy={start.isPending || retryStart.isPending || checkProviders.isPending}/>}
       {layout === "dialog" ? (
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
@@ -664,7 +669,7 @@ export function NewTaskForm({
             Cancel
           </Button>
         ) : null}
-        <SubmitButton pending={start.isPending || testTask.isPending} disabled={!canSubmit} icon="Play">
+        <SubmitButton pending={start.isPending || retryStart.isPending || testTask.isPending} disabled={!canSubmit} icon="Play">
           {testing ? "Run test task" : "Start task"}
         </SubmitButton>
       </DialogFooter>

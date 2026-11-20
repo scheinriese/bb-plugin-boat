@@ -250,13 +250,13 @@ export function providersView(input: {
 /** How long another provider's connection check counts. */
 const CONNECTION_TTL_MS = 60_000;
 
-export function providerHandlers(runtime: Runtime) {
+export function providerHandlers(runtime: Runtime, now = Date.now) {
   const { service, bb } = runtime;
   let checked: { at: number; connections: Connections; prices: Prices; macReady: ReadonlySet<string>; statuses: ReadonlyMap<string,string> } | null = null;
 
   /** Ask each enabled provider other than boat.dev for its plan (an answer means connected) and its prices. */
   async function others(): Promise<{ connections: Connections; prices: Prices; macReady: ReadonlySet<string>; statuses: ReadonlyMap<string,string> }> {
-    if (checked !== null && Date.now() - checked.at < CONNECTION_TTL_MS) return checked;
+    if (checked !== null && now() - checked.at < CONNECTION_TTL_MS) return checked;
     const providers = service.sandboxProviders.enabled.filter((provider) => provider.id !== "boat");
     const results = await Promise.all(
       providers.map(async (provider) => {
@@ -277,7 +277,7 @@ export function providerHandlers(runtime: Runtime) {
       }),
     );
     checked = {
-      at: Date.now(),
+      at: now(),
       macReady: new Set(results.filter(entry=>entry.macReady).map(entry=>entry.id)),
       connections: new Map(results.map((entry) => [entry.id, entry.connection])),
       prices: new Map(results.flatMap((entry) => (entry.pricing ? [[entry.id, entry.pricing] as const] : []))),
@@ -286,7 +286,7 @@ export function providerHandlers(runtime: Runtime) {
     return checked;
   }
 
-  async function view(force = false): Promise<SandboxProvidersResultDto> {
+  async function readPresentation(force = false): Promise<SandboxProvidersResultDto> {
     const reading = runtime.setup ? (runtime.setup.peek()?.facts ?? (await runtime.setup.reading().catch(() => null))) : null;
     if (force) checked = null;
     const { connections, prices, macReady, statuses } = await others();
@@ -307,10 +307,30 @@ export function providerHandlers(runtime: Runtime) {
       if (row.steps) {
         const complete = row.steps.filter(s => s.possible).every(s => s.done);
         row.status = complete ? row.id === "scaleway" ? (row.status ?? "Held Macs only") : "Connected" : `Setting up · ${row.steps.filter(s => s.possible && s.done).length} of ${row.steps.filter(s => s.possible).length}`;
-        row.waitingTasks = service.store.list({statuses:["failed"],limit:500}).filter(task => task.sandboxProvider === row.id && /GitHub Secret|API key|setup/i.test(task.error ?? "")).length;
       }
     }));
     return result;
+  }
+
+  // One shared promise includes plan, usage, lists and Secret metadata. Project
+  // choices and waiting counts are cheap local reads and stay current.
+  let presentation: { at: number; value: Promise<SandboxProvidersResultDto> } | null = null;
+  async function view(force = false): Promise<SandboxProvidersResultDto> {
+    if (force || !presentation || now() - presentation.at >= CONNECTION_TTL_MS) {
+      const value = readPresentation(force);
+      presentation = { at: now(), value };
+      value.catch(() => { if (presentation?.value === value) presentation = null; });
+    }
+    const result = await presentation.value;
+    const waiting = result.providers.some(row => row.steps) ? service.store.list({ statuses: ["failed"], limit: 500 }) : [];
+    return {
+      ...result,
+      projects: runtime.projects.list().map(project => projectRow(project, service.sandboxProviders)),
+      providers: result.providers.map(row => ({
+        ...row,
+        ...(row.steps ? { waitingTasks: waiting.filter(task => task.sandboxProvider === row.id && /GitHub|API key|setup/i.test(task.error ?? "")).length } : {}),
+      })),
+    };
   }
 
   return {

@@ -80,6 +80,9 @@ export async function providerStates(deps: ProviderStatusDeps, options: { force?
           checks: status?.checks.map(check) ?? [],
         };
       }
+      if (provider.id === "scaleway" && !enabled.has(provider.id) && !(await provider.configured?.())) {
+        return {...base(provider),turnedOn:false,keyPresent:null,status:"off",problem:null,checks:[]};
+      }
       if (provider.id === "scaleway" && provider.presentation) {
         const presentation = await provider.presentation().catch(() => null);
         const missing = presentation?.steps.find(step=>step.possible && !step.done);

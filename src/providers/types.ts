@@ -630,6 +630,8 @@ export interface AgentRunner {
 /** For later providers: not called yet. */
 export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string }
 export interface LaterMembers {
+  /** Whether any provider-specific setup was saved, even if incomplete. */
+  configured?(): boolean | Promise<boolean>;
   /** Read-only, bounded setup and billing metadata. Also works while turned off. */
   presentation?(options?: { force?: boolean; signal?: AbortSignal }): Promise<{ steps: import("../../contract-providers.ts").ProviderStepDto[]; linuxUsage?: import("../../contract-providers.ts").LinuxUsageDto }>;
 

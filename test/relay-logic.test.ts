@@ -12,7 +12,7 @@ test('pinned historical handoff keeps its recorded switch when a later one arriv
  assert.equal(selectHandoffEvent(events,'7'),undefined);
 });
 test('Claude extra usage line names the real state and when the Pooler checked',()=>{
- const now=Date.UTC(2026,10,17,23,0);const at=now-10*60_000;const time=new Date(at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+ const now=Date.UTC(2026,10,17,23,0);const at=now-10*60_000;const time=new Date(at).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
  assert.equal(claudeExtraUsageLine({status:'rejected',observedAt:at,pool:'on'},false,now),`Claude extra usage: blocked · last checked ${time} by the Account Pooler`);
  assert.equal(claudeExtraUsageLine(undefined,true,now),'Claude extra usage: available');
  assert.equal(claudeExtraUsageLine({status:'unknown',observedAt:null,pool:'off'},false,now),'Claude extra usage: unknown (Account Pooler off)');

@@ -64,6 +64,7 @@ export type ProviderStepDto = z.infer<typeof providerStepSchema>;
 export const linuxUsageSchema = z.object({
   plan: z.string().nullable(), used: z.number().nullable(), credit: z.number().nullable(),
   remaining: z.number().nullable(), resetsAt: z.string().nullable(), hours: z.number().nullable(),
+  hoursScope:z.enum(["period","running-machines"]).optional(),
   active: z.number().nullable(), error: z.string().nullable(),
   accountCredit: z.boolean().optional(),
 });

@@ -5,6 +5,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { scene } from "../test/fixtures/provider-polish-render";
 const allScenes = [
   "usage",
+  "sandbox-actions",
+  "running-only",
+  "multi-lease-footer",
   "settings",
   "footer",
   "github",
