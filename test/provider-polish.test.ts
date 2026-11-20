@@ -186,9 +186,28 @@ test("owned stopped rows retain hover Delete beside Resume; unowned rows only sh
  assert.match(owned,/>Delete</);assert.match(owned,/>Resume</);assert.match(owned,/group-hover:opacity-100/);
  assert.match(unowned,/>Delete</);assert.doesNotMatch(unowned,/>Resume<|group-hover:opacity-100/);
 });
-test("footer has one on block per Mac lease; fallback hours and failed mobile headers are explicit",()=>{
- const html=renderScene("multi-lease-footer");assert.equal((html.match(/1 on ·/g) ?? []).length,2);assert.doesNotMatch(html,/1 held/);
+test("footer groups held Macs by provider; fallback hours and failed mobile headers are explicit",()=>{
+ const html=renderScene("multi-lease-footer");assert.equal((html.match(/2 on ·/g) ?? []).length,2);assert.equal((html.match(/Mac · Instabox/g) ?? []).length,1);assert.doesNotMatch(html,/1 held/);
  assert.match(renderScene("running-only"),/running machines only/);
  const failed=renderScene("failed");assert.match(failed,/Mac start/);assert.doesNotMatch(failed,/Instabox setup/);
  assert.doesNotMatch(renderScene("settings"),/\$20.00 monthly/);
+});
+
+test("monthly guidance uses the blue shared decision frame, responsive options, dated currency-safe copy",()=>{
+ const html=renderScene("monthly-chat");
+ for(const value of ["Suggestion","from Harbormaster","Recommended","Rent a monthly Mac ↗","Keep day leases","Use my own Mac","Prices as of 2026-11-20","€149.00","No cross-currency savings estimate","Own-Mac setup guidance is coming","sm:hidden","hidden sm:block","border-[#2A3A55]"])assert.ok(html.includes(value),value);
+ assert.doesNotMatch(html,/Needs you|never.*Boat/);
+ assert.match(renderScene("monthly-today"),/2 need you/);
+ assert.match(renderScene("monthly-receipt"),/You chose Keep day leases.*snoozed for 2 weeks/);
+ assert.match(renderScene("monthly-own"),/setup guidance is coming/);
+ assert.match(renderScene("monthly-cancel"),/Review cancellation ↗/);
+ assert.doesNotMatch(renderScene("monthly-receipt"),/Recommended/);
+});
+test("Mac usage adds the actionable monthly link and marker only above break-even",()=>{
+ const html=renderScene("monthly-usage");
+ assert.match(html,/Monthly M4: ≈ \$119.99 \/ mo/);assert.match(html,/Break-even ≈ 11 days/);
+ assert.match(html,/bg-\[#FC8C45\]/);
+ const below=renderScene("monthly-below");assert.doesNotMatch(below,/Monthly M4|Break-even/);
+ assert.match(renderScene("meter-over"),/width:100%/);
+ assert.doesNotMatch(renderScene("meter-outside"),/Break-even|h-3.5/);
 });

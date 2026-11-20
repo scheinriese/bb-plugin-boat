@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { LiveMonthlyMacCard } from "./monthly-mac";
+import type { MonthlyMacSuggestion } from "../contract-monthly-macs";
 import { formatLeaseDays } from "./mac-usage-logic.ts";
 import { ProviderGlyphIcon } from "./providers";
 import type { ReactNode } from "react";
@@ -11,35 +14,17 @@ import {
   leaseTime,
 } from "./provider-format";
 export const macLeaseEnd = leaseTime;
-export function LeaseDayMeter({
-  days,
-  breakEven,
-}: {
-  days: number;
-  breakEven?: number;
-}) {
-  return (
-    <div
-      className="w-[300px] max-w-full"
-      aria-label={`${formatLeaseDays(days)} in the last 30 days`}
-    >
-      <div className="relative h-1.5 rounded-[3px] bg-[#262626]">
-        <div
-          className="h-full rounded-[3px] bg-[#6E6E6E]"
-          style={{ width: `${Math.min(100, (days / 30) * 100)}%` }}
-        />
-        {breakEven !== undefined && (
-          <span
-            className="absolute -top-1 h-3.5 w-0.5 bg-[#EDEDED]"
-            style={{ left: `${(breakEven / 30) * 100}%` }}
-          />
-        )}
-      </div>
-      <p className="mt-1.5 text-right text-xs text-[color:var(--boat-faint)]">
-        Last 30 days
-      </p>
+export function LeaseDayMeter({days, breakEven, showCount=false}: {days:number;breakEven?:number;showCount?:boolean}) {
+  const fill = Math.max(0, Math.min(100, days / 30 * 100));
+  const marker = breakEven !== undefined && Number.isFinite(breakEven) && breakEven > 0 && breakEven <= 30 ? breakEven / 30 * 100 : null;
+  return <div className="w-full max-w-full" aria-label={`${formatLeaseDays(days)} in the last 30 days${marker!==null ? `; break-even approximately ${Number(breakEven!.toFixed(1))} days` : ""}`}>
+    {showCount && <div className="mb-1 text-xs text-[#FC8C45]" style={{paddingLeft:`${Math.min(fill,85)}%`}}>{Number(days.toFixed(1))} days</div>}
+    <div className="relative h-1.5 rounded-[3px] bg-[#262626]">
+      <div className="h-full rounded-[3px] bg-[#6E6E6E]" style={{width:`${fill}%`}}/>
+      {marker!==null && <><div className="absolute top-0 h-full rounded-r-[3px] bg-[#FC8C45]" style={{left:`${marker}%`,width:`${Math.max(0,fill-marker)}%`}}/><span className="absolute -top-1 h-3.5 w-0.5 -translate-x-1/2 rounded-[1px] bg-[#EDEDED]" style={{left:`${marker}%`}}/></>}
     </div>
-  );
+    <div className="relative mt-1.5 h-4 text-xs leading-4"><span className="absolute right-0 text-[#6E6E6E]">Last 30 days</span>{marker!==null && <span className="absolute -translate-x-1/2 whitespace-nowrap text-[#A8A8A8]" style={{left:`${Math.min(65,Math.max(20,marker))}%`}}>Break-even ≈ {Math.round(breakEven!)} days</span>}</div>
+  </div>;
 }
 export function CreditWords({ usage }: { usage: LinuxUsageDto }) {
   if (usage.error) return <>Usage unavailable</>;
@@ -159,6 +144,7 @@ export function ThisMonthUsage({
   idleMinutes?: number;
   boatError?: boolean;
 }) {
+  const [selected,setSelected] = useState<MonthlyMacSuggestion|null>(null);
   const used =
     plan?.hoursTotal != null && plan.hoursRemaining != null
       ? Math.max(0, plan.hoursTotal - plan.hoursRemaining)
@@ -296,6 +282,7 @@ export function ThisMonthUsage({
                     ) ?? [],
                   lease = held[0],
                   state = lease ? leaseState(lease) : null;
+                const suggestion = mac?.monthlySuggestions?.find(s => s.dayProvider===p.id && s.kind==="rent" && !s.answer && p.rolling30.leaseDays>s.breakEven);
                 return (
                   <Row
                     key={p.id}
@@ -315,9 +302,9 @@ export function ThisMonthUsage({
                         ? "Hourly after 24 h · EUR"
                         : "Bills per second after 24 h"
                     }
-                    meter={<LeaseDayMeter days={p.rolling30.leaseDays} />}
+                    meter={<LeaseDayMeter days={p.rolling30.leaseDays} breakEven={suggestion?.breakEven} />}
                     now={state?.text ?? "No lease now"}
-                    nowSub={[
+                    nowSub={suggestion ? <button className="text-[#7AA7FF]" onClick={()=>setSelected(suggestion)}>Monthly {suggestion.candidate.chip}: ≈ {money(suggestion.candidate.monthlyPrice,suggestion.currency)} / mo</button> : [
                       state?.detail,
                       held.length > 1 ? `${held.length} leases held` : null,
                     ]
@@ -330,6 +317,7 @@ export function ThisMonthUsage({
           </tbody>
         </table>
       </div>
+      {selected && <div><button className="text-xs text-[#7AA7FF]" onClick={()=>setSelected(null)}>Close suggestion</button><LiveMonthlyMacCard key={selected.id} suggestion={selected}/></div>}
       {instabox?.accountCredit && (
         <p className="mt-2 text-xs text-[#8A8A8A]">
           Instabox account credit includes Mac charges. The Mac row shows its

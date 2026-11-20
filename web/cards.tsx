@@ -1,3 +1,5 @@
+import { Frame } from "./decision-frame";
+import { MonthlyMacDirective } from "./monthly-mac";
 import { TaskProviderFailure } from "./provider-failure";
 import { providerFailureCard } from "../provider-failure";
 import { useEffect, useState, type ReactNode } from "react";
@@ -53,24 +55,6 @@ import {
   recommendedOption,
 } from "./cards-logic";
 
-function Frame({
-  children,
-  className,
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <section
-      className={cn(
-        "boat-ui my-3 -ml-2 w-[calc(100%+16px)] sm:ml-0 sm:w-[calc(100%+8px)] max-w-[720px] overflow-hidden rounded-[12px] sm:rounded-[10px] border border-border bg-card text-[13px] leading-5 text-foreground dark:text-[#C1C1C1]",
-        className,
-      )}
-    >
-      {children}
-    </section>
-  );
-}
 function Notice({ children }: { children: ReactNode }) {
   return (
     <div
@@ -235,7 +219,7 @@ function ReviewCard({ task, round }: { task: TaskDetailDto; round?: number }) {
 }
 
 /** Uses the pane's composer; never sends an own-words answer automatically. */
-function useFillComposer(threadId: string) {
+export function useFillComposer(threadId: string) {
   const composers = useComposers();
   const composer = composers.find(
     (item) => item.scope.kind === "thread" && item.scope.threadId === threadId,
@@ -570,6 +554,7 @@ export function registerChatCards(app: PluginAppBuilder): void {
       },
     ],
   });
+  app.slots.messageDirective({ id: "boat-monthly-mac", component: MonthlyMacDirective });
   app.slots.messageDirective({ id: "boat-task", component: TaskDirective });
   app.slots.messageDirective({ id: "boat-tasks", component: TasksDirective });
   app.slots.messageDirective({

@@ -66,6 +66,11 @@ export function FooterUsage({
   const instabox = providers?.find(
     (p) => p.id === "instabox" && p.enabled,
   )?.linuxUsage;
+  const macGroups = new Map<string, NonNullable<MacUsageDto>["held"]>();
+  for (const lease of mac?.held ?? []) {
+    const id = lease.provider ?? "instabox";
+    macGroups.set(id,[...(macGroups.get(id) ?? []),lease]);
+  }
   return (
     <>
       {plan?.hoursRemaining != null && (
@@ -103,14 +108,11 @@ export function FooterUsage({
           Instabox account credit includes Mac charges.
         </p>
       )}
-      {mac?.held.map((lease) => (
-        <FooterMeter
-          key={lease.machineId}
-          label={`Mac · ${lease.provider === "scaleway" ? "Scaleway" : "Instabox"}`}
-          value={leaseState(lease).text}
-          detail={`1 on · ${lease.size.toUpperCase()} · ${money(lease.minimumCost, lease.currency)} minimum, then ${money(lease.hourPrice, lease.currency)} / h`}
-        />
-      ))}
+      {[...macGroups].map(([provider,leases]) => {
+        const states = [...new Set(leases.map(lease=>leaseState(lease).text))];
+        const terms = [...new Set(leases.map(lease=>`${lease.size.toUpperCase()} · ${money(lease.minimumCost,lease.currency)} minimum, then ${money(lease.hourPrice,lease.currency)} / h`))];
+        return <FooterMeter key={provider} label={`Mac · ${mac?.providers?.find(p=>p.id===provider)?.label ?? (provider === "scaleway" ? "Scaleway" : provider === "instabox" ? "Instabox" : provider)}`} value={states.length===1 ? states[0]! : "Different paid times"} detail={`${leases.length} on · ${terms.join("; ")}${states.length>1 ? ` · ${states.join("; ")}` : ""}`}/>;
+      })}
       <div className="border-t border-[#2A2A2A] pt-2.5">
         <FooterMeter
           label="Today"

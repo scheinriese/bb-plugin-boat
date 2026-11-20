@@ -1,3 +1,4 @@
+import { LiveMonthlyMacCard, MonthlyMacSuggestions } from "./monthly-mac";
 import { hours as providerHours } from "./provider-format";
 import { MacLeaseNotices } from "./mac-lease-notices";
 // Live events and measured usage; the demo seeds only the backend data.
@@ -59,6 +60,7 @@ const SURFACE =
 const countNumber = (n: number) =>
   n.toLocaleString("en-US", { maximumFractionDigits: 1 });
 export function Today() {
+  const monthly = experimental_useRpcQuery({contract:rpcContract,method:"monthlyMacSuggestions",input:null});
   const macUsage = experimental_useRpcQuery({contract:rpcContract,method:"macUsage",input:null});
   const board = useBoard(null);
   const overview = useOverview();
@@ -173,7 +175,7 @@ export function Today() {
   const hasWork = recent.length > 0 || open.length > 0 || native.length > 0;
   if (!data)
     return (
-      <div className="py-6"><MacLeaseNotices notices={macUsage.data?.notices}/>
+      <div className="py-6"><MonthlyMacSuggestions/><MacLeaseNotices notices={macUsage.data?.notices}/>
         {board.error ? (
           <InlineAlert>{board.error.message}</InlineAlert>
         ) : (
@@ -183,7 +185,7 @@ export function Today() {
     );
   if (setup.data?.ok === false && !hasWork)
     return (
-      <div className="py-6"><MacLeaseNotices notices={macUsage.data?.notices}/>
+      <div className="py-6"><MonthlyMacSuggestions/><MacLeaseNotices notices={macUsage.data?.notices}/>
         <SetupCard />
       </div>
     );
@@ -207,6 +209,7 @@ export function Today() {
       {!hasWork ? (
         <section className="space-y-3">
           <h2 className={HEADING}>Start here</h2>
+          {monthly.data?.suggestions.map(s=><LiveMonthlyMacCard key={s.id} suggestion={s}/>)}
           <p className="text-sm text-muted-foreground">
             Give a cloud agent one task, or let an orchestrator coordinate a
             project.
@@ -237,9 +240,10 @@ export function Today() {
       ) : (
         <div className="grid items-start gap-10 min-[1100px]:grid-cols-[minmax(0,1fr)_330px]">
           <div className="min-w-0 space-y-5 sm:space-y-[30px]">
-            {needsCount > 0 && (
+            {(needsCount > 0 || Boolean(monthly.data?.suggestions.length)) && (
               <section className="space-y-2 sm:space-y-[10px]">
                 <h2 className={HEADING}>Start here</h2>
+                {monthly.data?.suggestions.map(s=><LiveMonthlyMacCard key={s.id} suggestion={s}/>)}
                 <div className={cn(SURFACE, "divide-y divide-border/60")}>
                   {data.needsYou.map((decision) => (
                     <StartDecision

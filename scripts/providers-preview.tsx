@@ -4,6 +4,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { scene } from "../test/fixtures/provider-polish-render";
 const allScenes = [
+  "monthly-chat",
+  "monthly-today",
+  "monthly-usage",
+  "monthly-receipt",
+  "monthly-own",
+  "monthly-cancel",
   "usage",
   "sandbox-actions",
   "running-only",
