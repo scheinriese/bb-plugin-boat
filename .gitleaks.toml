@@ -51,3 +51,27 @@ keywords = ["ghu_"]
 [[rules.allowlists]]
 description = "Obviously fake values"
 stopwords = ["example", "fake", "dummy", "placeholder", "redacted"]
+
+# Match the same key alphabet, minimum body length and optional v as redactKeys.
+[[rules]]
+id = "instabox-key"
+description = "Instabox API key or private port token"
+regex = '''\bib[kp]v?_[A-Za-z0-9_-]{6,}'''
+keywords = ["ibk_", "ibp_", "ibkv_", "ibpv_"]
+
+[[rules.allowlists]]
+description = "Recognisably fake Instabox fixture values"
+stopwords = ["fake", "test", "example"]
+
+[[rules]]
+id = "scaleway-secret-key"
+description = "UUID secret key within 80 characters of a Scaleway label or access key"
+regex = '''(?i)(?:scw_secret_key|scaleway\b|secret_key|scw[a-z0-9]{17})[\s\S]{0,80}?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'''
+secretGroup = 1
+keywords = ["scw", "scaleway", "secret_key"]
+
+[[rules]]
+id = "scaleway-access-key"
+description = "Scaleway access key"
+regex = '''\bSCW[A-Z0-9]{17}\b'''
+keywords = ["SCW"]
