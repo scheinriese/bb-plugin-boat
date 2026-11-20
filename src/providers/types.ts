@@ -667,6 +667,8 @@ export interface SandboxProvider extends ProviderAccount, SandboxLifecycle, Sand
   machineHooks?(context: MachineHookContext): MachineHooks;
   /** Its words for the plugin's repo steps (absent: neutral words, ProviderError). */
   readonly repoWords?: RepoWords;
+  /** Retry the GitHub access probe once after a 401 while proxy delivery settles. */
+  readonly retryGithubAccess?: boolean;
   /** Refresh provider credentials before the checkout's login shell starts. */
   beforeRepo?(sandboxId: string, signal?: AbortSignal): Promise<void>;
 }

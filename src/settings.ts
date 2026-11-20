@@ -440,7 +440,7 @@ export const PLUGIN_SETTINGS = {
     type: "string",
     label: "Instabox Secrets",
     description: "Proxy Secrets for new machines: all, none, or comma-separated names. GitHub tasks need GH_TOKEN, scoped to github.com and api.github.com.",
-    experimental_schema: z.string().max(4000).regex(/^(?:all|none|[A-Za-z_][A-Za-z0-9_]*(?:,[A-Za-z_][A-Za-z0-9_]*)*)$/, "Use all, none, or comma-separated Secret names."),
+    experimental_schema: z.string().trim().max(4000).regex(/^(?:all|none|[A-Za-z_][A-Za-z0-9_]*(?:,[A-Za-z_][A-Za-z0-9_]*)*)$/, "Use all, none, or comma-separated Secret names.").refine(value => value === "all" || !value.split(",").includes("all"), "Use all by itself, without Secret names."),
     default: "all",
   },
   scalewayProjectId: {
