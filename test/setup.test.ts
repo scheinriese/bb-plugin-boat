@@ -339,7 +339,7 @@ test("each missing piece says how to fix it", () => {
   assert.doesNotMatch(check(safe, "environment").fix!.text, /boat env set/);
   assert.equal(check(safe, "agents").state, "unknown", "fix the environment first");
   assert.equal(check(safe, "agents").fix, undefined);
-  assert.match(summaryLine(safe), /^Setup: 1 thing to fix \(Boat environment\)/);
+  assert.match(summaryLine(safe), /^Setup: 1 thing to fix \(boat.dev environment\)/);
 
   // Installed after the plugin loaded: bb's "needs configuration" stays until a reload.
   const reload = buildChecks(facts(), context({}, { reloadNeeded: true }));
@@ -413,7 +413,7 @@ test("the checks before a sandbox: unknowns never block, broken setups do", () =
   assert.match(preflightProblem(hidden, SETTINGS, { agent: "claude", environment: "web" })!.message, /^Your boat environment "web" doesn't pass agent logins to sandboxes \("Safe for third parties"\)\.$/);
 });
 
-test("a Boat sandbox machine says what's missing", () => {
+test("a boat.dev sandbox machine says what's missing", () => {
   assert.equal(machineProblem(facts(), SETTINGS, { state: "ready", fix: null }), null);
   assert.match(machineProblem(facts({ account: { signedIn: false, identifier: null, plan: null, error: null } }), SETTINGS, null)!, /boat onboard/);
   assert.match(machineProblem(withProfile([]), SETTINGS, null)!, /Connect Claude or ChatGPT/);

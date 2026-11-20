@@ -83,7 +83,7 @@ test("machine resumes are paced: a third wake within a minute waits for its slot
   assert.equal(resumes(env.boat.calls).length, 3);
   // The first two went at once; the third waited out the minute.
   assert.deepEqual(env.sleeps, [60_000]);
-  assert.ok(env.report.steps.some((step) => step === "Waiting until 00:01 UTC: Boat wakes at most 2 sandboxes a minute"), env.report.steps.join("\n"));
+  assert.ok(env.report.steps.some((step) => step === "Waiting until 00:01 UTC: Harbormaster wakes at most 2 sandboxes a minute"), env.report.steps.join("\n"));
 });
 
 test("over the wait, a machine resume fails clearly, retryably, without waking anything", async () => {
@@ -91,7 +91,7 @@ test("over the wait, a machine resume fails clearly, retryably, without waking a
   const machines = [await env.stoppedMachine("a"), await env.stoppedMachine("b"), await env.stoppedMachine("c")];
   await env.provider().resume(env.lifecycle(machines[0]));
   await env.provider().resume(env.lifecycle(machines[1]));
-  await assert.rejects(env.provider().resume(env.lifecycle(machines[2])), /^Error: Boat wakes at most 2 sandboxes a minute and others are waking now\. Boat will wake this one at 00:01 UTC\.$/);
+  await assert.rejects(env.provider().resume(env.lifecycle(machines[2])), /^Error: Harbormaster wakes at most 2 sandboxes a minute and others are waking now\. Harbormaster will wake this one at 00:01 UTC\.$/);
   assert.equal(resumes(env.boat.calls).length, 2);
   assert.equal((await env.wakes.scheduled(machines[2]!.sandboxId))!.kind, "paced");
 });
@@ -101,7 +101,7 @@ test("bb's setup hitting EIO: the plain disk message, a retry plan, and no hamme
   const resource = await env.stoppedMachine("orch");
   env.boat.execResult = (script) => ({ exitCode: 0, stdout: script.includes("BOAT_DISK_END") ? `BOAT_HYDRATOR ${HYDRATOR}\nBOAT_DISK fail .profile Input/output error\nBOAT_DISK_END\n` : "", stderr: "" });
   env.failBootstrap(new Error("Machine bootstrap command failed: grep: /home/user/.ssh/authorized_keys: Input/output error"));
-  await assert.rejects(env.provider().resume(env.lifecycle(resource)), /^Error: boat\.dev is still restoring this sandbox's disk \(its storage is returning errors\)\. Boat will retry at 00:02 UTC; pressing Resume earlier won't help\.$/);
+  await assert.rejects(env.provider().resume(env.lifecycle(resource)), /^Error: boat\.dev is still restoring this sandbox's disk \(its storage is returning errors\)\. Harbormaster will retry at 00:02 UTC; pressing Resume earlier won't help\.$/);
   assert.equal((await env.pacer.snapshot()).failures, 1, "the account's next wake pauses");
   // bb's Resume, the watchdog or bb's provider retry before 00:02: refused without asking boat.dev.
   const calls = env.boat.calls.length;
@@ -164,7 +164,7 @@ test("teardown backs off: bb's retries in between don't reach boat.dev", async (
   env.boat.delete = async () => { deletes += 1; throw new BoatError("Please reduce your request rate.", { code: "rate_limited", status: 429 }); };
   const first = await env.provider().remove({ resource });
   assert.equal(first.status, "failed");
-  assert.match(first.message!, /^boat\.dev failed to delete this sandbox \(Please reduce your request rate\.\)\. Boat asks it again at \d\d:\d\d UTC\.$/);
+  assert.match(first.message!, /^boat\.dev failed to delete this sandbox \(Please reduce your request rate\.\)\. Harbormaster asks it again at \d\d:\d\d UTC\.$/);
   const second = await env.provider().remove({ resource });
   assert.match(second.message!, /failed to delete this sandbox a moment ago/);
   assert.equal(deletes, 1);
@@ -181,7 +181,7 @@ test("teardown backs off: bb's retries in between don't reach boat.dev", async (
   assert.equal((await env.provider().remove({ resource: other.resource })).status, "removed");
 });
 
-test("a plain stop boat keeps refusing, the node failing the same file: Boat watches, then moves it once safe, keeping the last snapshot", async () => {
+test("a plain stop boat keeps refusing, the node failing the same file: Harbormaster watches, then moves it once safe, keeping the last snapshot", async () => {
   const env = setup({ moves: {} });
   const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
   const resource = created.resource!;
@@ -194,7 +194,7 @@ test("a plain stop boat keeps refusing, the node failing the same file: Boat wat
   });
   // bb's suspends, as its own retries come (the backoff in between: no boat calls).
   const suspend = () => env.provider().suspend(env.lifecycle(resource));
-  await assert.rejects(suspend(), /^Error: boat\.dev failed to stop this sandbox \(boat didn't stop it: the stop is failing\)\. Boat asks it again at 00:00 UTC\.$/);
+  await assert.rejects(suspend(), /^Error: boat\.dev failed to stop this sandbox \(boat didn't stop it: the stop is failing\)\. Harbormaster asks it again at 00:00 UTC\.$/);
   await assert.rejects(suspend(), /a moment ago/);
   assert.equal(env.boat.calls.filter((call) => call === `stop ${sandboxId}`).length, 1, "held: boat isn't asked again");
   for (const minutes of [1, 2, 4, 8]) {
@@ -205,9 +205,9 @@ test("a plain stop boat keeps refusing, the node failing the same file: Boat wat
   const plan = (await env.wakes.scheduled(sandboxId))!;
   assert.equal(plan.move!.state, "due");
   assert.equal(plan.move!.resume, false);
-  await assert.rejects(suspend(), /Boat moves it off its node, or asks first under Needs you/);
+  await assert.rejects(suspend(), /Harbormaster moves it off its node, or asks first under Needs you/);
   // Meanwhile no Boat work goes there (a follow-up's bringUp, a start, a ship).
-  await assert.rejects(env.service.bringUp(sandboxId), /^TaskError: Boat is moving sandbox bx_\w+ to a new boat\.dev node: its node keeps failing its disk\.$/);
+  await assert.rejects(env.service.bringUp(sandboxId), /^TaskError: Harbormaster is moving sandbox bx_\w+ to a new boat\.dev node: its node keeps failing its disk\.$/);
   // No chat at work there (none listed), clean checkouts: the forced stop, since boat refused the plain one.
   assert.equal(await env.wakes.tick(), sandboxId);
   await env.wakes.idle();
@@ -229,7 +229,7 @@ test("a refused stop with the disk only restoring (or healthy) is only reported 
   assert.ok(!env.boat.calls.some((call) => call.includes("--force")));
 });
 
-test("a plain stop boat answers pending isn't a failed suspend: Boat follows it until boat finishes", async () => {
+test("a plain stop boat answers pending isn't a failed suspend: Harbormaster follows it until boat finishes", async () => {
   const env = setup();
   const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
   const sandboxId = created.resource!.sandboxId;
@@ -257,7 +257,7 @@ test("a stop boat refuses with its own words is refused, and they're quoted", as
   const env = setup();
   const created = await env.provider().create({ inputs: {}, key: "orch", checkpoint: async () => undefined, report: env.report, signal: new AbortController().signal });
   env.boat.stopBehavior = "error";
-  await assert.rejects(env.provider().suspend(env.lifecycle(created.resource)), /^Error: boat\.dev failed to stop this sandbox \(boat didn't stop it: boat said: "Final snapshot failed; stop aborted to protect unsaved data \(lazy volume not fully hydrated\)"\)\. Boat asks it again at \d\d:\d\d UTC\.$/);
+  await assert.rejects(env.provider().suspend(env.lifecycle(created.resource)), /^Error: boat\.dev failed to stop this sandbox \(boat didn't stop it: boat said: "Final snapshot failed; stop aborted to protect unsaved data \(lazy volume not fully hydrated\)"\)\. Harbormaster asks it again at \d\d:\d\d UTC\.$/);
 });
 
 test("a machine resume boat refuses for the sandbox's size: plain words on the machine, the way back under Needs you, nothing larger started", async () => {

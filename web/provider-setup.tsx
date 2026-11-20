@@ -84,7 +84,7 @@ export function ProviderSetup({
               <div className="space-y-2.5 pl-[26px]">
                 <p className="text-xs leading-[17px] text-[#A8A8A8]">
                   {s.id === "github"
-                    ? "Agents push branches from Instabox, so it needs its own GitHub token. Add it in Instabox; Boat only checks that it exists."
+                    ? "Agents push branches from Instabox, so it needs its own GitHub token. Add it in Instabox; Harbormaster only checks that it exists."
                     : s.detail}
                 </p>
                 {s.id === "github" && (

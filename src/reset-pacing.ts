@@ -76,7 +76,7 @@ const CONSENT_POLL_MS = 1_000;
 /** kv: the stopped turns Boat resumed itself, and when. */
 export const RESET_RESUMES_KEY = "resetResumes";
 
-export const DECLINE_REASON = "Boat resumes its own chats after a usage limit resets, paced so their sandboxes don't all wake at once";
+export const DECLINE_REASON = "Harbormaster resumes its own chats after a usage limit resets, paced so their sandboxes don't all wake at once";
 
 /** The parts of bb's turn.failed event this reads. */
 export interface LimitFailure {
@@ -261,7 +261,7 @@ export function createResetPacing(deps: ResetPacingDeps): ResetPacing {
           // Boat declined, but provider retry recorded nothing readable: bb's queue tells whether it retries anyway.
           const queued = deps.queuedRetry === undefined ? null : await deps.queuedRetry(threadId).catch(() => null);
           if (queued !== false) {
-            log(`reset resume ${threadId}: provider retry recorded no decision within a minute${queued ? " and a retry is queued" : ", and Boat couldn't read bb's queue"}; leaving the chat as it is`);
+            log(`reset resume ${threadId}: provider retry recorded no decision within a minute${queued ? " and a retry is queued" : ", and Harbormaster couldn't read bb's queue"}; leaving the chat as it is`);
             return "skipped";
           }
         } else if (decision.kind !== "decline" || decision.reason !== "declined-by-sender") {
@@ -317,7 +317,7 @@ export function createResetPacing(deps: ResetPacingDeps): ResetPacing {
       const earliest = deps.nextWakeAt === undefined ? at : await deps.nextWakeAt().catch(() => at);
       const slot = lane.slot(key, at, earliest);
       if (slot <= at + 1_000) return null;
-      return { action: "wait", reason: `Boat wakes at most ${WAKES_PER_WINDOW} sandboxes a minute after a usage limit resets; this chat goes on at ${clockTime(slot, at)}.`, sendAt: slot };
+      return { action: "wait", reason: `Harbormaster wakes at most ${WAKES_PER_WINDOW} sandboxes a minute after a usage limit resets; this chat goes on at ${clockTime(slot, at)}.`, sendAt: slot };
     },
   };
 }

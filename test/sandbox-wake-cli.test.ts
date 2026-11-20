@@ -47,7 +47,7 @@ test("bb boat sandbox wake --dry-run on a stuck sandbox: the diagnosis and the p
   assert.match(result.stdout, /· boat\.dev can't restore this sandbox's disk \(HYDRATOR FAILED attempt 32 .*status code 503\)\./);
   assert.match(result.stdout, /→ Stop it with a plain boat stop \(a fresh snapshot, nothing lost\), follow that stop, and start it again/);
   // No bb machine is known there: Boat can't see which chats run there, so it wouldn't force a stop.
-  assert.match(result.stdout, /If boat refuses the plain stop, Boat won't force it: Boat couldn't see which chats run there\./);
+  assert.match(result.stdout, /If boat refuses the plain stop, Harbormaster won't force it: Harbormaster couldn't see which chats run there\./);
   assert.match(result.stdout, /→ Start it again: an included boat start \(20 left this hour\), with a wake slot free now\./);
   // Only reads: no stop, resume or delete reached boat.
   const made = calls().slice(before);
@@ -87,7 +87,7 @@ test("bb boat sandbox wake: no paid extra start without --allow-paid-start (exit
   });
   const none = await harness.runCli(["sandbox", "wake", sandboxId, "--allow-paid-start"]);
   assert.equal(none.exitCode, 1);
-  assert.match(none.stdout, /Needs you: No included boat start is left today or this hour, and boat's paid extra starts are off \(Boat never turns them on\)/);
+  assert.match(none.stdout, /Needs you: No included boat start is left today or this hour, and boat's paid extra starts are off \(Harbormaster never turns them on\)/);
   assert.ok(!calls().includes("resume"));
 });
 

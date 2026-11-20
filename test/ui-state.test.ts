@@ -79,7 +79,7 @@ test("the card's toasts name the card and the Settings button, and promise it on
   // After ×: what was hidden, and the Settings button in its own words.
   const hidden = cardHiddenToast();
   assert.match(hidden.title, /^Orchestrator card hidden\./);
-  assert.equal(hidden.description, "Show the orchestrator card again in Settings → Plugins → Boat Cloud Agents → Orchestrators.");
+  assert.equal(hidden.description, "Show the orchestrator card again in Settings → Plugins → Harbormaster → Orchestrators.");
   // After Show again: back on the page only with no orchestrator (the page shows it only then).
   assert.deepEqual(cardShownToast(false), { title: "The orchestrator card is back on the Cloud agents page", description: null });
   const withOne = cardShownToast(true);

@@ -134,7 +134,7 @@ export const INSTABOX_MACHINE: MachineSpec = {
     gone: (sandboxId) => `Instabox machine ${sandboxId} no longer exists`,
     stopSaid: (reason) => `Instabox said: "${reason}"`,
     notStopped: (why) => `Instabox didn't stop it: ${why}`,
-    stillRestoring: (detail) => `Instabox can't stop it yet${detail}; Boat tries again later`,
+    stillRestoring: (detail) => `Instabox can't stop it yet${detail}; Harbormaster tries again later`,
   },
 };
 
@@ -423,7 +423,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         if (create.system !== "macos") throw error;
         const code = (error as {code?:string}).code;
         if (["no_capacity","quota_exceeded","unauthenticated","key_missing","template_not_allowed","spec_not_allowed","instabox_not_found","instabox_spawn_failed"].includes(code ?? "")) throw error;
-        throw new InstaboxError("Instabox may have allocated a Mac before create failed. Check its machine list before retrying; Boat will not rent a fallback Mac.",{code:"creation_unknown"});
+        throw new InstaboxError("Instabox may have allocated a Mac before create failed. Check its machine list before retrying; Harbormaster will not rent a fallback Mac.",{code:"creation_unknown"});
       }
       try {
         const sandbox = toSandbox(rec(record.machine) ?? record);

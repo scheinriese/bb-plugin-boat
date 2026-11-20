@@ -350,7 +350,7 @@ test("orchestrators load the protocol first and reconcile on every wake", () => 
   assert.ok(ORCHESTRATOR_INSTRUCTIONS.length < 2500);
   assert.match(ORCHESTRATOR_INSTRUCTIONS, /call boat_protocol/);
   assert.match(ORCHESTRATOR_INSTRUCTIONS, /On every wake .* call boat_tasks first and reconcile every open task/);
-  assert.match(kickoffPrompt({ project: PROJECT, prompt: "Ship it" }), /^You are a boat orchestrator for this chat\. First call boat_protocol/);
+  assert.match(kickoffPrompt({ project: PROJECT, prompt: "Ship it" }), /^You are a Harbormaster orchestrator for this chat\. First call boat_protocol/);
 });
 
 // ------------------------------------------------------- review fixes

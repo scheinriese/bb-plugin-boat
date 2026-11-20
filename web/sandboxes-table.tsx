@@ -265,7 +265,7 @@ export function SandboxTable() {
               <tbody className="divide-y divide-border/60">
                 {sorted.map((sandbox,index) => (
                   <Fragment key={sandbox.id}>
-                  {sandbox.uses.length===0 && (index===0 || sorted[index-1]!.uses.length>0) && <tr className="h-10 border-b border-[#262626]"><td colSpan={5} className="px-3.5 pb-2 align-bottom text-xs text-[#A8A8A8]">Not from a task <span className="text-[#6E6E6E]">· {sorted.filter(s=>s.uses.length===0).length} · started outside Boat, e.g. by another plugin or a review run</span></td></tr>}
+                  {sandbox.uses.length===0 && (index===0 || sorted[index-1]!.uses.length>0) && <tr className="h-10 border-b border-[#262626]"><td colSpan={5} className="px-3.5 pb-2 align-bottom text-xs text-[#A8A8A8]">Not from a task <span className="text-[#6E6E6E]">· {sorted.filter(s=>s.uses.length===0).length} · started outside Harbormaster, e.g. by another plugin or a review run</span></td></tr>}
                   <SandboxTableRow
                     key={sandbox.id}
                     projects={projects.data?.projects ?? []}

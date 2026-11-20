@@ -28,6 +28,19 @@ const { renderScene } = (await import(
   pathToFileURL(join(temporary, "render.mjs")).href
 )) as { renderScene(name: string): string };
 
+test("Harbormaster copy keeps provider names and existing settings links", () => {
+  const settings = renderScene("settings");
+  assert.match(settings, /Harbormaster only checks that it exists/);
+  for (const provider of ["boat.dev", "Instabox", "Scaleway"]) {
+    assert.ok(settings.includes(provider), provider);
+  }
+  const notice = renderScene("fresh");
+  assert.match(notice, /Harbormaster can&#x27;t yet sign a fresh Mac/);
+  assert.match(notice, /Scaleway can&#x27;t rent a new Mac/);
+  assert.match(notice, /href="\/settings\/plugins\/boat"/);
+  assert.doesNotMatch(notice + settings, /\bBoat\b/);
+});
+
 test("product numbers and dates use English US independently of the host locale", () => {
   assert.equal(hours(2777.78), "2,778");
   assert.equal(hours(2643.77), "2,644");
@@ -135,9 +148,9 @@ for (const name of ["github", "key", "capacity", "fresh", "failed", "released"])
     }
     if (name === "failed") {
       assert.match(html, /paid lease may still be held/);
-      assert.doesNotMatch(html, /Boat released it|>Retry</);
+      assert.doesNotMatch(html, /Harbormaster released it|>Retry</);
     }
-    if (name === "released") assert.match(html, /Boat released it/);
+    if (name === "released") assert.match(html, /Harbormaster released it/);
   });
 test("per-second task lines, sharers, and hourly Scaleway state", () => {
   const html = renderScene("lines");

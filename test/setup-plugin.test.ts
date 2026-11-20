@@ -224,7 +224,7 @@ test("without the CLI, the plugin says how to install it and to reload", async (
   assert.equal((JSON.parse(doctor.stdout) as { checks: { id: string; state: string }[] }).checks[0]!.state, "missing");
 });
 
-test("the Boat sandbox machine needs a signed-in boat, an agent login and bb Connect", async (t) => {
+test("the boat.dev sandbox machine needs a signed-in boat, an agent login and bb Connect", async (t) => {
   const { harness, patch } = await setup(t);
   harness.sdk.stub("plugins.callRpc", async () => ({ paired: true, enabled: true }));
   const machine = harness.inspection.registrations.machineProviders.get("boat-sandbox")!;

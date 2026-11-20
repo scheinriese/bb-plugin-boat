@@ -56,7 +56,7 @@ test("a slot further away than the caller waits is a WakeDeferred with when to t
     assert.equal(error.code, "wake_deferred");
     assert.equal(error.reason, "rate");
     assert.equal(error.retryAt, time.now() + 60_000);
-    assert.match(error.message, /Boat wakes at most 2 sandboxes a minute and others are waking now\. Try again at 00:01 UTC\./);
+    assert.match(error.message, /Harbormaster wakes at most 2 sandboxes a minute and others are waking now\. Try again at 00:01 UTC\./);
     return true;
   });
   assert.deepEqual(time.sleeps, [], "it never fires early, nor waits in vain");

@@ -50,7 +50,7 @@ export function BackupSettings() {
     if (!file) return;
     try {
       const text = await file.text();
-      if (text.length > MAX_FILE_CHARS) throw new Error(`${file.name} is too large for a Boat backup.`);
+      if (text.length > MAX_FILE_CHARS) throw new Error(`${file.name} is too large for a Harbormaster backup.`);
       setPicked({ name: file.name, text });
     } catch (failure) {
       showError(failure);

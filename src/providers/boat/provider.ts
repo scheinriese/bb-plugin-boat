@@ -79,28 +79,28 @@ export const BOAT_SIZES: readonly SizeOption[] = MACHINE_TYPES.map((id) => ({
 /** "Boat sandbox" in bb's machine and environment pickers. */
 export const BOAT_MACHINE: MachineSpec = {
   id: MACHINE_PROVIDER_ID,
-  displayName: "Boat sandbox",
+  displayName: "boat.dev sandbox",
   description: "Run bb chats in a boat.dev cloud sandbox, with the Claude and ChatGPT logins connected in boat.dev (or bb's Account Pooler, if it routes them).",
   icon: "ComputerCloud",
   // For project chats (bb clones the project there) and project-less chats.
   environments: [
     {
       id: "boat-sandbox",
-      displayName: "Boat sandbox",
+      displayName: "boat.dev sandbox",
       description: "A new boat.dev cloud sandbox with this project checked out",
       environmentProviderId: "project-checkout",
     },
     {
       id: "boat-sandbox-personal",
-      displayName: "Boat sandbox",
+      displayName: "boat.dev sandbox",
       description: "A new boat.dev cloud sandbox with a personal workspace",
       environmentProviderId: "personal-workspace",
     },
   ],
   machineName: (key) => `bb machine ${key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24)}`,
-  machineLabel: (sandboxId, hostId) => `Boat ${sandboxId} (${hostId.slice(-6)})`,
+  machineLabel: (sandboxId, hostId) => `boat.dev ${sandboxId} (${hostId.slice(-6)})`,
   words: {
-    invalidInputs: "Boat machine options are invalid. Choose a supported size, snapshot and reviewer.",
+    invalidInputs: "boat.dev machine options are invalid. Choose a supported size, snapshot and reviewer.",
     usingPrepared: "Using the prepared boat sandbox",
     creating: "Creating the boat sandbox",
     resuming: "Resuming the boat sandbox",
@@ -108,7 +108,7 @@ export const BOAT_MACHINE: MachineSpec = {
     gone: (sandboxId) => `boat sandbox ${sandboxId} no longer exists`,
     stopSaid: (reason) => `boat said: "${reason}"`,
     notStopped: (why) => `boat didn't stop it: ${why}`,
-    stillRestoring: (detail) => `it can't snapshot a disk it hasn't finished restoring${detail}; Boat moves it off its node, or asks first under Needs you`,
+    stillRestoring: (detail) => `it can't snapshot a disk it hasn't finished restoring${detail}; Harbormaster moves it off its node, or asks first under Needs you`,
   },
 };
 

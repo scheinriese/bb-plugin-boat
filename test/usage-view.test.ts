@@ -319,7 +319,7 @@ test("Refresh with the Pooler off re-reads this computer's logins and asks the P
   assert.deepEqual(errors, []);
   assert.equal(host.calls.filter((call) => call.method === "account.refreshUsage").length, 0);
   assert.ok(host.calls.some((call) => call.pluginId === "provider-claude-code" && call.method === "provider-usage.v1.getResource" && call.input?.refresh === true));
-  assert.equal(refreshErrorText(new Error("unknown method account.refreshUsage")), "This Account Pooler can't refresh from Boat. Use Reload in its own settings.");
+  assert.equal(refreshErrorText(new Error("unknown method account.refreshUsage")), "This Account Pooler can't refresh from Harbormaster. Use Reload in its own settings.");
   assert.equal(refreshErrorText(new Error("plugin account-pool is not installed")), "The Account Pooler is off.");
 });
 

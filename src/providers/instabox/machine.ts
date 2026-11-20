@@ -29,7 +29,7 @@ export function registerInstaboxMachine(
       try {
         const status = await (deps.setup.peek() ?? deps.setup.status());
         const failing = status.checks.find((check) => check.required && check.state === "missing");
-        if (!status.turnedOn) return { status: "setup-required" as const, message: "Instabox is off in Boat's settings. Turn it on with `bb boat config set instaboxEnabled true`." };
+        if (!status.turnedOn) return { status: "setup-required" as const, message: "Instabox is off in Harbormaster's settings. Turn it on with `bb boat config set instaboxEnabled true`." };
         if (failing) return { status: "setup-required" as const, message: `${failing.label}: ${failing.detail}. ${failing.fix?.text ?? ""}`.trim() };
         const connect = deps.connect ? await deps.connect().catch(() => null) : null;
         if (connect?.state === "off") return { status: "setup-required" as const, message: `A chat in an Instabox machine reaches this bb through bb Connect, which is off. ${connect.fix ?? "Run `bb connect on`."}` };

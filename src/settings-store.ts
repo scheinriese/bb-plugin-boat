@@ -52,7 +52,7 @@ export async function createMigratingSettingsStore(bb: BbPluginApi): Promise<Set
     let writes: Promise<unknown> = Promise.resolve();
     const mirror = (values: DeclaredValues): Promise<unknown> => {
       const valid = declaredValues(values);
-      if (valid === null) throw new Error("Cannot migrate invalid Boat settings.");
+      if (valid === null) throw new Error("Cannot migrate invalid Harbormaster settings.");
       const text = JSON.stringify(valid);
       if (text === saved) return writes;
       saved = text;
@@ -70,12 +70,12 @@ export async function createMigratingSettingsStore(bb: BbPluginApi): Promise<Set
   }
   // A corrupted snapshot is a blocking error, never permission to silently
   // replace the owner's migrated choices with defaults or stale host values.
-  if (declaredValues(snapshot) === null) throw new Error("Boat settings could not be read. Restore the settings backup before reloading.");
+  if (declaredValues(snapshot) === null) throw new Error("Harbormaster settings could not be read. Restore the settings backup before reloading.");
   bb.settings.define({});
   const listeners: ((next: DeclaredValues, previous: DeclaredValues) => void)[] = [];
   const read = async () => {
     const values = declaredValues(await bb.storage.kv.get(DECLARED_SETTINGS_KEY));
-    if (values === null) throw new Error("Boat settings could not be read. Restore the settings backup.");
+    if (values === null) throw new Error("Harbormaster settings could not be read. Restore the settings backup.");
     return values;
   };
   const handle: PluginSettingsHandle<typeof SETTINGS> = {
@@ -319,7 +319,7 @@ export function settingsText(rows: SettingRow[]): string {
   const line = (row: SettingRow) =>
     `  ${row.key} = ${shown(row.value)}${row.isDefault ? "" : `  (default ${shown(row.default)})`}${row.disabledReason ? `  [${row.disabledReason.toLowerCase()}]` : ""}`;
   const bbRows = rows.filter((row) => row.where === "bb");
-  if (bbRows.length > 0) blocks.push(["bb's settings list (Settings → Plugins → Boat Cloud Agents):", ...bbRows.map(line)].join("\n"));
+  if (bbRows.length > 0) blocks.push(["bb's settings list (Settings → Plugins → Harbormaster):", ...bbRows.map(line)].join("\n"));
   for (const section of SETTING_SECTIONS) {
     const inSection = rows.filter((row) => row.section === section.id);
     if (inSection.length > 0) blocks.push([`${section.title}:`, ...inSection.map(line)].join("\n"));

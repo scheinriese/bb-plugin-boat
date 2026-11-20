@@ -73,7 +73,7 @@ export const SETTINGS = {
   },
   environment: {
     type: "string",
-    label: "Boat environment",
+    label: "boat.dev environment",
     description:
       "The boat.dev environment new sandboxes start from: its repos, secrets and agent logins. Empty: your boat default. A project can pick its own.",
     default: "",
@@ -219,14 +219,14 @@ export const PLUGIN_SETTINGS = {
     section: "usage-limits",
     type: "boolean",
     label: "Allow automatic paid Claude fallback",
-    description: "Use included allowances first. When all connected agents are near their limits, bb task chats and orchestrators may use Claude extra usage if Account Pooler reports it available. Claude enforces your billing limit; Boat cannot read or set the money cap or buy credits.",
+    description: "Use included allowances first. When all connected agents are near their limits, bb task chats and orchestrators may use Claude extra usage if Account Pooler reports it available. Claude enforces your billing limit; Harbormaster cannot read or set the money cap or buy credits.",
     default: false,
   },
   paidClaudeHeadless: {
     section: "usage-limits",
     type: "boolean",
-    label: "Include headless Boat tasks in paid fallback",
-    description: "Only with automatic paid Claude fallback enabled. Authorize headless tasks too after confirming Boat uses the same Claude subscription account and billing controls as bb. The availability signal comes from bb; Boat cannot verify every environment's login. Leave off for different accounts or API keys.",
+    label: "Include headless Harbormaster tasks in paid fallback",
+    description: "Only with automatic paid Claude fallback enabled. Authorize headless tasks too after confirming Harbormaster uses the same Claude subscription account and billing controls as bb. The availability signal comes from bb; Harbormaster cannot verify every environment's login. Leave off for different accounts or API keys.",
     default: false,
   },
   resumeStoppedChats: {
@@ -342,8 +342,8 @@ export const PLUGIN_SETTINGS = {
   orchestratorMachineType: {
     section: "orchestrators",
     type: "select",
-    label: "Size for chats on a Boat sandbox",
-    description: "Cloud orchestrators and any chat you start on a Boat sandbox. They mostly coordinate, so Small is usually enough.",
+    label: "Size for chats on a boat.dev sandbox",
+    description: "Cloud orchestrators and any chat you start on a boat.dev sandbox. They mostly coordinate, so Small is usually enough.",
     options: [...MACHINE_TYPES],
     experimental_optionLabels: SIZE_LABELS,
     default: "small",
@@ -370,7 +370,7 @@ export const PLUGIN_SETTINGS = {
     type: "boolean",
     label: "Recover any chat after a steer Bad Request",
     description:
-      "When a chat's turn fails with a provider Bad Request right after a message steered it (yours, or another agent's), send that chat one message that repeats it so the work goes on. Boat task chats are retried either way.",
+      "When a chat's turn fails with a provider Bad Request right after a message steered it (yours, or another agent's), send that chat one message that repeats it so the work goes on. Harbormaster task chats are retried either way.",
     default: true,
   },
   freeSlotsWhenFull: {

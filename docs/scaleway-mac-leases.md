@@ -65,7 +65,7 @@ zone, project ID and whether bootstrap completed. The directory comes from
 API secret is persisted there.
 
 Register the public key using `POST /iam/v1alpha1/ssh-keys`. Scaleway SSH
-keys are project-scoped, although Boat generates and uses one pair per
+keys are project-scoped, although Harbormaster generates and uses one pair per
 machine. See [SSH access](https://www.scaleway.com/en/docs/apple-silicon/how-to/connect-to-mac-mini-ssh/).
 SSH uses the API-reported address and username, its login environment for the
 actual home directory, batch authentication and
@@ -79,14 +79,14 @@ bb's existing shared machine registration installs/enrolls bb through a
 stdin-capable SSH executor. Enrollment input is never put on a command line
 or in shell history. Existing task workspace and checkout logic is reused.
 Fresh task rentals fail closed while credential provisioning is unavailable.
-Boat does not copy the host's GitHub or agent tokens to a new provider.
+Harbormaster does not copy the host's GitHub or agent tokens to a new provider.
 
 Delete the IAM public-key resource and local private/public/known-hosts files
 when releasing the server. Automatic management requires a local key or lease
 record. A name token matches only its local recovery record; the recorded server
 ID keeps ownership after a rename. Other `bb-boat-*` servers are reported as
 orphans in provider status, `bb boat providers` and `bb boat status` (including
-JSON output). Boat never adopts, schedules or deletes them automatically; inspect
+JSON output). Harbormaster never adopts, schedules or deletes them automatically; inspect
 them in the Scaleway console.
 Successful complete lists cover every recorded project/zone before treating an
 allocation as absent. Changing project or zone does not discard an existing key.

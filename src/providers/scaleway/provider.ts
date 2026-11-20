@@ -155,7 +155,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
   }
   async function run(server: Server, request: SshRequest) {
     const record = await keyFor(server);
-    if (!record) throw fail("This Scaleway Mac has no recorded Boat SSH key.", "key_missing");
+    if (!record) throw fail("This Scaleway Mac has no recorded Harbormaster SSH key.", "key_missing");
     return ssh({ ip: server.ip, user: server.ssh_username, key: keys.path(record.token) }, { ...request, command: ["bash", "-lc", request.command.map(shellQuote).join(" ")] });
   }
   async function view(server: Server, signal?: AbortSignal, reconcile = true): Promise<SandboxInfo> {
@@ -241,7 +241,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     ...unavailableProvider("scaleway"), id: "scaleway", displayName: "Scaleway", caps, idPattern: SCALEWAY_ID_PATTERN, machine,
     async presentation({signal} = {}) {
       let project = false, accepted = false;
-      let detail = "Set Scaleway project ID in Boat settings";
+      let detail = "Set Scaleway project ID in Harbormaster settings";
       try {
         const config=await api.config();
         await api.parse(z.object({organization_id:z.string()}),"GET",`/account/v3/projects/${config.projectId}`,undefined,signal);
@@ -249,7 +249,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       } catch (error) {
         const code=(error as {code?:string}).code;
         if(code==="key_missing")detail="Add Scaleway secret key in bb secrets";
-        else if(code==="not_found"){accepted=true;detail="Check Scaleway project ID in Boat settings";}
+        else if(code==="not_found"){accepted=true;detail="Check Scaleway project ID in Harbormaster settings";}
         else if(code!=="provider_unavailable")detail="Check Scaleway secret key and project access";
       }
       const github = await credentials.githubConfigured();

@@ -95,7 +95,7 @@ export async function providerStates(deps: ProviderStatusDeps, options: { force?
           return { ...base(provider), turnedOn: true, keyPresent: null, status: provider.id === "scaleway" ? "setup-required" : "ready", checks: [], orphans,
             problem: provider.id === "scaleway" ? "Held Macs only; logins on fresh Macs are not possible yet." : orphans.length ? `${orphans.length} orphan server(s) have no local ownership record. They are not managed; inspect them in the provider console.` : null };
         } catch (error) {
-          return { ...base(provider), turnedOn: true, keyPresent: null, status: "unknown", problem: provider.id === "scaleway" ? ((error as {code?:string}).code === "key_missing" ? "Add the Scaleway secret key in bb secrets." : (error as {code?:string}).code === "provider_unavailable" ? "Set a valid Scaleway project ID and Paris zone in Boat settings." : "Check the Scaleway secret key and project access.") : "Could not check provider ownership records.", checks: [] };
+          return { ...base(provider), turnedOn: true, keyPresent: null, status: "unknown", problem: provider.id === "scaleway" ? ((error as {code?:string}).code === "key_missing" ? "Add the Scaleway secret key in bb secrets." : (error as {code?:string}).code === "provider_unavailable" ? "Set a valid Scaleway project ID and Paris zone in Harbormaster settings." : "Check the Scaleway secret key and project access.") : "Could not check provider ownership records.", checks: [] };
         }
       }
       return { ...base(provider), turnedOn: false, keyPresent: null, status: "off", problem: null, checks: [] };

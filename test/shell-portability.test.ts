@@ -1,4 +1,5 @@
 import { GITHUB_LOGIN_SCRIPT, CREDENTIAL_CLEANUP_SCRIPT } from "../src/credentials.ts";
+import { CODEX_HEALTH_SCRIPT } from "../src/codex-health.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
@@ -16,6 +17,7 @@ async function scripts(): Promise<Map<string, string>> {
     ["Scaleway bootstrap", BOOTSTRAP],
     ["GitHub credential delivery", GITHUB_LOGIN_SCRIPT],
     ["Credential cleanup", CREDENTIAL_CLEANUP_SCRIPT],
+    ["Codex health", CODEX_HEALTH_SCRIPT],
     ["Instabox bootstrap", BOOTSTRAP_PREP_SCRIPT],
     ["Instabox beforeRepo", GITHUB_SECRET_PROBE_SCRIPT],
     ["ship snapshot", shipSnapshotScript([{ path: "/tmp/web", baseBranch: "main" }])],

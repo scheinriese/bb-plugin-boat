@@ -540,7 +540,7 @@ export default async function plugin(bb: BbPluginApi) {
   registerBoatMachine(bb, { boat, cli, service, settings: readSettings, setup, setupSettings, connect, wakes, prepareHost });
   registeredMachines.add("boat-sandbox");
   registerSandboxMachine(bb, scaleway, { service, settings: readSettings, availability: async () => {
-    if (!sandboxProviders.get("scaleway")) return { status: "setup-required", message: "Add the Scaleway secret key in bb secrets and set its project ID in Boat settings." };
+    if (!sandboxProviders.get("scaleway")) return { status: "setup-required", message: "Add the Scaleway secret key in bb secrets and set its project ID in Harbormaster settings." };
     const state = await connect().catch(() => null);
     return state?.state === "off" ? { status: "setup-required", message: "Turn on bb Connect for Scaleway task chats." } : { status: "available" };
   } });
@@ -625,7 +625,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(
     retryConsentContract,
     { [RETRY_CONSENT_METHOD]: (input) => resets.consent(input) },
-    { experimental_discoverable: true, experimental_description: "Boat declines a usage-limit retry of a chat it runs and resumes it itself after the reset, paced. Everything else is allowed." },
+    { experimental_discoverable: true, experimental_description: "Harbormaster declines a usage-limit retry of a chat it runs and resumes it itself after the reset, paced. Everything else is allowed." },
   );
   bb.events.on("turn.failed", (payload: unknown) => {
     void resets.failed(payload as LimitFailure).catch((error: unknown) => bb.log.warn(`reset resume: ${error instanceof Error ? error.message : String(error)}`));
@@ -650,7 +650,7 @@ export default async function plugin(bb: BbPluginApi) {
       .catch(() => undefined);
   });
 
-  // Orchestrator threads get the boat tools, the playbook skill, and standing
+  // Orchestrator threads get the Harbormaster tools, the playbook skill, and standing
   // instructions; every thread can use the general `boat` skill and CLI.
   bb.agents.configure((context) => {
     if (isOrchestratorMetadata(context.pluginMetadata)) {
@@ -884,7 +884,7 @@ export default async function plugin(bb: BbPluginApi) {
         return;
       }
       if (!lifecycle.signal.aborted) {
-        bb.log.warn(`couldn't remove withdrawn queued message ${queuedMessageId} from ${threadId}; the messages grouped with it stay queued, waiting on Boat, until it's deleted`);
+        bb.log.warn(`couldn't remove withdrawn queued message ${queuedMessageId} from ${threadId}; the messages grouped with it stay queued, waiting on Harbormaster, until it's deleted`);
       }
     } finally {
       releasing.delete(queuedMessageId);
@@ -897,7 +897,7 @@ export default async function plugin(bb: BbPluginApi) {
     const guarded = guard?.queuedMessageId ?? null;
     if (guarded !== null && queuedIds.length <= 1) {
       bb.log.warn(`refused queued message ${guarded} in ${context.thread.id}: the plugin withdrew it, the chat moved on before it could run`);
-      return { action: "reject", message: "Boat withdrew this automatic message: the chat moved on before it could run." };
+      return { action: "reject", message: "Harbormaster withdrew this automatic message: the chat moved on before it could run." };
     }
     if (guard !== null && Date.now() - guard.createdAt < GROUP_HOLD_MS) {
       // Grouped with newer input: refusing would refuse that too, and a hook can't take one row out of a group.
@@ -907,7 +907,7 @@ export default async function plugin(bb: BbPluginApi) {
       bb.log.warn(`held a queued group in ${context.thread.id}: it carries withdrawn message ${guarded}, which the plugin removes before the rest goes out`);
       armDeadline(guard.queuedMessageId, guard.createdAt);
       void releaseGroup(context.thread.id, guard.queuedMessageId);
-      return { action: "wait", reason: "Boat is removing an automatic message it withdrew; your messages go out right after.", sendAt: guard.createdAt + GROUP_HOLD_MS };
+      return { action: "wait", reason: "Harbormaster is removing an automatic message it withdrew; your messages go out right after.", sendAt: guard.createdAt + GROUP_HOLD_MS };
     }
     if (guard !== null) {
       // Fail open: real input is never held longer. The accepted exception: the withdrawn row goes out with it,

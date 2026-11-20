@@ -394,7 +394,7 @@ test("providers recover clears absent unresolved keys from the supported plugin 
   } finally {globalThis.fetch=oldFetch;await keys.remove(key.token);}
 });
 
-test("foreign Boat-named Scaleway servers are reported as orphans without adoption or automatic deletion",async t=>{
+test("foreign Harbormaster-named Scaleway servers are reported as orphans without adoption or automatic deletion",async t=>{
   const f=await fixture(t);
   const foreign={zone:"fr-par-3",id:serverId,name:"bb-boat-40000000-0000-4000-8000-000000000001",type:"M1-M",project_id:projectId,status:"ready",delivered:true,ip:"192.0.2.1",ssh_username:"mac-user",created_at:new Date(Date.now()-25*3600000).toISOString(),deletable_at:new Date(Date.now()-3600000).toISOString()};
   f.servers().push(foreign);

@@ -179,7 +179,7 @@ export function moveDecision(facts: MoveFacts): { auto: boolean; reasons: string
     if (task.status === "running" || task.status === "starting") reasons.push(`task ${task.id} is mid-turn`);
     if ((task.unshipped ?? 0) > 0) reasons.push(`task ${task.id} has ${task.unshipped} commit${task.unshipped === 1 ? "" : "s"} not shipped yet`);
   }
-  if (facts.threads === null) reasons.push("Boat couldn't see which chats run there");
+  if (facts.threads === null) reasons.push("Harbormaster couldn't see which chats run there");
   else {
     for (const row of facts.threads) {
       if (!isOpen(row)) continue;
@@ -188,12 +188,12 @@ export function moveDecision(facts: MoveFacts): { auto: boolean; reasons: string
       else if (hasWork(rowWork(row))) reasons.push(`${name} has background work running`);
     }
   }
-  if (facts.checkouts === null || !facts.checkouts.complete) reasons.push("Boat couldn't check every git checkout in the sandbox");
+  if (facts.checkouts === null || !facts.checkouts.complete) reasons.push("Harbormaster couldn't check every git checkout in the sandbox");
   for (const checkout of facts.checkouts?.checkouts ?? []) {
     const task = owners.get(checkout.path.replace(/\/+$/, ""));
     const name = task ? `task ${task.id}` : shortPath(checkout.path);
     if (checkout.git === null) {
-      reasons.push(`Boat couldn't check ${task ? `${name}'s branch` : name}`);
+      reasons.push(`Harbormaster couldn't check ${task ? `${name}'s branch` : name}`);
       continue;
     }
     if (checkout.git.unpushed > 0) reasons.push(`${name} has ${checkout.git.unpushed} unpushed commit${checkout.git.unpushed === 1 ? "" : "s"}`);
@@ -202,7 +202,7 @@ export function moveDecision(facts: MoveFacts): { auto: boolean; reasons: string
   }
   // A task's checkout the scan didn't reach (outside the home folder, too deep).
   const scanned = new Set((facts.checkouts?.checkouts ?? []).map((checkout) => checkout.path.replace(/\/+$/, "")));
-  for (const [path, task] of owners) if (facts.checkouts !== null && !scanned.has(path)) reasons.push(`Boat couldn't check task ${task.id}'s branch`);
+  for (const [path, task] of owners) if (facts.checkouts !== null && !scanned.has(path)) reasons.push(`Harbormaster couldn't check task ${task.id}'s branch`);
   return { auto: reasons.length === 0, reasons: [...new Set(reasons)] };
 }
 
@@ -321,7 +321,7 @@ export function forkText(check: ForkCheck): string {
     case "healthy":
       return " A test fork from the same snapshot restored fine on another node.";
     case "unknown":
-      return " Boat couldn't check the snapshot with a test fork.";
+      return " Harbormaster couldn't check the snapshot with a test fork.";
     case "unreadable":
       return " A test fork from the same snapshot couldn't read its files either.";
     case "skipped":
@@ -331,8 +331,8 @@ export function forkText(check: ForkCheck): string {
 
 /** The machine's message while Boat moves it (or asks first). */
 export function movingMessage(track: HydratorTrack | null | undefined, now: number): string {
-  const how = track ? ` (Boat saw the same file fail ${track.seen} times since ${clockTime(track.firstAt, now)})` : "";
-  return `boat.dev keeps failing to restore this sandbox's disk on the node it runs on${how}. Boat moves it to a new node if nothing there could be lost, else asks you first under Needs you.`;
+  const how = track ? ` (Harbormaster saw the same file fail ${track.seen} times since ${clockTime(track.firstAt, now)})` : "";
+  return `boat.dev keeps failing to restore this sandbox's disk on the node it runs on${how}. Harbormaster moves it to a new node if nothing there could be lost, else asks you first under Needs you.`;
 }
 
 /** Needs you: move it by hand, and what that loses. */
@@ -340,7 +340,7 @@ export function moveQuestion(input: { sandboxId: string; snapshotAt: string | nu
   const since = snapshotText(input.snapshotAt, input.now);
   return {
     question: `Sandbox ${input.sandboxId} is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? If boat can't take a fresh snapshot, that loses what changed there since ${since}, files git ignores (a local .env, build output) included.`,
-    recommendation: `Move it if nothing written since then matters: run ${moveCommands(input.sandboxId)}. Boat didn't do it itself because ${input.reasons.join("; ")}. Otherwise wait for boat.dev to recover.`,
+    recommendation: `Move it if nothing written since then matters: run ${moveCommands(input.sandboxId)}. Harbormaster didn't do it itself because ${input.reasons.join("; ")}. Otherwise wait for boat.dev to recover.`,
     options: ["Move it now", "Wait for boat.dev"],
     context: `boat.dev said: ${input.detail ?? "(no details)"}.${forkText(input.fork)}`,
     shortLabel: "Sandbox stuck on a node",
