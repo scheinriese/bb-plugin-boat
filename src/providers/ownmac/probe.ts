@@ -28,7 +28,8 @@ test -n "$uuid"
 printf 'hardware=%s\\nuser=%s\\nuid=%s\\n' "$(printf %s "$uuid" | shasum -a 256 | awk '{print $1}')" "$(id -un)" "$(id -u)"
 `;
 export const AVAILABILITY_SCRIPT = `${IDENTITY_SCRIPT}
-admin=$(case " $(id -Gn) " in (*' admin '*) echo 1 ;; (*) echo 0 ;; esac)
+groups=$(id -Gn)
+admin=$(case " $groups " in (*' admin '*) echo 1 ;; (*) echo 0 ;; esac)
 ac=$(case "$(pmset -g batt)" in (*"AC Power"*) echo 1 ;; (*"Battery Power"*) echo 0 ;; (*) exit 1 ;; esac)
 console=$(stat -f %Su /dev/console)
 session=0
