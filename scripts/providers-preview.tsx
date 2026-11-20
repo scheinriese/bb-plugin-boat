@@ -1,9 +1,47 @@
 // Static preview of the real components with neutral, obviously fake data.
 // npx esbuild scripts/providers-preview.tsx --bundle --platform=node --format=esm --packages=external --outfile=scripts/.providers-preview.mjs
 // node scripts/.providers-preview.mjs > /tmp/providers-preview/index.html
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { scene } from "../test/fixtures/provider-polish-render";
+const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+// Simulate host chrome using the values bb reads from this plugin. The
+// provider rows and chat notice below are the actual plugin components.
+const panelTitle = /app\.slots\.navPanel\(\{[\s\S]*?title: "([^"]+)"/.exec(
+  readFileSync("app.tsx", "utf8"),
+)![1];
+
+function NamePreview() {
+  return <>
+    <section style={{ marginBottom: 32 }}>
+      <h2 className="caption">Settings · host frame from plugin manifest</h2>
+      <h1 style={{ fontSize: 26, lineHeight: "32px", fontWeight: 500, letterSpacing: "-.015em" }}>
+        {manifest.bb.name}
+      </h1>
+      <p style={{ fontSize: 13, lineHeight: "20px", color: "#8A8A8A", maxWidth: 760, marginBottom: 20 }}>
+        {manifest.bb.description}
+      </p>
+      {scene("settings")}
+    </section>
+    <section style={{ marginBottom: 32 }}>
+      <h2 className="caption">Cloud agents · host frame from navPanel title</h2>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", height: 42, borderBottom: "1px solid #262626", marginBottom: 16 }}>
+        <span style={{ fontSize: 13, fontWeight: 500 }}>{panelTitle}</span>
+        <span style={{ fontSize: 12, color: "#6E6E6E" }}>Cloud agents</span>
+      </div>
+      <div style={{ display: "flex", gap: 28, fontSize: 20, marginBottom: 20 }}>
+        <span>Today</span><span>Sandboxes</span><span>Projects</span>
+      </div>
+      {scene("usage")}
+    </section>
+    <section>
+      <h2 className="caption">Chat · actual provider notice card</h2>
+      {scene("fresh")}
+    </section>
+  </>;
+}
 const allScenes = [
+  "name",
   "usage",
   "sandbox-actions",
   "running-only",
@@ -60,7 +98,7 @@ const html = renderToStaticMarkup(
         {names.map((name) => (
           <div key={name} id={name} className="scene">
             <h2 className="caption">{name}</h2>
-            {scene(name)}
+            {name === "name" ? <NamePreview /> : scene(name)}
           </div>
         ))}
       </main>
