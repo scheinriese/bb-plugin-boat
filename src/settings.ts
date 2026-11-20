@@ -1,4 +1,5 @@
 import { monthlyMacPricesSchema } from "../contract-monthly-macs.ts";
+import { CREDENTIAL_RISKS_URL } from "../credential-warnings.ts";
 // The plugin's settings live in two places:
 // - SETTINGS: bb's settings list (Settings → Plugins → Boat Cloud Agents,
 //   `bb plugin config boat`), the ten everyday choices in this order;
@@ -476,7 +477,8 @@ export const PLUGIN_SETTINGS = {
  * Agents) is where the owner enters them; only the server reads them.
  */
 export const SECRET_SETTINGS = {
-  scalewaySecretKey: { type: "string", label: "Scaleway secret key", description: "Only used for Scaleway API authentication. Enter it here, never in chat.", secret: true },
+  rentedMachineGithubToken: { type: "string", label: "GitHub token for rented machines", description: `Fine-grained token: only selected task repositories; Contents, Pull requests and Workflows read and write; 90-day expiry. Enter it here, never in chat. Delivered over private SSH stdin; normal hand-back requires cleanup. If cleanup fails, delete in the Scaleway console and revoke or rotate the token. Reminders clear only after recorded expiry. A changed Scaleway key/project blocks delivery; to re-enable, clear this field, save, enter the token again and save. This is defence in depth: agents can write these settings too. Shared by rented Macs: compromise exposes every selected repo and its Actions secrets through Workflows write. Logout does not revoke it. Use a dedicated, narrowly scoped token and rotate it after any doubt. Risk details: ${CREDENTIAL_RISKS_URL}`, secret: true },
+  scalewaySecretKey: { type: "string", label: "Scaleway secret key", description: "Only used for Scaleway API authentication. Enter it here, never in chat. Changing this key or the project blocks rented-machine GitHub delivery until the GitHub-token setting is cleared, saved and entered again. This is defence in depth; agents can write settings too.", secret: true },
   instaboxApiKey: {
     type: "string",
     label: "Instabox API key",

@@ -410,3 +410,11 @@ test("an old provider read cannot repopulate the cache after a settings change",
  let checks=0;gate.provider.capacity=async()=>{checks++;return {} as never;};
  await handlers.sandboxProviders();assert.equal(checks,1,"the obsolete connection facts were discarded");
 });
+
+for (const complete of [false, true]) test(`Instabox keeps its ${complete ? "connected" : "setup"} status copy when an orphan is reported`, async () => {
+  const instabox = {...INSTABOX,capacity:async()=>({} as never),orphans:async()=>[{id:"example_orphan",name:"Example orphan"}],presentation:async()=>({steps:[{id:"key",label:"Key",done:complete,possible:true,detail:"Key check"}]})};
+  const {runtime} = fakeRuntime(createProviderRegistry([BOAT,instabox]));
+  Object.assign(runtime.service, {store:{list:()=>[]}});
+  const view = await providerHandlers(runtime).sandboxProviders();
+  assert.equal(view.providers.find(provider=>provider.id==="instabox")!.status,complete ? "Connected" : "Setting up · 0 of 1");
+});

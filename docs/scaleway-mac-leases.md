@@ -9,11 +9,9 @@ No API secret belongs in a command, task prompt, backup or log.
 Only a dispatched task rents a Mac. The adapter does not offer a new-machine
 environment picker, buy a monthly commitment, change a plan, or rent ahead.
 Tasks on Scaleway use bb chats, with the existing trusted-project rules and
-bb Connect. **New Scaleway task rentals are currently refused before allocation:**
-there is no supported way to provision GitHub and agent logins onto a fresh Mac.
-Instabox's organization Secrets do not apply to Scaleway, and bb enrollment alone
-is not proof of either login. Existing held Macs can be reused after SSH checks
-verify the selected agent login and, for repository tasks, GitHub login. Instabox's
+bb Connect. Fresh rentals require **GitHub token for rented machines** in bb secret settings for repository tasks and an available Account Pooler route for the chosen agent. GitHub access/expiry and the agent route are checked before allocation. The token travels only through private SSH stdin; agent logins stay on the owner server, with core routing model traffic through the enrolled daemon’s authenticated proxy. See [credential setup and cleanup](settings.md).
+
+Existing held Macs retain SSH checks for the selected agent and GitHub login, with provisioned credentials refreshed before expiry. Immediate and scheduled release first log out and verify credential-file removal, including after failed bootstrap once no live task uses the machine. Machines with no persisted delivery attempt can still be released when SSH never comes up; uncertain or legacy credential state requires verified cleanup. See the settings guide for shared-token, pooled-quota and macOS Keychain risks. Cleanup failure keeps that tracked lease for retry without blocking other leases. Instabox's
 headless runner stays available. If a headless task reaches the Scaleway
 routing step, it reports that task chats are required and tries Instabox.
 

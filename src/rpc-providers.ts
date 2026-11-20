@@ -12,6 +12,7 @@ import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import {
   PROVIDERS_TAG,
   type ProjectRunsOnDto,
+  type MacUsageDto,
   type ProviderSystemDto,
   type RunsOnDto,
   type RunsOnOptionDto,
@@ -308,10 +309,12 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       if (!provider?.presentation) return;
       const metadata = await provider.presentation({force, signal: AbortSignal.timeout(15_000)}).catch(() => null);
       if (metadata) Object.assign(row, metadata);
-      if (row.id === "scaleway" && row.connection === "connected") row.status = [row.status,"Held Macs only"].filter(Boolean).join(" · ");
       if (row.steps) {
-        const complete = row.steps.filter(s => s.possible).every(s => s.done);
-        row.status = complete ? row.id === "scaleway" ? (row.status ?? "Held Macs only") : "Connected" : `Setting up · ${row.steps.filter(s => s.possible && s.done).length} of ${row.steps.filter(s => s.possible).length}`;
+        const required = row.steps.filter(s => s.possible && s.required !== false);
+        const complete = required.every(s => s.done);
+        const setup = `Setting up · ${required.filter(s => s.done).length} of ${required.length}`;
+        // Scaleway's orphan warning remains visible; Instabox keeps its existing copy.
+        row.status = row.id === "scaleway" ? (complete ? (row.status ?? "Connected") : [row.status, setup].filter(Boolean).join(" · ")) : complete ? "Connected" : setup;
       }
     }));
     return result;
@@ -341,7 +344,8 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       projects: runtime.projects.list().map(project => projectRow(project, service.sandboxProviders)),
       providers: result.providers.map(row => ({
         ...row,
-        ...(row.steps ? { waitingTasks: waiting.filter(task => task.sandboxProvider === row.id && /GitHub|API key|setup/i.test(task.error ?? "")).length } : {}),
+        ...(service.sandboxProviders.all.find(provider => provider.id === row.id)?.releaseNotice?.() ? { releaseNotice: service.sandboxProviders.all.find(provider => provider.id === row.id)!.releaseNotice!()!, status: "Credential action required" } : {}),
+        ...(row.steps ? { waitingTasks: waiting.filter(task => task.sandboxProvider === row.id && /GitHub|API key|setup|credentials|Account Pooler/i.test(task.error ?? "")).length } : {}),
       })),
     };
   }
@@ -368,13 +372,14 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const now = Date.now(), date = new Date(now);
       const monthStart = Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1), monthEnd = Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1);
       const label = (id: string) => providerLabel(id, service.sandboxProviders.all.find(provider=>provider.id===id));
+      const notices: NonNullable<MacUsageDto["notices"]> = [...summary.held.flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []), ...service.store.macLeases.credentialNotices().map(notice=>({...notice,label:label(notice.provider),tokenRevocation:true}))];
       return { ...summary,
         monthlySuggestions: service.store.monthlyMacs.active(),
         monthlyComparisons: service.store.monthlyMacs.comparisons(prices, now),
         byProvider: summary.providers.map(id => ({id,label:label(id),month:service.store.macLeases.between(monthStart,monthEnd,now,undefined,id),rolling30:service.store.macLeases.between(now-30*86400000,now,now,undefined,id)})),
         today: service.store.macLeases.between(Date.parse(usageWindows(date,input?.timezoneOffsetMinutes ?? 0).day.since),now,now).costs,
         providers: summary.providers.map(id=>({id,label:label(id)})),
-        notices: summary.held.flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []) };
+        notices };
     },
 
     setProjectRunsOn: async ({ projectId, provider }: { projectId: string; provider: string }) => {

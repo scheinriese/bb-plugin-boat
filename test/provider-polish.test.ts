@@ -35,8 +35,8 @@ test("Harbormaster copy keeps provider names and existing settings links", () =>
     assert.ok(settings.includes(provider), provider);
   }
   const notice = renderScene("fresh");
-  assert.match(notice, /Harbormaster can&#x27;t yet sign a fresh Mac/);
-  assert.match(notice, /Scaleway can&#x27;t rent a new Mac/);
+  assert.match(notice, /Harbormaster needs a GitHub token/);
+  assert.match(notice, /Scaleway needs task credentials/);
   assert.match(notice, /href="\/settings\/plugins\/boat"/);
   assert.doesNotMatch(notice + settings, /\bBoat\b/);
 });
@@ -111,15 +111,17 @@ for (let step = 0; step < 5; step++)
     assert.match(html, new RegExp(`${step + 1}<\/span>`));
     assert.doesNotMatch(html, /value="ibk_|test-only/);
   });
-test("setup regression, waiting owner, complete collapse, and impossible Scaleway step", () => {
+test("setup regression, waiting owner, complete collapse, and actionable Scaleway credentials", () => {
   assert.match(renderScene("waiting"), /1 task waiting/);
   assert.match(renderScene("waiting"), /#3D3420/);
   assert.match(renderScene("regressed"), /Instabox rejected the key/);
   assert.doesNotMatch(renderScene("complete"), />Next<|setup steps/);
   const html = renderScene("settings");
-  assert.match(html, /Held Macs only/);
+  assert.match(html, /GitHub token stored/);
+  assert.match(html, /Agent route available/);
+  assert.doesNotMatch(html, /Held Macs only/);
   assert.match(html, /Logins on fresh Macs/);
-  assert.match(html, /border-dashed/);
+  assert.doesNotMatch(html, /border-dashed/);
   assert.match(html, /target="_blank"/);
 });
 for (const name of ["github", "key", "capacity", "fresh", "failed", "released"])
@@ -235,4 +237,23 @@ test("Today has no empty action box when guidance is the only Start here item",(
 test("zero rolling use retains the matching price target and Today names the project",()=>{
  const zero=renderScene("monthly-zero");assert.match(zero,/Break-even ≈ 11 days/);assert.doesNotMatch(zero,/Monthly M4:/);
  assert.match(renderScene("monthly-today-alone"),/Mac costs · iOS app · today/);
+});
+
+test("Settings exposes the pooled quota risk and a working documentation anchor even when steps collapse", () => {
+  const html=renderScene("credential-settings-ready");
+  assert.match(html,/Any process on the Mac can use your pooled AI quota until bb removes the machine/);
+  assert.match(html,/href="https:\/\/github.com\/scheinriese\/bb-plugin-boat\/blob\/main\/docs\/settings.md#rented-machine-credential-risks"/);
+});
+test("cleanup failure explains manual console recovery without a plugin bypass",()=>{
+  const html=renderScene("credential-cleanup");
+  assert.match(html,/keeps billing/);assert.match(html,/retry cleanup once SSH works/);
+  assert.match(html,/Scaleway console/);assert.match(html,/Revoke or rotate/);
+  assert.doesNotMatch(html,/Delete without verified cleanup|Owner approval|type="checkbox"/);
+});
+
+test("post-deletion token reminder shows expiry without a dismissal action",()=>{
+  const html=renderScene("credential-revocation");
+  assert.match(html,/GitHub token action required/);assert.match(html,/returned hardware/);
+  assert.match(html,/recorded token expiry/);assert.match(html,/2030-04-01/);
+  assert.doesNotMatch(html,/Dismiss|Delete without|Owner approval/);
 });

@@ -48,8 +48,8 @@ export function providerFailureCard(failure: ProviderFailure, message = "") {
     return {
       kind: "fresh",
       tone: "neutral",
-      title: "Scaleway can't rent a new Mac for agents yet",
-      body: "Harbormaster can't yet sign a fresh Mac in to GitHub and the agents. A Scaleway Mac you already hold works. Nothing was rented.",
+      title: "Scaleway needs task credentials",
+      body: message ? `${message}${message.includes("Nothing was rented") ? "" : " Nothing was rented."}` : "Harbormaster needs a GitHub token for rented machines. Enable the chosen agent in Account Pooler with bb Connect. Nothing was rented.",
     } as const;
   if (
     mac &&

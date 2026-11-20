@@ -1,3 +1,4 @@
+import { CLEANUP_NOTICE_PREFIX, tokenExposureNotice } from "../credential-warnings.ts";
 import { createCodexHealthCheck } from "./codex-health.ts";
 import { providerFailureCard } from "../provider-failure.ts";
 import { canHostMac, macTaskResources } from "./providers/types.ts";
@@ -686,6 +687,7 @@ export class BoatService {
   private readonly codexHealth = createCodexHealthCheck();
   /** Last observed sandbox state; views never start or resume a sandbox. */
   private readonly observedSandboxStates = new Map<string, string>();
+  private credentialNoticeSnapshot = "";
   private readonly settlingReviews = new Set<string>();
 
   publicStatus(task: Task, context: StatusContext = {}): TaskPublicStatus {
@@ -1816,7 +1818,12 @@ export class BoatService {
    * token is caught here, with what to do, instead of failing mid-turn.
    */
   private async assertGithubLogin(task: Task, options: { signal?: AbortSignal; resume?: boolean; forShip?: boolean } = {}): Promise<void> {
-    const recorded = this.githubExpiry(task);
+    let recorded = this.githubExpiry(task);
+    const provider = this.sandboxProvider(task);
+    if (task.sandboxId !== null && provider.refreshGithubLogin) {
+      const expiry = await provider.refreshGithubLogin(task.sandboxId, options.signal);
+      if (expiry) { if (expiry !== recorded) this.store.addEvent(task.id, "github-token", expiry); recorded = expiry; }
+    }
     if (recorded === null || task.sandboxId === null) return;
     // A turn can run a while: a token running out within it is checked too.
     if (Date.parse(recorded) - Date.now() > 45 * 60_000) return;
@@ -1836,15 +1843,17 @@ export class BoatService {
     const settings = await this.settings();
     const environment = task.environment ?? sandbox.environment ?? (settings.environment || null);
     const upgrade = environment ? `\`boat env upgrade ${environment}\`` : "`boat env upgrade <its environment>`";
+    const remedy = provider.id === "boat" ? `Run ${upgrade} to give sandboxes fresh credentials` : "Refresh this machine’s GitHub credential source in bb settings";
+    const duration = provider.id === "boat" ? "boat's GitHub tokens last about 8 hours; " : "";
     const when = new Date(expiresAt).toUTCString().slice(17, 22);
     throw new TaskError(
       options.forShip
-        ? `Task ${task.id}'s sandbox has an expired GitHub login (boat's GitHub tokens last about 8 hours; this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so it can't push the approved work.`
-        : `Task ${task.id}'s sandbox has an expired GitHub login (boat's GitHub tokens last about 8 hours; this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so the agent can't push or open pull requests from it.`,
+        ? `Task ${task.id}'s sandbox has an expired GitHub login (${duration}this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so it can't push the approved work.`
+        : `Task ${task.id}'s sandbox has an expired GitHub login (${duration}this one ${Date.parse(expiresAt) <= Date.now() ? "ran out" : "runs out"} at ${when} UTC), so the agent can't push or open pull requests from it.`,
       "github_token_expired",
       options.forShip
-        ? `Run ${upgrade} to give sandboxes fresh credentials, then ship again. Don't close this task or delete its sandbox: the approved commits exist only there.`
-        : `Run ${upgrade} to give sandboxes fresh credentials and try again; if that doesn't help, start the work again in a new sandbox (boat_dispatch with context_from ${task.id}).`,
+        ? `${remedy}, then ship again. Don't close this task or delete its sandbox: the approved commits exist only there.`
+        : `${remedy} and try again; if that doesn't help, start the work again in a new sandbox (boat_dispatch with context_from ${task.id}).`,
     );
   }
 
@@ -1935,6 +1944,7 @@ export class BoatService {
           task = this.store.get(id) ?? task;
         }
         stillWanted();
+        if (reuse && this.macCleaning.has(reuse)) throw new TaskError("This Mac is cleaning up a failed start. Try again once cleanup finishes.", "sandbox_busy");
         this.sizes.assertSandboxNotResizing(reuse, "Start the task once the move is done, or in a new sandbox."); // sizes
         if (reuse !== null) {
           const leased = this.store.macLeases.held(reuse).length > 0;
@@ -2502,6 +2512,7 @@ export class BoatService {
   // Future routing stages: eligible own Mac, then an enrolled monthly Mac.
   // Both must return null before held day leases and a dispatched new lease.
   private readonly macPreparing = new Set<string>();
+  private readonly macCleaning = new Set<string>();
   private macLock: Promise<unknown> = Promise.resolve();
   private withMacLock<T>(run: () => Promise<T>): Promise<T> {
     const next = this.macLock.then(run, run);
@@ -2524,7 +2535,7 @@ export class BoatService {
       this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)));
       const need = macTaskResources(provider, type);
       for (const lease of this.store.macLeases.held()) {
-        if (lease.provider !== provider.id || this.macPreparing.has(lease.machineId) || this.isMovingSandbox(lease.machineId) || this.sizes.isResizing(lease.machineId)) continue;
+        if (lease.provider !== provider.id || this.macPreparing.has(lease.machineId) || this.macCleaning.has(lease.machineId) || this.isMovingSandbox(lease.machineId) || this.sizes.isResizing(lease.machineId)) continue;
         if (!machines.some(m => m.id === lease.machineId && (ACTIVE_STATES.has(m.state) || m.state === "stopped"))) continue;
         if (parent?.sandboxId === lease.machineId && await this.sandboxWorkRuns(lease.machineId)) continue;
         const open = new Set(this.store.liveSandboxTasks(lease.machineId).map(t => t.id));
@@ -2615,6 +2626,7 @@ export class BoatService {
   }
 
   private async macLeaseNotice(lease: MacLease, tasks: readonly Task[], now: number, kept: boolean | "unknown"): Promise<void> {
+    if (lease.noticeText?.startsWith(CLEANUP_NOTICE_PREFIX)) return;
     const threads = [...new Set(tasks.map(t => t.orchestratorThreadId).filter((id): id is string => id !== null))];
     const pastMinimum = now >= Date.parse(lease.paidUntil);
     const pageNotice = !this.hooks.tell || tasks.length === 0 || tasks.some(task => task.orchestratorThreadId === null);
@@ -2633,6 +2645,55 @@ export class BoatService {
     if (this.hooks.tell) for (const thread of threads) await this.hooks.tell(thread,text);
   }
 
+  /** A failed enrollment must not log out a shared Mac's other tasks. */
+  async cleanupFailedMachineBootstrap(sandboxId: string, cleanup: () => Promise<void>, taskId?: string): Promise<void> {
+    const release = await this.withMacLock(async () => {
+      const attachments = this.store.macLeases.held(sandboxId).flatMap(lease => this.store.macLeases.tasks(lease.id));
+      const owner = taskId ? this.store.get(taskId) : null;
+      // Only the failing start can be excluded. A running owner or an unknown
+      // resume still needs its login, even if it is the machine's only task.
+      const excluded = owner?.status === "starting" && (owner.sandboxId === sandboxId || attachments.some(attachment => attachment.taskId === owner.id)) ? owner.id : null;
+      if (this.store.liveSandboxTasks(sandboxId).some(task => task.id !== excluded)) return null;
+      // Missing task metadata is uncertain ownership, so leave cleanup to hand-back.
+      if (attachments.some(attachment => {
+        if (attachment.taskId === excluded) return false;
+        const task = this.store.get(attachment.taskId);
+        return !task || OPEN_STATUSES.includes(task.status);
+      })) return null;
+      if (this.macCleaning.has(sandboxId)) return null;
+      this.macCleaning.add(sandboxId);
+      const unclaim = this.claim(sandboxId);
+      return () => { this.macCleaning.delete(sandboxId); unclaim(); };
+    });
+    if (!release) return;
+    try { await cleanup(); } finally { release(); }
+  }
+
+  private async credentialCleanupNotice(lease: MacLease, now: number): Promise<void> {
+    const delivered = this.store.macLeases.hasGithubDeliveryRecord(lease.id);
+    if (delivered) this.store.macLeases.recordCredentialNotice(lease.id, tokenExposureNotice(lease.machineId), now);
+    const rate = new Intl.NumberFormat("en-US", { style: "currency", currency: lease.currency }).format(lease.hourPrice);
+    const parts = lease.machineId.split("_");
+    const text = `${CLEANUP_NOTICE_PREFIX} Scaleway Mac ${lease.machineId} keeps billing at ${rate}/hour (the 24 h minimum still applies). Restore SSH access; the plugin will retry cleanup once SSH works. To delete manually: open https://console.scaleway.com → Apple silicon → ${parts[1] ?? "the recorded zone"} → server ${parts[2] ?? lease.machineId} → Delete after the minimum. ${delivered ? "Revoke or rotate the GitHub token in GitHub because it may still be on this Mac." : "Local logins need checking: inspect local GitHub and agent logins, including macOS Keychain. This warning clears after verified cleanup."} Ask the owner to review the Cloud agents page and decide how to recover this Mac.`;
+    const changed = lease.noticeText !== text;
+    const notify = this.store.macLeases.warn(lease.id, now, true, text, changed);
+    if (changed || notify) this.hooks.changed([]);
+    if (!notify) return;
+    const tasks = new Map([...this.store.sandboxTasks(lease.machineId), ...this.store.macLeases.tasks(lease.id).flatMap(item => { const task = this.store.get(item.taskId); return task ? [task] : []; })].map(task => [task.id, task]));
+    for (const task of tasks.values()) this.store.addEvent(task.id, "credential-cleanup", text);
+    const threads = [...new Set([...tasks.values()].map(task => task.orchestratorThreadId).filter((id): id is string => id !== null))];
+    if (this.hooks.tell) for (const thread of threads) await this.hooks.tell(thread, text).catch(() => undefined);
+  }
+
+  /** Clock-dependent reminders must refresh even with no remaining leases. */
+  refreshCredentialNotices(now = Date.now()): void {
+    const snapshot = JSON.stringify(this.store.macLeases.credentialNotices(now));
+    if (snapshot !== this.credentialNoticeSnapshot) {
+      this.credentialNoticeSnapshot = snapshot;
+      this.hooks.changed([]);
+    }
+  }
+
   /** Provider-neutral minimum/rate policy. No local extension of paid time. */
   async processMacLeases(now = Date.now()): Promise<void> {
     if (!this.store.macLeases.held().length) return;
@@ -2645,60 +2706,79 @@ export class BoatService {
         const machines = await provider.list({ all: true, signal: this.hooks.lifecycle });
         this.store.macLeases.reconcile(provider.id, new Set(machines.map(m => m.id)), now);
         for (const lease of this.store.macLeases.held().filter(lease => lease.provider === provider.id)) {
-          const minimumEnd = Date.parse(lease.paidUntil);
-          if (now < minimumEnd-(settings.macHandBackMarginMinutes ?? 30)*60_000) continue;
-          const open = this.store.liveSandboxTasks(lease.machineId);
-          const attached = () => this.store.macLeases.tasks(lease.id).flatMap(t => { const task=this.store.get(t.taskId); return task ? [task] : []; });
-          const work = !lease.kept && !open.length ? await this.macLeaseWorkState(lease) : "resolved";
-          if (work === "unknown") {
-            if (lease.releaseAt) {
-              if (!provider.cancelLeaseRelease) continue;
-              await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
-              this.store.macLeases.schedule(lease.id,null);
+          try {
+            // Refresh active held leases too, before a long-running chat hits expiry.
+            if (provider.refreshGithubLogin) {
+              for (const task of this.store.liveSandboxTasks(lease.machineId).filter(task => task.repo !== null || task.extraRepos.length > 0)) {
+                try { await this.assertGithubLogin(task, { signal: this.hooks.lifecycle }); }
+                catch (error) {
+                  const warning = errorText(error);
+                  if (this.store.latestEvent(task.id, "github-refresh-failed")?.text !== warning) {
+                    this.store.addEvent(task.id, "github-refresh-failed", warning);
+                    this.hooks.log.warn(`GitHub credentials for task ${task.id}: ${warning}`);
+                  }
+                }
+              }
             }
-            if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,"unknown");
-            continue;
-          }
-          if (work === "unshipped" || lease.kept) {
-            await this.keepMacLease(lease, this.hooks.lifecycle);
-            if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,true);
-            continue;
-          }
-          if (open.length) {
-            const threshold = (settings.macIdleNoticeMinutes ?? 60)*60_000;
-            if (open.every(t => t.status !== "running" && t.status !== "starting" && now-Date.parse(t.updatedAt) >= threshold) && !(await this.sandboxWorkRuns(lease.machineId))) {
-              await this.macLeaseNotice(lease,open,now,false);
-            } else { if(this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
-            continue; // All open tasks, including failed/unpushed work, are protected.
-          }
-          { if(this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
-          if (this.holdsSandbox(lease.machineId) || await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
-          const current = await provider.findInfo(lease.machineId, this.hooks.lifecycle);
-          if (await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
-          const checked = await this.macLeaseWorkState(lease);
-          if (checked === "unshipped") { await this.keepMacLease(lease,this.hooks.lifecycle); continue; }
-          if (checked === "unknown") {
-            if (lease.releaseAt && provider.cancelLeaseRelease) {
-              await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
-              this.store.macLeases.schedule(lease.id,null);
+            const minimumEnd = Date.parse(lease.paidUntil);
+            if (now < minimumEnd-(settings.macHandBackMarginMinutes ?? 30)*60_000) continue;
+            const open = this.store.liveSandboxTasks(lease.machineId);
+            const attached = () => this.store.macLeases.tasks(lease.id).flatMap(t => { const task=this.store.get(t.taskId); return task ? [task] : []; });
+            const work = !lease.kept && !open.length ? await this.macLeaseWorkState(lease) : "resolved";
+            if (work === "unknown") {
+              if (lease.releaseAt) {
+                if (!provider.cancelLeaseRelease) continue;
+                await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
+                this.store.macLeases.schedule(lease.id,null);
+              }
+              if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,"unknown");
+              continue;
             }
-            continue;
+            if (work === "unshipped" || lease.kept) {
+              await this.keepMacLease(lease, this.hooks.lifecycle);
+              if (now >= minimumEnd) await this.macLeaseNotice(lease,attached(),now,true);
+              continue;
+            }
+            if (open.length) {
+              const threshold = (settings.macIdleNoticeMinutes ?? 60)*60_000;
+              if (open.every(t => t.status !== "running" && t.status !== "starting" && now-Date.parse(t.updatedAt) >= threshold) && !(await this.sandboxWorkRuns(lease.machineId))) {
+                await this.macLeaseNotice(lease,open,now,false);
+              } else { if(!lease.noticeText?.startsWith(CLEANUP_NOTICE_PREFIX) && this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
+              continue; // All open tasks, including failed/unpushed work, are protected.
+            }
+            { if(!lease.noticeText?.startsWith(CLEANUP_NOTICE_PREFIX) && this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
+            if (this.holdsSandbox(lease.machineId) || await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
+            const current = await provider.findInfo(lease.machineId, this.hooks.lifecycle);
+            if (await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
+            const checked = await this.macLeaseWorkState(lease);
+            if (checked === "unshipped") { await this.keepMacLease(lease,this.hooks.lifecycle); continue; }
+            if (checked === "unknown") {
+              if (lease.releaseAt && provider.cancelLeaseRelease) {
+                await provider.cancelLeaseRelease(lease.machineId,this.hooks.lifecycle);
+                this.store.macLeases.schedule(lease.id,null);
+              }
+              continue;
+            }
+            const latest = this.store.macLeases.held(lease.machineId).find(l => l.id === lease.id);
+            // Re-read after I/O. Nothing awaits between this guard and release.
+            if (this.store.liveSandboxTasks(lease.machineId).length || this.holdsSandbox(lease.machineId) || !latest || latest.kept) continue;
+            if (now < minimumEnd) {
+              // Keep the paid Mac available until the boundary. A provider without
+              // scheduling is released on the first pass after its minimum.
+              if (latest.releaseAt || !provider.scheduleLeaseRelease || !provider.cancelLeaseRelease) continue;
+              await provider.scheduleLeaseRelease(lease.machineId, lease.paidUntil, this.hooks.lifecycle);
+              this.store.macLeases.schedule(lease.id, current?.scheduledReleaseAt ?? lease.paidUntil);
+            } else {
+              await provider.delete(lease.machineId, this.hooks.lifecycle, { leaseEndReason: "handed back", leaseEndAt: now });
+              this.store.macLeases.end(lease.id, "handed back", now);
+              this.store.expirePreviewsForSandbox(lease.machineId);
+            }
+            this.store.macLeases.clearNotice(lease.id);
+            this.hooks.changed([]);
+          } catch (error) {
+            if (lease.provider === "scaleway" && ["credential_cleanup_failed", "key_missing"].includes((error as { code?: string }).code ?? "")) await this.credentialCleanupNotice(lease, now);
+            this.hooks.log.warn(`Mac lease ${lease.machineId} maintenance failed: ${errorText(error)}`);
           }
-          const latest = this.store.macLeases.held(lease.machineId).find(l => l.id === lease.id);
-          // Re-read after I/O. Nothing awaits between this guard and release.
-          if (this.store.liveSandboxTasks(lease.machineId).length || this.holdsSandbox(lease.machineId) || !latest || latest.kept) continue;
-          if (now < minimumEnd) {
-            // Keep the paid Mac available until the boundary. A provider without
-            // scheduling is released on the first pass after its minimum.
-            if (latest.releaseAt || !provider.scheduleLeaseRelease || !provider.cancelLeaseRelease) continue;
-            await provider.scheduleLeaseRelease(lease.machineId, lease.paidUntil, this.hooks.lifecycle);
-            this.store.macLeases.schedule(lease.id, current?.scheduledReleaseAt ?? lease.paidUntil);
-          } else {
-            await provider.delete(lease.machineId, this.hooks.lifecycle, { leaseEndReason: "handed back", leaseEndAt: now });
-            this.store.macLeases.end(lease.id, "handed back", now);
-            this.store.expirePreviewsForSandbox(lease.machineId);
-          }
-          this.hooks.changed([]);
         }
       }
     });
@@ -3679,6 +3759,7 @@ export class BoatService {
 
   /** keepPlan: a resume the plugin makes itself (a ship), not someone asking: the sandbox's retry plan stays. */
   async sandboxAction(sandboxId: string, action: "stop" | "resume" | "delete", ttlSeconds: number, signal?: AbortSignal, options: { keepPlan?: boolean } = {}): Promise<void> {
+    if (this.macCleaning.has(sandboxId)) throw new TaskError("This Mac is cleaning up a failed start. Try again once cleanup finishes.", "sandbox_busy");
     if (this.isMovingSandbox(sandboxId)) {
       throw new TaskError(`A task is moving to a task chat in sandbox ${sandboxId}.`, "task_busy", "Try again once the chat is open (in about a minute).");
     }
