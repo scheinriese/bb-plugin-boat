@@ -208,20 +208,31 @@ test("cancelling the source request during recovered chat spawn stops and archiv
 
 async function legacyDeletedFixture(t:TestContext) {
   const env=await fixture(),lease=env.record();
-  const failure=env.store.history({taskId:env.failed.id,limit:100}).events.find(event=>event.kind==="stopped")!;
-  const failedAt=env.store.get(env.failed.id)!.finishedAt!;
-  const endedAt=new Date(Date.parse(failedAt)+1494).toISOString();
-  env.store.macLeases.end(lease.id,"deleted",Date.parse(endedAt));
   const db=(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db();
-  // Provider-realistic precision and a fake numeric-string physical ID.
-  const startedAt=lease.startedAt.replace("Z","853Z"),paidUntil=lease.paidUntil.replace("Z","853Z");
+  // Neutral synthetic chronology: approval precedes allocation, then failed
+  // admission and a legacy local deletion follow the same physical start.
+  const minute=Date.UTC(2031,4,7,9,42);
+  const at=(offset:number)=>new Date(minute+offset).toISOString();
+  const approvalAt=at(11_000),createdAt=at(11_200),failedAt=at(31_299),endedAt=at(32_793);
+  const startedAt=at(27_670).replace("670Z","670853Z");
+  const paidUntil=new Date(minute+27_670+86_400_000).toISOString().replace("670Z","670853Z");
+  env.store.update(env.source.id,{createdAt:at(5000),updatedAt:at(31_301),finishedAt:at(6000)});
+  env.store.update(env.failed.id,{createdAt,updatedAt:failedAt,finishedAt:failedAt,sandboxId:null});
+  const quote={...env.quote,checkedAt:at(10_000),expiresAt:at(610_000)};
+  env.store.addOwnMacEvent(env.source.id,"ownmac-rental-offer","Synthetic pre-approval quote",quote);
+  db.prepare("UPDATE task_events SET at=? WHERE task_id=? AND kind='ownmac-rental-offer'").run(at(10_000),env.source.id);
+  db.prepare("UPDATE task_events SET at=? WHERE task_id=? AND kind='ownmac-rental-answer' AND json_extract(metadata,'$.ownMac.answer')='rent'").run(approvalAt,env.source.id);
+  db.prepare("UPDATE task_events SET at=? WHERE task_id=? AND kind='ownmac-rental-answer' AND json_extract(metadata,'$.ownMac.answer')='failed'").run(at(31_301),env.source.id);
+  db.prepare("UPDATE task_events SET at=? WHERE task_id=? AND kind='created'").run(createdAt,env.failed.id);
+  db.prepare("UPDATE task_events SET at=? WHERE task_id=? AND kind='failed'").run(at(31_300),env.failed.id);
+  env.store.macLeases.end(lease.id,"deleted",Date.parse(endedAt));
   db.prepare("UPDATE mac_leases SET id=?,started_at=?,paid_until=?,end_evidence='legacy' WHERE id=?").run("instabox:73",startedAt,paidUntil,lease.id);
   lease.id="instabox:73";lease.startedAt=startedAt;lease.paidUntil=paidUntil;
-  env.setMachine({mac:{...env.machine().mac!,leaseId:"73",startedAt,chargeUntil:paidUntil},scheduledReleaseAt:paidUntil});
+  env.setMachine({createdAt:startedAt,mac:{...env.machine().mac!,leaseId:"73",startedAt,chargeUntil:paidUntil},scheduledReleaseAt:paidUntil});
   env.store.addOwnMacEvent(env.failed.id,"ownmac-allocation","legacy allocation evidence",null);
   env.store.addOwnMacEvent(env.failed.id,"ownmac-rental-approved","legacy approval evidence",null);
-  env.store.update(env.failed.id,{sandboxId:null});
-  t.mock.timers.enable({apis:["Date"],now:Date.parse(endedAt)+5000});
+  t.mock.timers.enable({apis:["Date"],now:minute+40_000});
+  assert.ok(Date.parse(approvalAt)<Date.parse(createdAt));assert.ok(Date.parse(createdAt)<Date.parse(startedAt));assert.ok(Date.parse(startedAt)<Date.parse(failedAt));
   return {...env,lease,endedAt,adoption:{ledgerId:lease.id,leaseId:env.machine().mac!.leaseId,sourceTaskId:env.source.id,startedAt:lease.startedAt,paidUntil:lease.paidUntil,endedAt,failedAt,noReleaseRequested:true as const}};
 }
 
