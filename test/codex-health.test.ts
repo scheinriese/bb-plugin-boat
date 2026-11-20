@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtemp, mkdir, writeFile, symlink, rm, chmod, readFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -9,7 +10,7 @@ import { makeService } from "./fakes.ts";
 
 for (const platform of ["linux-x64", "darwin-arm64"]) for (const mode of ["healthy", "repair", "sudo", "recheck-fails"]) test(`Codex shell checks the resolved prefix (${platform}, ${mode})`, { skip: mode === "sudo" && process.getuid?.() === 0 }, async () => {
   const broken = mode !== "healthy";
-  const prefix = await mkdtemp(join(tmpdir(), 'codex-health-'));
+  const prefix = await mkdtemp(join(realpathSync(tmpdir()), 'codex-health-'));
   try {
     const root = join(prefix, 'lib/node_modules/@openai/codex');
     await mkdir(join(root, 'bin'), { recursive: true });
