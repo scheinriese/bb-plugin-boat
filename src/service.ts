@@ -5474,7 +5474,8 @@ export class BoatService {
     let inserted=false;
     const assertCurrent=()=>{
       this.hooks.lifecycle.throwIfAborted();
-      if (adoption && (this.store.macLeases.releaseIntent(machineId) || [original.id,source.id].some(id=>["cancelled","done","sandbox-deleted","discarded"].some(kind=>this.store.latestEvent(id,kind))))) refuse("A stop, delete, cancellation, or discard request prevents legacy adoption.");
+      const releaseIntent=this.store.macLeases.releaseIntent(machineId);
+      if ((releaseIntent && Date.parse(releaseIntent.at)>=Date.parse(original.createdAt)) || (adoption && [original.id,source.id].some(id=>["cancelled","done","sandbox-deleted","discarded"].some(kind=>this.store.latestEvent(id,kind))))) refuse("A stop, delete, cancellation, or discard request prevents recovery of this allocation.");
       const task=this.store.get(original.id),request=this.store.get(source.id);
       if (!task || task.status!==(inserted?"starting":"failed") || task.turns!==0 || (!inserted && (task.threadId || task.hostId || task.repoPath || task.promptId || task.conversationId)) || (request?.status!=="cancelled" || request.updatedAt!==sourceVersion) || this.store.latestEvent(source.id,"cancelled") || (this.store.ownMacEventData(source.id,"ownmac-rental-answer") as {replacementId?:string}|null)?.replacementId!==task.id) refuse("The task or its original request changed during recovery.");
       if (task.title!==original.title || task.brief!==original.brief || task.repo!==original.repo || task.branch!==original.branch || task.provider!==original.provider || task.model!==original.model) refuse("The task intent changed during recovery.");

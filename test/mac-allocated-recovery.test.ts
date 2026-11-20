@@ -354,3 +354,11 @@ test("failed task admission atomically rolls back the explicit legacy overlay",a
   await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true,env.adoption),{code:"mac_recovery_refused"});
   assert.equal(env.store.macLeases.adoptions().length,0);assert.equal(env.store.macLeases.held().length,0);assert.equal(env.store.get(env.failed.id)!.status,"failed");assert.equal(env.store.macLeases.rawList()[0]!.endedAt,env.endedAt);
 });
+
+test("ordinary recovery cannot bypass a later durable owner deletion intent",async()=>{
+  const env=await fixture(),lease=env.record();env.store.macLeases.schedule(lease.id,env.machine().scheduledReleaseAt!);
+  env.provider.delete=async()=>{throw Error("fake failed owner delete");};
+  await assert.rejects(env.service.sandboxAction(env.machine().id,"delete",0));
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true),{code:"mac_recovery_refused"});
+  assert.equal(env.chat.spawns.length,0);assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);
+});
