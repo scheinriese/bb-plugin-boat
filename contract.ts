@@ -407,7 +407,7 @@ export const sandboxSchema = z.object({
   createdAt: z.string().nullable(),
   /** Auto-stop deadline (ISO), null when stopped. */
   archiveAfter: z.string().nullable(),
-  dashboardUrl: z.string(),
+  dashboardUrl: z.string().nullable(),
   sshCommand: z.string(),
   machineType: machineTypeSchema.nullable().optional(),
   taskIds: z.array(z.string()),
