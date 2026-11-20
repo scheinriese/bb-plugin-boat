@@ -106,6 +106,7 @@ test("setup regression, waiting owner, complete collapse, and actionable Scalewa
   const html = renderScene("settings");
   assert.match(html, /GitHub token stored/);
   assert.match(html, /Agent route available/);
+  assert.doesNotMatch(html, /Held Macs only/);
   assert.match(html, /Logins on fresh Macs/);
   assert.doesNotMatch(html, /border-dashed/);
   assert.match(html, /target="_blank"/);

@@ -115,7 +115,7 @@ export const scaleway: SandboxProviderDto = {
   id: "scaleway",
   label: "Scaleway",
   summary: "Whole Mac minis. 24 h minimum, then hourly. Prices in EUR.",
-  status: "Held Macs only",
+  status: "Setting up · 3 of 6",
   systems: [{ os: "macos", label: "Mac", ready: true, note: null }],
   apiKey: { setting: "Scaleway secret key" },
   steps: [
