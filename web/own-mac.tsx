@@ -27,7 +27,7 @@ export function OwnMacDot({ code }: { code?: OwnMacFacts["code"] }) {
             ? "bg-[#F0B135]"
             : code === "setup"
               ? "bg-[#7AA7FF]"
-              : ["battery", "memory", "session"].includes(code ?? "")
+              : ["battery", "power", "memory", "session"].includes(code ?? "")
                 ? "bg-[#FC8C45]"
                 : ["available", "busy"].includes(code ?? "")
                   ? "bg-[#5BD08A]"
@@ -59,6 +59,8 @@ export function ownMacDescription(f: OwnMacFacts) {
       return "Mac tasks go to a rented Mac until it's back. A new rental always asks you first.";
     case "battery":
       return "Agents only start on power. Mac tasks go to the next Mac in line until it's plugged in.";
+    case "power":
+      return "Harbormaster couldn't read the power state. Mac tasks go to the next Mac in line until it can.";
     case "memory":
       return `A task needs ${OWN_MAC_MIN_FREE_GB} GB free. Mac tasks go to the next Mac in line until memory frees up.`;
     case "session":
@@ -145,6 +147,17 @@ function Setting({
       </div>
       {children}
     </div>
+  );
+}
+function PrivateHomeHelp() {
+  return (
+    <p className="mt-2 text-xs leading-[17px] text-[#8A8A8A]">
+      In your personal account, make your home folder private: run{" "}
+      <code className="font-mono text-[#D6D6D6]">chmod 700 ~</code>, or remove
+      “everyone” read access in Get Info. Then check from the agents account
+      that your personal home folder is unreadable. Harbormaster never changes
+      these permissions.
+    </p>
   );
 }
 function AliasField({
@@ -314,6 +327,7 @@ function Setup({
                     I've created it
                   </button>
                 )}
+                {!vm && <PrivateHomeHelp />}
               </div>
             )}
             {step === 3 && (
@@ -421,9 +435,11 @@ function Setup({
                   ? "checked after step 5 · your settings, Harbormaster never changes them"
                   : !f.loggedIn
                     ? "Not logged in. You can still turn it on; new tasks use the next Mac until you log in."
-                    : !f.onPower
-                      ? "On battery. You can still turn it on; new tasks use the next Mac until it's plugged in."
-                      : "logged in and on power · your settings, Harbormaster never changes them"}
+                    : f.onPower === null
+                      ? "Power state unknown. You can still turn it on; new tasks use the next Mac until its power can be read."
+                      : !f.onPower
+                        ? "On battery. You can still turn it on; new tasks use the next Mac until it's plugged in."
+                        : "logged in and on power · your settings, Harbormaster never changes them"}
               </span>
             )}
             {step === 7 && (
@@ -627,6 +643,7 @@ export function OwnMacRow({
                 <p className="text-xs leading-[17px] text-[#8A8A8A]">
                   {OWN_MAC_VM_POWER_HELP}
                 </p>
+                {f.vm === false && <PrivateHomeHelp />}
                 <Setting
                   label="Tasks at once"
                   help="More tasks than this go to the next Mac in line."

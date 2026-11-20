@@ -291,3 +291,11 @@ test("Your Mac UI explains guest power cannot prove the host is on mains",()=>{
 test("an explicit rental choice does not offer automatic Your Mac waiting",()=>{
   const html=renderScene("ownmac-explicit-rental");assert.match(html,/Runs on selects a rented Mac/);assert.match(html,/Choose Your Mac in Runs on/);assert.doesNotMatch(html,/Wait for your Mac/);assert.match(html,/Rent for \$10.80/);
 });
+
+test("separate-user setup explains how the owner makes the personal home private",()=>{
+  const html=renderScene("ownmac-setup-user");for(const text of ["Created the user","In your personal account","chmod 700 ~","Get Info","personal home folder is unreadable"])assert.ok(html.includes(text),text);
+  assert.doesNotMatch(renderScene("ownmac-setup-test-failed"),/chmod 700/);
+});
+test("unknown power has the orange status and routes new starts elsewhere",()=>{
+  const html=renderScene("ownmac-power-unknown");assert.match(html,/Power state unknown/);assert.match(html,/bg-\[#FC8C45\]/);assert.match(html,/next Mac in line/);assert.doesNotMatch(html,/Asleep or unreachable/);
+});

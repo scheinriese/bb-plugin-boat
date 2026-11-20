@@ -470,10 +470,13 @@ execution account.
 A successful **Test connection** pins the SSH alias, hardware-UUID hash,
 username, uid and detected VM flag in plugin storage. Admission and allocation
 refuse any mismatch with **Test connection again**. Alias or identity changes
-also post “Your Mac target changed; Test connection again before tasks run
-there” in the orchestrator chats. Re-testing accepts and pins the checked
-identity again. bb cannot distinguish the owner from an agent: an agent that
-can run Test connection can re-pin too. The chat notice is the safeguard.
+also post a timestamped notice addressed to the owner in the orchestrator chats.
+The timestamp records when the change was observed. The owner must re-test in
+Settings; agents must not run Test connection or change Your Mac settings.
+A successful re-test pins the checked identity again and resolves the notice,
+so later orchestrators receive no stale notice. bb cannot distinguish the owner
+from an agent: an agent that can run Test connection can re-pin too. The notice
+and agent instructions are safeguards, not authentication of who ran the test.
 
 Availability needs a recent read-only SSH heartbeat, mains power, a logged-in
 execution session, **6 GB free memory**, CPU headroom, and a free task slot. The
@@ -484,6 +487,8 @@ host running on battery. Keep the host on mains power and verify this behavior
 on the actual VM; the guest reading is not proof of host mains power. UPS power
 means mains power was lost and is treated as On battery. Passwordless sudo is
 treated as admin access, with the same detected-VM exception as the group check.
+An unrecognized power reading shows the orange **Power state unknown** status
+and sends new tasks to the next Mac. It is not reported as an unreachable host.
 Idle tasks can release their execution slot while retaining their task home and
 credentials until close or cancel. Battery, memory and Pause never move or kill
 running work. After a mid-task disconnect, inspect the task before retrying;
