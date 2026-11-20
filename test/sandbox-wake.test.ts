@@ -830,8 +830,7 @@ test("a wake in another plugin load (a fresh heartbeat in kv) isn't run twice", 
   assert.equal((await w.makeWaker().run({ target: "bx_demo1" })).outcome, "awake");
 });
 
-test("a long wake: the call returns after its wait with the progress so far, --status shows it, and the chat hears when it's done", async t => {
-  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+test("a long wake: the call returns after its wait with the progress so far, --status shows it, and the chat hears when it's done", async () => {
   let open: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => (open = resolve));
   const w = world({ state: "stopped", gate });
