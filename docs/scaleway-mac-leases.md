@@ -84,8 +84,12 @@ Fresh task rentals fail closed while credential provisioning is unavailable.
 Boat does not copy the host's GitHub or agent tokens to a new provider.
 
 Delete the IAM public-key resource and local private/public/known-hosts files
-when releasing the server. Ownership is matched by the name token, then the
-recorded server ID, so renaming a recorded server does not lose its lease/key.
+when releasing the server. Automatic management requires a local key or lease
+record. A name token matches only its local recovery record; the recorded server
+ID keeps ownership after a rename. Other `bb-boat-*` servers are reported as
+orphans in provider status, `bb boat providers` and `bb boat status` (including
+JSON output). Boat never adopts, schedules or deletes them automatically; inspect
+them in the Scaleway console.
 Successful complete lists cover every recorded project/zone before treating an
 allocation as absent. Changing project or zone does not discard an existing key.
 
@@ -96,7 +100,10 @@ or incomplete list clears nothing. The operator can run
 `bb boat providers recover scaleway` to invoke the same reconciliation. Recovered
 allocations awaiting setup cannot authorize another rental. Failed bootstrap
 requests `schedule_deletion`; a failed safety schedule is surfaced explicitly
-with a tracked lease and manual-release instruction, never swallowed.
+with a tracked lease and manual-release instruction, never swallowed. Allocation,
+listing, orphan reporting and recovery share a provider-local lock until the
+create outcome and server ID are recorded. A list during `POST /servers` cannot
+delete the pending IAM or private key. Readiness/bootstrap runs outside this lock.
 
 ## Routing and verification
 
@@ -110,7 +117,13 @@ Readiness and SSH/bootstrap use the separate `waitReady` phase outside it, while
 the task's reservation/claim protects the machine. Other placements and hand-back
 therefore continue. Instabox timeouts and malformed create responses are unknown
 allocation outcomes and never authorize a second rental; only explicit refusals
-allow fallback. The shared ledger, hand-back and keep-sandbox policy apply.
+allow fallback. Each candidate runs its own agent/runner preflight before model
+lookup or creation, so an unactivated Instabox account reports its setup problem.
+Providers that classify their own create outcomes retain ordinary pre-allocation
+errors for safe fallback; the service wraps unknown errors only for other providers.
+The shared ledger, hand-back and keep-sandbox policy apply. The CLI preserves a
+project's system when changing to a mixed provider such as Instabox; it forces Mac
+for a Mac-only provider, or Linux for a provider that cannot host Macs.
 Scaleway records `minimumCost`, immutable `paidUntil`, `hourPrice` and
 `billingIncrementSeconds: 3600`. The ledger charges the minimum plus begun
 hours after it, splitting billable time and costs across UTC months. The

@@ -630,6 +630,10 @@ export interface AgentRunner {
 /** For later providers: not called yet. */
 export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string }
 export interface LaterMembers {
+  /** Classifies uncertain/allocated create outcomes itself; ordinary errors mean no machine was allocated. */
+  classifiesCreateErrors?: boolean;
+  /** Servers with Boat names but no local ownership record. Read-only; never adopted automatically. */
+  orphans?(signal?: AbortSignal): Promise<{ id: string; name: string }[]>;
   /** Allocate and record a lease quickly; readiness/bootstrap is a separate step outside the placement lock. */
   allocate?(options: CreateSandboxOptions): Promise<SandboxInfo>;
   waitReady?(sandboxId: string, signal?: AbortSignal): Promise<SandboxInfo>;

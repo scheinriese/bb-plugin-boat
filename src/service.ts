@@ -1128,7 +1128,7 @@ export class BoatService {
       } catch (error) {
         const code = (error as {code?:string}).code;
         const rejected = ["creation_rejected","no_capacity","at_capacity","quota_exceeded","key_missing","unauthorized","unauthenticated","template_not_allowed","spec_not_allowed","unsupported","size_unavailable","instabox_not_found","instabox_spawn_failed"].includes(code ?? "");
-        if (options.system === "macos" && !rejected && code !== "creation_unknown" && code !== "creation_allocated") throw new ProviderError(`${sandboxProvider.displayName} create outcome is unknown. Check its machines before retrying; Boat will not rent another Mac.`,{code:"creation_unknown"});
+        if (options.system === "macos" && !sandboxProvider.classifiesCreateErrors && !rejected && code !== "creation_unknown" && code !== "creation_allocated") throw new ProviderError(`${sandboxProvider.displayName} create outcome is unknown. Check its machines before retrying; Boat will not rent another Mac.`,{code:"creation_unknown"});
         throw plain(error);
       }
     });
@@ -2530,11 +2530,13 @@ export class BoatService {
     for (const provider of this.macProviders(task.sandboxProvider ?? DEFAULT_PROVIDER_ID)) {
       signal.throwIfAborted();
       try {
-        if (unlisted.has(provider.id)) throw new TaskError(`${provider.displayName} machine list could not be confirmed.`, "provider_unavailable");
         if (!this.sandboxProviders.get(provider.id)) throw new TaskError(`${provider.displayName} is not configured.`, "provider_unavailable");
+        if (!canHostMac(provider)) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
         if (provider.caps.headlessAgentRunner === false && task.runner !== "chat") throw new TaskError(`${provider.displayName} needs task chats and bb Connect. Enable Run tasks as chats for this project.`, "chat_required");
+        await this.hooks.preflight?.({ agent: task.provider, runner: task.runner, environment: provider.caps.environments ? task.environment : null, newSandbox: true, ...(provider.id === DEFAULT_PROVIDER_ID ? {} : { provider: provider.id }) });
+        if (unlisted.has(provider.id)) throw new TaskError(`${provider.displayName} machine list could not be confirmed.`, "provider_unavailable");
         await provider.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(repo=>repo.repo)].filter((repo):repo is string=>repo!==null),signal});
-        if (!canHostMac(provider) || (provider.macModels && !(await provider.macModels(signal)).length)) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
+        if (provider.macModels && !(await provider.macModels(signal)).length) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
         const sandbox = await this.createSandbox({ name: `bb ${task.id} ${slug(task.title)}`, type, system: "macos", environment: task.environment, snapshot: task.snapshot, sandboxProvider: provider, allocateOnly: Boolean(provider.allocate && provider.waitReady), signal });
         this.store.update(task.id, { sandboxProvider: provider.id });
         if (failures.length) this.store.addEvent(task.id, "sandbox-provider", `Mac provider fallback: ${failures.join("; ")} Using ${provider.displayName}.`);

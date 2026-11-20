@@ -198,6 +198,7 @@ export function providersView(input: {
   prices?: Prices;
   keys?: Keys;
   macReady?: ReadonlySet<string>;
+  statuses?: ReadonlyMap<string, string>;
   projects: readonly BoatProject[];
 }): SandboxProvidersResultDto {
   const { registry } = input;
@@ -224,6 +225,7 @@ export function providersView(input: {
     rows.push(catalogRow(entry, provider, input.connections?.get(provider.id) ?? "not-connected", defaultId === provider.id, input.prices?.get(provider.id) ?? null));
   }
   rows.sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+  for (const row of rows) row.status = input.statuses?.get(row.id) ?? row.status;
 
   const options: RunsOnOptionDto[] = rows
     // A monthly Mac is a choice once one is enrolled.
@@ -249,10 +251,10 @@ const CONNECTION_TTL_MS = 60_000;
 
 export function providerHandlers(runtime: Runtime) {
   const { service, bb } = runtime;
-  let checked: { at: number; connections: Connections; prices: Prices; macReady: ReadonlySet<string> } | null = null;
+  let checked: { at: number; connections: Connections; prices: Prices; macReady: ReadonlySet<string>; statuses: ReadonlyMap<string,string> } | null = null;
 
   /** Ask each enabled provider other than boat.dev for its plan (an answer means connected) and its prices. */
-  async function others(): Promise<{ connections: Connections; prices: Prices; macReady: ReadonlySet<string> }> {
+  async function others(): Promise<{ connections: Connections; prices: Prices; macReady: ReadonlySet<string>; statuses: ReadonlyMap<string,string> }> {
     if (checked !== null && Date.now() - checked.at < CONNECTION_TTL_MS) return checked;
     const providers = service.sandboxProviders.enabled.filter((provider) => provider.id !== "boat");
     const results = await Promise.all(
@@ -268,7 +270,9 @@ export function providerHandlers(runtime: Runtime) {
         }
         const pricing = connection === "connected" && provider.pricing ? await provider.pricing(signal).catch(() => null) : null;
         const macReady = connection === "connected" && (provider.macModels ? (await provider.macModels(signal).catch(() => [])).length > 0 : (provider.caps.systems ?? [provider.caps.os]).includes("macos"));
-        return { id: provider.id, connection, pricing, macReady };
+        const orphans = connection === "connected" && provider.orphans ? await provider.orphans(signal).catch(() => null) : [];
+        const status = orphans === null ? "Orphan check unavailable" : orphans.length ? `${orphans.length} orphan server(s) · not managed; inspect with bb boat providers` : null;
+        return { id: provider.id, connection, pricing, macReady, status };
       }),
     );
     checked = {
@@ -276,18 +280,19 @@ export function providerHandlers(runtime: Runtime) {
       macReady: new Set(results.filter(entry=>entry.macReady).map(entry=>entry.id)),
       connections: new Map(results.map((entry) => [entry.id, entry.connection])),
       prices: new Map(results.flatMap((entry) => (entry.pricing ? [[entry.id, entry.pricing] as const] : []))),
+      statuses: new Map(results.flatMap(entry=>entry.status ? [[entry.id,entry.status] as const] : [])),
     };
     return checked;
   }
 
   async function view(): Promise<SandboxProvidersResultDto> {
     const reading = runtime.setup ? (runtime.setup.peek()?.facts ?? (await runtime.setup.reading().catch(() => null))) : null;
-    const { connections, prices, macReady } = await others();
+    const { connections, prices, macReady, statuses } = await others();
     const keys = new Map(service.sandboxProviders.all.flatMap((provider) => {
       const stored = runtime.providers?.keyPresent(provider.id) ?? null;
       return stored === null ? [] : [[provider.id, stored] as const];
     }));
-    return providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, keys, macReady, projects: runtime.projects.list() });
+    return providersView({ registry: service.sandboxProviders, boat: reading, connections, prices, keys, macReady, statuses, projects: runtime.projects.list() });
   }
 
   return {

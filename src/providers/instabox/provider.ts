@@ -284,6 +284,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     displayName: "Instabox",
     caps,
     macModels,
+    classifiesCreateErrors: true,
     idPattern: MACHINE_ID_PATTERN,
     sizes: INSTABOX_SIZES,
     machine: INSTABOX_MACHINE,
@@ -361,9 +362,14 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         if (["no_capacity","quota_exceeded","unauthenticated","key_missing","template_not_allowed","spec_not_allowed","instabox_not_found","instabox_spawn_failed"].includes(code ?? "")) throw error;
         throw new InstaboxError("Instabox may have allocated a Mac before create failed. Check its machine list before retrying; Boat will not rent a fallback Mac.",{code:"creation_unknown"});
       }
-      const sandbox = toSandbox(rec(record.machine) ?? record);
-      if (sandbox.id === "") throw new InstaboxError("instabox create did not report a machine id", { code: create.system === "macos" ? "creation_unknown" : "instabox_bad_output" });
-      return remember(sandbox);
+      try {
+        const sandbox = toSandbox(rec(record.machine) ?? record);
+        if (sandbox.id === "") throw new InstaboxError("instabox create did not report a machine id", { code: create.system === "macos" ? "creation_unknown" : "instabox_bad_output" });
+        return remember(sandbox);
+      } catch (error) {
+        if (create.system !== "macos" || (error as {code?:string}).code === "creation_unknown") throw error;
+        throw new InstaboxError("Instabox allocated a Mac but local lease registration failed. Reconcile its machine list before retrying.",{code:"creation_allocated"});
+      }
     },
     async delete(sandboxId, signal, deleteOptions) {
       await cli.run(["rm", sandboxId, "--yes", "--json", ...(options.ledger?.held(sandboxId).length ? ["--now"] : [])], { signal, timeoutMs: 120_000 });

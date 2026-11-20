@@ -1145,3 +1145,27 @@ test("page-started kept leases persist recurring cost notices without an orchest
   await restarted.processMacLeases(end+86400000+1);
   assert.match(view().notices[0]!.text,/compute cost \$21\.60/);assert.equal(view().notices.length,1);
 });
+
+test("an unactivated Instabox Mac account fails preflight before model lookup or create",async t=>{
+  let setup!:ReturnType<typeof createInstaboxSetup>;
+  const f=await macEnv(t,{preflight:async(input:import("../src/providers/boat/setup.ts").PreflightInput)=>{
+    if(input.provider==="instabox")await instaboxPreflight(setup);
+  }});
+  setup=createInstaboxSetup({cli:f.box.cli,turnedOn:async()=>true,keyPresent:()=>true});
+  f.box.setState({fail:"invite"});
+  f.box.provider.macModels=async()=>{assert.fail("account preflight must run first");};
+  await assert.rejects(f.start(),error=>{
+    assert.match(String(error),/Instabox isn't ready: Instabox account.*isn't activated/);
+    assert.doesNotMatch(String(error),/may have allocated/);return true;
+  });
+  assert.equal(Object.keys(f.box.state().machines).length,0);
+  assert.ok(!f.box.state().calls.some((call:string)=>call.startsWith("create ")));
+});
+
+test("Instabox reports a confirmed allocation when local ledger registration fails",async t=>{
+  const f=await macEnv(t);
+  f.store.macLeases.record=()=>{throw new Error("local ledger unavailable");};
+  assert.equal(f.box.provider.classifiesCreateErrors,true);
+  await assert.rejects(f.box.provider.create({name:"mac",type:"default",system:"macos",ttlSeconds:3600,gitGuard:true}),{code:"creation_allocated"});
+  assert.equal(Object.keys(f.box.state().machines).length,1);
+});

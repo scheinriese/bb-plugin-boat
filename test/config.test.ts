@@ -674,3 +674,18 @@ test("local bb project links survive backup roundtrip and unrelated legacy impor
   assert.equal(unchanged.exitCode, 0, unchanged.stderr);
   assert.equal((await exported()).projects[0].localBbProjectId, "proj_demo");
 });
+
+for (const command of ["config runs-on", "project set"]) test(`${command} keeps a mixed provider's project system and changes it only for a single-system provider`, async t => {
+  const {harness,cli,exported,importFile}=await setup();
+  t.after(()=>harness.lifecycle.dispose());
+  const backup=await exported();
+  const seeded=await importFile({...backup,projects:[{...PROJECTS[0],id:"ios-app",name:"iOS app",sandboxProvider:"instabox",sandboxSystem:"macos"}]});
+  assert.equal(seeded.exitCode,0,seeded.stderr);
+  for (const [provider,system] of [["instabox","macos"],["scaleway","macos"],["instabox","macos"],["boat","linux"],["instabox","linux"],["scaleway","macos"]]) {
+    const args=command==="config runs-on"?["config","runs-on","ios-app",provider!]:["project","set","ios-app","--runs-on",provider!];
+    const result=await cli(args);assert.equal(result.exitCode,0,result.stderr);
+    const project=(await exported()).projects[0]!;
+    assert.equal(project.sandboxSystem ?? "linux",system,`${command} ${provider}`);
+    assert.equal(project.sandboxProvider ?? "boat",provider);
+  }
+});

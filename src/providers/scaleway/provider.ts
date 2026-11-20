@@ -57,6 +57,14 @@ git config --global core.hooksPath "$HOME/.boat-hooks"
 export function createScalewayProvider(options: { api: ScalewayApi; keys: ScalewayKeys; ledger: MacLeaseLedger; ssh?: SshExec; pollMs?: number; readyTimeoutMs?: number }): SandboxProvider {
   const { api, keys, ledger } = options;
   const ssh = options.ssh ?? sshExec;
+  // Only the short allocation phase owns this lock. Account-wide reads can
+  // run outside Boat's placement lock, but cannot clear a pending POST's key.
+  let allocationLock: Promise<unknown> = Promise.resolve();
+  function withAllocationLock<T>(run: () => Promise<T>): Promise<T> {
+    const next = allocationLock.then(run, run);
+    allocationLock = next.catch(() => undefined);
+    return next;
+  }
   const caps: SandboxProvider["caps"] = { os: "macos", systems: [], shell: "bash", homeDir: "~", execMaxSeconds: 3600, stopKeepsDisk: true, retentionAfterStopSeconds: null, environments: false, autoStop: null, agentBusyState: false, previews: "token-link", bbEnrollment: true, headlessAgentRunner: false, concurrencyUnit: "kept-sandboxes" };
   const unsupported = async (): Promise<never> => { throw fail("Scaleway Macs run tasks as bb chats. This operation is not available.", "unsupported"); };
   async function models(signal?: AbortSignal, stockOnly = false): Promise<MacModel[]> {
@@ -117,9 +125,10 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
   }
   async function view(server: Server, signal?: AbortSignal): Promise<SandboxInfo> {
     const id = `scw_${server.zone}_${server.id}`;
-    await keyFor(server);
+    const record = await keyFor(server);
     let lease = ledger.held(id)[0];
-    if (!lease && (nameToken(server.name) || (await keys.records()).some(record => record.serverId === server.id))) {
+    if (!record && !lease) throw fail("This Scaleway server has no local ownership record. It is an orphan and will not be managed automatically.", "unmanaged_server");
+    if (!lease && record) {
       const model = (await models(signal)).find(m => m.id === server.type);
       if (!model) throw fail("Scaleway Mac pricing could not be confirmed.", "lease_unknown");
       lease = ledger.record({ id: `scaleway:${server.id}`, provider: "scaleway", machineId: id, size: model.id, startedAt: server.created_at, paidUntil: server.deletable_at, minimumCost: model.minimumCost, hourPrice: model.hourPrice, billingIncrementSeconds: 3600, currency: "EUR", cpus: model.cpus, memoryMiB: model.memoryMiB });
@@ -150,8 +159,13 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       else { await forgetKey(record,signal); cleared++; }
     }
     const ids = new Set(records.map(record => record.serverId).filter(Boolean));
-    const managed = all.filter(server => nameToken(server.name) || ids.has(server.id) || ledger.held(`scw_${server.zone}_${server.id}`).length);
-    return { servers: [...new Map(managed.map(server=>[server.id,server])).values()], recovered, cleared };
+    const names = new Set(records.filter(record => !record.serverId).map(record => `${NAME_PREFIX}${record.token}`));
+    const unique = [...new Map(all.map(server=>[server.id,server])).values()];
+    const managed = unique.filter(server => ids.has(server.id) || names.has(server.name) || ledger.held(`scw_${server.zone}_${server.id}`).length);
+    const managedIds = new Set(managed.map(server=>server.id));
+    const orphans = unique.filter(server=>server.name.startsWith(NAME_PREFIX) && !managedIds.has(server.id))
+      .map(server=>({id:`scw_${server.zone}_${server.id}`,name:server.name}));
+    return { servers: managed, orphans, recovered, cleared };
   }
   async function prepare(id: string, signal?: AbortSignal): Promise<SandboxInfo> {
     let server: Server;
@@ -188,6 +202,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
   }
   const provider: SandboxProvider = {
     ...unavailableProvider("scaleway"), id: "scaleway", displayName: "Scaleway", caps, idPattern: SCALEWAY_ID_PATTERN, machine,
+    classifiesCreateErrors: true,
     sizes: SCALEWAY_TASK_SIZES,
     macModels: signal => models(signal),
     async pricing(signal) { const list = await models(signal); return list.map(m => `${m.label} EUR ${(m.hourPrice).toFixed(2)}/h · EUR ${m.minimumCost.toFixed(2)} minimum (24 h)`).join("; ") || null; },
@@ -197,12 +212,13 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       return { tier: "Apple silicon · hourly", summary: "24 h minimum, then hourly; billed until deleted", activeSandboxes: servers.length, maxActiveSandboxes: choices.some(c => c.max === null) ? null : servers.length + choices.reduce((n,c) => n+Math.max(0,(c.max ?? 0)-c.used),0), startsLeftToday: null, startsLeftThisHour: null, canStart, blockedReason: canStart ? null : "Scaleway Mac stock or quota is unavailable.", checkoutRequired: false, autoStopCapHours: null };
     },
     usagePlan: async () => null, usage: async () => ({ seconds: null, hours: null, dollars: null, since: null, until: null, running: null }),
-    async list({ signal } = {}) { const listed = await managedServers(signal); return Promise.all(listed.servers.map(server=>view(server,signal))); },
-    async recoverCreations(signal) {
+    list: ({ signal } = {}) => withAllocationLock(async () => { const listed = await managedServers(signal); return Promise.all(listed.servers.map(server=>view(server,signal))); }),
+    orphans: signal => withAllocationLock(async () => (await managedServers(signal)).orphans),
+    recoverCreations: signal => withAllocationLock(async () => {
       const result = await managedServers(signal);
       for (const server of result.servers) await view(server,signal);
       return { recovered: result.recovered, cleared: result.cleared };
-    },
+    }),
     async info(id, signal) { return view(await raw(id,signal),signal); },
     async findInfo(id, signal) { try { return await provider.info(id,signal); } catch (error) { if (isNotFound(error)) return null; throw error; } },
     async assertTaskReady({ agent, repos, sandboxId, signal }) {
@@ -212,7 +228,7 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
       if ((await run(server,{command:["bash","-lc",`${command} >/dev/null 2>&1`],timeoutMs:30_000,signal})).exitCode !== 0) throw fail("The held Scaleway Mac has no verified agent login.","task_credentials_missing");
       if (repos.length && (await run(server,{command:["bash","-lc","gh auth status >/dev/null 2>&1"],timeoutMs:30_000,signal})).exitCode !== 0) throw fail("The held Scaleway Mac has no verified GitHub login for repository tasks.","task_credentials_missing");
     },
-    async allocate(input) {
+    allocate: input => withAllocationLock(async () => {
       if (input.system !== "macos" || input.snapshot) throw fail("Scaleway supports new Mac task leases only.", "unsupported");
       const recovery = await managedServers(input.signal);
       if (recovery.recovered) { for (const server of recovery.servers) await view(server,input.signal); throw fail("Recovered an earlier Scaleway allocation. Reuse its tracked lease before renting another Mac.","creation_allocated"); }
@@ -246,12 +262,13 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
         }
         throw error;
       }
-    },
+    }),
     waitReady: prepare,
     async create(input) { const server = await provider.allocate!(input); return prepare(server.id,input.signal); },
     async delete(id, signal, endOptions) {
       let server: Server;
       try { server = await raw(id,signal); } catch (error) { if (!isNotFound(error)) throw error; return; }
+      await view(server,signal); // Require a local key/lease record before deleting.
       if (Date.now() < Date.parse(server.deletable_at)) throw fail("Scaleway cannot release this Mac before its 24 h minimum ends.", "minimum_lease");
       await api.request("DELETE", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, undefined, signal);
       const record = await keyFor(server);
@@ -260,11 +277,13 @@ export function createScalewayProvider(options: { api: ScalewayApi; keys: Scalew
     },
     async scheduleLeaseRelease(id, at, signal) {
       const server = await raw(id,signal);
+      await view(server,signal);
       if (Date.parse(at) !== Date.parse(server.deletable_at)) throw fail("Scaleway only schedules deletion at its minimum boundary.", "minimum_lease");
       await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, { schedule_deletion: true }, signal);
     },
     async cancelLeaseRelease(id, signal) {
       const server = await raw(id,signal);
+      await view(server,signal);
       await api.request("PATCH", `/apple-silicon/v1alpha1/zones/${server.zone}/servers/${server.id}`, { schedule_deletion: false }, signal);
     },
     // A suspend releases no money and must not shut down a shared Mac. Keep
