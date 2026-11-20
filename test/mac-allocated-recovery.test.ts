@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { FakeBoat, FakeChat, fakeRepos, defaultSettings, memoryStore } from "./fakes.ts";
 import { createBoatProvider } from "../src/providers/boat/provider.ts";
 import type { BoatApi } from "../src/providers/boat/api.ts";
@@ -7,6 +11,10 @@ import { createProviderRegistry } from "../src/providers/registry.ts";
 import { createInstaboxProvider, machineName, instaboxLeaseInput } from "../src/providers/instabox/provider.ts";
 import { BoatService } from "../src/service.ts";
 import type { SandboxInfo, SandboxProvider } from "../src/providers/types.ts";
+import { InstaboxCli } from "../src/providers/instabox/cli.ts";
+import { InstaboxRest } from "../src/providers/instabox/api.ts";
+// @ts-expect-error: a plain JavaScript fixture.
+import { startFakeInstaboxApi } from "../src/providers/instabox/fixtures/fake-api.mjs";
 
 async function fixture(repo:string|null=null) {
   const store=memoryStore(),boat=new FakeBoat(),chat=new FakeChat(),base=createBoatProvider(boat as unknown as BoatApi),calls:string[]=[];
@@ -381,4 +389,109 @@ test("ordinary recovery cannot bypass a later durable owner deletion intent",asy
   await assert.rejects(env.service.sandboxAction(env.machine().id,"delete",0));
   await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true),{code:"mac_recovery_refused"});
   assert.equal(env.chat.spawns.length,0);assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);
+});
+
+/** Real Instabox reads over a child CLI and localhost HTTP; only setup/dispatch
+ * stay fake. No sample's live flag is assigned by the service test adapter. */
+async function processAdapter(env:Awaited<ReturnType<typeof fixture>>,t:TestContext) {
+  const dir=mkdtempSync(join(tmpdir(),"instabox-process-recovery-")),statePath=join(dir,"state.json");
+  const current=env.machine(),mac=current.mac!;
+  const machine={id:current.id,name:current.name,state:"running",runtime:{ready:true},template:{id:"macos"},model:mac.model,
+    metadata:{"created-by":"bb-boat","boat-mac-model":mac.model},spec:{vcpus:mac.cpus,memMiB:mac.memoryMiB},
+    lease:{id:mac.leaseId,startedAt:mac.startedAt,chargeUntil:mac.chargeUntil,hourUSD:mac.hourPrice},deleteAt:current.scheduledReleaseAt};
+  writeFileSync(statePath,JSON.stringify({machines:{[current.id]:machine}}));
+  const state=()=>JSON.parse(readFileSync(statePath,"utf8"));
+  const patch=(change:Record<string,unknown>)=>writeFileSync(statePath,JSON.stringify({...state(),...change}));
+  const api=await startFakeInstaboxApi({statePath,key:"ibk_fake_process_sample"});
+  t.after(async()=>{await api.close();rmSync(dir,{recursive:true,force:true});});
+  const cli=new InstaboxCli(async()=>fileURLToPath(new URL("../src/providers/instabox/fixtures/fake-instabox.mjs",import.meta.url)),async()=>"ibk_fake_process_sample");
+  const cliEnv=cli.env.bind(cli);
+  cli.env=async()=>({...await cliEnv(),FAKE_INSTABOX_STATE:statePath,FAKE_INSTABOX_KEY:"ibk_fake_process_sample"});
+  const rest=new InstaboxRest({key:async()=>"ibk_fake_process_sample",baseUrl:()=>api.url});
+  const adapter=createInstaboxProvider(cli,rest,{ledger:env.store.macLeases});
+  env.provider.info=adapter.info.bind(adapter);
+  env.provider.conversations=adapter.conversations.bind(adapter);
+  env.provider.processes=adapter.processes.bind(adapter);
+  const sample=()=>({machineId:current.id,state:"running",live:true,capturedAt:new Date().toISOString(),trigger:"request",truncated:false,
+    processes:[{pid:1,ppid:0,user:"root",cpuPercent:0,memPercent:0.1,elapsedSeconds:60,command:"/sbin/launchd"}]});
+  const assertReadsOnly=()=>{
+    assert.ok(state().calls.every((call:string)=>call===`get ${current.id} --json` || call===`agent ls ${current.id} --json`),JSON.stringify(state().calls));
+    assert.ok(api.received.every((call:{method:string;path:string;keyOk:boolean})=>call.method==="GET" && call.path===`/v1/machines/${current.id}/processes` && call.keyOk));
+    assert.deepEqual(env.calls.filter(call=>["create","delete","resume","extend","cancel-release","schedule-release"].includes(call)),["create"]);
+  };
+  return {state,patch,api,sample,assertReadsOnly,adapter};
+}
+
+test("public recovery uses fresh complete Instabox evidence after refusing CLI rows with unknown liveness",async t=>{
+  const env=await fixture(),lease=env.record(),box=await processAdapter(env,t),harness=await publicHarness(env,t);
+  env.store.macLeases.schedule(lease.id,env.machine().scheduledReleaseAt!);
+  // CLI ps --json's actual shape loses the envelope, including cached/truncated
+  // provenance. The real adapter must refuse it even with a healthy idle get.
+  box.patch({processSample:box.sample().processes});
+  await assert.rejects(harness.callRpc("recoverAllocatedMac",{taskId:env.failed.id,machineId:env.machine().id,userApproved:true}),/current machine work state could not be confirmed idle/);
+  assert.equal(env.chat.spawns.length,0);assert.equal(env.store.get(env.failed.id)!.turns,0);
+  const fresh=box.sample();box.patch({processSample:fresh});
+  assert.deepEqual(await harness.callRpc("recoverAllocatedMac",{taskId:env.failed.id,machineId:env.machine().id,userApproved:true}),{taskId:env.failed.id,machineId:env.machine().id});
+  const observed=await box.adapter.processes(env.machine().id);
+  assert.equal(observed.live,true);assert.equal(observed.sampledAt,fresh.capturedAt);
+  assert.equal(env.chat.spawns.length,1);assert.equal(env.store.get(env.failed.id)!.turns,1);
+  assert.equal(env.store.get(env.failed.id)!.sandboxId,env.machine().id);assert.equal(env.store.list({limit:10}).length,2);
+  assert.equal(env.store.macLeases.held()[0]!.id,lease.id);assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);
+  assert.equal(env.store.macLeases.list().length,1);assert.equal(env.store.macLeases.summary().month.costs.USD,10.8);
+  assert.ok(box.api.received.length>=3,"fresh reads repeat across recovery validation");box.assertReadsOnly();
+});
+
+for(const scenario of ["cached","stale","future","missing timestamp","invalid timestamp","unknown live","missing list","malformed row","missing CPU","invalid CPU","blank command","truncated","unknown completeness","wrong machine","stopped sample","stop trigger","HTTP error","malformed JSON","error envelope","busy"] as const) {
+  test(`public recovery refuses ${scenario} from the real Instabox process adapter`,async t=>{
+    const env=await fixture(),lease=env.record(),box=await processAdapter(env,t),harness=await publicHarness(env,t);
+    env.store.macLeases.schedule(lease.id,env.machine().scheduledReleaseAt!);
+    const sample:Record<string,any>=box.sample();
+    if(scenario==="cached")sample.live=false;
+    if(scenario==="stale")sample.capturedAt=new Date(Date.now()-60_000).toISOString();
+    if(scenario==="future")sample.capturedAt=new Date(Date.now()+60_000).toISOString();
+    if(scenario==="missing timestamp")delete sample.capturedAt;
+    if(scenario==="invalid timestamp")sample.capturedAt="0";
+    if(scenario==="unknown live")delete sample.live;
+    if(scenario==="missing list")delete sample.processes;
+    if(scenario==="malformed row")sample.processes.push(null);
+    if(scenario==="missing CPU")delete sample.processes[0].cpuPercent;
+    if(scenario==="invalid CPU")sample.processes[0].cpuPercent="0";
+    if(scenario==="blank command")sample.processes[0].command=" ";
+    if(scenario==="truncated")sample.truncated=true;
+    if(scenario==="unknown completeness")delete sample.truncated;
+    if(scenario==="wrong machine")sample.machineId="m_other";
+    if(scenario==="stopped sample")sample.state="stopped";
+    if(scenario==="stop trigger")sample.trigger="stop";
+    if(scenario==="error envelope")sample.error={code:"host_unavailable",message:"fake unavailable"};
+    if(scenario==="busy")sample.processes.push({...sample.processes[0],pid:99,ppid:1,command:"npm run build",cpuPercent:90});
+    box.patch({processSample:sample,...(scenario==="HTTP error"?{processStatus:503,processSample:{error:{code:"host_unavailable",message:"fake unavailable"}}}:{}),...(scenario==="malformed JSON"?{processRaw:'{"processes":['}:{})});
+    const before=env.store.macLeases.rawList();
+    await assert.rejects(harness.callRpc("recoverAllocatedMac",{taskId:env.failed.id,machineId:env.machine().id,userApproved:true}));
+    assert.equal(env.chat.spawns.length,0);assert.equal(env.store.get(env.failed.id)!.status,"failed");assert.equal(env.store.get(env.failed.id)!.turns,0);
+    assert.equal(env.store.list({limit:10}).length,2);assert.equal(env.store.macLeases.adoptions().length,0);
+    assert.deepEqual(env.store.macLeases.rawList(),before);assert.equal(env.store.macLeases.summary().month.costs.USD,10.8);box.assertReadsOnly();
+  });
+}
+
+test("public legacy adoption also uses real Instabox process evidence and counts one minimum",async t=>{
+  const env=await legacyDeletedFixture(t),box=await processAdapter(env,t),harness=await publicHarness(env,t);
+  const rawBefore=env.store.macLeases.rawList();
+  await harness.callRpc("recoverAllocatedMac",{taskId:env.failed.id,machineId:env.machine().id,userApproved:true,adoptLegacyLease:env.adoption});
+  assert.equal(env.store.get(env.failed.id)!.turns,1);assert.equal(env.store.macLeases.adoptions().length,1);
+  assert.deepEqual(env.store.macLeases.rawList(),rawBefore);assert.equal(env.store.macLeases.held()[0]!.id,env.lease.id);
+  assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);assert.equal(env.store.macLeases.summary().month.costs.USD,10.8);
+  box.assertReadsOnly();
+});
+
+test("legacy adoption refuses when a later real process read becomes cached",async t=>{
+  const env=await legacyDeletedFixture(t),box=await processAdapter(env,t),harness=await publicHarness(env,t);
+  const rawBefore=env.store.macLeases.rawList();let reads=0;
+  env.provider.processes=async(...args)=>{
+    if(++reads===2)box.patch({processSample:{...box.sample(),live:false,trigger:"suspend"}});
+    return box.adapter.processes(...args);
+  };
+  await assert.rejects(harness.callRpc("recoverAllocatedMac",{taskId:env.failed.id,machineId:env.machine().id,userApproved:true,adoptLegacyLease:env.adoption}));
+  assert.equal(reads,2);assert.equal(env.chat.spawns.length,0);assert.equal(env.store.get(env.failed.id)!.status,"failed");
+  assert.equal(env.store.macLeases.adoptions().length,0);assert.equal(env.store.macLeases.held().length,0);
+  assert.deepEqual(env.store.macLeases.rawList(),rawBefore);assert.equal(env.store.macLeases.summary().month.costs.USD,10.8);box.assertReadsOnly();
 });

@@ -1,11 +1,12 @@
 // Instabox's REST API (https://api.instabox.sh/v1/openapi.json), for the
-// three things its CLI doesn't offer:
+// things its CLI doesn't offer:
 // - exec with `noHistory` and stdin, streamed (bb's setup: its enrollment
 //   secret goes on stdin and its output names bb's server, so neither may
 //   land in the machine's exec history, which keeps 64 KiB of each command);
 // - activity leases, which keep a machine awake while a bb chat works there
 //   (Instabox's idle check doesn't see bb's connection);
 // - a machine's running time over a window (the usage view).
+// - process-list provenance and completeness (CLI ps --json prints rows only).
 // The key goes in the X-API-Key header only, never in a URL, a log or an error.
 import { InstaboxError, num, rec, redactKeys, str, type JsonRecord } from "./cli.ts";
 import type { ExecResult } from "../types.ts";
@@ -88,6 +89,11 @@ export class InstaboxRest {
       if (error instanceof InstaboxError) throw error;
       throw new InstaboxError(`Instabox answered ${path} with something that isn't JSON`, { code: "instabox_bad_output" });
     }
+  }
+
+  /** Keep the ProcessList envelope: CLI ps drops live/capturedAt/truncated. */
+  async processes(machineId: string, signal?: AbortSignal): Promise<JsonRecord> {
+    return this.json("GET", `/v1/machines/${encodeURIComponent(machineId)}/processes`, { signal });
   }
 
   /**

@@ -1,5 +1,5 @@
-// A stand-in for Instabox's REST API, for tests: the three routes the plugin
-// calls (exec with server-sent events, activity leases, a machine's usage),
+// A stand-in for Instabox's REST API, for tests: the routes the plugin
+// calls (exec, processes, activity leases, a machine's usage),
 // on 127.0.0.1, with state in the same JSON file as fake-instabox.mjs. It
 // checks the X-API-Key header and never stores the key or the stdin it gets:
 // only whether they were there, and the request's other fields.
@@ -72,6 +72,20 @@ export async function startFakeInstaboxApi({ statePath, key }) {
       if (request.headers["x-api-key"] !== key) return json(401, { error: { code: "invalid_key", message: "the API key is not valid" } });
       if (state.fail === "down") return json(503, { error: { code: "host_unavailable", message: "upstream unavailable", retryable: true } });
       if (state.fail === "invite") return json(403, { error: { code: "invite_required", message: "an invite is required" } });
+      const processes = url.pathname.match(/^\/v1\/machines\/([^/]+)\/processes$/);
+      if (processes && request.method === "GET") {
+        const machine = state.machines?.[decodeURIComponent(processes[1])];
+        if (!machine || machine.state === "deleted") return json(404, { error: { code: "not_found", message: "no such machine" } });
+        if (state.processRaw !== undefined) {
+          response.writeHead(200, { "content-type": "application/json" });
+          return response.end(state.processRaw);
+        }
+        return json(state.processStatus ?? 200, Object.hasOwn(state, "processSample") ? state.processSample : {
+          machineId: machine.id, state: machine.state, live: machine.state === "running",
+          capturedAt: new Date().toISOString(), trigger: machine.state === "running" ? "request" : "stop", truncated: false,
+          processes: [{ pid: 1, ppid: 0, user: "root", cpuPercent: 0, memPercent: 0.1, elapsedSeconds: 60, command: "/sbin/launchd" }],
+        });
+      }
       const exec = url.pathname.match(/^\/v1\/machines\/([^/]+)\/exec$/);
       if (exec && request.method === "POST") {
         const machine = state.machines?.[decodeURIComponent(exec[1])];
