@@ -357,3 +357,13 @@ a check now) and the plugin log list each chat that continued, and an
 orchestrator gets one message per check naming its workers that continued.
 The next step line in Settings › Usage limits counts the stopped chats
 continued on paid Claude in the last day.
+
+### Provider setup and billing in the UI
+
+Sandbox providers checks Instabox's CLI, stored key, plan, selected GitHub proxy Secret and enabled setting. Only the first unfinished step is highlighted. **Check again** reads Secret metadata again immediately; it never reads Secret values. From a blocked task card, passing every check retries that task only when no sandbox was allocated. A manual **Retry** uses the same subscription and project checks as a new start, and refuses concurrent retries or uncertain allocations.
+
+Scaleway uses its REST API directly, so its checklist shows **API access**, **Project found** and **On**, rather than a CLI check. **Held Macs only** means authenticated existing Macs can run work; fresh task rentals remain unavailable until their logins can be provisioned. Missing keys and project IDs name the setting to fix. The dashed fresh-login step never blocks inspecting or using a held Mac.
+
+Usage and the footer read boat.dev's reset from its provider plan, and Instabox's allowance and reset from `usage.cost.allowanceUSD` and `usage.cost.periodEnd`. Older Instabox responses show usage so far without inventing a credit allowance or period. Its credit is account-wide: when Mac charges are present, the UI says that credit includes them. Linux hours are omitted when a complete provider usage list cannot be classified by operating system. Mac estimates remain separate per provider and currency; **Today** excludes Mac time from Linux dollars and shows Scaleway euros separately, without conversion.
+
+Stopped sandboxes with no task or chat have **Delete** with confirmation; running ones have **Stop**. There is no bulk stop: an external review or plugin may still use an unowned sandbox. Key actions lead to bb's existing secret settings; the plugin SDK does not expose a separate secure-entry dialog.

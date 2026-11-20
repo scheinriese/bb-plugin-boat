@@ -18,11 +18,11 @@ export function macRunsOnBatch(snapshot: MacLeaseSnapshot, tasks: readonly Task[
     if (!lease) return null;
     const others = (openByMachine.get(machineId) ?? []).filter(t => t.id !== taskId);
     const minimumHours = (Date.parse(lease.paidUntil)-Date.parse(lease.startedAt))/3_600_000;
-    return { provider: lease.provider, label: PROVIDER_NAMES[lease.provider as keyof typeof PROVIDER_NAMES] ?? lease.provider, os: "macos", machine: `Mac ${lease.size.toUpperCase().replace("PRO", " Pro")}`,
+    return { provider: lease.provider, label: PROVIDER_NAMES[lease.provider as keyof typeof PROVIDER_NAMES] ?? lease.provider, os: "macos", machine: `${lease.provider === "scaleway" ? "Mac mini" : "Mac"} ${lease.size.toUpperCase().replace("PRO", " Pro")}`,
       // Times are structured so the browser formats them in the owner's zone.
-      note: null, lease: { paidUntil: lease.paidUntil, endedAt: lease.endedAt, shared: taskId !== undefined && firstTask.get(lease.id) !== taskId, kept: lease.kept, releaseAt: lease.releaseAt },
-      leaseCost: `${leaseMoney(lease.hourPrice,lease.currency)}/h after ${minimumHours} h minimum`, sharedTasks: others.length,
-      detail: taskId ? (others.length ? `Shares the lease with ${others.map(t => t.title).join(", ")}` : null) : `${minimumHours} h minimum · ${leaseMoney(lease.minimumCost,lease.currency)}` };
+      note: null, lease: { paidUntil: lease.paidUntil, endedAt: lease.endedAt, shared: taskId !== undefined && firstTask.get(lease.id) !== taskId, kept: lease.kept, releaseAt: lease.releaseAt, hourPrice: lease.hourPrice, currency: lease.currency, billingIncrementSeconds: lease.billingIncrementSeconds },
+      leaseCost: `${leaseMoney(lease.hourPrice,lease.currency)} / h after ${minimumHours} h minimum`, sharedTasks: others.length,
+      detail: taskId ? (others.length ? `Shares the Mac with ${others.map(t => t.title).join(", ")}` : null) : `${leaseMoney(lease.minimumCost,lease.currency)} minimum` };
   };
 }
 /** Single-item callers may opt in; collection RPCs always share a batch. */

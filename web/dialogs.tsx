@@ -1,3 +1,4 @@
+import { ProviderFailureCard } from "./provider-failure";
 // Dialogs: new task / sandbox / orchestrator, review, close task, and a
 // generic confirm. Each dialog mounts its form only while open, so every
 // opening starts from a clean form and fetches only what it needs.
@@ -237,6 +238,8 @@ export function NewTaskForm({
   const testTask = experimental_useRpcMutation({ contract: rpcContract, method: "startTestTask" });
   const { openTask } = useCloudAgentsNavigation();
 
+  const [providerFailure,setProviderFailure] = useState<{code:string;message:string}|null>(null);
+  const checkProviders=experimental_useRpcMutation({contract:rpcContract,method:"checkSandboxProviders"});
   const [starter, setStarter] = useState<StarterId | null>(null);
   const [chosenProject, setChosenProject] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -355,8 +358,9 @@ export function NewTaskForm({
     }, 0);
   };
 
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const submit = async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    setProviderFailure(null);
     if (!canSubmit) return;
     try {
       if (testing) {
@@ -396,12 +400,14 @@ export function NewTaskForm({
       onDone();
       openTask(task.id);
     } catch (error) {
+      const info=rpcErrorInfo(error);setProviderFailure({code:info.code ?? "provider_failed",message:info.message});
       showError(error);
     }
   };
 
   return (
     <form onSubmit={submit} className="@container grid gap-4">
+      {providerFailure && <ProviderFailureCard failure={{code:providerFailure.code,provider:project?.sandboxProvider ?? "boat",mac:project?.sandboxSystem==="macos",released:false,canRetry:!["creation_unknown","creation_allocated"].includes(providerFailure.code)}} message={providerFailure.message} onCheck={()=>void checkProviders.mutate(null).catch(showError)} onRetry={()=>void submit()} busy={start.isPending || checkProviders.isPending}/>}
       {layout === "dialog" ? (
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>

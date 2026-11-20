@@ -21,8 +21,8 @@ export function dayTime(iso: string, now: number): string | null {
   const at = Date.parse(iso);
   if (!Number.isFinite(at)) return null;
   const date = new Date(at);
-  const day = Math.abs(at - now) > 6 * 86_400_000 ? date.toLocaleDateString([], { month: "short", day: "numeric" }) : date.toLocaleDateString([], { weekday: "short" });
-  return `${day} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  const day = Math.abs(at - now) > 6 * 86_400_000 ? date.toLocaleDateString("en-US", { month: "short", day: "numeric" }) : date.toLocaleDateString("en-US", { weekday: "short" });
+  return `${day} ${date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
 /** "resets Thu 01:00", or "reset was due Thu 01:00" when the reading is older than its reset. */

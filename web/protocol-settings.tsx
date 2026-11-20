@@ -202,10 +202,10 @@ export function ProtocolEditor() {
             )}
           >
             {over > 0
-              ? `${over.toLocaleString()} characters over the limit`
+              ? `${over.toLocaleString("en-US")} characters over the limit`
               : empty
                 ? "The protocol can't be empty"
-                : `${text.length.toLocaleString()} / ${data.maxChars.toLocaleString()} characters`}
+                : `${text.length.toLocaleString("en-US")} / ${data.maxChars.toLocaleString("en-US")} characters`}
           </p>
           {dirty ? (
             <Button type="button" variant="ghost" size="sm" className="h-7" onClick={() => setDraft(null)}>

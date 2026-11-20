@@ -5,7 +5,7 @@ import type { PluginAgentToolResult } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { MACHINE_TYPES, ProviderError, type MachineType } from "./providers/types.ts";
 import { describeClose } from "./close-outcome.ts";
-import { agentLine, ago, decisionLines, limitsLine, overviewLink, taskDetail, taskNote, taskTable, tasksAtOnceLine, queuedStartMarker } from "./format.ts";
+import { agentLine, ago, decisionLines, limitsLine, overviewLink, taskDetail, taskNote, taskTable, tasksAtOnceLine, queuedStartMarker, taskMarker } from "./format.ts";
 import { parseProjectRef, type Runtime } from "./runtime.ts";
 import { TaskError } from "./service.ts";
 import { OPEN_STATUSES, PROVIDERS, TASK_ROLES, TASK_STATUSES, type Provider, type Task, type TaskStatus } from "./store.ts";
@@ -45,7 +45,9 @@ function failure(error: unknown): PluginAgentToolResult {
           ? error.message
           : String(error);
   // Never an empty failure: say at least what kind of error it was.
-  const text = message.trim() !== "" ? message : `The call failed without a reason (${error instanceof Error ? error.name : typeof error}). Run \`bb boat status\` and try again.`;
+  let text = message.trim() !== "" ? message : `The call failed without a reason (${error instanceof Error ? error.name : typeof error}). Run \`bb boat status\` and try again.`;
+  const taskId=(error as {taskId?:unknown} | null)?.taskId;
+  if(typeof taskId==="string" && /^t_[a-z0-9]+$/i.test(taskId))text+=`\nShow this returned live card once:\n${taskMarker("problem",taskId)}`;
   return { content: [{ type: "text", text }], isError: true };
 }
 

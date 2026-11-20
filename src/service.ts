@@ -1,3 +1,4 @@
+import { providerFailureCard } from "../provider-failure.ts";
 import { canHostMac, macTaskResources } from "./providers/types.ts";
 import type { MacLease, MacWorkOutcome } from "./mac-leases.ts";
 import { reviewerSchema, type Reviewer } from "../contract-review.ts";
@@ -686,6 +687,11 @@ export class BoatService {
   private readonly settlingReviews = new Set<string>();
 
   publicStatus(task: Task, context: StatusContext = {}): TaskPublicStatus {
+    if (task.status==="failed" && task.turns===0 && ["instabox","scaleway"].includes(task.sandboxProvider ?? "")) {
+      const code=this.store.history({taskId:task.id,limit:30}).events.find(e=>e.kind==="stopped" && e.cause)?.cause ?? "provider_failed";
+      const card=providerFailureCard({code,provider:task.sandboxProvider!,mac:task.sandboxSystem==="macos",released:false,canRetry:false},task.error ?? "");
+      if(card) return {status:card.tone==="owner" ? "needs-you" : card.tone==="neutral" ? "stopped" : "broken",label:card.title,tone:card.tone==="owner" ? "attention" : card.tone==="neutral" ? "neutral" : "danger",reason:card.body,needsYou:card.tone!=="neutral",moving:false};
+    }
     if (task.status === "done" && this.isNativeChat(task) && this.store.latestEvent(task.id, "shipped") === null && this.store.latestEvent(task.id, "merged") === null) return {
       status: "stopped", label: "Closed", tone: "neutral", reason: "Closed without shipping.", needsYou: false, moving: false,
     };
@@ -1461,12 +1467,8 @@ export class BoatService {
     // anything is created (a sandbox the setup can't use would cost a start).
     // A review that reuses its task's sandbox needs no start; when it may
     // still get a new one, createSandbox checks the plan right before.
-    if (this.hooks.preflight && sandboxSystem !== "macos") {
+    if (this.hooks.preflight && sandboxSystem !== "macos" && sandboxProvider.id !== "instabox") {
       await this.hooks.preflight({ agent: provider, runner, environment, newSandbox: surelyNewSandbox(input, parent, settings), ...(sandboxProvider.id === DEFAULT_PROVIDER_ID ? {} : { provider: sandboxProvider.id }) });
-    }
-    const credentialWarnings: string[] = [];
-    if (sandboxSystem !== "macos" && sandboxProvider.id === "instabox") {
-      await sandboxProvider.assertTaskReady?.({ agent: provider, repos: [repo, ...extraRepos.map(entry => entry.repo)].filter((value): value is string => value !== null), signal: input.signal, onWarning: message => credentialWarnings.push(message) });
     }
     // Headless because the rules don't trust the repo (asked for or not): the Untrusted repo badge.
     const ruled = runner === "boat" && ruleRunner === "boat" && this.hooks.chat !== undefined && settings.workerMode === "chat";
@@ -1601,7 +1603,6 @@ export class BoatService {
     if (paidFallback) this.store.addEvent(task.id, "paid-fallback-authorized", "Automatic Claude extra usage authorized by the saved fallback policy after included allowances reached the cutoff. Claude's billing controls apply; no euro balance is available to Boat.");
     if (input.nativeReview) this.store.addEvent(id, "native-review-source", JSON.stringify(input.nativeReview.source));
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
-    for (const warning of credentialWarnings) this.store.addEvent(id, "preflight-warning", warning);
     if (input.measureMemory) this.sizes.watch(id); // sizes
     if (agentNote !== null) this.store.addEvent(id, "agent", agentNote);
     if (relayNote !== null) this.store.addEvent(id, "relay", relayNote);
@@ -1916,6 +1917,10 @@ export class BoatService {
     };
     try {
       stillWanted();
+      if (task.sandboxProvider === "instabox" && task.sandboxSystem !== "macos") {
+        await this.hooks.preflight?.({agent:provider,runner:task.runner,environment:task.environment,newSandbox:surelyNewSandbox(input,parent,settings),provider:"instabox"});
+        await this.sandboxProvider(task).assertTaskReady?.({agent:provider,repos:[task.repo,...task.extraRepos.map(r=>r.repo)].filter((r):r is string=>r!==null),signal,onWarning:message=>this.store.addEvent(id,"preflight-warning",message)});
+      }
       // 1. Sandbox: reuse or create.
       let reuse: string | null = null;
       let sandbox!: Sandbox;
@@ -2192,11 +2197,15 @@ export class BoatService {
       const message = errorText(failure);
       if (task.runner === "boat" && settings.relay.paidClaudeFallback && settings.relay.paidClaudeHeadless && USAGE_LIMIT_PATTERN.test(message)) await this.hooks.usageRefused?.(provider);
       this.store.transition(id, ["starting"], { status: "failed", error: clip(message, 4000), finishedAt: new Date().toISOString() });
-      this.store.addEvent(id, "failed", message, transient ? { source: "system", cause: "bootstrap_retryable", detail: `npm ${transient.code}; ${transient.attempts} installation attempts; no agent started` } : {});
+      this.store.addEvent(id, "failed", message, transient ? { source: "system", cause: "bootstrap_retryable", detail: `npm ${transient.code}; ${transient.attempts} installation attempts; no agent started` } : task.sandboxProvider && task.sandboxProvider!==DEFAULT_PROVIDER_ID ? {source:"system",cause:(failure as {code?:string}).code ?? "provider_failed"} : {});
       this.hooks.changed([id]);
       // Do not leave a fresh sandbox behind when setup failed.
       release();
       await this.discardNew(id, createdSandbox, createdHost);
+      if (task.sandboxProvider && task.sandboxProvider !== DEFAULT_PROVIDER_ID && failure instanceof Error) {
+        // Preserve the provider's error type/code while tools can return the live card.
+        Object.defineProperty(failure,"taskId",{value:id,configurable:true});
+      }
       throw failure;
     } finally {
       if (createdSandbox) this.macPreparing.delete(createdSandbox);
@@ -2535,6 +2544,7 @@ export class BoatService {
 
   private async createMacFor(task: Task, type: MachineType, signal: AbortSignal, unlisted = new Set<string>()): Promise<Sandbox> {
     const failures: string[] = [];
+    let primaryCode: string | undefined;
     for (const provider of this.macProviders(task.sandboxProvider ?? DEFAULT_PROVIDER_ID)) {
       signal.throwIfAborted();
       try {
@@ -2552,11 +2562,12 @@ export class BoatService {
       } catch (error) {
         const code = (error as { code?: string }).code;
         if (signal.aborted || code === "creation_unknown" || code === "creation_allocated") throw error;
+        if (!primaryCode || primaryCode==="provider_unavailable") primaryCode=code;
         failures.push(`${provider.displayName}: ${errorText(error)}`);
         this.store.addEvent(task.id, "sandbox-provider", `${provider.displayName} Mac unavailable; trying the other day-lease provider. ${errorText(error)}`);
       }
     }
-    throw new TaskError(`No Mac day-lease provider is available. ${failures.join(" ")}`, "provider_unavailable");
+    throw new TaskError(`No Mac day-lease provider is available. ${failures.join(" ")}`, primaryCode ?? "provider_unavailable");
   }
 
   private async keepMacLease(lease: MacLease, signal?: AbortSignal): Promise<void> {
@@ -2603,14 +2614,14 @@ export class BoatService {
     const money = (amount: number) => new Intl.NumberFormat("en-US",{style:"currency",currency:lease.currency}).format(amount);
     const cost = money(this.store.macLeases.cost(lease,now));
     const rate = money(lease.hourPrice);
-    const time = new Intl.DateTimeFormat(undefined,{hour:"2-digit",minute:"2-digit",timeZoneName:"short"}).format(new Date(lease.paidUntil));
+    const time = new Intl.DateTimeFormat("en-US",{hour:"2-digit",minute:"2-digit",hourCycle:"h23",timeZoneName:"short"}).format(new Date(lease.paidUntil));
     const billing = lease.billingIncrementSeconds === 3600 ? "hourly" : "per second";
     const text = kept === "unknown"
-      ? `[boat] Mac unshipped work could not be checked; compute cost ${cost} so far; ${rate}/h after the minimum. Resume it to check its work before hand-back.`
+      ? `[boat] Mac unshipped work could not be checked; compute cost ${cost} so far; ${rate} / h after the minimum. Run \`bb boat sandbox resume ${lease.machineId}\` to check its work before hand-back.`
       : kept
-      ? `[boat] Mac lease is kept; compute cost ${cost} so far; ${rate}/h billed ${billing} after the minimum. Automatic hand-back is off; delete it manually when its work is safe.`
+      ? `[boat] Mac lease is kept; compute cost ${cost} so far; ${rate} / h billed ${billing} after the minimum. Automatic hand-back is off; delete it manually when its work is safe.`
       : `[boat] Mac lease's paid time ${pastMinimum ? "ended" : "ends"} at ${time}; after that it bills ${billing} while tasks ${tasks.map(t=>t.id).join(", ")} sit idle; compute cost ${cost} so far; close them to hand it back`;
-    if (!this.store.macLeases.warn(lease.id,now,pastMinimum,pageNotice ? text : null)) return;
+    if (!this.store.macLeases.warn(lease.id,now,pastMinimum,pageNotice ? text : null)) { if(pageNotice && text!==lease.noticeText)this.hooks.changed([]); return; }
     this.hooks.changed([]);
     if (this.hooks.tell) for (const thread of threads) await this.hooks.tell(thread,text);
   }
@@ -2650,9 +2661,10 @@ export class BoatService {
             const threshold = (settings.macIdleNoticeMinutes ?? 60)*60_000;
             if (open.every(t => t.status !== "running" && t.status !== "starting" && now-Date.parse(t.updatedAt) >= threshold) && !(await this.sandboxWorkRuns(lease.machineId))) {
               await this.macLeaseNotice(lease,open,now,false);
-            }
+            } else { if(this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
             continue; // All open tasks, including failed/unpushed work, are protected.
           }
+          { if(this.store.macLeases.clearNotice(lease.id))this.hooks.changed([]); }
           if (this.holdsSandbox(lease.machineId) || await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;
           const current = await provider.findInfo(lease.machineId, this.hooks.lifecycle);
           if (await this.machineBusy(this.store.sandboxTasks(lease.machineId))) continue;

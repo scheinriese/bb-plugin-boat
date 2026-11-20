@@ -1,3 +1,4 @@
+import { TaskProviderFailure } from "./provider-failure";
 // One task: header, metadata, actions, Report / Transcript / Brief / History
 // tabs, and a sticky follow-up box.
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
@@ -286,7 +287,7 @@ function TaskMeta({ task, link }: { task: TaskDetailDto; link: SandboxLinkState 
         </MetaRow>
       </dl>
       {/* Out of memory: the size panel below says it, with what to do. */}
-      {task.error && !task.memory?.oom ? <InlineAlert>{task.error}</InlineAlert> : null}
+      {task.providerFailure ? <TaskProviderFailure task={task}/> : task.error && !task.memory?.oom ? <InlineAlert>{task.error}</InlineAlert> : null}
     </div>
   );
 }

@@ -1,3 +1,5 @@
+import { TaskProviderFailure } from "./provider-failure";
+import { providerFailureCard } from "../provider-failure";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   UrlLink,
@@ -167,6 +169,7 @@ function TaskCard({
       </Notice>
     );
   const task = data.task;
+  if (task.providerFailure && providerFailureCard(task.providerFailure,task.error ?? "") && kind !== "chip") return <TaskProviderFailure task={task}/>;
   if (kind === "chip") return <TaskChip task={task} />;
   if (kind === "review") return <ReviewCard task={task} round={Number(props.attributes.round) || undefined} />;
   if (kind === "ready") return <ReadyCard task={task} />;

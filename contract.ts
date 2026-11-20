@@ -341,6 +341,7 @@ export const taskSchema = z.object({
   parentTaskId: z.string().nullable(),
   prUrl: z.string().nullable(),
   error: z.string().nullable(),
+  providerFailure: z.object({code:z.string(),provider:z.string(),mac:z.boolean(),released:z.boolean(),canRetry:z.boolean()}).optional(),
   turns: z.number(),
   ownsSandbox: z.boolean(),
   createdAt: z.string(),
@@ -795,6 +796,7 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.union([launchResult, z.object({ queued: queuedStartSchema, pending: z.literal(true) })]),
   },
+  retryProviderStart: { input: z.object({id:z.string()}), output: z.union([launchResult,z.object({queued:queuedStartSchema,pending:z.literal(true)})]) },
   review: {
     input: z.object({
       id: z.string(),

@@ -1349,3 +1349,76 @@ echo 'true true'
   assert.match(run(true, false), /BOAT_ACCESS expired/);
   assert.equal(readFileSync(counter, "utf8"), "1", "other providers retain one attempt");
 });
+
+test("setup presentation uses live allowance and period, and Check again invalidates GitHub metadata",async t=>{
+ const f=await instabox(t,{state:{cost:{costUSD:6.4,allowanceUSD:20,creditRemainingUSD:13.6,periodStart:"2026-11-01T00:00:00Z",periodEnd:"2026-12-01T00:00:00Z"}}});
+ const first=await f.provider.presentation!();
+ assert.deepEqual(first.steps.map(s=>s.done),[true,true,true,true,true]);
+ assert.deepEqual([first.linuxUsage?.used,first.linuxUsage?.credit,first.linuxUsage?.remaining,first.linuxUsage?.resetsAt],[6.4,20,13.6,"2026-12-01T00:00:00Z"]);
+ f.setState({secrets:[]});
+ assert.equal((await f.provider.presentation!()).steps[3]!.done,true,"ordinary read uses the minute cache");
+ assert.equal((await f.provider.presentation!({force:true})).steps[3]!.done,false,"Check again reads metadata now");
+ assert.doesNotMatch(JSON.stringify(first),new RegExp(KEY));
+ assert.equal(f.state().calls.some((c:string)=>c.startsWith("create ")),false);
+});
+test("setup detects a rejected key and unavailable metadata without showing key values",async t=>{
+ const f=await instabox(t,{key:"ibk_obviously_fake_rejected"});
+ const reading=await f.provider.presentation!();
+ assert.equal(reading.steps[1]!.done,false);assert.match(reading.steps[1]!.detail,/rejected the key/);
+ assert.equal(reading.steps[2]!.done,false);assert.equal(reading.steps[3]!.done,false);
+ assert.doesNotMatch(JSON.stringify(reading),/ibk_obviously/);
+});
+test("off-provider setup checks stored key and CLI without enabling or renting",async t=>{
+ const f=await instabox(t);
+ const provider=createInstaboxProvider(f.cli,f.rest,{enabled:()=>false,keyPresent:()=>false});
+ const reading=await provider.presentation!();
+ assert.deepEqual(reading.steps.map(s=>s.done),[true,false,false,false,false]);
+ assert.equal(f.state().calls?.length ?? 0,0);
+});
+test("a blocked GitHub start records a real cause for its card and never rents",async t=>{
+ const f=await instabox(t,{state:{secrets:[]}}),store=memoryStore();
+ const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi),f.provider]),store,hooks({projects:()=>[WEB]}).hooks);
+ await assert.rejects(service.startTask({title:"Blocked fixture task",role:"custom",brief:"Read the repo",repo:"acme/web",project:toOrchestratorProject(normalizeProject(WEB))}),/GitHub/);
+ const task=store.list({limit:1})[0]!;assert.equal(task.status,"failed");assert.equal(task.sandboxId,null);
+ const event=store.history({taskId:task.id}).events.find(e=>e.kind==="stopped")!;
+ assert.equal(event.cause,"setup_required");assert.equal(service.publicStatus(task).needsYou,true);
+ assert.equal(f.state().calls.some((c:string)=>c.startsWith("create ")),false);
+});
+
+test("retrying a blocked provider start preserves its project and refuses concurrent or ambiguous rentals",async t=>{
+ const f=await instabox(t,{state:{secrets:[]}}),store=memoryStore();
+ const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi),f.provider]),store,hooks({projects:()=>[WEB]}).hooks);
+ const project=toOrchestratorProject(normalizeProject(WEB));
+ await assert.rejects(service.startTask({title:"Blocked retry fixture",role:"custom",brief:"Read repo",repo:"acme/web",project}),/GitHub/);
+ const original=store.list({limit:1})[0]!;
+ const {createTestHost}=await import("./fakes.ts"),{registerRpc}=await import("../src/rpc.ts");
+ const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:"/fake/boat"}});t.after(()=>harness.lifecycle.dispose());
+ let release!:()=>void,entered!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;}),started=new Promise<void>(resolve=>{entered=resolve;});
+ const runtime={bb,service,settings:{},projects:{},changed:()=>{},wake:()=>{},launchWaitMs:10000,resolveProject:async(ref:{id:string})=>{assert.equal(ref.id,original.boatProject);return project;},launchTask:async(input:import("../src/service.ts").StartTaskInput)=>{entered();await gate;return {kind:"started",...await service.launchTask(input,10000)};}};
+ registerRpc(runtime as unknown as import("../src/runtime.ts").Runtime);
+ f.setState({secrets:[{name:"GH_TOKEN",delivery:"proxy",hosts:["github.com","api.github.com"]}]});await f.provider.presentation!({force:true});
+ const first=harness.callRpc("retryProviderStart",{id:original.id});await started;
+ await assert.rejects(harness.callRpc("retryProviderStart",{id:original.id}),/Check the provider machine list/);
+ release();const result=await first as {task:{id:string;runsOn:RunsOnDto}};
+ assert.equal(result.task.runsOn.provider,"instabox");assert.equal(store.get(original.id)!.status,"cancelled");
+ await assert.rejects(harness.callRpc("retryProviderStart",{id:original.id}),/Check the provider machine list/);
+ const replacement=store.get(result.task.id)!;assert.equal(replacement.boatProject,original.boatProject);
+ store.update(replacement.id,{status:"failed"});store.addEvent(replacement.id,"failed","Unknown allocation",{cause:"creation_unknown"});
+ const before=f.state().calls.filter((c:string)=>c.startsWith("create ")).length;
+ await assert.rejects(harness.callRpc("retryProviderStart",{id:replacement.id}),/Check the provider machine list/);
+ assert.equal(f.state().calls.filter((c:string)=>c.startsWith("create ")).length,before);
+});
+
+test("a failed provider dispatch returns the real task's live blocked card to the orchestrator",async t=>{
+ const f=await instabox(t,{state:{secrets:[]}}),store=memoryStore();
+ const service=new BoatService(createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi),f.provider]),store,hooks({projects:()=>[WEB]}).hooks);
+ const {createTestHost}=await import("./fakes.ts"),{registerTools}=await import("../src/tools.ts");
+ const {bb,harness}=await createTestHost({pluginId:"boat",settings:{boatPath:"/fake/boat"}});t.after(()=>harness.lifecycle.dispose());
+ const project=toOrchestratorProject(normalizeProject(WEB));
+ registerTools({bb,service,projectForThread:async()=>project,launchWaitMs:10000,launchTask:async(input:import("../src/service.ts").StartTaskInput)=>({kind:"started",...await service.launchTask(input,10000)})} as unknown as import("../src/runtime.ts").Runtime);
+ const result=await harness.callAgentTool("boat_dispatch",{title:"Blocked tool fixture",brief:"Read repo",role:"custom",tier:"light",reason:"Fixture provider check"});
+ const id=store.list({limit:1})[0]!.id;
+ assert.equal(typeof result,"object");assert.ok(JSON.stringify(result).includes("boat-problem"));assert.ok(JSON.stringify(result).includes(id));
+ assert.equal(store.get(id)!.sandboxId,null);
+});

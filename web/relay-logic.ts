@@ -13,8 +13,8 @@ export function selectHandoffEvent(events:readonly HistoryEventDto[],seq?:string
 export interface ClaudeExtraUsageView {status:'allowed'|'rejected'|'disabled'|'unknown';observedAt:number|null;pool:'on'|'off'|'not-routing'}
 /** "14:02", or "Nov 16 14:02" when it's older than most of a day. */
 export function checkedAt(at:number,now:number):string{
- const time=new Date(at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
- return now-at>=20*3600_000?`${new Date(at).toLocaleDateString([],{month:'short',day:'numeric'})} ${time}`:time;
+ const time=new Date(at).toLocaleTimeString("en-US",{hour:'2-digit',minute:'2-digit'});
+ return now-at>=20*3600_000?`${new Date(at).toLocaleDateString("en-US",{month:'short',day:'numeric'})} ${time}`:time;
 }
 /**
  * The real state of Claude extra usage, never "permitted when available":

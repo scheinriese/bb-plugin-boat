@@ -143,3 +143,9 @@ Its default preserves Instabox's elapsed-time rate. Scaleway supplies 3600: a
 [Scaleway setup and sources](scaleway-mac-leases.md). The increment column is
 added after the existing main migrations, preserving held Instabox leases and
 their elapsed-time billing on upgrade.
+
+The Usage table and footer show each Mac provider separately: paid minimum, per-second or hourly billing after the minimum, release scheduled, or kept with hand-back off. Task lines use the same paid-until words and rates. No monthly-price recommendation or break-even marker is shown without a live monthly-price source.
+
+A paused Mac whose unshipped work cannot be verified names `bb boat sandbox resume <id>` in its notice. Page notice text clears when work resumes or the lease is released, while reminder delivery stays limited to once per day. Scaleway listings and orphan checks only read; ownership recovery and IAM-key cleanup run in the maintenance sweep (or the explicit recovery command).
+
+A failed start does not prove a Mac was released. Cards only claim release when the ledger confirms it, keep ambiguous allocations out of automatic retries, and warn that the provider's minimum may still apply. `no_capacity` has no scheduled retry; **Try now** is an explicit retry.

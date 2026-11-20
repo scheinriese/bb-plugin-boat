@@ -118,7 +118,7 @@ export default async function plugin(bb: BbPluginApi) {
   const providerSecrets = await defineProviderSecrets(bb);
   const instaboxCli = new InstaboxCli(async () => resolveInstaboxBinary((await settings.get()).instaboxPath), () => providerSecrets.instaboxKey());
   const instaboxRest = new InstaboxRest({ key: () => providerSecrets.instaboxKey() });
-  const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases, secrets: async () => (await settings.get()).instaboxSecrets });
+  const instabox = createInstaboxProvider(instaboxCli, instaboxRest, { ledger: store.macLeases, enabled: () => instaboxOn, keyPresent: () => providerSecrets.instaboxKeyPresent(), secrets: async () => (await settings.get()).instaboxSecrets });
   const scaleway = createScalewayProvider({ api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(dirname(bb.storage.database().name), "scaleway-keys")), ledger: store.macLeases });
   let scalewayOn = Boolean((await settings.get()).scalewayProjectId);
   settings.onChange(() => { void settings.get().then(values => { scalewayOn = Boolean(values.scalewayProjectId); }); });
@@ -982,6 +982,10 @@ export default async function plugin(bb: BbPluginApi) {
           await keepSandboxesOn();
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        for (const provider of sandboxProviders.enabled) {
+          try { await provider.recoverCreations?.(lifecycle.signal); }
+          catch (error) { bb.log.warn(`${provider.displayName} recovery: ${error instanceof Error ? error.message : String(error)}`); }
         }
         await maintainLeasesAndKeepAwake({
           hasMacLeases: () => store.macLeases.held().length > 0,

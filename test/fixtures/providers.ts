@@ -16,7 +16,7 @@ export const BOAT_CONNECTED: SandboxProviderDto = {
   enabled: true,
   connection: "connected",
   meta: null,
-  summary: "Linux · Standard plan · 475 h left this month",
+  summary: "Linux · Standard plan · 475 h left",
   pricing: null,
   systems: [],
   apiKey: null,
@@ -24,7 +24,7 @@ export const BOAT_CONNECTED: SandboxProviderDto = {
 };
 
 /** Plain words: production has no amounts. */
-const INSTABOX_SUMMARY = "Linux microVMs billed per second.";
+const INSTABOX_SUMMARY = "Linux microVMs billed per second. Macs: 24 h minimum, then per second.";
 /** As a connected Instabox provider might state its prices (test and scene data only). */
 const INSTABOX_PRICING = "Mac VMs lease for at least 24 h: M2 $10.80, M4 $18 a day.";
 
@@ -67,7 +67,7 @@ export const INSTABOX_NOT_CONNECTED: SandboxProviderDto = {
 
 export const SCALEWAY_NOT_CONNECTED: SandboxProviderDto = {
   id: "scaleway", label: "Scaleway", kind: "cloud", isDefault: false, available: true, enabled: false,
-  connection: "key-missing", meta: null, summary: "Paris Apple silicon · 24 h minimum, then hourly. New task rentals are blocked until credentials can be provisioned.",
+  connection: "key-missing", meta: null, summary: "Whole Mac minis. 24 h minimum, then hourly. Prices in EUR.",
   pricing: null, systems: [{ os: "macos", label: "Mac", note: null, ready: false }], apiKey: { setting: null }, status: null,
 };
 

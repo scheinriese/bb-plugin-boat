@@ -80,13 +80,19 @@ export async function providerStates(deps: ProviderStatusDeps, options: { force?
           checks: status?.checks.map(check) ?? [],
         };
       }
+      if (provider.id === "scaleway" && provider.presentation) {
+        const presentation = await provider.presentation().catch(() => null);
+        const missing = presentation?.steps.find(step=>step.possible && !step.done);
+        const orphans = missing ? undefined : await provider.orphans?.(AbortSignal.timeout(10_000)).catch(()=>undefined);
+        return {...base(provider),orphans,turnedOn:presentation?.steps.find(step=>step.id==="project")?.done ?? false,keyPresent:null,status:"setup-required",checks:[],problem:missing?.detail ?? "Held Macs only; logins on fresh Macs are not possible yet."};
+      }
       if (enabled.has(provider.id) && provider.orphans) {
         try {
           const orphans = await provider.orphans(AbortSignal.timeout(10_000));
-          return { ...base(provider), turnedOn: true, keyPresent: null, status: "ready", checks: [], orphans,
-            problem: orphans.length ? `${orphans.length} orphan server(s) have no local ownership record. They are not managed; inspect them in the provider console.` : null };
-        } catch {
-          return { ...base(provider), turnedOn: true, keyPresent: null, status: "unknown", problem: "Could not check provider ownership records.", checks: [] };
+          return { ...base(provider), turnedOn: true, keyPresent: null, status: provider.id === "scaleway" ? "setup-required" : "ready", checks: [], orphans,
+            problem: provider.id === "scaleway" ? "Held Macs only; logins on fresh Macs are not possible yet." : orphans.length ? `${orphans.length} orphan server(s) have no local ownership record. They are not managed; inspect them in the provider console.` : null };
+        } catch (error) {
+          return { ...base(provider), turnedOn: true, keyPresent: null, status: "unknown", problem: provider.id === "scaleway" ? ((error as {code?:string}).code === "key_missing" ? "Add the Scaleway secret key in bb secrets." : (error as {code?:string}).code === "provider_unavailable" ? "Set a valid Scaleway project ID and Paris zone in Boat settings." : "Check the Scaleway secret key and project access.") : "Could not check provider ownership records.", checks: [] };
         }
       }
       return { ...base(provider), turnedOn: false, keyPresent: null, status: "off", problem: null, checks: [] };

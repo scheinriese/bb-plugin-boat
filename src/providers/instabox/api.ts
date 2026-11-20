@@ -193,6 +193,27 @@ export class InstaboxRest {
     }
   }
 
+  /** Complete provider period, including deleted Linux machines when their OS is known. */
+  async linuxHours(knownLinux:ReadonlySet<string>, knownMac:ReadonlySet<string>, signal?:AbortSignal):Promise<number|null> {
+    let total=0;
+    for(let offset=0;offset<1000;offset+=100){
+      const record=await this.json("GET",`/v1/usage/machines?limit=100&offset=${offset}`,{signal});
+      if(!Array.isArray(record.machines) || num(record.total)===null)return null;
+      for(const value of record.machines){const row=rec(value),id=str(row?.id);if(id && knownMac.has(id))continue;if(!id || !knownLinux.has(id) || num(row?.runningSeconds)===null)return null;total+=num(row?.runningSeconds)!/3600;}
+      if(offset+record.machines.length>=num(record.total)!)return total;
+      if(record.machines.length===0)return null;
+    }
+    return null;
+  }
+  /** List-price compute for one machine, in a provider-rated window. */
+  async computeCost(machineId: string, window: {since?:string;until?:string}, signal?: AbortSignal): Promise<number | null> {
+    const query=new URLSearchParams({q:machineId,limit:"100"});
+    if(window.since)query.set("from",window.since);
+    if(window.until)query.set("to",window.until);
+    const record=await this.json("GET",`/v1/usage/machines?${query}`,{signal});
+    const rows=Array.isArray(record.machines) ? record.machines : [];
+    return num(rec(rows.find(row=>rec(row)?.id===machineId))?.computeUSD);
+  }
   /** A machine's running seconds over a window (default: this month). */
   async machineUsage(machineId: string, window: { since?: string; until?: string } = {}, signal?: AbortSignal): Promise<{ runningSeconds: number | null; from: string | null; to: string | null }> {
     const query = new URLSearchParams();

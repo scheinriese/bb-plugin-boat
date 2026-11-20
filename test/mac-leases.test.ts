@@ -91,7 +91,7 @@ test("close outcomes and page notices persist together with the reminder throttl
   assert.equal(attached.workOutcome,"shipped");assert.equal(attached.workTurns,2);
   assert.equal(restarted.held()[0]!.noticeText,"[boat] Compute cost $10.80");
   assert.equal(restarted.warn(lease.id,at+LEASE_DAY_MS+1,true,"too soon"),false);
-  assert.equal(restarted.held()[0]!.noticeText,"[boat] Compute cost $10.80");
+  assert.equal(restarted.held()[0]!.noticeText,"too soon", "page text updates even while delivery is throttled");
 });
 test("Mac lines batch their reads and format local instants with singular lease-day", () => {
   const {ledger,db}=fixture(); const lease=record(ledger);
@@ -100,7 +100,7 @@ test("Mac lines batch their reads and format local instants with singular lease-
   const view=macRunsOnBatch(new MacLeaseLedger(()=>counting).snapshot(),[]);
   for(let i=0;i<50;i++)view("m_1","t_2");assert.equal(reads,2);
   const task=view("m_1","t_2")!;assert.equal(task.lease?.shared,true);
-  assert.match(runsOnNote(task,at,"en-GB","America/Los_Angeles")!,/same lease, paid until Sun 16:00/);
+  assert.match(runsOnNote(task,at,"en-GB","America/Los_Angeles")!,/same Mac, paid until Sun 16:00/);
   assert.match(runsOnNote(task,at,"en-GB","Asia/Tokyo")!,/Mon 09:00/);
   assert.equal(formatLeaseDays(1,"en-US"),"1 lease-day");assert.equal(formatLeaseDays(1.0001,"en-US"),"1 lease-day");assert.equal(formatLeaseDays(1.25,"en-US"),"1.25 lease-days");
 });

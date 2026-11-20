@@ -40,7 +40,7 @@ export const runsOnSchema = z.object({
    */
   detail: z.string().nullable(),
   leaseCost: z.string().optional(),
-  lease: z.object({ paidUntil: z.string(), endedAt: z.string().nullable(), shared: z.boolean(), kept: z.boolean(), releaseAt: z.string().nullable() }).optional(),
+  lease: z.object({ paidUntil: z.string(), endedAt: z.string().nullable(), shared: z.boolean(), kept: z.boolean(), releaseAt: z.string().nullable(), hourPrice: z.number().optional(), currency: z.string().optional(), billingIncrementSeconds:z.number().optional() }).optional(),
   sharedTasks: z.number().int().nonnegative().optional(),
 });
 export type RunsOnDto = z.infer<typeof runsOnSchema>;
@@ -55,6 +55,19 @@ export const providerSystemSchema = z.object({
   note: z.string().nullable(),
 });
 export type ProviderSystemDto = z.infer<typeof providerSystemSchema>;
+
+export const providerStepSchema = z.object({
+  id: z.string(), label: z.string(), done: z.boolean(), detail: z.string(),
+  possible: z.boolean().default(true),
+});
+export type ProviderStepDto = z.infer<typeof providerStepSchema>;
+export const linuxUsageSchema = z.object({
+  plan: z.string().nullable(), used: z.number().nullable(), credit: z.number().nullable(),
+  remaining: z.number().nullable(), resetsAt: z.string().nullable(), hours: z.number().nullable(),
+  active: z.number().nullable(), error: z.string().nullable(),
+  accountCredit: z.boolean().optional(),
+});
+export type LinuxUsageDto = z.infer<typeof linuxUsageSchema>;
 
 /** One row of Settings › Sandbox providers. */
 export const sandboxProviderSchema = z.object({
@@ -85,6 +98,9 @@ export const sandboxProviderSchema = z.object({
   apiKey: z.object({ setting: z.string().nullable() }).nullable(),
   /** Status words when the connection alone doesn't say it ("Awake · on power", "Not available yet"); null: the connection's own. */
   status: z.string().nullable(),
+  steps: z.array(providerStepSchema).optional(),
+  linuxUsage: linuxUsageSchema.optional(),
+  waitingTasks: z.number().optional(),
 });
 export type SandboxProviderDto = z.infer<typeof sandboxProviderSchema>;
 
@@ -120,22 +136,25 @@ export const sandboxProvidersResultSchema = z.object({
 });
 export type SandboxProvidersResultDto = z.infer<typeof sandboxProvidersResultSchema>;
 
-const macUsageWindowSchema = z.object({ leaseDays: z.number(), costs: z.record(z.string(),z.number()) });
+export const macUsageWindowSchema = z.object({ leaseDays: z.number(), costs: z.record(z.string(),z.number()) });
 export const macUsageSchema = z.object({
   month: macUsageWindowSchema, rolling30: macUsageWindowSchema,
+  byProvider: z.array(z.object({ id: z.string(), label: z.string(), month: macUsageWindowSchema, rolling30: macUsageWindowSchema })).optional(),
+  today: z.record(z.string(),z.number()).optional(),
   providers: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
   notices: z.array(z.object({ id: z.string(), provider: z.string(), label: z.string(), machineId: z.string(), at: z.string(), text: z.string() })).optional(),
   held: z.array(z.object({ provider: z.string().optional(), billingIncrementSeconds: z.number().optional(), machineId: z.string(), size: z.string(), paidUntil: z.string(), minimumCost: z.number(), hourPrice: z.number(), kept: z.boolean(), releaseAt: z.string().nullable(), currency: z.string() })),
 });
 export type MacUsageDto = z.infer<typeof macUsageSchema>;
 export const providerRpcMethods = {
-  macUsage: { input: z.null(), output: macUsageSchema, tags: () => ["boat:sandboxes", "boat:tasks"] },
+  macUsage: { input: z.object({timezoneOffsetMinutes:z.number().int().min(-840).max(840)}).nullable(), output: macUsageSchema, tags: () => ["boat:sandboxes", "boat:tasks"] },
   /** Settings › Sandbox providers and Runs on. */
   sandboxProviders: {
     input: z.null(),
     output: sandboxProvidersResultSchema,
     tags: () => [PROVIDERS_TAG, "boat:projects", "boat:setup"],
   },
+  checkSandboxProviders: { input: z.null(), output: sandboxProvidersResultSchema },
   /** Pick the provider for a project's new work (the default's id clears its own pick). Tasks already running stay where they are. */
   setProjectRunsOn: {
     input: z.object({ projectId: z.string().min(1).max(64), provider: z.string().trim().min(1).max(40) }),
