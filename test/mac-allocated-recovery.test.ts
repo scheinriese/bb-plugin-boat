@@ -173,3 +173,13 @@ test("provider-known allocation metadata survives creation_allocated without inv
   assert.equal(failed.sandboxId,null);assert.deepEqual(env.store.ownMacEventData(failed.id,"ownmac-allocation"),{machineId:"m_secondfake",provider:"instabox",leaseId:"known-fake"});
   assert.equal(env.calls.filter(call=>call==="delete").length,0);
 });
+
+test("legacy evidence cannot authorize a fresh physical lease begun after the failure",async()=>{
+  const env=await fixture();
+  env.store.addOwnMacEvent(env.failed.id,"ownmac-allocation","legacy fixture",null);
+  const failedAt=new Date(Date.now()-10_000).toISOString();env.store.update(env.failed.id,{finishedAt:failedAt});
+  const start=new Date(Date.now()-1000).toISOString(),until=new Date(Date.now()+24*3_600_000-1000).toISOString();
+  env.setMachine({mac:{...env.machine().mac!,startedAt:start,chargeUntil:until},scheduledReleaseAt:until});
+  await assert.rejects(env.service.recoverAllocatedMac(env.failed.id,env.machine().id,true),{code:"mac_recovery_refused"});
+  assert.equal(env.chat.spawns.length,0);assert.equal(env.calls.filter(call=>call==="create").length,1);
+});

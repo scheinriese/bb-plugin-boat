@@ -5457,7 +5457,7 @@ export class BoatService {
     const repoIntent=(task:Task)=>JSON.stringify(task.extraRepos.map(({repo,baseBranch})=>({repo,baseBranch})));
     if (repoIntent(source)!==repoIntent(original)) refuse("The linked task repository intent changed.");
     const quote=consent.data!;
-    const allocation=this.store.ownMacEventData(original.id,"ownmac-allocation") as {machineId?:string;provider?:string;leaseId?:string}|null;
+    const allocation=this.store.ownMacEventData(original.id,"ownmac-allocation") as {machineId?:string;provider?:string;leaseId?:string;startedAt?:string}|null;
     if (!machineId || (original.sandboxId && original.sandboxId!==machineId) || (allocation && (allocation.machineId!==machineId || allocation.provider!=="instabox"))) refuse("This machine does not match the task's recorded allocation.");
     const sourceVersion=source.updatedAt;
     let inserted=false;
@@ -5490,7 +5490,8 @@ export class BoatService {
       const mac=machine.mac;
       if (machine.id!==machineId || machine.system!=="macos" || machine.state!=="idle" || machine.health!=="ok" || machine.error || !mac) refuse("The provider did not confirm an idle healthy Mac with a current physical lease.");
       if ((!original.sandboxId && !allocation) && machine.name!==instaboxMachineName(`bb ${original.id} ${slug(original.title)}`)) refuse("The provider machine name does not bind it to this failed task.");
-      if (allocation?.leaseId && allocation.leaseId!==mac.leaseId) refuse("The physical lease identity changed.");
+      if ((allocation?.leaseId && allocation.leaseId!==mac.leaseId) || (allocation?.startedAt && Date.parse(allocation.startedAt)!==Date.parse(mac.startedAt))) refuse("The physical lease identity changed.");
+      if (Date.parse(mac.startedAt)>Date.parse(original.finishedAt ?? original.updatedAt)+1000) refuse("This physical lease began after the original allocation failure.");
       const duration=Date.parse(mac.chargeUntil)-Date.parse(mac.startedAt);
       const close=(a:number,b:number)=>Math.abs(a-b)<1e-8;
       // Recovery consumes remaining prepaid time; it cannot accept fresh terms
