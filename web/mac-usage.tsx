@@ -1,3 +1,5 @@
+import { ownMacStatusWords } from "../contract-ownmac";
+import { OwnMacDot } from "./own-mac";
 import { useState } from "react";
 import { LiveMonthlyMacCard } from "./monthly-mac";
 import type { MonthlyMacSuggestion } from "../contract-monthly-macs";
@@ -46,9 +48,9 @@ export function creditNow(usage: LinuxUsageDto): string {
     ? `${money(usage.remaining)} credit left`
     : "Usage so far";
 }
-function Sub({ children }: { children: ReactNode }) {
+function Sub({ children, wrap=false }: { children: ReactNode; wrap?:boolean }) {
   return (
-    <p className="truncate text-xs leading-4 text-[color:var(--boat-faint)]">
+    <p className={`${wrap ? "break-words" : "truncate"} text-xs leading-4 text-[color:var(--boat-faint)]`}>
       {children}
     </p>
   );
@@ -88,7 +90,7 @@ function Row({
           />
           <div className="min-w-0">
             <p className="truncate text-[#E2E2E2]">{name}</p>
-            <Sub>{sub}</Sub>
+            <Sub wrap={name==="Your Mac"}>{sub}</Sub>
           </div>
         </div>
       </td>
@@ -227,6 +229,7 @@ export function ThisMonthUsage({
                   : "Billing period unavailable"
               }
             />
+            {mac?.ownMac?.enabled && mac.ownMac.code!=="setup" && <Row name="Your Mac" sub={`${mac.ownMac.alias} · SSH · ${mac.ownMac.vm===true?"VM":mac.ownMac.vm===false?"separate user":"Mac"}`} used={`${mac.ownMac.tasksThisMonth ?? 0} tasks this month`} usedSub="$0 rent" now={<span className="inline-flex items-center gap-1.5"><OwnMacDot code={mac.ownMac.code}/>{ownMacStatusWords(mac.ownMac)}</span>} nowSub={["available","busy"].includes(mac.ownMac.code ?? "")?`on power · checked ${Math.max(0,Math.floor((Date.now()-Date.parse(mac.ownMac.checkedAt ?? new Date().toISOString()))/1000))} s ago`:"Mac tasks go to the next Mac"}/>}
             {instabox && (
               <Row
                 name="Instabox"
@@ -269,7 +272,7 @@ export function ThisMonthUsage({
                 }
               />
             )}
-            {mac?.ownMac && <Row name="Your Mac" sub="Mac · $0 rent" used="$0" usedSub="No lease-days" now={`${mac.ownMac.running} of ${mac.ownMac.max} tasks running`} nowSub={mac.ownMac.status} />}
+
             {macRows
               .filter(
                 (p) =>

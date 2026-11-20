@@ -1,3 +1,4 @@
+import { LiveOwnMacNotices } from "./own-mac-live";
 import { runsOnDetail } from "./providers-logic";
 import { RunsOnLine } from "./providers";
 // Surfaces outside the Cloud agents page: the context row segment above a
@@ -145,14 +146,14 @@ export function ThreadSegmentDetails({ threadId, isExpanded }: ExperimentalThrea
   const tasks = own ? [own] : [...data.ready, ...data.running, ...data.done];
   if (data.needsYou.length === 0 && tasks.length === 0) return null;
   return (
-    <ul aria-label="Cloud agents" className="max-h-64 space-y-px overflow-y-auto py-1">
+    <><LiveOwnMacNotices threadId={threadId}/><ul aria-label="Cloud agents" className="max-h-64 space-y-px overflow-y-auto py-1">
       {data.needsYou.map((decision) => (
         <CompactDecisionRow key={decision.id} decision={decision} threadId={threadId} />
       ))}
       {tasks.map((task) => (
         <CompactTaskRow key={task.id} task={task} />
       ))}
-    </ul>
+    </ul></>
   );
 }
 

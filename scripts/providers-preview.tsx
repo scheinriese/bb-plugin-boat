@@ -41,7 +41,7 @@ function NamePreview() {
   </>;
 }
 const allScenes = [
-  "ownmac-available", "ownmac-user", "ownmac-asleep", "ownmac-refused-admin", "ownmac-memory", "ownmac-fallback", "ownmac-paused", "ownmac-battery", "ownmac-refused-personal-login", "ownmac-not-set-up",
+  "ownmac-available", "ownmac-states", "ownmac-busy", "ownmac-logged-out", "ownmac-setup-test-failed", "ownmac-setup-success", "ownmac-setup-battery", "ownmac-refusals", "ownmac-cleanup", "ownmac-cleanup-card", "ownmac-cleanup-removed", "ownmac-fallback", "ownmac-receipt", "ownmac-waiting", "ownmac-footer", "ownmac-mobile", "ownmac-off", "ownmac-user", "ownmac-asleep", "ownmac-refused-admin", "ownmac-memory", "ownmac-fallback", "ownmac-paused", "ownmac-battery", "ownmac-refused-personal-login", "ownmac-not-set-up",
   "monthly-chat",
   "monthly-today",
   "monthly-today-alone",
@@ -80,9 +80,10 @@ const allScenes = [
   "regressed",
   "complete",
 ];
+const uniqueScenes=[...new Set(allScenes)];
 const names = process.env.PROVIDER_PREVIEW_SCENE
-  ? allScenes.filter((name) => name === process.env.PROVIDER_PREVIEW_SCENE)
-  : allScenes;
+  ? uniqueScenes.filter((name) => name === process.env.PROVIDER_PREVIEW_SCENE)
+  : uniqueScenes;
 const html = renderToStaticMarkup(
   <html lang="en" className="dark">
     <head>

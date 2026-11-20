@@ -1,3 +1,4 @@
+import { LiveOwnMacNotices } from "./own-mac-live";
 import { Frame } from "./decision-frame";
 import { MonthlyMacDirective } from "./monthly-mac";
 import { TaskProviderFailure } from "./provider-failure";
@@ -159,7 +160,7 @@ function TaskCard({
   if (kind === "ready") return <ReadyCard task={task} />;
   if (kind === "problem") return <ProblemCard task={task} stage={typeof props.attributes.stage==='string'?props.attributes.stage.slice(0,120):undefined} />;
   return (
-    <Frame>
+    <><LiveOwnMacNotices taskId={task.id} threadId={props.message.threadId}/><Frame>
       <ul>
         <LiveTaskRow task={task} />
       </ul>
@@ -168,7 +169,7 @@ function TaskCard({
           {task.excerpt}
         </p>
       )}
-    </Frame>
+    </Frame></>
   );
 }
 export function TaskDirective(props: PluginMessageDirectiveProps) {

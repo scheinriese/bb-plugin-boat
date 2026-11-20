@@ -1,3 +1,4 @@
+import { ownMacStatusWords } from "../contract-ownmac";
 import type { ReactNode } from "react";
 import type { MacUsageDto, SandboxProviderDto } from "../contract-providers";
 import {
@@ -14,18 +15,20 @@ export function FooterMeter({
   detail,
   fraction,
   color = "#BDBDBD",
+  valueColor,
 }: {
   label: string;
   value: string;
   detail: ReactNode;
   fraction?: number | null;
   color?: string;
+  valueColor?:string;
 }) {
   return (
     <div className="space-y-[5px]">
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-xs text-[#A8A8A8]">{label}</span>
-        <span className="text-right text-[13px] font-medium leading-4 tabular-nums text-[#EDEDED]">
+        <span style={valueColor?{color:valueColor}:undefined} className="text-right text-[13px] font-medium leading-4 tabular-nums text-[#EDEDED]">
           {value}
         </span>
       </div>
@@ -84,6 +87,7 @@ export function FooterUsage({
           detail={`${boatOn ?? "–"} on${cap === null ? "" : ` of ${cap}`} · plan hours ${plan.resetsAt ? `reset ${resetDate(plan.resetsAt)}` : "reset date unavailable"}`}
         />
       )}
+      {mac?.ownMac?.enabled && mac.ownMac.code!=="setup" && <FooterMeter label="Your Mac" value={ownMacStatusWords(mac.ownMac)} valueColor={mac.ownMac.code==="cleanup"?"#E06C6C":["available","busy"].includes(mac.ownMac.code ?? "")?"#EDEDED":"#A8A8A8"} detail={["available","busy"].includes(mac.ownMac.code ?? "")?`$0 · ${mac.ownMac.alias} · on power`:"$0 · Mac tasks go to the next Mac"}/>}
       {instabox && (
         <FooterMeter
           label="Instabox · Linux"
@@ -108,7 +112,7 @@ export function FooterUsage({
           Instabox account credit includes Mac charges.
         </p>
       )}
-      {mac?.ownMac && <FooterMeter label="Your Mac" value="$0 rent" detail={`${mac.ownMac.running} of ${mac.ownMac.max} tasks running · ${mac.ownMac.status}`}/> }
+
       {[...macGroups].map(([provider,leases]) => {
         const states = [...new Set(leases.map(lease=>leaseState(lease).text))];
         const terms = [...new Set(leases.map(lease=>`${lease.size.toUpperCase()} · ${money(lease.minimumCost,lease.currency)} minimum, then ${money(lease.hourPrice,lease.currency)} / h`))];

@@ -1,3 +1,4 @@
+import { LiveOwnMacNotices } from "./own-mac-live";
 import { TaskProviderFailure } from "./provider-failure";
 // Task-owned side panel; source chats keep the separate Cloud agents list.
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -109,7 +110,7 @@ function Overview({ task, facts, history, reviewPolicy }: { task: TaskDetailDto;
   const reviewer = history.filter((event) => event.review).at(-1)?.review;
   const approved = state.status === "ready" && !nativeReviewPending(reviewPolicy) && reviewer?.verdict === "approve" ? reviewer : null;
   return <>
-    {task.providerFailure ? <TaskProviderFailure task={task}/> : task.error && <InlineAlert>{task.error}</InlineAlert>}
+    <LiveOwnMacNotices taskId={task.id}/>{task.providerFailure ? <TaskProviderFailure task={task}/> : task.error && <InlineAlert>{task.error}</InlineAlert>}
     <Section title="Status"><div className={cn(BOX, "boat-task-status-box")}>
       <div className="boat-task-line"><span className="boat-task-status" data-tone={state.tone}><i aria-hidden="true" /><strong>{state.label}</strong></span>
         {approved && <span className="boat-task-muted">approved by {PROVIDER_LABEL[approved.provider]} · review {approved.round}</span>}</div>
