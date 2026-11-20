@@ -12,7 +12,7 @@ import { rpcContract, type TaskDetailDto, type TaskDto } from "../contract";
 import { Button } from "../components/ui/button";
 import { Icon } from "../components/ui/icon";
 import { cn } from "../lib/utils";
-import { ConfirmDialog } from "./dialogs";
+import { CloseTaskDialog, ConfirmDialog } from "./dialogs";
 import { PROVIDER_LABEL, clockTime, isRunning, modelName } from "./format";
 import { useCloudAgentsNavigation, useInterval, useSandboxes, useTask, useThreadTask } from "./hooks";
 import { ShipButton } from "./board";
@@ -90,7 +90,7 @@ function TaskPanel({ task }: { task: TaskDetailDto }) {
       </button>)}
     </div>
     <div role="tabpanel" id={`${id}-panel-${tab}`} aria-labelledby={`${id}-tab-${tab}`} tabIndex={0} className="boat-task-content">
-      {(tab === "Overview" || tab === "Reviews") && <NativeReviewPolicyLine policy={reviewPolicy} />}
+      {!task.macRentalPending && (tab === "Overview" || tab === "Reviews") && <NativeReviewPolicyLine policy={reviewPolicy} />}
       {tab === "Overview" ? <Overview task={task} reviewPolicy={reviewPolicy} facts={facts ?? null} history={[...(history?.events ?? [])].sort((a,b) => a.at.localeCompare(b.at) || a.seq-b.seq)} /> : tab === "Reviews" ? <Reviews task={task} history={[...(history?.events ?? [])].sort((a,b) => a.at.localeCompare(b.at) || a.seq-b.seq)} /> : tab === "Transcript" ? <Transcript task={task} /> : <Sandbox task={task} />}
     </div>
   </div>;
@@ -107,21 +107,33 @@ function MergeAction({ task }: { task: TaskDto }) {
 function Overview({ task, facts, history, reviewPolicy }: { task: TaskDetailDto; facts: PullRequestFacts | null; history: HistoryEventDto[]; reviewPolicy: NativeReviewState | null }) {
   const state = cardStatus(task);
   const sdk = useSdk();
+  const [cancelling, setCancelling] = useState(false);
   const reviewer = history.filter((event) => event.review).at(-1)?.review;
   const approved = state.status === "ready" && !nativeReviewPending(reviewPolicy) && reviewer?.verdict === "approve" ? reviewer : null;
   return <>
-    <LiveOwnMacNotices taskId={task.id}/>{task.providerFailure ? <TaskProviderFailure task={task}/> : task.error && <InlineAlert>{task.error}</InlineAlert>}
-    <Section title="Status"><div className={cn(BOX, "boat-task-status-box")}>
+    <LiveOwnMacNotices showTaskTitle={false} taskId={task.id}/>{task.providerFailure ? <TaskProviderFailure task={task}/> : !task.macRentalPending && task.error && <InlineAlert>{task.error}</InlineAlert>}
+    {task.macRentalPending && <>
+      <Section title="Task details"><div className={cn(BOX, "boat-task-who")}>
+        {task.repo && <div className="boat-task-line"><span className="boat-task-muted">Repository</span><span className="min-w-0 break-all">{task.repo}</span></div>}
+        {task.source.title && <div className="boat-task-line"><span className="boat-task-muted">Started by</span><span className="min-w-0 break-words">{task.source.title}</span></div>}
+        <div className="boat-task-line"><span className="boat-task-muted">Agent</span><span>{PROVIDER_LABEL[task.provider]}{task.model ? ` · ${modelName(task.model)}` : ""}</span></div>
+        <div className="boat-task-line"><span className="boat-task-muted">Queued</span><span>{taskClock(task.createdAt)} · Not started</span></div>
+        <p className="boat-task-muted">The branch, task chat and pull request will appear after the task starts.</p>
+      </div></Section>
+      <Button variant="outline" size="sm" onClick={() => setCancelling(true)}>Cancel task</Button>
+      <CloseTaskDialog task={task} open={cancelling} onOpenChange={setCancelling} />
+    </>}
+    {!task.macRentalPending && <Section title="Status"><div className={cn(BOX, "boat-task-status-box")}>
       <div className="boat-task-line"><span className="boat-task-status" data-tone={state.tone}><i aria-hidden="true" /><strong>{state.label}</strong></span>
         {approved && <span className="boat-task-muted">approved by {PROVIDER_LABEL[approved.provider]} · review {approved.round}</span>}</div>
       <div className="boat-task-actions">{state.status === "ready" && task.delivery === "pr" && task.prUrl ? <MergeAction task={task} /> : task.canShip ? <ShipButton task={task} /> : null}
         {task.previewUrl && <UrlLink href={task.previewUrl} className="boat-task-outline-link">Preview ↗</UrlLink>}</div>
-    </div></Section>
+    </div></Section>}
     <Section title="Brief"><div className={BOX}>
       {task.source.threadId && <p className="boat-task-origin"><AgentLogo provider={task.provider} className="size-[11px]" /> <button type="button" onClick={() => void sdk.threads.open({ threadId: task.source.threadId!, file: null })}>From {task.source.title || "source chat"}</button></p>}
       <Markdown content={task.brief || "No brief recorded."} className="boat-task-brief" />
     </div></Section>
-    <Section title="Change"><div className={cn(BOX, "boat-task-change")}>
+    {!task.macRentalPending && <><Section title="Change"><div className={cn(BOX, "boat-task-change")}>
       <div className="boat-task-line"><strong>{task.prUrl ? `PR #${task.prUrl.match(/\/pull\/(\d+)/)?.[1]}` : task.repo ?? "Committed change"}</strong>
         {facts && <span className="boat-task-muted"><DiffStats additions={facts.additions} deletions={facts.deletions} />{facts.fileCount !== undefined ? ` · ${facts.fileCount} files` : ""}</span>}
         {task.prUrl && <UrlLink href={task.prUrl} className="boat-task-trailing">GitHub ↗</UrlLink>}</div>
@@ -133,7 +145,7 @@ function Overview({ task, facts, history, reviewPolicy }: { task: TaskDetailDto;
       <div className="boat-task-line"><AgentLogo provider={task.provider} className="size-3" /><span>{PROVIDER_LABEL[task.provider]}{task.model ? ` · ${modelName(task.model)}` : ""}</span>{task.tier && <span className="boat-task-trailing boat-task-muted">{task.tier[0].toUpperCase() + task.tier.slice(1)} preset</span>}</div>
       <div className="boat-task-line"><span className="boat-task-muted">Started</span><span className="boat-task-trailing">{taskClock(task.createdAt)}{task.source.title ? ` by ${task.source.title}` : ""}</span></div>
       {reviewer && <div className="boat-task-line"><AgentLogo provider={reviewer.provider} className="size-3" /><span>Reviewer: {PROVIDER_LABEL[reviewer.provider]}{reviewer.model ? ` · ${modelName(reviewer.model)}` : ""}</span></div>}
-    </div></Section>
+    </div></Section></>}
   </>;
 }
 
@@ -170,6 +182,7 @@ function Reviews({ task, history }: { task: TaskDetailDto; history: HistoryEvent
 }
 
 function Transcript({ task }: { task: TaskDetailDto }) {
+  if (task.macRentalPending) return <EmptyBox>Choose a Mac rental in Overview before the task can start.</EmptyBox>;
   return task.runner === "chat" && task.threadId ? <ChatTranscript task={task} /> : <BoatTranscript task={task} />;
 }
 function ChatTranscript({ task }: { task: TaskDetailDto }) {

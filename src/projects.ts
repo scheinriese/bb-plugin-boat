@@ -262,6 +262,9 @@ export class ProjectStore {
  */
 export interface OrchestratorProject {
   reviewer?: "codex" | "claude" | "none" | null;
+  /** Snapshot for display and queued-policy comparisons; routing re-reads the saved project. */
+  sandboxProvider?: string;
+  sandboxSystem?: "linux" | "macos";
   id: string;
   name: string;
   repos: ProjectRepo[];
@@ -290,6 +293,8 @@ export function toOrchestratorProject(project: BoatProject): OrchestratorProject
     protectedBranches: project.protectedBranches,
     instructions: project.instructions,
     reviewer: project.reviewer ?? null,
+    ...(project.sandboxProvider ? { sandboxProvider: project.sandboxProvider } : {}),
+    ...(project.sandboxSystem ? { sandboxSystem: project.sandboxSystem } : {}),
     source: "boat",
     bbProjectId: project.localBbProjectId ?? null,
   };
@@ -297,6 +302,8 @@ export function toOrchestratorProject(project: BoatProject): OrchestratorProject
 
 const orchestratorProjectSchema = z.object({
   reviewer: z.enum(["codex", "claude", "none"]).nullable().optional(),
+  sandboxProvider: z.string().regex(/^[a-z0-9-]{1,40}$/).optional(),
+  sandboxSystem: z.enum(["linux", "macos"]).optional(),
   id: z.string().min(1),
   name: z.string().min(1),
   repos: z.array(projectRepoSchema).min(1),

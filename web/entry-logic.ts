@@ -74,6 +74,7 @@ export function reviewFromChat(role: ThreadRoleDto | undefined) {
   if (role?.kind !== "task") return null;
   const { task } = role;
   if (
+    task.macRentalPending ||
     task.role === "review" ||
     task.status === "done" ||
     task.status === "cancelled"

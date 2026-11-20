@@ -55,6 +55,7 @@ test("header actions: Ship when the task can ship, Request review on open tasks,
   assert.equal(reviewFromChat(taskRole({ role: "review" })), null, "a review isn't reviewed");
   assert.equal(reviewFromChat(taskRole({ status: "done" })), null);
   assert.equal(reviewFromChat(taskRole({ status: "cancelled" })), null);
+  assert.equal(reviewFromChat(taskRole({ macRentalPending: true })), null, "pending rental has no work to review");
   assert.equal(reviewFromChat({ kind: "chat" }), null);
 });
 

@@ -37,7 +37,13 @@ slot (default 1). Running work is not moved or killed when availability changes.
 Automatic Mac routing prefers Your Mac, existing monthly capacity, a held rental,
 then a new rental. Explicit Scaleway or Instabox Runs-on choices take precedence.
 A new rental shows its live cost and waits for the owner's choice;
-never approve it yourself. Waiting tasks that never started can resume when
+never approve it yourself. Inspect options with `bb boat task rental-options <id> --json`,
+refresh with `--refresh`, or select a current `--quote <quote-id>` on the same
+zero-turn request. These operations never rent a machine or change Runs on.
+The `boat_rental_options` tool has the same read, refresh and selection path;
+show its returned task card so the owner can approve the exact cost there.
+Rental approval is separate from any paid Claude approval.
+Waiting tasks that never started can resume when
 Your Mac returns. Never blindly replay work after a disconnect. Close/cancel
 removes task credentials and revokes proxy access. A failed check automatically
 pauses new starts until the read-only **Check again** passes; the owner can

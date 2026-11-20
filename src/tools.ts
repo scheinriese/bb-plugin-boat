@@ -19,6 +19,7 @@ export const TOOL_NAMES = [
   "boat_goal",
   "boat_status",
   "boat_dispatch",
+  "boat_rental_options",
   "boat_review",
   "boat_followup",
   "boat_tasks",
@@ -225,6 +226,25 @@ export function registerTools(runtime: Runtime): void {
           ? `Request ${result.request.id} is waiting for a usage reset. No sandbox has been created. It will retry automatically when an agent has confirmed subscription room. Do not start a replacement or name an agent to bypass this wait; paid extra usage needs the user's separate in-thread confirmation.\nShow this returned live receipt once:\n${queuedStartMarker(result.request.id)}`
           : launched(result.task, result.pending);
       }),
+  });
+
+  bb.agents.registerTool({
+    name: "boat_rental_options",
+    description: "Read current Mac rental offers for a zero-turn pending task, refresh their live availability and prices, or select a quote on that same request. Selection never rents a Mac or changes project routing. The owner must approve the selected exact cost in the native card.",
+    parameters: z.object({
+      task_id: z.string().min(4),
+      refresh: z.boolean().optional().describe("Recheck eligible offers without allocating a machine"),
+      quote_id: z.string().optional().describe("Select this current quote on the same task; cannot be combined with refresh"),
+    }),
+    execute: (params) => attempt(async () => {
+      if (params.refresh && params.quote_id) throw new TaskError("Refresh offers first, then select a current quote id.", "invalid_task");
+      const notice = params.quote_id
+        ? await service.selectMacRentalOffer(params.task_id, params.quote_id)
+        : params.refresh
+          ? await service.refreshMacRentalOffers(params.task_id)
+          : await service.ownMacNotice(service.mustGet(params.task_id));
+      return `${JSON.stringify({ notice })}\nNo rental is authorized by this call. Show the owner this actionable card:\n${taskMarker("task", params.task_id)}`;
+    }),
   });
 
   bb.agents.registerTool({

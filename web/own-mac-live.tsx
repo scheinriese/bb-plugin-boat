@@ -15,9 +15,11 @@ import { toast } from "sonner";
 export function LiveOwnMacNotices({
   taskId,
   threadId,
+  showTaskTitle = true,
 }: {
   taskId?: string;
   threadId?: string;
+  showTaskTitle?: boolean;
 }) {
   const fill = useFillComposer(threadId ?? "");
   const { data } = experimental_useRpcQuery({
@@ -37,13 +39,30 @@ export function LiveOwnMacNotices({
     contract: rpcContract,
     method: "answerOwnMacRental",
   });
+  const refresh = experimental_useRpcMutation({
+    contract: rpcContract,
+    method: "refreshMacRentalOffers",
+  });
+  const select = experimental_useRpcMutation({
+    contract: rpcContract,
+    method: "selectMacRentalOffer",
+  });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [approvingTask, setApprovingTask] = useState<string | null>(null);
   const [showOffers, setShowOffers] = useState<Record<string, boolean>>({});
   const fail = (reason: Error) => toast.error(reason.message);
   if (!data?.notices.length) return null;
   return (
     <div className="space-y-3">
       {data?.notices.map((notice) => {
-        const busy = test.isPending || check.isPending || answer.isPending;
+        const busy = test.isPending || check.isPending || answer.isPending || refresh.isPending || select.isPending;
+        const run = (action: () => Promise<unknown>, approving = false) => {
+          setErrors(current => ({ ...current, [notice.taskId]: "" }));
+          if (approving) setApprovingTask(notice.taskId);
+          void action().catch((reason: Error) => {
+            setErrors(current => ({ ...current, [notice.taskId]: reason.message }));
+          }).finally(() => { if (approving) setApprovingTask(null); });
+        };
         if (notice.disconnect)
           return (
             <p
@@ -70,6 +89,7 @@ export function LiveOwnMacNotices({
           notice.refusal &&
           !notice.answer &&
           !notice.offer &&
+          !notice.offers &&
           !notice.replacementId &&
           !showOffers[notice.taskId]
         )
@@ -86,7 +106,7 @@ export function LiveOwnMacNotices({
               }
             />
           );
-        if (notice.offer)
+        if (notice.offer || notice.offers)
           return (
             <div key={notice.taskId} className="space-y-3">
               {notice.refusal &&
@@ -105,6 +125,7 @@ export function LiveOwnMacNotices({
                 )}
               <OwnMacRentalCard
                 notice={notice}
+                showTaskTitle={showTaskTitle}
                 onOwnWords={
                   fill
                     ? () =>
@@ -114,15 +135,15 @@ export function LiveOwnMacNotices({
                     : undefined
                 }
                 busy={busy}
-                onAnswer={(choice) => {
-                  void answer
-                    .mutate({
-                      taskId: notice.taskId,
-                      answer: choice,
-                      quoteId: notice.offer!.id,
-                    })
-                    .catch(fail);
-                }}
+                approving={approvingTask === notice.taskId}
+                error={errors[notice.taskId]}
+                onRefresh={() => run(() => refresh.mutate({ taskId: notice.taskId }))}
+                onSelect={(quoteId) => run(() => select.mutate({ taskId: notice.taskId, quoteId }))}
+                onAnswer={(choice) => run(() => answer.mutate({
+                  taskId: notice.taskId,
+                  answer: choice,
+                  quoteId: notice.offer?.id,
+                }), choice === "rent")}
               />
             </div>
           );

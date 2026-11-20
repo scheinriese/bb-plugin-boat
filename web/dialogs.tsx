@@ -86,7 +86,7 @@ import {
   useSettingRows,
   useStoredFlag,
 } from "./hooks";
-import { STARTERS, chatChoice, chatControl, closeToast, projectSizeOnPlan, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
+import { STARTERS, chatChoice, chatControl, closeTaskIsCancellation, closeToast, projectSizeOnPlan, snapshotNameFor, titleFromBrief, type StarterId } from "./logic";
 import { NewProjectDialog } from "./projects-settings";
 import { Disclosure, Field, IconButton, InlineAlert, Kbd, RichText, SUGGEST_INPUT, ThreadName, showError } from "./ui";
 
@@ -1864,7 +1864,7 @@ export function CloseTaskDialog({ task, open, onOpenChange }: DialogControl & { 
 function CloseTaskForm({ task, onDone }: { task: TaskDto; onDone: () => void }) {
   const close = experimental_useRpcMutation({ contract: rpcContract, method: "closeTask" });
   const [keepSandbox, setKeepSandbox] = useState(false);
-  const cancel = task.status === "running" || task.status === "starting";
+  const cancel = closeTaskIsCancellation(task);
   const ownsSandbox = task.sandboxId !== null && task.ownsSandbox;
   // Work that ships after approval lives only in its sandbox until it's shipped.
   // The server checks again on close: work it finds there turns this into a discard.
@@ -1893,7 +1893,9 @@ function CloseTaskForm({ task, onDone }: { task: TaskDto; onDone: () => void }) 
       <DialogHeader>
         <DialogTitle>{cancel ? "Cancel this task?" : "Close this task?"}</DialogTitle>
         <DialogDescription>
-          {cancel
+          {task.macRentalPending
+            ? "This pending request is cancelled. Nothing has started or been rented."
+            : cancel
             ? `The running turn is interrupted and the task is marked cancelled.${unshipped ? " Work that hasn't shipped is thrown away with the sandbox." : ""}`
             : unshipped
               ? "If this work hasn't shipped, closing throws it away: its commits exist only in the sandbox. To keep it, use Ship instead."

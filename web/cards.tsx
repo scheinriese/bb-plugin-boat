@@ -154,6 +154,7 @@ function TaskCard({
       </Notice>
     );
   const task = data.task;
+  if (task.macRentalPending && kind !== "chip") return <LiveOwnMacNotices taskId={task.id} threadId={props.message.threadId}/>;
   if (task.providerFailure && providerFailureCard(task.providerFailure,task.error ?? "") && kind !== "chip") return <TaskProviderFailure task={task}/>;
   if (kind === "chip") return <TaskChip task={task} />;
   if (kind === "review") return <ReviewCard task={task} round={Number(props.attributes.round) || undefined} />;

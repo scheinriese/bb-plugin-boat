@@ -66,11 +66,16 @@ export const macRentalQuoteSchema = z.object({
   label: z.string(),
   model: z.string(),
   modelLabel: z.string(),
+  /** Display facts only; older persisted quotes may omit them. */
+  cpus: z.number().positive().optional(),
+  memoryMiB: z.number().positive().optional(),
+  region: z.string().min(1).optional(),
+  checkedAt: z.string().refine(value=>Number.isFinite(Date.parse(value)),"Invalid quote check time").optional(),
   minimumCost: z.number().nonnegative(),
   hourPrice: z.number().nonnegative(),
   minimumHours: z.number().positive(),
-  currency: z.string(),
-  expiresAt: z.string(),
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  expiresAt: z.string().refine(value=>Number.isFinite(Date.parse(value)),"Invalid quote expiry"),
 });
 export type MacRentalQuote = z.infer<typeof macRentalQuoteSchema>;
 export const ownMacNoticeSchema = z.object({
@@ -90,7 +95,11 @@ export const ownMacNoticeSchema = z.object({
     })
     .optional(),
   offer: macRentalQuoteSchema.optional(),
-  answer: z.enum(["wait", "rent", "auto", "failed"]).optional(),
+  offers: z.array(macRentalQuoteSchema).optional(),
+  recommendedQuoteId: z.string().optional(),
+  recommendationReason: z.string().optional(),
+  unavailable: z.array(z.object({provider:z.string(),label:z.string(),reason:z.string()})).optional(),
+  answer: z.enum(["wait", "rent", "queue", "auto", "failed"]).optional(),
   replacementId: z.string().optional(),
   cleanup: ownMacFactsSchema.shape.cleanup,
   disconnect: z.string().optional(),
@@ -127,10 +136,18 @@ export const ownMacRpcMethods = {
     }),
     output: z.object({ notices: z.array(ownMacNoticeSchema) }),
   },
+  refreshMacRentalOffers: {
+    input: z.object({taskId:z.string()}),
+    output: z.object({notice:ownMacNoticeSchema}),
+  },
+  selectMacRentalOffer: {
+    input: z.object({taskId:z.string(),quoteId:z.string()}),
+    output: z.object({notice:ownMacNoticeSchema}),
+  },
   answerOwnMacRental: {
     input: z.object({
       taskId: z.string(),
-      answer: z.enum(["rent", "wait"]),
+      answer: z.enum(["rent", "wait", "queue"]),
       quoteId: z.string().optional(),
     }),
     output: z.object({ replacementId: z.string().nullable() }),

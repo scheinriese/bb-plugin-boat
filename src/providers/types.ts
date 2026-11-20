@@ -631,7 +631,7 @@ export interface AgentRunner {
 }
 
 /** For later providers: not called yet. */
-export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string }
+export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string; region?: string; unavailableReason?: string }
 export interface LaterMembers {
   /** Already rented monthly capacity is reused before held day leases; never allocated. */
   macLeaseKind?: "monthly" | "day";
@@ -666,6 +666,9 @@ export interface LaterMembers {
   recoverCreations?(signal?: AbortSignal): Promise<{ recovered: number; cleared: number }>;
 
   macModels?(signal?: AbortSignal): Promise<MacModel[]>;
+  /** Read-only rental eligibility, including live model stock/quota where reported.
+   * Catalog/presentation readiness alone does not guarantee an allocation. */
+  macRentalModels?(signal?: AbortSignal): Promise<MacModel[]>;
   /** Release an empty lease exactly when its paid minimum ends. Omit if the provider cannot schedule; Boat waits until the minimum ends instead. */
   scheduleLeaseRelease?(sandboxId: string, at: string, signal?: AbortSignal): Promise<void>;
   /** Cancel that schedule before attaching more work. */

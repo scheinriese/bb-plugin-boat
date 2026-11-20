@@ -12,6 +12,7 @@ const projectSchema = z.object({
   id: z.string().min(1).max(200), name: z.string().min(1).max(200), repos: z.array(z.object({ repo: z.string().max(200), baseBranch: z.string().max(200) })).min(1).max(8),
   environment: text(), snapshot: text(), protocolPath: text(300), workerMode: z.enum(["boat", "chat"]), delivery: z.enum(["pr", "push"]),
   protectedBranches: z.array(z.string().max(200)).max(50), instructions: z.string().max(10_000), source: z.enum(["boat", "local"]), bbProjectId: text(), reviewer: z.enum(["claude", "codex", "none"]).nullable().optional(),
+  sandboxProvider: z.string().regex(/^[a-z0-9-]{1,40}$/).optional(), sandboxSystem: z.enum(["linux", "macos"]).optional(),
 });
 /** No closures/signals/internal launch capabilities may cross the durable boundary. */
 export const queuedInputSchema = z.object({

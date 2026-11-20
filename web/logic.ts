@@ -255,9 +255,14 @@ export function snapshotNameFor(repo: string | null): string {
 
 // ------------------------------------------------------------------ task page
 
+/** A pending rental has no completed work to close; cancelling retires its request. */
+export function closeTaskIsCancellation(task: Pick<TaskDto, "status" | "macRentalPending">): boolean {
+  return task.macRentalPending === true || task.status === "running" || task.status === "starting";
+}
+
 /** Request review: open tasks with work to review (not reviews, not the test task). */
-export function canRequestReview(task: Pick<TaskDto, "role" | "status" | "title" | "repo">): boolean {
-  if (task.role === "review" || isTestTask(task)) return false;
+export function canRequestReview(task: Pick<TaskDto, "role" | "status" | "title" | "repo" | "macRentalPending">): boolean {
+  if (task.macRentalPending || task.role === "review" || isTestTask(task)) return false;
   // A closed task's sandbox is usually gone, and with it what there was to review.
   return task.status !== "done" && task.status !== "cancelled";
 }
