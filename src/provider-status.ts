@@ -80,6 +80,10 @@ export async function providerStates(deps: ProviderStatusDeps, options: { force?
           checks: status?.checks.map(check) ?? [],
         };
       }
+      if (provider.id === "ownmac" && provider.ownMacStatus) {
+        const state = await provider.ownMacStatus(options.force);
+        return {...base(provider),turnedOn:enabled.has(provider.id),keyPresent:null,status:state.status === "Available" ? "ready" : "setup-required",problem:state.status === "Available" ? null : state.status,checks:[]};
+      }
       if (provider.id === "scaleway" && !enabled.has(provider.id) && !(await provider.configured?.()) && !provider.releaseNotice?.()) {
         return {...base(provider),turnedOn:false,keyPresent:null,status:"off",problem:null,checks:[]};
       }

@@ -62,7 +62,7 @@ export const PROVIDER_CATALOG: readonly CatalogEntry[] = [
     apiKey: true,
   },
   { id: "scaleway", label: "Scaleway", kind: "cloud", summary: "Whole Mac minis. 24 h minimum, then hourly. Prices in EUR.", systems: [{ os: "macos", label: "Mac", note: null }], apiKey: true },
-  { id: "your-mac", label: "Your Mac", kind: "own-mac", summary: `Agents on your own Mac, enrolled in bb. ${NO_MACS}`, systems: [], apiKey: false, unsupported: NO_MACS },
+  { id: "ownmac", label: "Your Mac", kind: "own-mac", summary: "Use a separate standard user or a VM, never your own login. Administrator accounts are refused.", systems: [{os:"macos",label:"Mac",note:null}], apiKey: false },
   {
     id: "monthly-mac",
     label: "Monthly Mac",
@@ -87,6 +87,7 @@ export function providerLabel(id: string, provider?: Pick<SandboxProvider, "disp
  * since it may offer more than one.
  */
 export function runsOnOf(provider: Pick<SandboxProvider, "id" | "displayName" | "caps">, size: MachineType | null, defaultId: string): RunsOnDto {
+  if (provider.id === "ownmac") return {provider:provider.id,label:"Your Mac",os:"macos",machine:null,note:"$0 rent",detail:null};
   const sizeLabel = size === null ? null : SIZE_SPECS[size].label;
   const system = provider.caps.os === "macos" ? "Mac" : "Linux";
   const machine = provider.id === defaultId ? sizeLabel : [system, sizeLabel].filter(Boolean).join(" · ");
@@ -182,7 +183,7 @@ function pickProblem(row: SandboxProviderDto): string | null {
 
 /** The line under the providers: where work goes first. */
 function routingLine(rows: readonly SandboxProviderDto[], defaultLabel: string): string {
-  const macs = rows.some((row) => row.kind !== "cloud" && row.available);
+  const macs = rows.some((row) => row.kind !== "cloud" && row.available && row.enabled);
   if (macs) return "Mac tasks go to your Mac first, then a monthly Mac, then an enabled Mac day-lease provider. Harbormaster rents only for dispatched tasks.";
   return `New work runs on ${defaultLabel} unless a project picks another provider below.`;
 }
@@ -309,7 +310,8 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       if (!provider?.presentation) return;
       const metadata = await provider.presentation({force, signal: AbortSignal.timeout(15_000)}).catch(() => null);
       if (metadata) Object.assign(row, metadata);
-      if (row.steps) {
+      if (row.id === "ownmac") { row.connection = row.status === "Available" ? "connected" : "not-connected"; }
+      if (row.steps && row.id !== "ownmac") {
         const required = row.steps.filter(s => s.possible && s.required !== false);
         const complete = required.every(s => s.done);
         const setup = `Setting up · ${required.filter(s => s.done).length} of ${required.length}`;
@@ -317,6 +319,8 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
         row.status = row.id === "scaleway" ? (complete ? (row.status ?? "Connected") : [row.status, setup].filter(Boolean).join(" · ")) : complete ? "Connected" : setup;
       }
     }));
+    const ownRow=result.providers.find(row=>row.id==="ownmac");
+    if(ownRow) for(const option of result.options.filter(option=>option.provider==="ownmac-macos")) option.disabledReason=ownRow.enabled ? null : "Enable Your Mac in Settings";
     return result;
   }
 
@@ -373,7 +377,9 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const monthStart = Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1), monthEnd = Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1);
       const label = (id: string) => providerLabel(id, service.sandboxProviders.all.find(provider=>provider.id===id));
       const notices: NonNullable<MacUsageDto["notices"]> = [...summary.held.flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []), ...service.store.macLeases.credentialNotices().map(notice=>({...notice,label:label(notice.provider),tokenRevocation:true}))];
+      const ownMac = await service.sandboxProviders.all.find(p=>p.id==="ownmac")?.ownMacStatus?.();
       return { ...summary,
+        ...(ownMac ? {ownMac:{...ownMac,rent:0 as const}} : {}),
         monthlySuggestions: service.store.monthlyMacs.active(),
         monthlyComparisons: service.store.monthlyMacs.comparisons(prices, now),
         byProvider: summary.providers.map(id => ({id,label:label(id),month:service.store.macLeases.between(monthStart,monthEnd,now,undefined,id),rolling30:service.store.macLeases.between(now-30*86400000,now,now,undefined,id)})),

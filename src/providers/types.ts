@@ -20,10 +20,10 @@ import type { Provider } from "../store.ts";
 export const DEFAULT_PROVIDER_ID = "boat";
 
 /** Every provider this plugin has an adapter for: where a project's work can run. */
-export const PROVIDER_IDS = ["boat", "instabox", "scaleway"] as const;
+export const PROVIDER_IDS = ["boat", "instabox", "scaleway", "ownmac"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 /** Their names in the plugin's words (a provider that isn't enabled is named too). */
-export const PROVIDER_NAMES: Record<ProviderId, string> = { boat: "boat.dev", instabox: "Instabox", scaleway: "Scaleway" };
+export const PROVIDER_NAMES: Record<ProviderId, string> = { boat: "boat.dev", instabox: "Instabox", scaleway: "Scaleway", ownmac: "Your Mac" };
 
 // ------------------------------------------------------------------ sizes and states
 
@@ -632,10 +632,15 @@ export interface AgentRunner {
 /** For later providers: not called yet. */
 export interface MacModel { id: string; label: string; cpus: number; memoryMiB: number; minimumCost: number; minimumHours: number; hourPrice: number; currency: string }
 export interface LaterMembers {
+  /** Already rented monthly capacity is reused before held day leases; never allocated. */
+  macLeaseKind?: "monthly" | "day";
+  closeTaskCredentials?(sandboxId: string, signal?: AbortSignal, machineRemoved?: boolean): Promise<void>;
+  runsOnMachine?(sandboxId?: string | null): string | null;
+  ownMacStatus?(force?: boolean, signal?: AbortSignal): Promise<{ status: string; running: number; max: number }>;
   /** Whether any provider-specific setup was saved, even if incomplete. */
   configured?(): boolean | Promise<boolean>;
   /** Read-only, bounded setup and billing metadata. Also works while turned off. */
-  presentation?(options?: { force?: boolean; signal?: AbortSignal }): Promise<{ steps: import("../../contract-providers.ts").ProviderStepDto[]; linuxUsage?: import("../../contract-providers.ts").LinuxUsageDto }>;
+  presentation?(options?: { force?: boolean; signal?: AbortSignal }): Promise<{ steps: import("../../contract-providers.ts").ProviderStepDto[]; linuxUsage?: import("../../contract-providers.ts").LinuxUsageDto; status?: string; ownMac?: import("../../contract-providers.ts").OwnMacDto; pricing?: string; meta?: string }>;
 
   /** Classifies uncertain/allocated create outcomes itself; ordinary errors mean no machine was allocated. */
   classifiesCreateErrors?: boolean;

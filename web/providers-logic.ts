@@ -9,6 +9,7 @@ export type ProviderGlyph = "boat" | "box" | "laptop" | "laptop-dashed";
 
 /** "boat.dev · Default", "Instabox · Mac M2 · lease ends Thu 14:00": a task's line and its chip's tooltip. */
 export function runsOnLine(runsOn: RunsOnDto, fallbackMachine: string | null = null): string {
+  if (runsOn.provider === "ownmac") return "on Your Mac · $0 rent";
   return [runsOn.label, runsOn.provider === "instabox" && runsOn.os === "linux" ? "Linux" : runsOn.machine ?? fallbackMachine, runsOnNote(runsOn)].filter(Boolean).join(" · ");
 }
 
@@ -35,7 +36,7 @@ export function providerGlyph(provider: Pick<SandboxProviderDto, "id" | "kind">)
 
 /** The dot and words beside a provider: "Connected" (green), else grey. */
 export function providerStatus(provider: Pick<SandboxProviderDto, "connection" | "status" | "available">): { text: string; ok: boolean } {
-  const ok = provider.available && provider.connection === "connected";
+  const ok = provider.available && provider.connection === "connected" && (!provider.status || ["Connected","Available"].includes(provider.status));
   return { text: provider.status ?? (ok ? "Connected" : "Not connected"), ok };
 }
 

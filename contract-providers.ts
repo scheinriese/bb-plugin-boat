@@ -74,6 +74,10 @@ export const linuxUsageSchema = z.object({
 });
 export type LinuxUsageDto = z.infer<typeof linuxUsageSchema>;
 
+export const sshAliasSchema = z.string().max(128).refine(value => value === "" || /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value), "Use an SSH host alias only: letters, numbers, underscores or hyphens; no paths, spaces or options.");
+export const ownMacConfigSchema = z.object({ownMacEnabled:z.boolean(),ownMacPaused:z.boolean(),ownMacAlias:sshAliasSchema,ownMacMaxTasks:z.number().int().min(1).max(16),ownMacIsolation:z.enum(["vm","user"]).default("vm")});
+export const ownMacSchema = ownMacConfigSchema.extend({running:z.number().int().nonnegative(),max:z.number().int().positive()});
+export type OwnMacDto = z.infer<typeof ownMacSchema>;
 /** One row of Settings › Sandbox providers. */
 export const sandboxProviderSchema = z.object({
   id: z.string(),
@@ -107,6 +111,7 @@ export const sandboxProviderSchema = z.object({
   releaseNotice: z.string().optional(),
   linuxUsage: linuxUsageSchema.optional(),
   waitingTasks: z.number().optional(),
+  ownMac: ownMacSchema.optional(),
 });
 export type SandboxProviderDto = z.infer<typeof sandboxProviderSchema>;
 
@@ -144,6 +149,7 @@ export type SandboxProvidersResultDto = z.infer<typeof sandboxProvidersResultSch
 
 export const macUsageWindowSchema = z.object({ leaseDays: z.number(), costs: z.record(z.string(),z.number()) });
 export const macUsageSchema = z.object({
+  ownMac: z.object({running:z.number(),max:z.number(),status:z.string(),rent:z.literal(0)}).optional(),
   monthlySuggestions: z.array(monthlyMacSuggestionSchema).optional(),
   monthlyComparisons: z.array(monthlyMacComparisonSchema).optional(),
   month: macUsageWindowSchema, rolling30: macUsageWindowSchema,

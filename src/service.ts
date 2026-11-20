@@ -691,7 +691,7 @@ export class BoatService {
   private readonly settlingReviews = new Set<string>();
 
   publicStatus(task: Task, context: StatusContext = {}): TaskPublicStatus {
-    if (task.status==="failed" && task.turns===0 && ["instabox","scaleway"].includes(task.sandboxProvider ?? "")) {
+    if (task.status==="failed" && task.turns===0 && ["instabox","scaleway","ownmac"].includes(task.sandboxProvider ?? "")) {
       const code=this.store.history({taskId:task.id,limit:30}).events.find(e=>e.kind==="stopped" && e.cause)?.cause ?? "provider_failed";
       const card=providerFailureCard({code,provider:task.sandboxProvider!,mac:task.sandboxSystem==="macos",released:false,canRetry:false},task.error ?? "");
       if(card) return {status:card.tone==="owner" ? "needs-you" : card.tone==="neutral" ? "stopped" : "broken",label:card.title,tone:card.tone==="owner" ? "attention" : card.tone==="neutral" ? "neutral" : "danger",reason:card.body,needsYou:card.tone!=="neutral",moving:false};
@@ -903,7 +903,7 @@ export class BoatService {
     }
     if (input.sandboxSystem === "macos" && project?.sandboxProvider == null && !canHostMac(provider)) {
       const enabled = this.sandboxProviders.enabled;
-      const candidate = enabled.find(p => (p.caps.systems ?? [p.caps.os]).includes("macos")) ?? enabled.find(canHostMac);
+      const candidate = enabled.find(p=>p.id === "ownmac") ?? enabled.find(p => (p.caps.systems ?? [p.caps.os]).includes("macos")) ?? enabled.find(canHostMac);
       if (!candidate) throw new TaskError("No enabled provider can host Mac tasks. Choose a Mac provider in Runs on.", "provider_unavailable");
       provider = candidate;
     }
@@ -1939,8 +1939,21 @@ export class BoatService {
       const unlistedMacProviders = new Set<string>();
       const place = async () => {
         reuse = await this.pickSandbox(input, parent, settings, signal);
+        // Persistent Mac accounts still use one credential home per task.
+        if (reuse?.startsWith("ownmac_")) reuse = null;
         if (task.sandboxSystem === "macos" && reuse === null) {
-          reuse = await this.heldMacFor(task, sizing.type, parent, signal, unlistedMacProviders);
+          const own = this.sandboxProviders.get("ownmac");
+          if (own && task.runner === "chat") {
+            try {
+              await own.assertTaskReady?.({agent:task.provider,repos:[task.repo,...task.extraRepos.map(r=>r.repo)].filter((r):r is string=>r!==null),signal});
+              const owned = await (own.allocate ?? own.create)({name:`bb ${id}`,type:sizing.type,system:"macos",ttlSeconds:0,gitGuard:true,signal});
+              this.store.update(id,{sandboxProvider:own.id});
+              reuse = owned.id;
+              createdSandbox = owned.id;
+              if (own.waitReady) this.macPreparing.add(owned.id);
+            } catch (error) { if(signal.aborted || ["creation_unknown","creation_allocated"].includes((error as {code?:string}).code ?? ""))throw error; this.store.addEvent(id,"sandbox-provider",`Your Mac unavailable: ${errorText(error)}. Checking approved rental routes.`); }
+          }
+          if (!reuse) reuse = await this.heldMacFor(task, sizing.type, parent, signal, unlistedMacProviders);
           task = this.store.get(id) ?? task;
         }
         stillWanted();
@@ -1948,7 +1961,7 @@ export class BoatService {
         this.sizes.assertSandboxNotResizing(reuse, "Start the task once the move is done, or in a new sandbox."); // sizes
         if (reuse !== null) {
           const leased = this.store.macLeases.held(reuse).length > 0;
-          if (leased !== (task.sandboxSystem === "macos")) throw new TaskError("The sandbox system does not match this task.", "invalid_task");
+          if ((leased || task.sandboxProvider === "ownmac") !== (task.sandboxSystem === "macos")) throw new TaskError("The sandbox system does not match this task.", "invalid_task");
           if (leased) {
             const lease = this.store.macLeases.held(reuse)[0]!;
             const open = new Set(this.store.liveSandboxTasks(reuse).filter(t => t.id !== id).map(t => t.id));
@@ -1960,7 +1973,7 @@ export class BoatService {
             const current = await this.sandboxProvider(task).info(reuse, signal);
             if (current.system === "macos" && task.sandboxSystem !== "macos") throw new TaskError("Linux tasks cannot use a Mac sandbox.", "invalid_task");
           }
-          if (task.sandboxSystem === "macos") {
+          if (task.sandboxSystem === "macos" && task.sandboxProvider !== "ownmac") {
             const lease = this.store.macLeases.held(reuse)[0]!;
             const info = await this.sandboxProvider(task).info(reuse, signal);
             if (lease.releaseAt || info.scheduledReleaseAt) {
@@ -1996,7 +2009,7 @@ export class BoatService {
           this.store.addEvent(id, "sandbox", `Created sandbox ${sandbox.id}${task.snapshot ? ` from snapshot ${task.snapshot}` : ""}`);
           if (sizing.note !== null) this.store.addEvent(id, "sandbox-size", sizing.note); // sizes
         }
-        if (task.sandboxSystem === "macos") {
+        if (task.sandboxSystem === "macos" && task.sandboxProvider !== "ownmac") {
           const lease = this.store.macLeases.held(sandbox.id)[0];
           if (!lease) throw new TaskError(`${this.sandboxProvider(task).displayName} did not report the Mac lease; work cannot safely start.`, "lease_unknown");
           const spec = macTaskResources(this.sandboxProvider(task), sizing.type);
@@ -2509,8 +2522,8 @@ export class BoatService {
     return tasks.some((task) => task.status === "running" || task.status === "starting") || (await this.machineBusy(tasks));
   }
 
-  // Future routing stages: eligible own Mac, then an enrolled monthly Mac.
-  // Both must return null before held day leases and a dispatched new lease.
+  // Your Mac is checked before this lease placement path. Monthly providers
+  // can expose already held capacity here; only day providers allocate.
   private readonly macPreparing = new Set<string>();
   private readonly macCleaning = new Set<string>();
   private macLock: Promise<unknown> = Promise.resolve();
@@ -2557,7 +2570,7 @@ export class BoatService {
 
   private macProviders(preferred: string): SandboxProvider[] {
     const first = this.sandboxProviders.all.find(provider => provider.id === preferred) ?? this.sandboxProviders.forTask({ sandboxProvider: preferred });
-    return [first, ...this.sandboxProviders.enabled.filter(provider => provider.id !== preferred && canHostMac(provider))];
+    return [first, ...this.sandboxProviders.enabled.filter(provider => provider.id !== preferred && canHostMac(provider))].filter(provider=>provider.id !== "ownmac").sort((a,b)=>Number(b.macLeaseKind === "monthly")-Number(a.macLeaseKind === "monthly"));
   }
 
   private async createMacFor(task: Task, type: MachineType, signal: AbortSignal, unlisted = new Set<string>()): Promise<Sandbox> {
@@ -2565,7 +2578,12 @@ export class BoatService {
     let primaryCode: string | undefined;
     for (const provider of this.macProviders(task.sandboxProvider ?? DEFAULT_PROVIDER_ID)) {
       signal.throwIfAborted();
+      if (provider.macLeaseKind === "monthly") continue;
       try {
+        if (task.sandboxProvider === "ownmac") {
+          const estimate = await provider.pricing?.(signal).catch(()=>null);
+          throw new TaskError(`Your Mac is unavailable. Next route: ${provider.displayName}. ${estimate ?? "Confirm current pricing in Settings."} Choose this rental provider in Runs on before starting a new task to approve its cost.`,"mac_rental_confirmation_required");
+        }
         if (!this.sandboxProviders.get(provider.id)) throw new TaskError(`${provider.displayName} is not configured.`, "provider_unavailable");
         if (!canHostMac(provider)) throw new TaskError(`${provider.displayName} has no usable Mac models.`, "provider_unavailable");
         if (provider.caps.headlessAgentRunner === false && task.runner !== "chat") throw new TaskError(`${provider.displayName} needs task chats and bb Connect. Enable Run tasks as chats for this project.`, "chat_required");
@@ -3570,7 +3588,7 @@ export class BoatService {
         if (key !== null) await this.hooks.chat.settleMachine(key);
       }
       await this.hooks.chat.removeMachine(task.hostId);
-      this.store.addEvent(task.id, "sandbox", `Removed bb machine ${task.hostId} and its sandbox ${task.sandboxId ?? ""}`.trim());
+      this.store.addEvent(task.id, "sandbox", task.sandboxProvider === "ownmac" ? "Removed the task’s bb machine; Your Mac and checkout stay." : `Removed bb machine ${task.hostId} and its sandbox ${task.sandboxId ?? ""}`.trim());
       await this.dropMachineSources(task.hostId);
       return "deleted";
     } catch (error) {
@@ -5008,7 +5026,7 @@ export class BoatService {
     options: { status?: "done" | "cancelled"; keepSandbox?: boolean; discard?: boolean; signal?: AbortSignal } = {},
   ): Promise<{ task: Task; sandbox: "deleted" | "kept" | "gone" | "none" }> {
     const task = this.mustGet(idOrPrefix);
-    const mac = task.sandboxId !== null && this.store.macLeases.held(task.sandboxId).length > 0;
+    const mac = task.sandboxId !== null && (task.sandboxProvider === "ownmac" || this.store.macLeases.held(task.sandboxId).length > 0);
     return mac ? this.withMacLock(() => this.closeTaskInner(idOrPrefix,options)) : this.closeTaskInner(idOrPrefix,options);
   }
 
@@ -5057,7 +5075,19 @@ export class BoatService {
     let sandbox: "deleted" | "kept" | "gone" | "none" = "none";
     const current = this.store.get(task.id) ?? task;
     const sandboxId = current.sandboxId;
-    if (sandboxId !== null && this.store.macLeases.held(sandboxId).length > 0) {
+    if (sandboxId !== null && current.sandboxProvider === "ownmac") {
+      try {
+        let removed = true;
+        if (current.hostId && this.hooks.chat) {
+          for (const threadId of this.store.chatThreads(task.id)) await this.hooks.chat.archive(threadId);
+          removed = (await this.removeMachineIfUnused(current)) === "deleted";
+        }
+        await this.sandboxProviders.all.find(p=>p.id==="ownmac")?.closeTaskCredentials?.(sandboxId,options.signal,removed);
+      }
+      catch(error) { this.store.addEvent(task.id,"credential-cleanup-failed",errorText(error)); this.hooks.changed([task.id]); throw error; }
+      sandbox = "kept";
+      this.store.addEvent(task.id,"sandbox","Kept Your Mac and its work; task credentials removed and verified.");
+    } else if (sandboxId !== null && this.store.macLeases.held(sandboxId).length > 0) {
       sandbox = "kept";
       this.store.addEvent(task.id, "sandbox", permanentMacKeep ? "Kept the Mac; automatic hand-back is off until it is deleted manually." : "Kept the paid Mac lease for reuse until hand-back.");
     } else if (this.isNativeChat(current)) {
