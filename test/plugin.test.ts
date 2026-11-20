@@ -1082,3 +1082,34 @@ test("sandbox sizes through the page's RPCs: the dialog's facts, a move, a proje
   assert.ok(calls().some((call) => call[0] === "exec" && call.includes("--detach") && call.includes(cliTask.sandboxId)), "the CLI's task is measured too");
   assert.equal((await harness.runCli(["task", "close", cliTask.id, "--cancel"])).exitCode, 0);
 });
+
+test("a running orchestrator receives monthly guidance once through tools, never through replaced instructions",async t=>{
+ const {bb,harness}=await setup();t.after(()=>harness.lifecycle.dispose());
+ const {TaskStore}=await import("../src/store.ts");
+ const {MONTHLY_MAC_PRICES}=await import("../src/monthly-macs.ts");
+ const store=new TaskStore(()=>bb.storage.database());
+ const context=makePluginAgentConfigurationContext({pluginMetadata:{role:"orchestrator",project:{id:"web",name:"Web",environment:null,snapshot:null,source:"boat",bbProjectId:null,repos:[{repo:"acme/web",baseBranch:"main"}],protocolPath:"docs/orchestrator.md",delivery:"pr"}}});
+ // The provider has already constructed its session with these instructions.
+ const first=await harness.resolveAgentConfiguration(context);
+ const suggestion={id:"monthly-tool-card",group:"instabox:USD",kind:"rent",createdAt:new Date().toISOString(),candidate:MONTHLY_MAC_PRICES[1]!,alternatives:[],dayProvider:"instabox",chip:"M2",ramGB:16,currency:"USD",days:20,cost:216,dayRate:10.8,breakEven:119.99/10.8,forecast:{low:18,base:20,high:22},savings:96.01,answer:null,answeredAt:null};
+ bb.storage.database().prepare("INSERT INTO monthly_mac_suggestions (id,group_id,created_at,active,body) VALUES (?,?,?,1,?)").run(suggestion.id,suggestion.group,Date.now(),JSON.stringify(suggestion));
+ for(let i=0;i<2;i++)assert.equal((await harness.resolveAgentConfiguration(context)).instructions,first.instructions);
+ assert.doesNotMatch(first.instructions??"",/boat-monthly-mac/);
+ assert.match(first.instructions??"",/docs\/orchestrator.md/);
+ assert.equal((bb.storage.database().prepare("SELECT COUNT(*) AS n FROM monthly_mac_shown").get() as {n:number}).n,0,"configuration cannot consume delivery");
+ const tasks=toolText(await harness.callAgentTool("boat_tasks",{},{threadId:"thr_orch"}));
+ assert.equal((tasks.match(/::boat-monthly-mac\{id="monthly-tool-card"\}/g)??[]).length,1);
+ for(const name of ["boat_tasks","boat_status","boat_protocol"]){
+   const text=toolText(await harness.callAgentTool(name,{},{threadId:"thr_orch"}));assert.doesNotMatch(text,/::boat-monthly-mac/);
+ }
+ assert.equal(new TaskStore(()=>bb.storage.database()).monthlyMacs.takeForTool("thr_orch").length,0,"delivery survives reloads");
+ assert.equal(store.monthlyMacs.get(suggestion.id)?.answer,null,"delivery is not an answer");
+});
+
+test("status and task tools omit absent monthly guidance without trailing newlines",async t=>{
+ const {harness}=await setup();t.after(()=>harness.lifecycle.dispose());
+ for(const name of ["boat_status","boat_tasks"]){
+ const text=toolText(await harness.callAgentTool(name,{},{threadId:"thr_orch"}));
+ assert.equal(text,text.trimEnd());assert.doesNotMatch(text,/boat-monthly-mac/);
+ }
+});

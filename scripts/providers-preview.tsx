@@ -41,6 +41,14 @@ function NamePreview() {
   </>;
 }
 const allScenes = [
+  "monthly-chat",
+  "monthly-today",
+  "monthly-today-alone",
+  "monthly-usage",
+  "monthly-below",
+  "monthly-receipt",
+  "monthly-own",
+  "monthly-cancel",
   "name",
   "usage",
   "credential-settings-ready",

@@ -1,3 +1,4 @@
+import { MonthlyMacAdvisor, MONTHLY_MAC_MIGRATIONS } from "./monthly-mac-advisor.ts";
 import { MacLeaseLedger, MAC_LEASE_MIGRATIONS, MAC_CREDENTIAL_NOTICES_MIGRATION, MAC_CREDENTIAL_EXPIRIES_MIGRATION } from "./mac-leases.ts";
 // Plugin-owned task registry (SQLite, <dataDir>/plugins/boat/data.db).
 //
@@ -554,17 +555,22 @@ export interface TaskFilter {
 
 export class TaskStore {
   readonly macLeases: MacLeaseLedger;
+  readonly monthlyMacs: MonthlyMacAdvisor;
   private readonly db: () => Database.Database;
 
   constructor(db: () => Database.Database) {
     this.db = db;
     this.macLeases = new MacLeaseLedger(db);
+    this.monthlyMacs = new MonthlyMacAdvisor(db, this.macLeases);
   }
 
   static migrations(): string[] {
     return [...MIGRATIONS, ...MAC_LEASE_MIGRATIONS, `ALTER TABLE tasks ADD COLUMN sandbox_system TEXT NOT NULL DEFAULT 'linux'`,
       `ALTER TABLE mac_leases ADD COLUMN billing_increment_seconds INTEGER NOT NULL DEFAULT 1`,
-      `ALTER TABLE tasks ADD COLUMN start_options TEXT`, MAC_CREDENTIAL_NOTICES_MIGRATION, MAC_CREDENTIAL_EXPIRIES_MIGRATION];
+      `ALTER TABLE tasks ADD COLUMN start_options TEXT`, MAC_CREDENTIAL_NOTICES_MIGRATION, MAC_CREDENTIAL_EXPIRIES_MIGRATION,
+      ...MONTHLY_MAC_MIGRATIONS,
+      // Reset earlier instruction-time delivery claims for live sessions.
+      `DELETE FROM monthly_mac_shown`];
   }
 
   insert(task: Task): Task {

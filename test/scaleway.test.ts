@@ -774,7 +774,7 @@ test("cleanup failure persists a billing notice, tells attached threads once, an
   assert.ok(!f.calls.some(call=>call.method==="DELETE"));
   const runtime={service,projects:{list:()=>[]},setup:null} as unknown as import("../src/runtime.ts").Runtime;
   const handlers=providerHandlers(runtime);
-  assert.equal(handlers.macUsage().notices?.[0]!.text,saved.noticeText);
+  assert.equal((await handlers.macUsage()).notices?.[0]!.text,saved.noticeText);
   assert.ok((await handlers.sandboxProviders()).providers.find(row=>row.id==="scaleway")!.releaseNotice!.includes(saved.noticeText!));
   const {providerStates}=await import("../src/provider-status.ts");
   const states=await providerStates({registry:service.sandboxProviders,projects:()=>[],machines:()=>new Set(),boatSetup:null,instabox:null});
@@ -782,7 +782,7 @@ test("cleanup failure persists a billing notice, tells attached threads once, an
   assert.ok(f.store.sandboxTasks(sandbox.id).every(task=>f.store.events(task.id).some(event=>event.kind==="credential-cleanup")));
   await service.processMacLeases(Date.now()+86400_000);assert.equal(told.length,2,"one daily reminder");
   f.sshExit(0);await service.processMacLeases();
-  assert.equal(f.store.macLeases.held().length,0);assert.equal(handlers.macUsage().notices!.length,1);assert.equal(handlers.macUsage().notices![0]!.tokenRevocation,true);
+  assert.equal(f.store.macLeases.held().length,0);assert.equal((await handlers.macUsage()).notices!.length,1);assert.equal((await handlers.macUsage()).notices![0]!.tokenRevocation,true);
 });
 test("a setup failure with no delivered credentials skips a transient cleanup GET and schedules deletion",async t=>{
   const f=await fixture(t,1,rentedCredentials());f.failSetup();
@@ -872,7 +872,7 @@ test("manual console deletion closes the lease on reconcile but token reminders 
   assert.equal(f.store.macLeases.held().length,0);assert.equal(f.store.macLeases.list()[0]!.endReason,"deleted");
   assert.equal(f.store.macLeases.credentialNotices().length,1);assert.match(f.provider.releaseNotice!()!,/GitHub token revocation required/);
   const page=providerHandlers({service,projects:{list:()=>[]},setup:null} as unknown as import("../src/runtime.ts").Runtime);
-  assert.equal(page.macUsage().notices![0]!.tokenRevocation,true);
+  assert.equal((await page.macUsage()).notices![0]!.tokenRevocation,true);
   f.store.macLeases.clearNotice(lease.id);
   service.refreshCredentialNotices();changed=0;
   service.refreshCredentialNotices(Date.parse(notice.expiresAt!)-1);assert.equal(changed,0);

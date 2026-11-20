@@ -110,12 +110,13 @@ export class MacLeaseLedger {
   /** Billable time includes the entire committed minimum, even after an early
    * deletion. Allocate that minimum uniformly across its actual interval;
    * subsequent time uses the provider's hourPrice, with no rounding to days. */
-  between(from: number, until: number, now = Date.now(), machineId?: string, provider?: string) {
+  between(from: number, until: number, now = Date.now(), machineId?: string, provider?: string, currency?: string) {
     let leaseDays = 0; const costs: Record<string, number> = {};
     const overlap = (start: number, end: number) => Math.max(0, Math.min(end,until)-Math.max(start,from));
     for (const lease of this.list()) {
       if (machineId && lease.machineId !== machineId) continue;
       if (provider && lease.provider !== provider) continue;
+      if (currency && lease.currency !== currency) continue;
       const start = Date.parse(lease.startedAt), minimumEnd = Date.parse(lease.paidUntil);
       const end = this.billableEnd(lease,now);
       const minimumMs = overlap(start,minimumEnd), extraMs = overlap(minimumEnd,end);

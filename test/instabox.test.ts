@@ -917,7 +917,7 @@ test("explicit keep_sandbox protects closed unpushed work across restarts and st
   await restarted.processMacLeases(Date.parse(lease.paidUntil)+3*86400000);
   assert.equal(box.state().machines[task.sandboxId!].state,"running");
   const {providerHandlers}=await import("../src/rpc-providers.ts");
-  const usage=providerHandlers({service,bb:{}} as unknown as import("../src/runtime.ts").Runtime).macUsage();
+  const usage=await providerHandlers({service,bb:{}} as unknown as import("../src/runtime.ts").Runtime).macUsage();
   assert.equal(usage.held[0]!.kept,true);
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
 });
@@ -1153,10 +1153,10 @@ test("page-started kept leases persist recurring cost notices without an orchest
   await service.processMacLeases(end+1);
   const {providerHandlers}=await import("../src/rpc-providers.ts");
   const view=()=>providerHandlers({service,bb:{}} as unknown as import("../src/runtime.ts").Runtime).macUsage();
-  assert.match(view().notices[0]!.text,/Mac lease is kept; compute cost \$10\.80/);
+  assert.match((await view()).notices[0]!.text,/Mac lease is kept; compute cost \$10\.80/);
   const restarted=new BoatService(service.sandboxProviders,store,hooks().hooks);
   await restarted.processMacLeases(end+86400000+1);
-  assert.match(view().notices[0]!.text,/compute cost \$21\.60/);assert.equal(view().notices.length,1);
+  assert.match((await view()).notices[0]!.text,/compute cost \$21\.60/);assert.equal((await view()).notices.length,1);
 });
 
 test("an unactivated Instabox Mac account fails preflight before model lookup or create",async t=>{

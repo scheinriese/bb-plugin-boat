@@ -144,7 +144,7 @@ Its default preserves Instabox's elapsed-time rate. Scaleway supplies 3600: a
 added after the existing main migrations, preserving held Instabox leases and
 their elapsed-time billing on upgrade.
 
-The Usage table and footer show each Mac provider separately: paid minimum, per-second or hourly billing after the minimum, release scheduled, or kept with hand-back off. Task lines use the same paid-until words and rates. No monthly-price recommendation or break-even marker is shown without a live monthly-price source.
+The Usage table and footer show each Mac provider separately: paid minimum, per-second or hourly billing after the minimum, release scheduled, or kept with hand-back off. Task lines use the same paid-until words and rates. Monthly recommendations and break-even markers use the dated, owner-overridable catalog and policy in [monthly Mac suggestions](monthly-macs.md).
 
 A paused Mac whose unshipped work cannot be verified names `bb boat sandbox resume <id>` in its notice. Page notice text clears when work resumes or the lease is released, while reminder delivery stays limited to once per day. Scaleway listings and orphan checks only read; ownership recovery and IAM-key cleanup run in the maintenance sweep (or the explicit recovery command).
 

@@ -1,3 +1,8 @@
+import { TodayStartHereActions } from "../../web/today-start-here";
+import { MonthlyMacCard } from "../../web/monthly-mac";
+import { LeaseDayMeter } from "../../web/mac-usage";
+import { MONTHLY_MAC_PRICES } from "../../src/monthly-macs";
+import type { MonthlyMacSuggestion } from "../../contract-monthly-macs";
 import { MacLeaseNotice } from "../../web/mac-lease-notices";
 import { CREDENTIAL_RISKS_URL, CLEANUP_NOTICE_PREFIX, TOKEN_REVOCATION_NOTICE_PREFIX } from "../../credential-warnings";
 import { StoppedSandboxActions } from "../../web/sandbox-row-actions";
@@ -154,7 +159,26 @@ export const scaleway: SandboxProviderDto = {
     { id: "enabled", label: "On", done: true, possible: true, detail: "Credentials are checked for the chosen agent and repositories before rental" },
   ],
 };
+export const monthlySuggestion: MonthlyMacSuggestion = {
+  id:"sample-monthly", group:"instabox:USD",kind:"rent",createdAt:"2026-11-20T00:00:00Z",
+  candidate:MONTHLY_MAC_PRICES[1]!,alternatives:[MONTHLY_MAC_PRICES[5]!],dayProvider:"instabox",chip:"M2",ramGB:16,currency:"USD",days:16,cost:172.8,dayRate:10.8,breakEven:119.99/10.8,forecast:{low:15,base:18,high:22},savings:74.41,answer:null,answeredAt:null,
+};
 export function scene(name: string) {
+  if(name==="monthly-zero")return <ThisMonthUsage plan={plan} mac={{...mac,byProvider:undefined,month:{leaseDays:1,costs:{USD:10.8}},rolling30:{leaseDays:0,costs:{}},monthlyComparisons:[{dayProvider:"instabox",currency:"USD",candidate:monthlySuggestion.candidate,breakEven:monthlySuggestion.breakEven}],monthlySuggestions:[]}}/>;
+
+  if(name==="monthly-today-alone")return <div className="max-w-[720px]"><p className="mb-6 text-[13px] text-[#A8A8A8]">0 need you · 1 in progress</p><h3 className="text-sm font-medium">Start here</h3><MonthlyMacCard suggestion={monthlySuggestion} project="iOS app"/><TodayStartHereActions>{[]}{[]}</TodayStartHereActions></div>;
+  if(name==="today-actions")return <TodayStartHereActions><p>Choose a sign-in flow</p></TodayStartHereActions>;
+  if(name==="today-actions-empty")return <TodayStartHereActions>{[]}{null}{false}</TodayStartHereActions>;
+
+  if(name==="monthly-chat")return <div className="max-w-[720px]"><p className="mb-4 text-[13px] text-[#A8A8A8]">The UI tests are running on an Instabox Mac. Your Mac leases have added up; one cost suggestion:</p><MonthlyMacCard suggestion={monthlySuggestion} onAnswer={()=>{}}/><p className="mt-4 rounded-lg border border-[#2A2A2A] p-3 text-xs text-[#A8A8A8]">● 1 working · The UI tests go on; nothing waits on this</p></div>;
+  if(name==="monthly-today")return <div className="max-w-[720px]"><p className="mb-6 text-[13px] text-[#A8A8A8]"><span className="text-[#F0B135]">● 2 need you</span> · 1 ready · 1 in progress</p><h3 className="text-sm font-medium">Start here</h3><MonthlyMacCard suggestion={monthlySuggestion}/><div className="divide-y divide-[#262626] rounded-lg border border-[#262626] text-[13px]"><p className="p-3.5">Which sign-in flow should the app use?</p><p className="p-3.5">Review the new onboarding screens</p></div></div>;
+  if(name==="monthly-usage")return <ThisMonthUsage plan={plan} instabox={linux} mac={{...mac,byProvider:undefined,month:{leaseDays:16,costs:{USD:172.8}},rolling30:{leaseDays:16,costs:{USD:172.8}},monthlyComparisons:[{dayProvider:"instabox",currency:"USD",candidate:monthlySuggestion.candidate,breakEven:monthlySuggestion.breakEven}],monthlySuggestions:[monthlySuggestion]}} active={3} cap={300} idleMinutes={60}/>;
+  if(name==="monthly-below")return <ThisMonthUsage plan={plan} mac={{...mac,byProvider:undefined,month:{leaseDays:5,costs:{USD:54}},rolling30:{leaseDays:5,costs:{USD:54}},monthlyComparisons:[{dayProvider:"instabox",currency:"USD",candidate:monthlySuggestion.candidate,breakEven:monthlySuggestion.breakEven}],monthlySuggestions:[]}}/>;
+  if(name==="monthly-receipt")return <MonthlyMacCard suggestion={{...monthlySuggestion,answer:"keep",answeredAt:"2026-11-20T00:01:00Z"}}/>;
+  if(name==="monthly-own")return <MonthlyMacCard suggestion={{...monthlySuggestion,answer:"own",answeredAt:"2026-11-20T00:01:00Z"}}/>;
+  if(name==="monthly-cancel")return <MonthlyMacCard suggestion={{...monthlySuggestion,kind:"cancel",days:3,forecast:{low:2,base:3,high:4},savings:-87.59}}/>;
+  if(name==="meter-over")return <LeaseDayMeter days={45} breakEven={12} showCount/>;
+  if(name==="meter-outside")return <LeaseDayMeter days={5} breakEven={35}/>;
   if(name === "credential-revocation") {
     const text = `${TOKEN_REVOCATION_NOTICE_PREFIX} Revoke or rotate the GitHub token in GitHub settings; it may still be on returned hardware (example-mac). This reminder stays until the recorded token expiry passes.`;
     return <div className="space-y-4"><ProviderRow provider={{...scaleway,waitingTasks:0,releaseNotice:text,status:"Credential action required"}}/><MacLeaseNotice notice={{id:"token-revocation:example-lease",provider:"scaleway",label:"Scaleway",machineId:"example-mac",at:"2030-01-01T00:00:00Z",text,tokenRevocation:true,expiresAt:"2030-04-01T00:00:00Z"}}/></div>;

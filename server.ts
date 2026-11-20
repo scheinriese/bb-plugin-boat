@@ -1,3 +1,5 @@
+import { MONTHLY_MACS_TAG } from "./contract-monthly-macs.ts";
+import { monthlyMacPrices } from "./src/monthly-macs.ts";
 import { createCredentialSource, createAgentRouteCheck } from "./src/credentials.ts";
 import { createRentedMachineScope } from "./src/rented-machine-scope.ts";
 import { createProviderRecovery } from "./src/provider-recovery.ts";
@@ -242,7 +244,7 @@ export default async function plugin(bb: BbPluginApi) {
   let attentionNotifications: AttentionNotifications | null = null;
 
   function changed(): void {
-    bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings, PROVIDERS_TAG]);
+    bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings, PROVIDERS_TAG, MONTHLY_MACS_TAG]);
     bb.realtime.publish(REALTIME_CHANNEL, null);
     void attentionNotifications?.flush();
   }
@@ -480,6 +482,7 @@ export default async function plugin(bb: BbPluginApi) {
     notifyUser: async () => undefined,
     setup,
     providers: {
+      onChange: listener => providerSecrets.onChange(listener),
       states: (options) =>
         providerStates(
           {
@@ -995,6 +998,13 @@ export default async function plugin(bb: BbPluginApi) {
         } catch (error) {
           bb.log.warn(`machine keeper failed: ${error instanceof Error ? error.message : String(error)}`);
         }
+        // Persist one forecast per week even when no usage page is open.
+        try {
+          const before = store.monthlyMacs.active().map(item=>item.id).join(",");
+          const after = store.monthlyMacs.refresh(monthlyMacPrices((await settings.get()).monthlyMacPricesJson)).map(item=>item.id).join(",");
+          if (before !== after) changed();
+        }
+        catch (error) { bb.log.warn(`monthly Mac forecast failed: ${String(error)}`); }
         await recoverProviders();
         await maintainLeasesAndKeepAwake({
           hasMacLeases: () => store.macLeases.held().length > 0,
