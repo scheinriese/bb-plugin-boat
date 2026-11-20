@@ -132,9 +132,10 @@ export default async function plugin(bb: BbPluginApi) {
   settings.onChange(keys => { if (keys.includes("scalewayProjectId")) void githubScope.configurationChanged("project").catch(scopeNotice); });
   await githubScope.assertAllowed().catch(scopeNotice);
   const machineCredentials = createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), assertDeliveryAllowed: githubScope.assertAllowed, agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) });
-  const ownmac = await createOwnMacProvider({ config: () => settings.get(), kv: bb.storage.kv, taskState:id=>{const tasks=store.liveSandboxTasks(id);if(tasks.some(task=>["starting","running"].includes(task.status)))return "running";if(tasks.length)return "idle";return store.sandboxTasks(id).length?"closed":null;}, credentials: createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) }) });
+  let ownMacTargetChanged:(()=>Promise<void>)|undefined;
+  const ownmac = await createOwnMacProvider({ config: () => settings.get(), kv: bb.storage.kv, onTargetChanged:async()=>{await ownMacTargetChanged?.();}, taskState:id=>{const tasks=store.liveSandboxTasks(id);if(tasks.some(task=>["starting","running"].includes(task.status)))return "running";if(tasks.length)return "idle";return store.sandboxTasks(id).length?"closed":null;}, credentials: createCredentialSource({ githubToken: () => providerSecrets.rentedMachineGithubToken(), agentAvailable: createAgentRouteCheck(bb, createConnectCheck(bb, { cacheMs: 0 })) }) });
   let ownMacOn = (await settings.get()).ownMacEnabled;
-  settings.onChange(() => { void settings.get().then(values => { ownMacOn = values.ownMacEnabled; }); });
+  settings.onChange(keys => { void settings.get().then(async values => { ownMacOn = values.ownMacEnabled; if(keys.includes("ownMacAlias"))await ownmac.ownMacStatus!(true); }).catch(()=>bb.log.warn("Your Mac settings need a connection test.")); });
   const scaleway = createScalewayProvider({ credentials: machineCredentials, api: new ScalewayApi({ key: () => providerSecrets.scalewayKey(), config: async () => { const values = await settings.get(); return { projectId: values.scalewayProjectId, zone: values.scalewayZone }; } }), keys: new ScalewayKeys(join(dirname(bb.storage.database().name), "scaleway-keys")), ledger: store.macLeases });
   scaleway.configured = async () => Boolean((await settings.get()).scalewayProjectId) || providerSecrets.scalewayKeyPresent();
   let scalewayOn = Boolean((await settings.get()).scalewayProjectId);
@@ -505,6 +506,8 @@ export default async function plugin(bb: BbPluginApi) {
     wake: () => wakeMonitor(),
   });
   runtimeRef = runtime;
+  ownMacTargetChanged=()=>service.deliverOwnMacTargetNotice();
+  void service.deliverOwnMacTargetNotice().catch(()=>bb.log.warn("Your Mac target-change notice is waiting for chat delivery."));
   // The paid Claude resume: its own timer, one pass at a time, so it never holds up the monitor's loop or the relay.
   const paidTimer = createPaidResumeTimer(
     async () => {

@@ -22,7 +22,6 @@ export interface Reading extends Identity {
   freeMiB: number;
   cpus: number;
   load: number;
-  running: number;
 }
 export const IDENTITY_SCRIPT = `set -eu
 uuid=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F '"' '/"IOPlatformUUID"/ {print $(NF-1); exit}')
@@ -33,7 +32,8 @@ export const AVAILABILITY_SCRIPT = `${IDENTITY_SCRIPT}
 vm=$(sysctl -n kern.hv_vmm_present 2>/dev/null || echo unknown)
 groups=$(id -Gn)
 admin=$(case " $groups " in (*' admin '*) echo 1 ;; (*) echo 0 ;; esac)
-ac=$(case "$(pmset -g batt)" in (*"AC Power"*) echo 1 ;; (*"Battery Power"*) echo 0 ;; (*) exit 1 ;; esac)
+if sudo -n true </dev/null >/dev/null 2>&1; then admin=1; fi
+ac=$(case "$(pmset -g batt)" in (*"AC Power"*) echo 1 ;; (*"Battery Power"*|*"UPS Power"*) echo 0 ;; (*) exit 1 ;; esac)
 console=$(stat -f %Su /dev/console)
 session=0
 if [ "$console" = "$(id -un)" ]; then session=1; fi
@@ -43,8 +43,7 @@ memory=$(sysctl -n hw.memsize)
 free=$(vm_stat | awk 'NR==1 {for(i=1;i<=NF;i++) if($i=="of") page=$(i+1)} /^Pages (free|inactive|speculative):/ {gsub(/\\./,"",$NF); pages+=$NF} END {if(page>0) printf "%.0f", pages*page/1048576; else exit 1}')
 cpus=$(sysctl -n hw.ncpu)
 load=$(sysctl -n vm.loadavg | awk '{print $2}')
-running=$(pgrep -u "$(id -u)" -f '(/claude|/codex)( |$)' 2>/dev/null | wc -l | tr -d ' ')
-printf 'vm=%s\\nadmin=%s\\nac=%s\\nsession=%s\\nmemoryMiB=%s\\nfreeMiB=%s\\ncpus=%s\\nload=%s\\nrunning=%s\\n' "$vm" "$admin" "$ac" "$session" "$((memory / 1048576))" "$free" "$cpus" "$load" "$running"
+printf 'vm=%s\\nadmin=%s\\nac=%s\\nsession=%s\\nmemoryMiB=%s\\nfreeMiB=%s\\ncpus=%s\\nload=%s\\n' "$vm" "$admin" "$ac" "$session" "$((memory / 1048576))" "$free" "$cpus" "$load"
 `;
 const readingSchema = z.object({
   hardware: z.string().regex(/^[a-f0-9]{64}$/),
@@ -61,7 +60,6 @@ const readingSchema = z.object({
   freeMiB: z.coerce.number().nonnegative(),
   cpus: z.coerce.number().int().positive(),
   load: z.coerce.number().nonnegative(),
-  running: z.coerce.number().int().nonnegative(),
 });
 export function parseReading(stdout: string): Reading {
   return readingSchema.parse(
@@ -98,7 +96,7 @@ export function availability(
     return "Not enough free memory";
   if (reading.load > Math.max(1, reading.cpus - 1))
     return "Not enough free CPU";
-  if (Math.max(running, reading.running) >= max) return "At task limit";
+  if (running >= max) return "At task limit";
   return "Available";
 }
 // No identity files or private keys are read by the plugin. OpenSSH resolves

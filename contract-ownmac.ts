@@ -1,6 +1,10 @@
 import { z } from "zod";
 export const OWN_MAC_MIN_FREE_GB = 6;
 export const OWN_MAC_TAG = "boat:ownmac";
+export const OWN_MAC_TARGET_CHANGED =
+  "Your Mac target changed; Test connection again before tasks run there";
+export const OWN_MAC_VM_POWER_HELP =
+  "Inside a VM, power is read from the guest. Keep the host Mac on mains power; host battery use may not be detected.";
 export const OWN_MAC_GUIDE =
   "https://github.com/scheinriese/bb-plugin-boat/blob/main/docs/settings.md#your-mac";
 export const ownMacCodeSchema = z.enum([
@@ -15,6 +19,7 @@ export const ownMacCodeSchema = z.enum([
   "session",
   "personal",
   "admin",
+  "target",
   "cleanup",
 ]);
 export const ownMacFactsSchema = z.object({
@@ -71,6 +76,7 @@ export const ownMacNoticeSchema = z.object({
   title: z.string(),
   alias: z.string(),
   reason: z.string(),
+  canWaitForOwnMac: z.boolean().optional(),
   refusal: z.enum(["personal", "admin"]).optional(),
   account: z.string().optional(),
   fallback: z

@@ -50,7 +50,7 @@ export function ownMacTaskNotice(
         reason:
           state?.code === "busy"
             ? `busy (${state.running} of ${state.max})`
-            : state?.code === "personal" || state?.code === "admin"
+            : state?.code === "personal" || state?.code === "admin" || state?.code === "target"
               ? "can't be used"
               : state?.code === "memory"
                 ? "low on memory"

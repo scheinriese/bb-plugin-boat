@@ -1,5 +1,6 @@
 import {
   OWN_MAC_MIN_FREE_GB,
+  OWN_MAC_TARGET_CHANGED,
   ownMacFactsSchema,
   type OwnMacFacts,
 } from "../../../contract-ownmac.ts";
@@ -57,6 +58,10 @@ const recordSchema = z.object({
   notice: z.string().optional(),
   proxyRemovalFailed: z.boolean().optional(),
 });
+const targetSchema = recordSchema
+  .pick({ alias: true, hardware: true, user: true, uid: true })
+  .extend({ vm: z.boolean().nullable() });
+type Target = z.infer<typeof targetSchema>;
 type Record = z.infer<typeof recordSchema>;
 export const OWN_MAC_RECORDS = "ownMacTasksV1";
 const fail = (message: string, code = "host_unavailable") =>
@@ -69,6 +74,7 @@ export async function createOwnMacProvider(options: {
   local?: () => Promise<Identity>;
   now?: () => number;
   taskState?: (id: string) => "running" | "idle" | "closed" | null;
+  onTargetChanged?: () => Promise<void>;
 }) {
   const readConfig = async () =>
     ownMacConfigSchema.parse(await options.config());
@@ -115,6 +121,16 @@ export async function createOwnMacProvider(options: {
   const setupSchema = z.object({
     step: z.number().int().min(0).max(7).default(0),
     testedAlias: z.string().default(""),
+    target: targetSchema.optional(),
+    observedAlias: z.string().optional(),
+    changedTarget: z.string().optional(),
+    targetNotice: z
+      .object({
+        id: z.string(),
+        text: z.string(),
+        deliveredTo: z.array(z.string()),
+      })
+      .optional(),
     since: z.string().nullable().default(null),
     refusal: z.enum(["personal", "admin"]).optional(),
     refusedAlias: z.string().optional(),
@@ -130,6 +146,64 @@ export async function createOwnMacProvider(options: {
   });
   let setup = setupSchema.parse((await options.kv.get<unknown>(metaKey)) ?? {});
   const saveSetup = () => options.kv.set(metaKey, setup);
+  if (setup.observedAlias === undefined) {
+    setup.observedAlias =
+      setup.target?.alias ??
+      (setup.testedAlias || (await readConfig()).ownMacAlias);
+    await saveSetup();
+  }
+  const targetOf = (alias: string, value: Reading): Target =>
+    targetSchema.parse({
+      alias,
+      hardware: value.hardware,
+      user: value.user,
+      uid: value.uid,
+      vm: value.vm,
+    });
+  const sameTarget = (a: Target, b: Target) =>
+    a.alias === b.alias &&
+    a.hardware === b.hardware &&
+    a.user === b.user &&
+    a.uid === b.uid &&
+    a.vm === b.vm;
+  async function targetChanged(fingerprint: string) {
+    if (setup.changedTarget !== fingerprint) {
+      setup.changedTarget = fingerprint;
+      setup.targetNotice = {
+        id: randomUUID(),
+        text: OWN_MAC_TARGET_CHANGED,
+        deliveredTo: [],
+      };
+      await saveSetup();
+    }
+    await options.onTargetChanged?.().catch(() => undefined);
+  }
+  async function observeAlias(alias: string) {
+    if (setup.observedAlias !== alias) {
+      setup.observedAlias = alias;
+      await targetChanged(JSON.stringify({ alias }));
+    }
+  }
+  async function observeTarget(alias: string, value: Reading) {
+    if (setup.target && !sameTarget(setup.target, targetOf(alias, value)))
+      await targetChanged(
+        JSON.stringify(
+          setup.target.alias !== alias ? { alias } : targetOf(alias, value),
+        ),
+      );
+  }
+  async function assertPinned(alias: string, value: Reading) {
+    const config = await readConfig();
+    await observeAlias(config.ownMacAlias);
+    await observeTarget(alias, value);
+    if (
+      config.ownMacAlias !== alias ||
+      !setup.target ||
+      setup.changedTarget !== undefined ||
+      !sameTarget(setup.target, targetOf(alias, value))
+    )
+      throw fail("Test connection again", "ownmac_target_changed");
+  }
   const reserves = (value: Record) =>
     value.active &&
     (!options.taskState ||
@@ -168,11 +242,15 @@ export async function createOwnMacProvider(options: {
       freeMiB: value?.freeMiB,
       onPower: value?.ac,
       loggedIn: value?.session,
-      account: code === "personal" ? undefined : value?.user,
+      account:
+        code === "personal" || code === "target" ? undefined : value?.user,
       checkedAt: new Date(cached?.at ?? failedProbe?.at ?? now()).toISOString(),
       since: setup.since,
-      tested:
-        setup.testedAlias === config.ownMacAlias && Boolean(config.ownMacAlias),
+      tested: Boolean(
+        setup.target &&
+        setup.target.alias === config.ownMacAlias &&
+        code !== "target",
+      ),
       setupSteps: setup.step,
       testResult: setup.testResult,
       cleanup: clean,
@@ -209,6 +287,7 @@ export async function createOwnMacProvider(options: {
       reading: parseReading(result.stdout),
       local,
     };
+    await observeTarget(config.ownMacAlias, cached.reading);
     setup.since = null;
     failedProbe = null;
     return cached;
@@ -218,6 +297,7 @@ export async function createOwnMacProvider(options: {
     signal?: AbortSignal,
   ): Promise<OwnMacFacts & { reading?: Reading }> {
     const config = await readConfig();
+    await observeAlias(config.ownMacAlias);
     configuredIsolation = config.ownMacIsolation;
     if (
       setup.step === 5 &&
@@ -229,6 +309,14 @@ export async function createOwnMacProvider(options: {
     }
     if ([...records.values()].some((value) => value.notice))
       return facts(config, "Logins left behind", "cleanup");
+    if (
+      config.ownMacAlias &&
+      ((setup.target &&
+        (config.ownMacAlias !== setup.target.alias ||
+          setup.changedTarget !== undefined)) ||
+        (!setup.target && config.ownMacEnabled))
+    )
+      return facts(config, "Test connection again", "target");
     if (
       (config.ownMacPaused || !config.ownMacEnabled) &&
       setup.refusal &&
@@ -279,6 +367,11 @@ export async function createOwnMacProvider(options: {
         now() - cached.at >= 45000
       )
         await readHost(config, signal);
+      if (
+        !setup.target ||
+        !sameTarget(setup.target, targetOf(config.ownMacAlias, cached!.reading))
+      )
+        return facts(config, "Test connection again", "target");
       const status = availability(
         cached!.reading,
         cached!.local,
@@ -311,6 +404,7 @@ export async function createOwnMacProvider(options: {
   }
   async function testConnection(): Promise<OwnMacFacts> {
     const config = await readConfig();
+    await observeAlias(config.ownMacAlias);
     configuredIsolation = config.ownMacIsolation;
     if (config.ownMacAlias !== setup.testedAlias)
       setup.step = Math.min(setup.step, 4);
@@ -329,6 +423,8 @@ export async function createOwnMacProvider(options: {
       delete setup.refusedAlias;
       setup.step = 5;
       setup.testedAlias = config.ownMacAlias;
+      setup.target = targetOf(config.ownMacAlias, value.reading);
+      delete setup.changedTarget;
       const r = value.reading;
       setup.testResult = {
         ok: true,
@@ -338,7 +434,7 @@ export async function createOwnMacProvider(options: {
       };
       await saveSetup();
       const { reading: _reading, ...current } = await probe(false);
-      return { ...current, tested: true };
+      return current;
     } catch (error) {
       const failure = (error as { code?: string }).code;
       if (failure === "personal" || failure === "admin") {
@@ -420,12 +516,16 @@ export async function createOwnMacProvider(options: {
     if (result.exitCode) throw fail("Your Mac is asleep or unreachable.");
     const reading = parseReading(result.stdout),
       local = await (options.local ?? localIdentity)();
+    await observeAlias((await readConfig()).ownMacAlias);
+    if (value.alias === setup.target?.alias)
+      await observeTarget(value.alias, reading);
     const reason = refusal(reading, local);
     if (reason) throw fail(reason, "ownmac_refused");
     if (
       reading.hardware !== value.hardware ||
       reading.user !== value.user ||
-      reading.uid !== value.uid
+      reading.uid !== value.uid ||
+      (value.vm !== undefined && reading.vm !== value.vm)
     )
       throw fail(
         "The SSH alias now points to a different account. Restore the recorded target before cleanup.",
@@ -570,6 +670,22 @@ export async function createOwnMacProvider(options: {
       const { reading: _reading, ...state } = await probe(force, signal);
       return state;
     },
+    ownMacTargetNotice: () =>
+      setup.targetNotice
+        ? {
+            ...setup.targetNotice,
+            deliveredTo: [...setup.targetNotice.deliveredTo],
+          }
+        : null,
+    acknowledgeOwnMacTargetNotice: async (id, threadId) => {
+      if (
+        setup.targetNotice?.id === id &&
+        !setup.targetNotice.deliveredTo.includes(threadId)
+      ) {
+        setup.targetNotice.deliveredTo.push(threadId);
+        await saveSetup();
+      }
+    },
     ownMacCleanup: cleanupFacts,
     testOwnMacConnection: testConnection,
     ownMacSetupStep: async (step) => {
@@ -645,7 +761,7 @@ export async function createOwnMacProvider(options: {
             "This Your Mac task is closed. Start a new task to use a fresh credential home.",
             "task_closed",
           );
-        const reading = await verify(value, signal);
+        await assertPinned(value.alias, await verify(value, signal));
       } else {
         const state = await probe(true, signal);
         if (state.status !== "Available")
@@ -663,6 +779,7 @@ export async function createOwnMacProvider(options: {
         const state = await probe(true, input.signal);
         if (state.status !== "Available" || !state.reading)
           throw fail(state.status, "ownmac_unavailable");
+        await assertPinned(state.alias!, state.reading);
         const need = SCALEWAY_TASK_SIZES.find(
           (size) => size.id === input.type,
         )!;
@@ -684,7 +801,7 @@ export async function createOwnMacProvider(options: {
         const id = `ownmac_${randomUUID()}`,
           value: Record = {
             id,
-            alias: (await readConfig()).ownMacAlias,
+            alias: state.alias!,
             hardware: state.reading.hardware!,
             user: state.reading.user,
             uid: state.reading.uid,
@@ -724,7 +841,7 @@ export async function createOwnMacProvider(options: {
         return info(id);
       }),
     async waitReady(id, signal) {
-      await verify(record(id), signal);
+      await assertPinned(record(id).alias, await verify(record(id), signal));
       const result = await run(id, {
         command: ["/bin/bash", "-s"],
         stdin: BOOTSTRAP,
@@ -785,14 +902,14 @@ export async function createOwnMacProvider(options: {
     },
     executor,
     beforeRepo: async (id, signal) => {
-      await verify(record(id), signal);
+      await assertPinned(record(id).alias, await verify(record(id), signal));
       if (await credentials.githubConfigured()) await ensureGithub(id, signal);
     },
     refreshGithubLogin: ensureGithub,
     machineHooks: () => ({
       bootstrapFailed: (id) => cleanup(id),
       beforeBootstrap: async (id, signal) => {
-        await verify(record(id), signal);
+        await assertPinned(record(id).alias, await verify(record(id), signal));
         const result = await run(id, {
           command: ["/bin/bash", "-s"],
           stdin: BOOTSTRAP,

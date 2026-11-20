@@ -1,3 +1,4 @@
+import {withFakeMacRentalConsent} from "./mac-consent.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FakeBoat, defaultSettings, memoryStore } from "./fakes.ts";
@@ -33,6 +34,7 @@ function fixture(capsOnly=false) {
   const registry=createProviderRegistry([createBoatProvider(boat as unknown as BoatApi),provider]);
   let project=normalizeProject({id:"mac",name:"Mac app",repos:[{repo:"acme/web",baseBranch:"main"}],sandboxProvider:provider.id,sandboxSystem:"macos"});
   const service=new BoatService(registry,store,{settings:async()=>defaultSettings({maxActiveSandboxes:0}),lifecycle:new AbortController().signal,changed:()=>{},notify:async()=>{},projects:()=>[project],log:{info:()=>{},warn:()=>{}}});
+  withFakeMacRentalConsent(service);
   const start=()=>service.startTask({title:"Mac work",role:"custom",brief:"Check tools",sandboxSystem:"macos",project:{...toOrchestratorProject(project),repos:[]}});
   const projects={get:(id:string)=>id===project.id?project:null,list:()=>[project],save:(input:Parameters<typeof normalizeProject>[0])=>{project=normalizeProject(input,project);return project}};
   return {store,boat,mac,provider,service,start,projects,registry,creates:()=>creates};
@@ -44,8 +46,10 @@ test("a second Mac provider routes, shares and reserves its own 3 CPU / 6 GiB ta
   const tasks=env.store.macLeases.tasks(env.store.macLeases.held(first.sandboxId!)[0]!.id);
   assert.equal(tasks.length,2);for(const task of tasks)assert.deepEqual([task.cpus,task.memoryMiB],[3,6144]);
 });
-test("caps-only Mac providers are eligible for an unconfigured Mac task",async()=>{
+test("caps-only Mac providers reuse held capacity and refuse unpriced new rentals",async()=>{
   const env=fixture(true);
+  await assert.rejects(env.service.startTask({title:"Mac",role:"custom",brief:"Check",sandboxSystem:"macos"}),/confirmed pricing/);
+  await env.provider.create({name:"fake held Mac",type:"default",system:"macos",ttlSeconds:3600,gitGuard:true});
   const task=await env.service.startTask({title:"Mac",role:"custom",brief:"Check",sandboxSystem:"macos"});
   assert.equal(task.sandboxProvider,"orchard");assert.equal(task.status,"running");
 });
