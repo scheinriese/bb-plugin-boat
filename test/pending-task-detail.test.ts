@@ -81,3 +81,10 @@ test("same-Mac recovery refusals remain visible on the consumed approval and can
   const cancelled=renderLinkedRental({...linked,linkedTask:{...linked.linkedTask!,status:"cancelled"}});
   assert.doesNotMatch(cancelled,/Recover on this Mac/);
 });
+
+test("a linked automatic Your Mac start does not become a rental approval card",async()=>{
+  const {notice}=await fixture();
+  const html=renderLinkedRental({...notice,answer:"auto",replacementId:"t_fake_ownmac",linkedTask:{taskId:"t_fake_ownmac",status:"running",turns:1,error:null,machineId:"ownmac_fake"}});
+  assert.match(html,/Your Mac is available again/);
+  assert.doesNotMatch(html,/Approved Mac rental|Approval received for one|Mac allocation unconfirmed|Recover on this Mac/);
+});

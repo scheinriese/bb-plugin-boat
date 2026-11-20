@@ -247,12 +247,12 @@ export function OwnMacRentalCard({
   const offers = notice.offers ?? (q ? [q] : []);
   const expired = !q || !Number.isFinite(Date.parse(q.expiresAt)) || Date.parse(q.expiresAt) <= now;
   const price = q ? money(q.minimumCost, q.currency) : "";
+  if (notice.answer === "auto")
+    return <p className="text-[13px] leading-5 text-[#A8A8A8]">Your Mac is available again, so “{notice.title}” runs on your Mac. No extra cost.</p>;
   if (notice.replacementId)
     return <OwnMacLinkedRentalCard notice={notice} onOpenTask={onOpenTask} onOpenMachine={onOpenMachine} onRecover={onRecover} recovering={recovering} error={error} />;
   if (notice.answer === "failed")
     return <p role="alert" className="rounded-lg border border-[#3A2424] bg-[#181818] px-3.5 py-3 text-[13px] leading-5 text-[#A8A8A8]">The start failed. Inspect the task and the provider’s machines before retrying; a rental may already exist. No other provider was approved.</p>;
-  if (notice.answer === "auto")
-    return <p className="text-[13px] leading-5 text-[#A8A8A8]">Your Mac is available again, so “{notice.title}” runs on your Mac. No extra cost.</p>;
   const orderedOffers = [...offers].sort((a, b) => Number(b.id === notice.recommendedQuoteId) - Number(a.id === notice.recommendedQuoteId));
   const comparison = q ? compareRentalOffers(q, offers.find(other => other.id !== q.id)) : undefined;
   const rationale = [q && q.id === notice.recommendedQuoteId ? notice.recommendationReason : undefined, comparison].filter(Boolean).join(" ");
