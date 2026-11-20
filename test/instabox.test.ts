@@ -1362,11 +1362,11 @@ test("setup presentation uses live allowance and period, and Check again invalid
  assert.equal(f.state().calls.some((c:string)=>c.startsWith("create ")),false);
 });
 test("setup detects a rejected key and unavailable metadata without showing key values",async t=>{
- const f=await instabox(t,{key:"ibk_obviously_fake_rejected"});
+ const f=await instabox(t,{key:"ibk_fake-rejected-key-0001"});
  const reading=await f.provider.presentation!();
  assert.equal(reading.steps[1]!.done,false);assert.match(reading.steps[1]!.detail,/rejected the key/);
  assert.equal(reading.steps[2]!.done,false);assert.equal(reading.steps[3]!.done,false);
- assert.doesNotMatch(JSON.stringify(reading),/ibk_obviously/);
+ assert.doesNotMatch(JSON.stringify(reading),/ibk_fake-rejected-key-0001/);
 });
 test("off-provider setup checks stored key and CLI without enabling or renting",async t=>{
  const f=await instabox(t);
