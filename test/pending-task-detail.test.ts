@@ -59,7 +59,7 @@ for (const answer of ["rent","failed"] as const) test(`consumed ${answer} approv
   const {notice}=await fixture();
   const linked:OwnMacNotice={...notice,answer,replacementId:"t_fake_linked",linkedTask:{taskId:"t_fake_linked",status:"failed",turns:0,error:"Instabox did not report the Mac lease; work cannot safely start.",machineId:"instabox_fake_allocated",lease:{provider:"instabox",model:"m2",minimumCost:10.8,hourPrice:.45,currency:"USD",paidUntil:"2030-01-02T12:00:00Z",releaseAt:"2030-01-02T12:00:00Z",endedAt:null}}};
   const html=renderLinkedRental(linked,true);
-  for (const words of ["App task did not start","Approval received","Mac allocated","instabox_fake_allocated","did not report the Mac lease","Minimum committed","$10.80","Paid until","Scheduled for","Open existing task","View machine in Sandboxes","same Mac","No second rental is approved","Rental start progress","0 worker turns","Lease terms recorded","Recover on this Mac"]) assert.ok(html.includes(words),words);
+  for (const words of ["App task did not start","Approval received","Mac allocated","instabox_fake_allocated","did not report the Mac lease","Minimum committed","$10.80","Paid until","Scheduled for","Open existing task","View machine in Sandboxes","same Mac","No second rental is approved","Rental start progress","0 turns","Lease terms recorded","Recover on this Mac"]) assert.ok(html.includes(words),words);
   assert.match(html,/dateTime="2030-01-02T12:00:00Z"/i);
   assert.doesNotMatch(html,/Starting rental|Starting the task|Rent Scaleway Mac|Rent Instabox Mac|disabled=/);
 });

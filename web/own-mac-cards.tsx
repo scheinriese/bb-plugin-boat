@@ -189,7 +189,7 @@ export function OwnMacLinkedRentalCard({notice,onOpenTask,onOpenMachine,onRecove
       <li>Approval received for one {quote?.label ?? lease?.provider ?? "Mac"} {quote?.modelLabel ?? lease?.model ?? "rental"}{quote ? ` · ${money(quote.minimumCost,quote.currency)} ${quote.currency} minimum for ${quote.minimumHours} h` : ""}.</li>
       <li className="font-medium text-[#D0D0D0]">{linked?.machineId ? "Mac allocated" : "Mac allocation unconfirmed"}{linked?.machineId && <span className="mt-0.5 block break-all font-mono text-xs font-normal text-[#A8A8A8]">{linked.machineId}</span>}</li>
       <li>{lease && !lease.endedAt ? "Lease terms recorded" : "Current lease unconfirmed"}</li>
-      <li>{stopped && linked!.turns===0 ? "App task did not start · 0 worker turns" : started ? "App task started" : "App task start unconfirmed"}</li>
+      <li>{stopped && linked!.turns===0 ? "App task did not start · 0 turns" : started ? "App task started" : "App task start unconfirmed"}</li>
     </ol>
     {linked?.error && <p className="mt-2 break-words text-[#E6A3A3]">{linked.error}</p>}
     {lease ? <dl className={cn(details,"mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-xs leading-[18px] max-sm:text-[13px] max-sm:leading-5")}>
