@@ -11,7 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { reviewerSchema } from "../../contract-review.ts";
-import { ACTIVE_STATES, isNotFound, type MachineType, type SandboxProvider, type StopReport } from "./types.ts";
+import { ACTIVE_STATES, isNotFound, type MachineType, type SandboxInfo, type SandboxProvider, type StopReport } from "./types.ts";
 import type { BoatService, BoatSettings } from "../service.ts";
 import { bootstrapExecutor, bootstrapFailureMessage, retryableBootstrap } from "../bootstrap.ts";
 import { directWakes, type WakeGuard } from "../wake-retry.ts";
@@ -19,7 +19,21 @@ import { TeardownBackoff } from "../teardown-backoff.ts";
 import type { HostPrep } from "../bb-update.ts";
 import { stopOutcome } from "../node-move.ts";
 
-const resourceSchema = z.object({ sandboxId: z.string(), key: z.string() });
+const recoveryLeaseSchema = z.object({
+  model: z.string().min(1), leaseId: z.string().min(1), startedAt: z.string().min(1), chargeUntil: z.string().min(1),
+  minimumCost: z.number().nonnegative(), hourPrice: z.number().nonnegative(), cpus: z.number().positive(), memoryMiB: z.number().positive(),
+  scheduledReleaseAt: z.string().nullable(),
+}).strict();
+const resourceSchema = z.object({ sandboxId: z.string(), key: z.string(), recoveryLease: recoveryLeaseSchema.optional() });
+
+/** Enrollment is permitted only on this already running physical allocation.
+ * A stopped or replaced Mac requires a separate decision, never an implicit wake. */
+function assertRecoveryLease(provider: SandboxProvider, sandbox: SandboxInfo | null, expected: z.infer<typeof recoveryLeaseSchema>): asserts sandbox is SandboxInfo {
+  const mac = sandbox?.mac;
+  const same = mac && mac.leaseId === expected.leaseId && mac.model === expected.model && Date.parse(mac.startedAt) === Date.parse(expected.startedAt) && Date.parse(mac.chargeUntil) === Date.parse(expected.chargeUntil) && Math.abs(mac.minimumCost-expected.minimumCost)<1e-8 && Math.abs(mac.hourPrice-expected.hourPrice)<1e-8 && mac.cpus === expected.cpus && mac.memoryMiB === expected.memoryMiB && (sandbox?.scheduledReleaseAt ?? null) === expected.scheduledReleaseAt;
+  const boundary = Math.min(Date.parse(mac?.chargeUntil ?? ""), sandbox?.scheduledReleaseAt ? Date.parse(sandbox.scheduledReleaseAt) : Infinity);
+  if (provider.id !== "instabox" || !sandbox || sandbox.system !== "macos" || sandbox.state !== "idle" || sandbox.health !== "ok" || sandbox.error || !same || !Number.isFinite(boundary) || boundary <= Date.now()) throw new Error("Mac recovery enrollment refused: the same healthy running paid lease is no longer confirmed. No machine was created, woken, or released.");
+}
 
 function inputsSchema(provider: Pick<SandboxProvider, "sizes" | "idPattern">) {
   return z
@@ -37,8 +51,11 @@ function inputsSchema(provider: Pick<SandboxProvider, "sizes" | "idPattern">) {
        * this machine, or a failed creation, never deletes it until the move is done.
        */
       keepSandbox: z.boolean().optional(),
+      /** Recovery may enroll this exact physical lease, with no implicit wake. */
+      recoveryLease: recoveryLeaseSchema.optional(),
     })
-    .strict();
+    .strict()
+    .refine(input => !input.recoveryLease || Boolean(input.sandboxId && input.taskId && input.keepSandbox), {message: "Mac recovery requires a protected existing task allocation"});
 }
 
 /** kv key remembering which sandbox an adopting machine took (cleanup only gets the key). */
@@ -130,11 +147,17 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
     async create({ inputs: given, key, checkpoint, report, signal }) {
       let bootstrapSandbox: string | null = null;
       let bootstrapTask: string | undefined;
+      let recoveryLease: z.infer<typeof recoveryLeaseSchema> | undefined;
       try {
         const parsed = inputs.safeParse(given ?? {});
         if (!parsed.success) throw new Error(words.invalidInputs);
-        const adopt = parsed.success ? (parsed.data.sandboxId ?? null) : null;
+        const adopt = parsed.data.sandboxId ?? null;
+        recoveryLease = parsed.data.recoveryLease;
+        // Protect before provider I/O: core may run cleanup even when the
+        // provider read or bootstrap fails before a resource is checkpointed.
+        if (recoveryLease && adopt) await bb.storage.kv.set(keepSandboxKey(key), adopt);
         let sandbox = adopt === null ? null : await provider.findInfo(adopt, signal);
+        if (recoveryLease) assertRecoveryLease(provider, sandbox, recoveryLease);
         if (adopt !== null) {
           // A worker chat's sandbox: the plugin already created and prepared it.
           if (sandbox === null) throw new Error(words.gone(adopt));
@@ -164,7 +187,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
           report.step(words.resuming);
           sandbox = await service.bringUp(sandbox.id, signal);
         }
-        await checkpoint({ sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) });
+        await checkpoint({ sandboxId: sandbox.id, key, ...(recoveryLease ? {recoveryLease} : {}), ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) });
         report.log(words.created(sandbox.id));
         bootstrapSandbox = sandbox.id;
         bootstrapTask = parsed.success ? parsed.data.taskId : undefined;
@@ -176,9 +199,9 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
           report,
           signal,
         });
-        return { status: "created" as const, name: machine.machineLabel(sandbox.id, hostId), resource: { sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) } };
+        return { status: "created" as const, name: machine.machineLabel(sandbox.id, hostId), resource: { sandboxId: sandbox.id, key, ...(recoveryLease ? {recoveryLease} : {}), ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) } };
       } catch (error) {
-        if (bootstrapSandbox !== null) { try { await bootstrapFailed(bootstrapSandbox, bootstrapTask); } catch { bb.log?.warn?.("Bootstrap credential cleanup failed; the tracked machine needs cleanup before release."); } }
+        if (bootstrapSandbox !== null && !recoveryLease) { try { await bootstrapFailed(bootstrapSandbox, bootstrapTask); } catch { bb.log?.warn?.("Bootstrap credential cleanup failed; the tracked machine needs cleanup before release."); } }
         signal.throwIfAborted();
         const transient = retryableBootstrap(error);
         return { status: "failed" as const, message: transient ? bootstrapFailureMessage(transient) : message(error) };
@@ -201,7 +224,8 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
       }
     },
     async suspend({ resource, hostId, signal }) {
-      const { sandboxId } = resourceSchema.parse(resource);
+      const { sandboxId, recoveryLease } = resourceSchema.parse(resource);
+      if (recoveryLease) throw new Error("This recovered Mac keeps its existing provider release plan. Use the Mac lease controls to review hand-back; recovery enrollment cannot stop its physical lease.");
       const held = teardown.held(sandboxId, "stop");
       if (held !== null) throw new Error(held);
       let refused: string | null = null;
@@ -240,10 +264,11 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
       return { resource };
     },
     async resume({ resource, report, signal, hostId }) {
-      const { sandboxId, key } = resourceSchema.parse(resource);
+      const { sandboxId, key, recoveryLease } = resourceSchema.parse(resource);
       // Paced, with failures diagnosed and retried by Boat later (src/wake-retry.ts).
       await wakes.machine({ sandboxId, hostId: hostId ?? null, signal, report }, async (permit) => {
         const sandbox = await provider.findInfo(sandboxId, signal);
+        if (recoveryLease) assertRecoveryLease(provider, sandbox, recoveryLease);
         if (sandbox === null) throw new Error(words.gone(sandboxId));
         let woke = false;
         if (!ACTIVE_STATES.has(sandbox.state)) {
@@ -260,7 +285,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
           await deps.prepareHost?.({ sandboxId, hostId: hostId ?? null, woke, signal, report });
           report.step("Restarting bb on the sandbox");
           await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(executor(sandboxId), report), report, signal });
-        } catch (error) { try { await bootstrapFailed(sandboxId); } catch { bb.log?.warn?.("Bootstrap credential cleanup failed; the tracked machine needs cleanup before release."); } throw error; }
+        } catch (error) { try { if (!recoveryLease) await bootstrapFailed(sandboxId); } catch { bb.log?.warn?.("Bootstrap credential cleanup failed; the tracked machine needs cleanup before release."); } throw error; }
       });
       return { resource };
     },

@@ -154,3 +154,34 @@ test("a stale unseen list lease cannot become held after a newer physical lease 
   assert.equal(f.store.macLeases.held().length,0);
   assert.equal(f.store.macLeases.list().length,1,"stale unseen history must not invent a second paid minimum");
 });
+
+test("confirmed physical absence clears only the lease discrepancy and keeps token reminders", async () => {
+  const f = fixture(); await f.provider.list({all:true});
+  const lease = f.store.macLeases.held()[0]!;
+  f.store.macLeases.end(lease.id,"handed back",Date.parse(until));
+  await f.provider.info("m_example");
+  f.store.macLeases.recordCredentialNotice(lease.id,"Revoke the example token");
+  assert.match(f.store.macLeases.list()[0]!.noticeText!,/currently reports/);
+  const {InstaboxError} = await import("../src/providers/instabox/cli.ts");
+  const cli = {json: async () => {throw new InstaboxError("Fake machine not found",{code:"not_found",status:404});}} as unknown as InstaboxCli;
+  const provider = createInstaboxProvider(cli,{} as InstaboxRest,{ledger:f.store.macLeases});
+  assert.equal(await provider.findInfo("m_example"),null);
+  assert.equal(f.store.macLeases.list()[0]!.noticeText,null);
+  assert.equal(f.store.macLeases.credentialNotices().length,1);
+});
+
+test("allocated create failures retain only the known machine and lease identities for supported recovery", async () => {
+  const store=memoryStore();
+  store.macLeases.record=()=>{throw Error("fake local persistence failure");};
+  const cli={json:async(args:string[])=>{
+    if(args[0]==="usage")return {org:{tier:"pro"}};
+    if(args[0]==="templates")return {templates:[{id:"macos",os:"macos",creatable:true,models:[{name:"m2",defaultSpec:{vcpus:8,memMiB:12288},minimumLease:{hours:24,hourUSD:0.45,minimumUSD:10.8}}]}]};
+    if(args[0]==="create")return {machine:machine()};
+    assert.fail(`Unexpected fake operation ${args[0]}`);
+  }} as unknown as InstaboxCli;
+  const provider=createInstaboxProvider(cli,{} as InstaboxRest,{ledger:store.macLeases});
+  await assert.rejects(provider.create({name:"example",type:"default",system:"macos",ttlSeconds:3600,gitGuard:true}),error=>{
+    const failure=error as {code?:string;machineId?:string;leaseId?:string};
+    assert.equal(failure.code,"creation_allocated");assert.equal(failure.machineId,"m_example");assert.equal(failure.leaseId,"71");return true;
+  });
+});

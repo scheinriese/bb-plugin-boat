@@ -285,7 +285,10 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     let record;
     try { record = await cli.json(["get", sandboxId, "--json"], { signal, timeoutMs: 60_000 }); }
     catch (error) {
-      if (isNotFound(error) && infoReads.get(sandboxId) === read && revision === options.ledger?.revision()) for (const lease of options.ledger?.held(sandboxId) ?? []) if (lease.provider === "instabox") options.ledger?.end(lease.id, "deleted");
+      if (isNotFound(error) && infoReads.get(sandboxId) === read && revision === options.ledger?.revision()) for (const lease of options.ledger?.list().filter(row => row.machineId === sandboxId && row.provider === "instabox") ?? []) {
+        if (!lease.endedAt) options.ledger?.end(lease.id, "deleted");
+        else options.ledger?.clearNotice(lease.id);
+      }
       throw error;
     }
     const raw = rec(record.machine) ?? record;
@@ -293,7 +296,10 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     if (sandbox.id !== sandboxId) throw new InstaboxError("Instabox returned a different machine identity", {code: "instabox_bad_output"});
     if (infoReads.get(sandboxId) === read && revision === options.ledger?.revision()) {
       if (sandbox.native === "deleted" || (sandbox.native === "stopped" && !sandbox.mac && sandbox.stoppedAt)) {
-        for (const lease of options.ledger?.held(sandboxId) ?? []) if (lease.provider === "instabox" && (sandbox.native === "deleted" || Date.parse(sandbox.stoppedAt!) >= Date.parse(lease.startedAt))) options.ledger?.end(lease.id, sandbox.native === "deleted" ? "deleted" : "handed back", sandbox.native === "deleted" ? undefined : Date.parse(sandbox.stoppedAt!));
+        for (const lease of options.ledger?.list().filter(row => row.machineId === sandboxId && row.provider === "instabox") ?? []) if (sandbox.native === "deleted" || Date.parse(sandbox.stoppedAt!) >= Date.parse(lease.startedAt)) {
+          if (!lease.endedAt) options.ledger?.end(lease.id, sandbox.native === "deleted" ? "deleted" : "handed back", sandbox.native === "deleted" ? undefined : Date.parse(sandbox.stoppedAt!));
+          else options.ledger?.clearNotice(lease.id);
+        }
       } else remember(sandbox, revision);
     }
     return sandbox;
@@ -475,12 +481,15 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         if (["no_capacity","quota_exceeded","unauthenticated","key_missing","template_not_allowed","spec_not_allowed","instabox_not_found","instabox_spawn_failed"].includes(code ?? "")) throw error;
         throw new InstaboxError("Instabox may have allocated a Mac before create failed. Check its machine list before retrying; Harbormaster will not rent a fallback Mac.",{code:"creation_unknown"});
       }
+      let allocated: SandboxInfo | undefined;
       try {
         let sandbox = toSandbox(rec(record.machine) ?? record);
         if (sandbox.id === "") throw new InstaboxError("instabox create did not report a machine id", { code: create.system === "macos" ? "creation_unknown" : "instabox_bad_output" });
+        allocated = sandbox;
         // Some create envelopes omit billing details. Re-read this exact VM;
         // never retry create or accept another physical minimum.
         if (create.system === "macos" && !sandbox.mac) sandbox = await info(sandbox.id, create.signal);
+        allocated = sandbox;
         if (create.system === "macos" && !sandbox.mac) throw new InstaboxError("Instabox allocated a Mac without current physical lease terms", {code: "creation_allocated"});
         remember(sandbox, options.ledger?.revision());
         if (create.system === "macos" && options.ledger) {
@@ -490,7 +499,10 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         return sandbox;
       } catch (error) {
         if (create.system !== "macos" || (error as {code?:string}).code === "creation_unknown") throw error;
-        throw new InstaboxError("Instabox allocated a Mac but local lease registration failed. Reconcile its machine list before retrying.",{code:"creation_allocated"});
+        const failure = new InstaboxError("Instabox allocated a Mac but local lease registration failed. Reconcile its machine list before retrying.",{code:"creation_allocated"});
+        if (allocated?.id) Object.defineProperty(failure,"machineId",{value:allocated.id});
+        if (allocated?.mac?.leaseId && !["undefined","null"].includes(allocated.mac.leaseId)) Object.defineProperty(failure,"leaseId",{value:allocated.mac.leaseId});
+        throw failure;
       }
     },
     async delete(sandboxId, signal, deleteOptions) {
