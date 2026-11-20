@@ -79,7 +79,7 @@ import {
   type Tier,
   type TierMap,
 } from "./tiers.ts";
-import { PERSONAL_PROJECT, type ChatRunner, type ChatSpawn, type ChatWhere, type ComposerRequest } from "./chat.ts";
+import { CHAT_PROVIDER, PERSONAL_PROJECT, type ChatRunner, type ChatSpawn, type ChatWhere, type ComposerRequest } from "./chat.ts";
 import { NO_PROJECT_SOURCE, type OwnProjectSource } from "./project-sources.ts";
 import type { WorkspaceInfo } from "./briefs.ts";
 import type { QuotaReader } from "./quota.ts";
@@ -3577,6 +3577,10 @@ export class BoatService {
     // Send now or never: look again right before the send, and skip for good if anything came in.
     const state = await chat.state(task.threadId).catch(() => null);
     if (state === null || state.archived) return "wait";
+    if (state.providerId != null && state.providerId !== CHAT_PROVIDER[task.provider]) {
+      this.skipRetry(task, turn.key, "the chat provider changed");
+      return "no";
+    }
     if ((state.status !== "idle" && state.status !== "error") || state.queued > 0 || state.backgroundAgents > 0 || (state.workflows ?? 0) > 0) {
       // Something else keeps the chat going (a turn, a queued message): the task follows that.
       this.skipRetry(task, turn.key, "the chat was busy");
@@ -3593,10 +3597,18 @@ export class BoatService {
       this.skipRetry(task, turn.key, "the chat moved on");
       return "no";
     }
-    // Claimed in one step with no await before the send: a sweep and an event at once, or a reload, retry at most once.
+    // Final local decision after every asynchronous read: consent, provider and
+    // project policy can change during the chat reads too. Keep this snapshot,
+    // the claim and the send invocation synchronous with the event validation.
     const current = this.store.get(task.id);
-    if (current === null || current.status !== "running" || current.promptId !== task.promptId || current.threadId !== task.threadId) return "wait";
-    if (this.interruptRequestedSince(current) || current.claudePaidContinuationRevoked === true) return "no";
+    if (current === null || current.status !== "running" || current.promptId !== task.promptId || current.threadId !== task.threadId ||
+      current.provider !== task.provider || current.role !== task.role || current.repo !== task.repo ||
+      current.boatProject !== task.boatProject || current.projectId !== task.projectId) return "wait";
+    if (this.interruptRequestedSince(current) || current.claudePaidContinuationRevoked === true ||
+      (current.claudePaidContinuation === true) !== (task.claudePaidContinuation === true)) return "no";
+    // Also governs global-policy retries. A retry cannot choose its upstream
+    // billing bucket, so the current project opt-out vetoes automatic Claude.
+    if (current.provider === "claude" && governingProject(this.hooks.projects?.() ?? [], current.boatProject, current.repo)?.neverPaidClaude) return "no";
     if (parseAutoRetryRecord(this.store.latestEvent(task.id, AUTO_RETRY_RECORD)?.text)?.failed === turn.key) return "tried";
     const marker = chatTurnMarker();
     const claimed = this.store.transition(task.id, ["running"], { promptId: marker, turns: task.turns + 1 }, { promptId: task.promptId });

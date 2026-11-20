@@ -482,3 +482,131 @@ for (const change of ["request", "close", "revoke", "prompt", "chat"] as const) 
     assert.equal(env.store.events(task.id).some(event => event.kind === "auto-retry"), false);
   });
 }
+
+test("a project opting out during the final scoped retry event read vetoes automatic continuation", async () => {
+  const env = makeService({ chat: true, quotas: scopedRetryUsage() });
+  const task = await scopedCustomChat(env);
+  const before = env.chat.sends.length;
+  let optedOut = false;
+  env.chat.onEventRead = (_threadId, read) => {
+    if (read !== 2) return;
+    optedOut = true;
+    env.setProjects([{ id: "web", name: "Web", repos: [{ repo: "acme/web" }], machineType: null, neverPaidClaude: true }]);
+  };
+  await fail(env, task.threadId!, INCIDENT);
+  assert.equal(optedOut, true);
+  assert.equal(env.chat.sends.length, before, "no automatic Claude send after the current project opts out");
+  assert.equal(retries(env), 0);
+});
+
+type RetryReadBoundary = "machine" | "quota" | "settings" | "chat state" | "events";
+type RetryBoundaryChange = "authentication failure" | "project opt-out" | "consent removal" | "revocation" | "closure" | "new request" | "provider change";
+
+// Core chat state/events, task consent and project policy have independent
+// lifecycles. Mutate each while a real asynchronous read is in progress,
+// without changing the task's prompt marker to conceal the competing change.
+async function retryBoundaryScenario(scoped: boolean, boundary: RetryReadBoundary, change: RetryBoundaryChange) {
+  const usage = scopedRetryUsage();
+  if (!scoped) usage.get("codex")!.usedPercent = 100;
+  let armed = false, changed = false;
+  let mutate = () => undefined;
+  const race = () => {
+    if (!armed || changed) return;
+    changed = true;
+    mutate();
+  };
+  const env = makeService({
+    chat: true,
+    get quotas() { if (boundary === "quota") race(); return usage; },
+    ...(!scoped ? { settings: { relay: { enabled: true, preferred: "claude" as const, switchAtPercent: 90, switchBackBelowPercent: 50, quietMinutes: 10, paidClaudeFallback: true } } } : {}),
+  });
+  const task = scoped ? await scopedCustomChat(env) : (await env.service.launchTask({
+    title: "Fake global-policy layout", role: "custom", brief: "Explore the fake layout.",
+    repo: "acme/web", provider: "claude", runner: "chat", orchestratorThreadId: "thr_orch", projectId: "proj_personal",
+  }, 5_000)).task;
+  if (!scoped) {
+    await env.service.sweep();
+    assert.ok(env.store.latestEvent(task.id, "paid-fallback-authorized"), "the global policy, not task consent, authorizes this task");
+  }
+  const before = env.chat.sends.length;
+  mutate = () => {
+    if (change === "authentication failure") {
+      env.chat.events.set(task.threadId!, [...INCIDENT, ...laterTurn(200, { status: "failed", error: "Authentication failed" })]);
+      env.chat.states.get(task.threadId!)!.status = "error";
+    } else if (change === "project opt-out") {
+      env.setProjects([{ id: "web", name: "Web", repos: [{ repo: "acme/web" }], machineType: null, neverPaidClaude: true }]);
+    } else if (change === "consent removal") env.store.update(task.id, { claudePaidContinuation: false });
+    else if (change === "revocation") env.store.update(task.id, { claudePaidContinuation: false, claudePaidContinuationRevoked: true });
+    else if (change === "closure") env.store.update(task.id, { status: "cancelled" });
+    else if (change === "new request") {
+      env.chat.events.set(task.threadId!, [...INCIDENT, { id: "evt_competing_request", seq: 200, type: "client/turn/requested", data: { requestId: "req_competing", target: { kind: "new-turn" }, input: [{ type: "text", text: "Use the new task requirements." }] } }]);
+    } else env.store.update(task.id, { provider: "codex" });
+  };
+  env.chat.onEventRead = () => {
+    if (!armed) { armed = true; return; }
+    if (boundary === "events") race();
+  };
+  env.chat.onMachineState = () => { if (boundary === "machine") race(); };
+  const readState = env.chat.state.bind(env.chat);
+  env.chat.state = async threadId => {
+    const result = await readState(threadId);
+    if (boundary === "chat state") race();
+    return result;
+  };
+  const readSettings = env.service.settings.bind(env.service);
+  env.service.settings = async () => {
+    const result = await readSettings();
+    if (boundary === "settings") race();
+    return result;
+  };
+  await fail(env, task.threadId!, INCIDENT);
+  assert.equal(changed, true, `${boundary} overlapped ${change}`);
+  assert.equal(env.chat.sends.length, before, `no retry or steer after ${change} during ${boundary}`);
+  assert.equal(retries(env), 0);
+  assert.equal(env.store.events(task.id).some(event => event.kind === "auto-retry"), false);
+}
+
+for (const boundary of ["machine", "quota", "settings", "chat state", "events"] as const) {
+  for (const change of ["authentication failure", "project opt-out", "consent removal", "revocation", "closure", "new request", "provider change"] as const) {
+    test(`scoped automatic retry rejects ${change} during ${boundary} read`, () => retryBoundaryScenario(true, boundary, change));
+  }
+}
+
+// Global policy has no per-task consent read; it must still respect current
+// project/task/core state across the SDK boundaries it does await.
+for (const boundary of ["machine", "chat state", "events"] as const) {
+  for (const change of ["authentication failure", "project opt-out", "revocation", "closure", "new request", "provider change"] as const) {
+    test(`global-policy automatic retry rejects ${change} during ${boundary} read`, () => retryBoundaryScenario(false, boundary, change));
+  }
+}
+
+for (const scoped of [true, false]) {
+  for (const providerId of ["claude-code", "codex"] as const) {
+    test(`${scoped ? "scoped" : "global-policy"} retry validates known provider ${providerId} in the final core state`, async () => {
+      const usage = scopedRetryUsage();
+      if (!scoped) usage.get("codex")!.usedPercent = 100;
+      const env = makeService({ chat: true, quotas: usage, ...(!scoped ? { settings: { relay: { enabled: true, preferred: "claude" as const, switchAtPercent: 90, switchBackBelowPercent: 50, quietMinutes: 10, paidClaudeFallback: true } } } : {}) });
+      const task = scoped ? await scopedCustomChat(env) : (await env.service.launchTask({
+        title: "Fake provider snapshot", role: "custom", brief: "Explore the fake layout.",
+        repo: "acme/web", provider: "claude", runner: "chat", projectId: "proj_personal",
+      }, 5_000)).task;
+      if (!scoped) await env.service.sweep();
+      const before = env.chat.sends.length;
+      const readState = env.chat.state.bind(env.chat);
+      let finalSnapshotReturned = false;
+      env.chat.state = async threadId => {
+        const state = await readState(threadId);
+        if (!state || env.chat.eventReads === 0) return state;
+        finalSnapshotReturned = true;
+        // Core's provider can change independently of the task registry. Use a
+        // returned snapshot, not mutation of a shared fake object after reads.
+        return { ...state, providerId };
+      };
+      await fail(env, task.threadId!, INCIDENT);
+      assert.equal(finalSnapshotReturned, true);
+      assert.equal(env.chat.sends.length - before, providerId === "claude-code" ? 1 : 0);
+      assert.equal(retries(env), providerId === "claude-code" ? 1 : 0);
+      assert.equal(env.store.get(task.id)!.provider, "claude");
+    });
+  }
+}
