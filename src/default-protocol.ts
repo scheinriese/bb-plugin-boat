@@ -1,6 +1,6 @@
 // The built-in orchestrator protocol, adapted from a Conductor Cloud
 // orchestrator prompt to the Harbormaster tools. Users can replace it in Settings →
-// Plugins → Boat Cloud Agents → Orchestrator protocol. Placeholders are
+// Plugins → Harbormaster → Orchestrator protocol. Placeholders are
 // filled in when an orchestrator loads it (protocol.ts): `{{model-tiers}}`
 // with the model preset table, the others with what the plugin settings say.
 export const TIER_TABLE_PLACEHOLDER = "{{model-tiers}}";

@@ -1,6 +1,6 @@
 ---
 name: boat-orchestrator
-description: "Quick reference for orchestrator chats that coordinate coding work through boat.dev cloud agents instead of writing code themselves: loading the protocol, the Harbormaster tools, checking tasks on every wake, model presets, starting tasks, cross-model reviews, follow-ups, and reporting. Use in any chat marked as a Harbormaster orchestrator, or when the user asks you to coordinate, delegate, or fan out work to cloud agents."
+description: "Quick reference for orchestrator chats that coordinate coding work through boat.dev cloud agents instead of writing code themselves: loading the protocol, the Harbormaster tools, checking tasks on every wake, model presets, starting tasks, cross-model reviews, follow-ups, and reporting. Use in any chat marked as a boat / Harbormaster orchestrator, or when the user asks you to coordinate, delegate, or fan out work to cloud agents."
 ---
 
 # Orchestrating cloud agents

@@ -164,7 +164,7 @@ export function buildCli(runtime: Runtime) {
     name: "boat",
     summary: "Harbormaster: coding agents across cloud sandbox providers, orchestrated from bb",
     description:
-      "Harbormaster runs coding agents (Claude Code or Codex) in cloud sandboxes on boat.dev, Instabox and Scaleway: headless in boat by default, or task chats you can open in bb. The chat that started a task is told when a turn finishes. New here? Run `bb boat doctor`, then `bb boat task start --test`. See the boat and boat-orchestrator skills.",
+      "Harbormaster runs coding agents (Claude Code or Codex) in cloud sandboxes on boat.dev, Instabox, Scaleway or your own Mac: headless in boat by default, or task chats you can open in bb. The chat that started a task is told when a turn finishes. New here? Run `bb boat doctor`, then `bb boat task start --test`. See the boat and boat-orchestrator skills.",
     commands: {
       doctor: cliCommand({
         summary: "Check the setup: boat CLI, sign-in, plan, agent logins, environment, boat login in sandboxes, GitHub, bb Connect",

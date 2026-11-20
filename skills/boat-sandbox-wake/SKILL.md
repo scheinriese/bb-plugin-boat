@@ -1,6 +1,6 @@
 ---
 name: boat-sandbox-wake
-description: "Bring a stuck boat.dev sandbox and its chat back with one command, `bb boat sandbox wake <id>` (the `boat_wake` tool for orchestrators). Use when the user says \"wake this machine\", or a chat or task is stuck on \"Machine is paused\" or \"resuming\", or a boat.dev sandbox chat doesn't come back after a stop. Don't repair the sandbox by hand."
+description: "Bring a stuck boat.dev sandbox and its chat back with one command, `bb boat sandbox wake <id>` (the `boat_wake` tool for orchestrators). Use when the user says \"wake this machine\", or a chat or task is stuck on \"Machine is paused\" or \"resuming\", or a boat / Harbormaster sandbox chat doesn't come back after a stop. Don't repair the sandbox by hand."
 ---
 
 # Waking a stuck sandbox

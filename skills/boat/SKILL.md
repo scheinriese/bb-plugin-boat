@@ -1,6 +1,6 @@
 ---
 name: boat
-description: Use Harbormaster to run coding agents (Claude Code or Codex) in boat.dev cloud sandboxes with the `bb boat` CLI — check the setup, start tasks, request reviews, send follow-ups, inspect sandboxes, and close work. Use when the user asks to spin up a cloud sandbox or cloud agent, delegate coding work to the cloud, check on Harbormaster tasks, or clean up sandboxes.
+description: Use Harbormaster to run coding agents (Claude Code or Codex) in boat.dev cloud sandboxes with the `bb boat` CLI — check the setup, start tasks, request reviews, send follow-ups, inspect sandboxes, and close work. Use when the user asks to spin up a cloud sandbox or cloud agent, delegate coding work to the cloud, check on boat / Harbormaster tasks, or clean up sandboxes.
 ---
 
 # Harbormaster: cloud agents
