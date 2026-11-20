@@ -43,7 +43,7 @@ interface CatalogEntry {
 }
 
 /** Why the Mac rows are greyed out: no Mac provider in this version. */
-const NO_MACS = "Boat can't run agents on a Mac yet.";
+const NO_MACS = "Harbormaster can't run agents on a Mac yet.";
 
 export const PROVIDER_CATALOG: readonly CatalogEntry[] = [
   { id: "boat", label: "boat.dev", kind: "cloud", summary: "Linux", systems: [], apiKey: false },
@@ -182,7 +182,7 @@ function pickProblem(row: SandboxProviderDto): string | null {
 /** The line under the providers: where work goes first. */
 function routingLine(rows: readonly SandboxProviderDto[], defaultLabel: string): string {
   const macs = rows.some((row) => row.kind !== "cloud" && row.available);
-  if (macs) return "Mac tasks go to your Mac first, then a monthly Mac, then an enabled Mac day-lease provider. Boat rents only for dispatched tasks.";
+  if (macs) return "Mac tasks go to your Mac first, then a monthly Mac, then an enabled Mac day-lease provider. Harbormaster rents only for dispatched tasks.";
   return `New work runs on ${defaultLabel} unless a project picks another provider below.`;
 }
 
@@ -386,7 +386,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const project = runtime.projects.get(projectId);
       if (project === null) throw missing();
       const option = current.options.find((entry) => entry.provider === provider);
-      if (option === undefined) throw new experimental_PluginRpcRefusal({ code: "invalid", message: `"${provider}" isn't a sandbox provider Boat knows.` });
+      if (option === undefined) throw new experimental_PluginRpcRefusal({ code: "invalid", message: `"${provider}" isn't a sandbox provider Harbormaster knows.` });
       // Moving off a pick that's no longer available is fine; moving onto one isn't.
       if (option.disabledReason !== null && provider !== projectRow(project,service.sandboxProviders).provider) {
         throw new experimental_PluginRpcRefusal({ code: "conflict", message: `${option.label} can't take new work: ${option.disabledReason.charAt(0).toLowerCase()}${option.disabledReason.slice(1)}.` });

@@ -136,7 +136,7 @@ export function agentsText(settings?: Omit<ProtocolSettings, "workerMode" | "evi
   const lines: string[] = [];
   const limitLine = (who: string) =>
     settings.relay.paidClaudeFallback
-      ? "- Use included allowances first. The saved automatic Claude fallback policy may authorize extra usage for eligible bb chats after all connected agents reach the cutoff. Claude controls billing; Boat cannot read the money cap. If work still queues, preserve its receipt and wait; do not bypass the guard."
+      ? "- Use included allowances first. The saved automatic Claude fallback policy may authorize extra usage for eligible bb chats after all connected agents reach the cutoff. Claude controls billing; Harbormaster cannot read the money cap. If work still queues, preserve its receipt and wait; do not bypass the guard."
       : settings.avoidExtraUsage
       ? `- If a dispatch fails with \`agents_at_limit\`, ${who}. Tell me and wait for a reset (\`bb boat relay status\` shows when); don't name an agent to get around it unless I said paid extra usage is fine.`
       : "- Paid extra usage is allowed in the plugin settings, so new work starts even near a usage limit.";
@@ -227,7 +227,7 @@ export function composeProtocol(shared: string, project: OrchestratorProject | n
   } else if (rules === null) {
     parts.push(
       `# Project rules: ${project.name}`,
-      "This project has no rules file in its repo (set one in Settings → Plugins → Boat Cloud Agents → Projects). Tasks still follow the repo's AGENTS.md.",
+      "This project has no rules file in its repo (set one in Settings → Plugins → Harbormaster → Projects). Tasks still follow the repo's AGENTS.md.",
     );
   } else if (rules.text !== null) {
     parts.push(

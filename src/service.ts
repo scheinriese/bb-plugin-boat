@@ -1,3 +1,4 @@
+import { createCodexHealthCheck } from "./codex-health.ts";
 import { providerFailureCard } from "../provider-failure.ts";
 import { canHostMac, macTaskResources } from "./providers/types.ts";
 import type { MacLease, MacWorkOutcome } from "./mac-leases.ts";
@@ -396,7 +397,7 @@ export function snapshotError(error: unknown, name: string | null): TaskError | 
     return new TaskError(
       `There's no saved snapshot "${name ?? "?"}".`,
       "snapshot_not_found",
-      "`bb boat sandbox snapshots` lists yours. Fix the project's snapshot in Settings → Plugins → Boat Cloud Agents → Projects, or pass another one.",
+      "`bb boat sandbox snapshots` lists yours. Fix the project's snapshot in Settings → Plugins → Harbormaster → Projects, or pass another one.",
     );
   }
   if (/snapshot/i.test(text) && (/trial|plan|upgrade|not available|not allowed|requires|payment/i.test(text) || error.status === 402 || error.status === 403)) {
@@ -682,6 +683,7 @@ function errorText(error: unknown): string {
 }
 
 export class BoatService {
+  private readonly codexHealth = createCodexHealthCheck();
   /** Last observed sandbox state; views never start or resume a sandbox. */
   private readonly observedSandboxStates = new Map<string, string>();
   private readonly settlingReviews = new Set<string>();
@@ -1134,7 +1136,7 @@ export class BoatService {
       } catch (error) {
         const code = (error as {code?:string}).code;
         const rejected = ["creation_rejected","no_capacity","at_capacity","quota_exceeded","key_missing","unauthorized","unauthenticated","template_not_allowed","spec_not_allowed","unsupported","size_unavailable","instabox_not_found","instabox_spawn_failed"].includes(code ?? "");
-        if (options.system === "macos" && !sandboxProvider.classifiesCreateErrors && !rejected && code !== "creation_unknown" && code !== "creation_allocated") throw new ProviderError(`${sandboxProvider.displayName} create outcome is unknown. Check its machines before retrying; Boat will not rent another Mac.`,{code:"creation_unknown"});
+        if (options.system === "macos" && !sandboxProvider.classifiesCreateErrors && !rejected && code !== "creation_unknown" && code !== "creation_allocated") throw new ProviderError(`${sandboxProvider.displayName} create outcome is unknown. Check its machines before retrying; Harbormaster will not rent another Mac.`,{code:"creation_unknown"});
         throw plain(error);
       }
     });
@@ -1191,7 +1193,7 @@ export class BoatService {
   private async ensureRunning(sandboxId: string, signal?: AbortSignal, given?: WakePermit, paidStart = false): Promise<Sandbox> {
     // A move to a new node stops it, maybe dropping what's written meanwhile: no work goes there now.
     if (await this.hooks.wakes?.moving?.(sandboxId)) {
-      throw new TaskError(`Boat is moving sandbox ${sandboxId} to a new boat.dev node: its node keeps failing its disk.`, "sandbox_moving", "Try again once it's back, in a few minutes (or see Needs you).");
+      throw new TaskError(`Harbormaster is moving sandbox ${sandboxId} to a new boat.dev node: its node keeps failing its disk.`, "sandbox_moving", "Try again once it's back, in a few minutes (or see Needs you).");
     }
     const deadline = Date.now() + TRANSITION_WAIT_MS;
     const sandboxProvider = this.sandboxProvider(sandboxId);
@@ -1459,7 +1461,7 @@ export class BoatService {
           "connect_required",
           input.runner === "chat"
             ? `${connect.fix ?? CONNECT_FIX} Or start it headless (--headless, or Run as a chat off in New task).`
-            : `${connect.fix ? `${connect.fix} ` : ""}Or run tasks in boat: \`bb boat config set workers boat\` (Settings → Plugins → Boat Cloud Agents → How tasks run).`,
+            : `${connect.fix ? `${connect.fix} ` : ""}Or run tasks in boat: \`bb boat config set workers boat\` (Settings → Plugins → Harbormaster → How tasks run).`,
         );
       }
     }
@@ -1601,7 +1603,7 @@ export class BoatService {
     if (input.queuedStart) await input.queuedStart.beforeInsert();
     input.subscriptionGuard?.assertCurrent();
     const task = input.queuedStart ? input.queuedStart.insert(record, () => this.store.insert(record), settings) : this.store.insert(record);
-    if (paidFallback) this.store.addEvent(task.id, "paid-fallback-authorized", "Automatic Claude extra usage authorized by the saved fallback policy after included allowances reached the cutoff. Claude's billing controls apply; no euro balance is available to Boat.");
+    if (paidFallback) this.store.addEvent(task.id, "paid-fallback-authorized", "Automatic Claude extra usage authorized by the saved fallback policy after included allowances reached the cutoff. Claude's billing controls apply; no euro balance is available to Harbormaster.");
     if (input.nativeReview) this.store.addEvent(id, "native-review-source", JSON.stringify(input.nativeReview.source));
     this.store.addEvent(id, "created", `${input.role} task created · ${modelLine(tier, model, reasoningEffort, reason)}`);
     if (input.measureMemory) this.sizes.watch(id); // sizes
@@ -1710,8 +1712,8 @@ export class BoatService {
     const hint = confirmedOther
       ? "Check the warning again, then try again."
       : via === "start"
-        ? "A task chat's sandbox can reach this bb, so the user decides: Run as a chat in New task on the Cloud agents page asks them, or they add the repo to a project with Run tasks as chats on (Settings → Plugins → Boat Cloud Agents → Projects). Or run it headless: drop --chat."
-        : "A task chat's sandbox can reach this bb, so the user decides: Continue as a chat on the task's page asks them, or they add the repo to a project with Run tasks as chats on (Settings → Plugins → Boat Cloud Agents → Projects).";
+        ? "A task chat's sandbox can reach this bb, so the user decides: Run as a chat in New task on the Cloud agents page asks them, or they add the repo to a project with Run tasks as chats on (Settings → Plugins → Harbormaster → Projects). Or run it headless: drop --chat."
+        : "A task chat's sandbox can reach this bb, so the user decides: Continue as a chat on the task's page asks them, or they add the repo to a project with Run tasks as chats on (Settings → Plugins → Harbormaster → Projects).";
     return new TaskError(message, "untrusted_repo", hint);
   }
 
@@ -2244,7 +2246,10 @@ export class BoatService {
    * under its orchestrator and in its section: the task never fails over a
    * source.
    */
-  private async spawnTaskChat(args: ChatSpawn, stillWanted: () => void = () => undefined): Promise<{ threadId: string; environmentId: string | null }> {
+  private async spawnTaskChat(args: ChatSpawn, stillWanted: () => void = () => undefined, signal: AbortSignal = this.hooks.lifecycle): Promise<{ threadId: string; environmentId: string | null }> {
+    const task = this.store.get(args.taskId);
+    if (task?.sandboxId) await this.codexHealth(this.sandboxProvider(task), task.sandboxId, args.provider, line => this.store.addEvent(task.id, "machine", line), signal);
+    stillWanted();
     const chat = this.hooks.chat!;
     const { where, projectId } = args;
     if (where.kind !== "machine" || where.path === null || isPersonalProject(projectId)) return chat.spawn(args);
@@ -2277,7 +2282,7 @@ export class BoatService {
     const source = await this.hooks.chat!.ensureProjectSource({ taskId, projectId, hostId, path });
     const what = source.created
       ? `Added the sandbox's checkout to bb project ${projectId} (source ${source.sourceId})`
-      : `bb project ${projectId} already has a source on the sandbox (${source.sourceId}${source.own ? "" : ", not added by Boat: it stays"})`;
+      : `bb project ${projectId} already has a source on the sandbox (${source.sourceId}${source.own ? "" : ", not added by Harbormaster: it stays"})`;
     // bb makes a project's first source its default; Boat never asks for that.
     const madeDefault = source.created && source.isDefault ? "; bb made it the project's default, since the project had no other source" : "";
     if (madeDefault) this.hooks.log.warn(`task ${taskId}: bb made source ${source.sourceId} the default of project ${projectId}`);
@@ -2452,6 +2457,7 @@ export class BoatService {
         where,
       },
       ctx.stillWanted,
+      ctx.signal,
     ).catch((error: unknown) => {
       // Joining another task's workspace: bb's refusal can be a bare "Something went wrong". Say whose and what to do.
       if (where.kind !== "environment" || ctx.parent === null || error instanceof DispatchCancelled || ctx.signal.aborted) throw error;
@@ -3053,7 +3059,7 @@ export class BoatService {
       throw new TaskError(
         `Task ${task.id}'s sandbox has no evidence-upload.`,
         "evidence_unavailable",
-        "It started before uploads were set up, or uploads are off (Settings → Plugins → Boat Cloud Agents → Setup → Screenshots and recordings).",
+        "It started before uploads were set up, or uploads are off (Settings → Plugins → Harbormaster → Setup → Screenshots and recordings).",
       );
     }
     const isChat = task.runner === "chat";
@@ -3394,6 +3400,7 @@ export class BoatService {
         : {};
     // A new agent in the same sandbox: a stop that cut off background work concerns it too.
     const note = await this.resumeNoteFor(task.id);
+    if (task.sandboxId) await this.codexHealth(this.sandboxProvider(task), task.sandboxId, next.provider, line => this.store.addEvent(task.id, "machine", line), this.hooks.lifecycle);
     const spawned = await this.hooks.chat!.spawn({
       taskId: task.id,
       title: this.chatTitle(task, next.provider),
@@ -3725,6 +3732,7 @@ export class BoatService {
     const environmentId = current?.environmentId ?? task.environmentId;
     if (environmentId !== null && environmentId !== task.environmentId) this.store.update(task.id, { environmentId });
     if (environmentId === null) throw new TaskError(`Task ${task.id}'s workspace isn't ready yet.`, "task_not_dispatched", "Try again in a moment.");
+    if (task.sandboxId) await this.codexHealth(this.sandboxProvider(task), task.sandboxId, request.providerId, line => this.store.addEvent(task.id, "machine", line), this.hooks.lifecycle);
     const { threadId } = await chat.spawnComposed({
       taskId: task.id,
       request,
@@ -3769,7 +3777,7 @@ export class BoatService {
     if (task === null || task.threadId === threadId) return null;
     const safe = (text: string | null) => (text ?? "").replace(/[`\n\r]/g, " ").slice(0, 200);
     const lines = [
-      `You're in the workspace of the boat task ${task.id} "${safe(task.title)}", in a boat.dev cloud sandbox.`,
+      `You're in the workspace of the Harbormaster task ${task.id} "${safe(task.title)}", in a boat.dev cloud sandbox.`,
       task.repoPath ? `- The checkout is at ${safe(task.repoPath)}${task.branch ? `, on the branch ${safe(task.branch)}` : ""}${task.baseBranch ? ` (base ${safe(task.baseBranch)})` : ""}. Work there.` : null,
       task.threadId ? `- Another agent works here too (the task chat, @thread:${task.threadId}). Don't switch its branch or push to it unless asked; push your own branch if you change code.` : null,
       "- Never push to a base branch or merge pull requests; a git hook refuses such pushes.",
@@ -4328,6 +4336,7 @@ export class BoatService {
           where: { kind: "machine", hostId, path: initial.repoPath },
         },
         stillWanted,
+        signal,
       );
       spawnedThread = spawned.threadId;
 

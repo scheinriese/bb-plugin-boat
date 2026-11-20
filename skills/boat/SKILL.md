@@ -1,11 +1,11 @@
 ---
 name: boat
-description: Run coding agents (Claude Code or Codex) in boat.dev cloud sandboxes with the `bb boat` CLI — check the setup, start tasks, request reviews, send follow-ups, inspect sandboxes, and close work. Use when the user asks to spin up a cloud sandbox or cloud agent, delegate coding work to the cloud, check on boat tasks, or clean up sandboxes.
+description: Use Harbormaster to run coding agents (Claude Code or Codex) in boat.dev cloud sandboxes with the `bb boat` CLI — check the setup, start tasks, request reviews, send follow-ups, inspect sandboxes, and close work. Use when the user asks to spin up a cloud sandbox or cloud agent, delegate coding work to the cloud, check on boat / Harbormaster tasks, or clean up sandboxes.
 ---
 
-# boat: cloud agents in boat.dev sandboxes
+# Harbormaster: cloud agents
 
-The Boat Cloud Agents plugin runs Claude Code and Codex in boat.dev
+The Harbormaster plugin runs Claude Code and Codex in boat.dev
 sandboxes, on the user's boat plan and their Claude and ChatGPT
 subscriptions (connected in boat.dev). Everything goes through `bb boat …`,
 which runs the user's signed-in `boat` CLI on the bb server's machine, so it
@@ -248,8 +248,8 @@ environment (`EVIDENCE_BUCKET`, `EVIDENCE_ACCESS_KEY_ID`,
 The owner can opt into `paidClaudeFallback` in Usage limits or with
 `bb boat config set paidClaudeFallback true`. Use included allowances first;
 only then may eligible bb task chats and orchestrators use Claude extra usage
-when Account Pooler reports recent availability. Claude enforces billing; Boat
-cannot read a money cap or balance and never buys credits. Headless Boat tasks
+when Account Pooler reports recent availability. Claude enforces billing; Harbormaster
+cannot read a money cap or balance and never buys credits. Headless Harbormaster tasks
 need per-request paid approval unless `paidClaudeHeadless` is also enabled
 after the owner confirms the same Claude subscription and billing account. Do not name a provider/model to bypass a
 waiting receipt or dispatch replacement work. If billing is unavailable, keep

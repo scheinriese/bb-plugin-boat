@@ -49,7 +49,7 @@ export default definePluginApp((app) => {
   // The Cloud agents page: overview at "", task detail at "task/<id>".
   app.slots.navPanel({
     id: "cloud-agents",
-    title: "Cloud agents",
+    title: "Harbormaster",
     icon: "ComputerCloud",
     path: PANEL_PATH,
     component: CloudAgentsPage,

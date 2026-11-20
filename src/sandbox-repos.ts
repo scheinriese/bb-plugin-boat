@@ -80,7 +80,7 @@ if [ -x "$dir/${hook}" ] && [ "$(cd "$dir" 2>/dev/null && pwd -P)" != "$(cd "$ou
  */
 export function prePushHook(): string {
   return `#!/bin/sh
-# Installed by the Boat plugin: workers push their own branch and open a draft PR.
+# Installed by the Harbormaster plugin: workers push their own branch and open a draft PR.
 # Pushes to a folder in this sandbox (a test's temporary remote) skip the checks.
 url="$2"
 local_remote=""
@@ -121,7 +121,7 @@ exit 0
 /** A pass-through hook that runs the repo's own hook of the same name. */
 export function chainedHook(hook: string): string {
   return `#!/bin/sh
-# Installed by the Boat plugin: runs the repo's own ${hook} hook.
+# Installed by the Harbormaster plugin: runs the repo's own ${hook} hook.
 ${chainSnippet(hook)}
   exec "$dir/${hook}" "$@"
 fi

@@ -330,24 +330,24 @@ export function wakeFailureMessage(diagnosis: WakeDiagnosis, plan: WakePlan, ori
   const when = plan.retryAt === null ? null : clockTime(plan.retryAt, plan.now);
   const gaveUp = plan.gaveUpAfter ?? null;
   const resumeLater = plan.resumeAfter ? ` Press Resume after ${clockTime(plan.resumeAfter, plan.now)}${plan.sandboxId ? `, or try now with \`bb boat sandbox resume ${plan.sandboxId}\`` : ""}.` : "";
-  const next = when ? `Boat will retry at ${when}; pressing Resume earlier won't help.` : "Try again in a few minutes.";
+  const next = when ? `Harbormaster will retry at ${when}; pressing Resume earlier won't help.` : "Try again in a few minutes.";
   const why = storageFailing(diagnosis.detail) ? "its storage is returning errors" : "files bb needs there aren't readable yet";
   switch (diagnosis.kind) {
     case "disk-restoring":
-      if (gaveUp !== null) return `boat.dev still couldn't restore this sandbox's disk after ${gaveUp} tries (${why}), so Boat stopped retrying on its own. It's under Needs you.${resumeLater}`;
+      if (gaveUp !== null) return `boat.dev still couldn't restore this sandbox's disk after ${gaveUp} tries (${why}), so Harbormaster stopped retrying on its own. It's under Needs you.${resumeLater}`;
       return `boat.dev is still restoring this sandbox's disk (${why}). ${next}`;
     case "restore-rate-limited":
-      if (gaveUp !== null) return `boat.dev still refused to restore this sandbox after ${gaveUp} tries ("Please reduce your request rate"), so Boat stopped retrying on its own. It's under Needs you.${resumeLater}`;
-      return `boat.dev is restoring too many sandboxes at once and asked Boat to slow down. ${next}`;
+      if (gaveUp !== null) return `boat.dev still refused to restore this sandbox after ${gaveUp} tries ("Please reduce your request rate"), so Harbormaster stopped retrying on its own. It's under Needs you.${resumeLater}`;
+      return `boat.dev is restoring too many sandboxes at once and asked Harbormaster to slow down. ${next}`;
     case "ssh-session-stuck":
-      if (gaveUp !== null) return `The sandbox still took Boat's SSH login without starting the session after ${gaveUp} tries (its login message scripts hang while boat.dev restores the disk), so Boat stopped retrying on its own. It's under Needs you.${resumeLater}`;
-      return `The sandbox took Boat's SSH login, but the session never started: its login message scripts hang while boat.dev restores the disk. Boat turns them off before each try. ${next}`;
+      if (gaveUp !== null) return `The sandbox still took Harbormaster's SSH login without starting the session after ${gaveUp} tries (its login message scripts hang while boat.dev restores the disk), so Harbormaster stopped retrying on its own. It's under Needs you.${resumeLater}`;
+      return `The sandbox took Harbormaster's SSH login, but the session never started: its login message scripts hang while boat.dev restores the disk. Harbormaster turns them off before each try. ${next}`;
     case "daemon-broken":
       return `bb's daemon on this sandbox broke during an update${diagnosis.detail ? ` (${diagnosis.detail})` : ""}, so bb can't start there. It needs a repair by hand; the steps are under Needs you.`;
     case "disk-too-large":
       return tooLargeMessage(diagnosis.size ?? null);
     case "ssh-unreachable":
-      return `Boat couldn't reach the sandbox over SSH to restart bb there${diagnosis.detail ? ` (${diagnosis.detail})` : ""}. Press Resume to try again; if it keeps failing, check the sandbox on boat.dev.`;
+      return `Harbormaster couldn't reach the sandbox over SSH to restart bb there${diagnosis.detail ? ` (${diagnosis.detail})` : ""}. Press Resume to try again; if it keeps failing, check the sandbox on boat.dev.`;
     case "other":
       return original;
   }

@@ -339,7 +339,7 @@ function FirstTaskCard() {
           title="A whole chat in the cloud"
           text={
             <>
-              In a new chat, pick <span className="font-medium text-foreground">Boat sandbox</span> in the environment menu. The chat runs there
+              In a new chat, pick <span className="font-medium text-foreground">boat.dev sandbox</span> in the environment menu. The chat runs there
               and keeps going while this computer sleeps. Needs bb Connect.
             </>
           }
@@ -358,7 +358,7 @@ function FirstTaskCard() {
 /** bb's new chat screen; the environment menu there has Boat sandbox. */
 export function openBoatChat(navigate: ReturnType<typeof useBbNavigate>) {
   navigate.toCompose({ focusPrompt: true });
-  toast("Pick Boat sandbox in the environment menu", { description: "Under the message box, next to the project." });
+  toast("Pick boat.dev sandbox in the environment menu", { description: "Under the message box, next to the project." });
 }
 
 function WayRow({ icon, title, text, actions }: { icon: string; title: string; text: ReactNode; actions: ReactNode }) {

@@ -1,6 +1,6 @@
 # Features
 
-Everything Boat Cloud Agents does, section by section. To get started, see
+Everything Harbormaster does, section by section. To get started, see
 the [README](../README.md); for every setting, [settings.md](settings.md);
 for orchestrators, [orchestrators.md](orchestrators.md).
 
@@ -26,7 +26,7 @@ Task chats have a **Task** side-panel tab with **Overview**, **Reviews**,
 **Transcript** and **Sandbox**. It shows the brief, report, branch and links,
 recorded reviews, searchable transcript, measured memory and sandbox actions.
 Chat transcripts use bb's own read-only log; the headless transcript contains
-the messages and tool names Boat reports. The plugin does not invent test
+the messages and tool names Harbormaster reports. The plugin does not invent test
 results, git totals, memory samples or costs when they are unavailable.
 
 Source chats keep a **Cloud agents** tab for the work they started. A task
@@ -34,7 +34,7 @@ that still runs headless has its existing detail page and reply box, with
 **Continue as a chat** when supported. See [How tasks
 run](#how-tasks-run-in-boat-or-as-task-chats).
 
-The sidebar footer's Boat icon opens sandbox meters: sandboxes on, plan
+The sidebar footer's Harbormaster icon opens sandbox meters: sandboxes on, plan
 hours remaining when reported; today's cost is currently unavailable. Only failures
 are listed below the meters; an idle stopped sandbox is neutral. **All
 sandboxes** opens the Sandboxes tab. Agent usage stays in bb's usage widget.
@@ -47,7 +47,7 @@ sandboxes** opens the Sandboxes tab. Agent usage stays in bb's usage widget.
 - **The send menu:** **Send to a cloud agent** in an existing chat sends
   your message with a request to use one. On bb's New thread screen,
   **Start** and **Start as orchestrator** submit the native composer.
-- **The environment menu:** **Boat sandbox** runs a whole chat in a
+- **The environment menu:** **boat.dev sandbox** runs a whole chat in a
   sandbox, with a size chip next to it. Sizes your plan can't use are
   greyed out with boat's reason.
 - **A task chat's header/context card:** an action suited to its state,
@@ -61,15 +61,15 @@ sandboxes** opens the Sandboxes tab. Agent usage stays in bb's usage widget.
 
 ## New task
 
-Start on bb's **New thread** screen. Pick the project and **Boat sandbox**
-environment, then write the brief. The Boat chip exposes the available
+Start on bb's **New thread** screen. Pick the project and **boat.dev sandbox**
+environment, then write the brief. The boat.dev chip exposes the available
 sandbox sizes and snapshots. In the send menu, choose **Start** for one task
 or **Start as orchestrator** to coordinate the project. The + menu inserts
 a brief starter: **Check the repo runs**, **Fix a bug**, or **Explore and
 plan**. A starter fills the draft; it does not launch work until you submit.
 
 bb keeps control of the selected project, environment, provider, model,
-effort, draft and provisioning. Boat registers the resulting chat as a task;
+effort, draft and provisioning. Harbormaster registers the resulting chat as a task;
 it does not launch a second worker or replace bb's sandbox ownership.
 Registering an existing chat does not establish its checkout branch, so
 direct shipping is not offered for that adopted record.
@@ -238,7 +238,7 @@ only while its preview is live, under the [preview rules](#previews).
 
 boat's own auto-stop (**Hard stop after**, within your plan's cap) only
 sees boat's headless agents at work, not a chat's. While a turn runs in a
-task chat, or in any chat on a Boat sandbox (a cloud orchestrator, a chat
+task chat, or in any chat on a boat.dev sandbox (a cloud orchestrator, a chat
 you started there), or background work runs there, the plugin moves that
 stop out shortly before it comes, by up to Hard stop after (within the
 cap). The task's history says "Kept the sandbox on while the agent works",
@@ -321,9 +321,9 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   processes stuck reading from the disk (`fuse_*`), hung login scripts.
   bb's machine card and the sandbox's tasks then say what's going on, for
   example "boat.dev is still restoring this sandbox's disk (its storage is
-  returning errors). Boat will retry at 01:52 UTC; pressing Resume earlier
+  returning errors). Harbormaster will retry at 01:52 UTC; pressing Resume earlier
   won't help."
-- **Boat retries later.** For a disk still being restored, a restore boat
+- **Harbormaster retries later.** For a disk still being restored, a restore boat
   refused ("Please reduce your request rate") or an SSH session that never
   starts, the plugin wakes the machine again itself after 2, 4, 8 and 16
   minutes, and refuses earlier resumes without asking boat.dev. After 5
@@ -376,7 +376,7 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
 - **Freed disk space trimmed before a stop.** boat's snapshot counts the
   disk blocks deleted files freed until they're trimmed, so a sandbox can
   outgrow its size while `df` shows far less in use. Before every stop the
-  plugin makes on purpose (bb suspending a Boat machine, the idle stop,
+  plugin makes on purpose (bb suspending a boat.dev machine, the idle stop,
   making room, Stop in Sandboxes, a preview's stop, a resize), it runs
   `sudo -n fstrim -av` there over boat's exec API, only while the sandbox
   runs. It takes at most a minute (20 seconds when it makes room for new
@@ -448,7 +448,7 @@ it) can overload that storage, so the plugin wakes sandboxes gently:
   the plugin's own retries take it, as for a disk still being restored.
 - **Usage limit resets, paced.** At a limit's reset, bb's provider retry
   retries every chat the limit stopped within the same minute. A retry
-  that would wake a Boat sandbox now waits for its machine's slot, 30
+  that would wake a boat.dev sandbox now waits for its machine's slot, 30
   seconds after the one before (2 a minute, the wake pace, and never
   during the hold after a wake the paid resume made failed), with the time on the
   queued message; every retry for the same machine goes in its slot. bb
@@ -499,7 +499,7 @@ the pieces above, in the order that worked by hand:
 `--dry-run` only looks and prints the plan, `--json` gives the report. When it
 stops for safety it exits 1 with "Needs you" and the commands to run.
 
-Work that's over isn't woken for. A chat whose Boat task is cancelled or
+Work that's over isn't woken for. A chat whose Harbormaster task is cancelled or
 closed is never retried. A sandbox whose tasks are all cancelled or closed, a
 closed task, or a closed task's chat isn't woken unless you add
 `--force-wake`. Before a wake brings a machine back, the chats of cancelled
@@ -579,7 +579,7 @@ through the recorded report.
 
 ## Live cards and notifications
 
-Assistant messages can include Boat's directive markers to show live task
+Assistant messages can include Harbormaster's directive markers to show live task
 lists, task chips, review verdicts, ready results, decisions and problems.
 The plugin reads their current data; the marker does not turn an assistant's
 claim into approval or a verified check.
@@ -609,11 +609,11 @@ it does not approve shipping or answer a decision.
   and additive Parent context item are controlled by bb.
 - Digest and handoff renderers are not an automatic last-seen digest or a
   guaranteed handoff summary for every switch.
-- Usage comes from bounded Boat readings; task costs on shared sandboxes
+- Usage comes from bounded boat.dev readings; task costs on shared sandboxes
   cannot be attributed perfectly. Memory charts show measured samples only.
 - Native cold starts wait when usage is exhausted or cannot be verified.
   bb's explicit **Send now** overrides dispatch hooks and may use paid extra
-  usage; it is separate from Boat's guarded delegated paid-start confirmation.
+  usage; it is separate from Harbormaster's guarded delegated paid-start confirmation.
 - The automated test suite uses a fake CLI, not a real paid sandbox run.
 
 ## Protected branches
@@ -667,7 +667,7 @@ grey out the sizes your boat plan doesn't include, with boat's reason.
   - A size picked for a task that your plan doesn't include is refused
     before anything starts. A project size it doesn't include falls back to
     the setting (or a smaller size the plan has), the task's history says
-    so. Native starts instead use the Boat size chip in bb's composer.
+    so. Native starts instead use the boat.dev size chip in bb's composer.
   - Set a project's size in Cloud agents → Projects → **Sandbox size** ("Same
     as the setting" is the default), or:
     ```sh
@@ -748,7 +748,7 @@ grey out the sizes your boat plan doesn't include, with boat's reason.
   memory or something was stopped for memory, else the same size (on
   XLarge: run fewer tests at once). A size your plan doesn't include says
   so. For a project's repo, **Use Large for Web app** sets the project's
-  size; without a project, pick a size in the Boat chip for the next native
+  size; without a project, pick a size in the boat.dev chip for the next native
   time. When other tasks used the sandbox meanwhile, the page says part of
   the peak is theirs.
 
@@ -789,7 +789,7 @@ failures without providing that reproducibility guarantee.
 
 Tasks start in a **boat environment**: the repos it clones, the variables
 and secret files it injects, and whether your GitHub and AI logins go in.
-Empty **Boat environment** uses your boat default; a project can pick its
+Empty **boat.dev environment** uses your boat default; a project can pick its
 own.
 
 - **Create one and add secrets** on the boat.dev dashboard, or with the boat
@@ -932,7 +932,7 @@ costs no tokens. When any chat on this bb fails on a usage limit, that agent
 counts as full until the limit resets. `bb boat relay status` shows each
 agent's usage.
 
-**Settings › Usage limits**, at the top of Boat's settings (and on the
+**Settings › Usage limits**, at the top of Harbormaster's settings (and on the
 mobile settings page), says which agent can run now, and why:
 
 - One line on where new work goes, from the same checks a start makes:
@@ -945,7 +945,7 @@ mobile settings page), says which agent can run now, and why:
   ones such as Fable are labelled; they don't stop the agent) and when it
   resets, in your local time. Claude accounts add their extra usage:
   available, blocked, off for this account, or unknown, with when the Pooler
-  checked. Boat never sees a money amount.
+  checked. Harbormaster never sees a money amount.
 - A reading older than about ten minutes shows as stale. **Account Pooler
   off** and **Not routing Claude** are states of their own, with the reading
   from this computer's own login when there is one.
@@ -956,7 +956,7 @@ mobile settings page), says which agent can run now, and why:
   links there.
 
 The usage numbers on the homepage, the thread's usage chip and a waiting
-start's **Change in Settings › Usage limits** link open this section. Boat
+start's **Change in Settings › Usage limits** link open this section. Harbormaster
 only reads from the Account Pooler: it never touches its logins or changes
 its accounts or routing.
 

@@ -253,7 +253,7 @@ export function plural(count: number, one: string, many = `${one}s`): string {
 
 /** Text a user can paste into any chat to point at a task. */
 export function taskReference(task: Pick<TaskDto, "id" | "title" | "prUrl">): string {
-  const line = `boat task ${task.id} — ${task.title}`;
+  const line = `Harbormaster task ${task.id} — ${task.title}`;
   return task.prUrl ? `${line}\n${task.prUrl}` : line;
 }
 

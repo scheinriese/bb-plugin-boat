@@ -211,15 +211,15 @@ function diagnosedBy(error: unknown): WakeDiagnosis | null {
 /** The progress line while a wake waits for its slot. */
 export function waitStep(until: number, reason: WakeWait, now = Date.now()): string {
   return reason === "backoff"
-    ? `Waiting until ${clockTime(until, now)}: a sandbox didn't wake just now, so Boat pauses wake-ups briefly`
-    : `Waiting until ${clockTime(until, now)}: Boat wakes at most 2 sandboxes a minute`;
+    ? `Waiting until ${clockTime(until, now)}: a sandbox didn't wake just now, so Harbormaster pauses wake-ups briefly`
+    : `Waiting until ${clockTime(until, now)}: Harbormaster wakes at most 2 sandboxes a minute`;
 }
 
 /** The message for a resume refused before Boat's own retry (or while it moves the sandbox). */
 export function heldMessage(entry: WakeRetry, now: number): string {
   if (moving(entry)) return movingMessage(entry.move?.track, now);
   if (entry.move?.state === "asked") return `boat.dev keeps failing to restore this sandbox's disk on the node it runs on. Moving it to a new node could lose unsaved work, so it's under Needs you.`;
-  if (entry.kind === "paced") return `Boat wakes at most 2 sandboxes a minute and others are waking now. Boat will wake this one at ${clockTime(entry.retryAt ?? now, now)}.`;
+  if (entry.kind === "paced") return `Harbormaster wakes at most 2 sandboxes a minute and others are waking now. Harbormaster will wake this one at ${clockTime(entry.retryAt ?? now, now)}.`;
   const diagnosis: WakeDiagnosis = { kind: entry.kind, detail: entry.detail, checked: false };
   return entry.retryAt === null
     ? wakeFailureMessage(diagnosis, { retryAt: null, gaveUpAfter: entry.failures, resumeAfter: holdUntil(entry), sandboxId: entry.sandboxId, now }, "")
@@ -343,7 +343,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
     const move = entry.move!;
     await tracks.put(entry.sandboxId, null);
     const stopped = lost
-      ? `boat.dev couldn't take a fresh snapshot of this sandbox, so Boat stopped it keeping its last completed snapshot (${snapshotText(move.snapshotAt ?? null, at)}); files written after it, files git ignores included, aren't kept.`
+      ? `boat.dev couldn't take a fresh snapshot of this sandbox, so Harbormaster stopped it keeping its last completed snapshot (${snapshotText(move.snapshotAt ?? null, at)}); files written after it, files git ignores included, aren't kept.`
       : "boat.dev stopped this sandbox with a fresh snapshot, so nothing was lost.";
     log(`node move: ${entry.sandboxId} stopped (${lost ? "forced" : "plain"})`);
     if (!move.resume) {
@@ -353,7 +353,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
     }
     // A new node gets a fresh start: Boat's retry resumes it at once.
     await update(entry.sandboxId, { ...entry, move: { ...move, state: "moved", nextAt: undefined }, failures: 0, retryAt: at, lastAt: at, firedAt: null });
-    tellTasks(entry.sandboxId, `${stopped} Boat resumes it now on a new boat.dev node.${move.fork === "healthy" ? " A test fork had restored fine." : ""}`);
+    tellTasks(entry.sandboxId, `${stopped} Harbormaster resumes it now on a new boat.dev node.${move.fork === "healthy" ? " A test fork had restored fine." : ""}`);
   }
 
   /** Follow a stop: stopped, force it once boat refused, wait while it's pending (never a new plain stop). */
@@ -391,7 +391,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
         forced = await deps.boat.stop(entry.sandboxId, undefined, { force: true });
       } catch (error) {
         log(`node move: force stop ${entry.sandboxId}: ${errorText(error)}`);
-        return askMove(entry, moveQuestion({ sandboxId: entry.sandboxId, snapshotAt: move.snapshotAt ?? null, reasons: [...(said ? [`boat refused the plain stop (${said})`] : []), `boat refused the forced stop too (${errorText(error).split("\n")[0]})`], detail: entry.detail, fork: move.fork ?? "skipped", now: at }), `Boat couldn't move this sandbox to a new boat.dev node: boat refused the forced stop (${errorText(error).split("\n")[0]}). It's under Needs you.`);
+        return askMove(entry, moveQuestion({ sandboxId: entry.sandboxId, snapshotAt: move.snapshotAt ?? null, reasons: [...(said ? [`boat refused the plain stop (${said})`] : []), `boat refused the forced stop too (${errorText(error).split("\n")[0]})`], detail: entry.detail, fork: move.fork ?? "skipped", now: at }), `Harbormaster couldn't move this sandbox to a new boat.dev node: boat refused the forced stop (${errorText(error).split("\n")[0]}). It's under Needs you.`);
       }
       const after = (await deps.boat.findInfo(entry.sandboxId).catch(() => null))?.state ?? null;
       const next: WakeRetry = { ...entry, move: { ...move, state: "stopping", forced: true, stopId: forced.stopId ?? move.stopId ?? null, nextAt: at + STOP_POLL_MS }, lastAt: at };
@@ -404,7 +404,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
       return askMove(
         entry,
         moveQuestion({ sandboxId: entry.sandboxId, snapshotAt: move.snapshotAt ?? null, reasons: [`boat's stop has been pending since ${clockTime(move.stoppedAt ?? move.at, at)} (the sandbox may be unreachable)`], detail: entry.detail, fork: move.fork ?? "skipped", now: at }),
-        `boat's stop of this sandbox has been pending for ${Math.round((at - (move.stoppedAt ?? move.at)) / 60_000)} minutes, so Boat leaves the move to you. It's under Needs you.`,
+        `boat's stop of this sandbox has been pending for ${Math.round((at - (move.stoppedAt ?? move.at)) / 60_000)} minutes, so Harbormaster leaves the move to you. It's under Needs you.`,
       );
     }
     await update(entry.sandboxId, { ...entry, move: { ...move, state: "stopping", stopId: report.stopId ?? move.stopId ?? null, nextAt: at + STOP_POLL_MS }, lastAt: at });
@@ -441,7 +441,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
         await update(id, { ...checked, move: { ...checked.move!, forkTries: tries, nextAt: at + RECHECK_MS }, lastAt: at });
         return;
       }
-      reasons.push(fork === "skipped" ? "Boat doesn't check snapshots with a test fork here" : "Boat couldn't check the snapshot with a test fork");
+      reasons.push(fork === "skipped" ? "Harbormaster doesn't check snapshots with a test fork here" : "Harbormaster couldn't check the snapshot with a test fork");
     }
     if (reasons.length > 0) {
       return askMove(
@@ -460,7 +460,7 @@ export function createWakeGuard(deps: WakeGuardDeps): WakeGuard {
         const said = errorText(error).split("\n")[0]!;
         // boat saying it can't snapshot it is a refusal; anything else isn't known to be one.
         if (/snapshot|hydrat|refus|can(?:no|')t stop/i.test(said)) report = { status: "failing", stopId: null, forced: null };
-        else return askMove(checked, moveQuestion({ sandboxId: id, snapshotAt, reasons: [`boat's stop failed (${said})`], detail: entry.detail, fork, now: at }), `Boat couldn't stop this sandbox to move it (${said}). It's under Needs you.`);
+        else return askMove(checked, moveQuestion({ sandboxId: id, snapshotAt, reasons: [`boat's stop failed (${said})`], detail: entry.detail, fork, now: at }), `Harbormaster couldn't stop this sandbox to move it (${said}). It's under Needs you.`);
       }
     }
     const stopping: WakeRetry = { ...checked, move: { ...checked.move!, state: "stopping", stopId: report.stopId, stoppedAt: at }, lastAt: at };

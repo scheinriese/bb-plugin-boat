@@ -753,7 +753,7 @@ test("in the plugin: the dispatch hook answers at once, and a message queued for
   // No pending note anywhere: every message goes ahead, without waiting on anything.
   const decision = hook(makeMessageDispatchHookContext());
   assert.deepEqual(decision instanceof Promise ? await decision : decision, { action: "proceed" });
-  const queued = await harness.emitThreadEvent("message.queued", { entry: makeQueueEntry({ waitingOn: { kind: "host-offline", hostName: "Boat bx_1 (abc123)" } }) });
+  const queued = await harness.emitThreadEvent("message.queued", { entry: makeQueueEntry({ waitingOn: { kind: "host-offline", hostName: "Harbormaster bx_1 (abc123)" } }) });
   assert.deepEqual(queued.errors, []);
 });
 

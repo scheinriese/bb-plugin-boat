@@ -129,8 +129,8 @@ export class WakeDeferred extends Error {
   constructor(retryAt: number, reason: WakeWait, perWindow = WAKES_PER_WINDOW) {
     super(
       reason === "backoff"
-        ? `boat.dev failed to wake a sandbox just now, so Boat pauses wake-ups until ${utcClock(retryAt)}. Try again then.`
-        : `Boat wakes at most ${perWindow} sandboxes a minute and others are waking now. Try again at ${utcClock(retryAt)}.`,
+        ? `boat.dev failed to wake a sandbox just now, so Harbormaster pauses wake-ups until ${utcClock(retryAt)}. Try again then.`
+        : `Harbormaster wakes at most ${perWindow} sandboxes a minute and others are waking now. Try again at ${utcClock(retryAt)}.`,
     );
     this.name = "WakeDeferred";
     this.retryAt = retryAt;

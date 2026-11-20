@@ -311,7 +311,7 @@ test("provider rows: glyphs, status, the key line and where the key goes", () =>
   assert.deepEqual(keyLine(INSTABOX_CONNECTED), { set: true, action: "Change" });
   assert.deepEqual(keyLine(INSTABOX_NOT_CONNECTED), { set: false, action: "Add key in bb secrets" });
   assert.match(keyHint(INSTABOX_CONNECTED).title, /“Instabox API key” in the settings list/);
-  assert.equal(keyHint(INSTABOX_NOT_CONNECTED).title, "This version of Boat can't take a key for Instabox yet");
+  assert.equal(keyHint(INSTABOX_NOT_CONNECTED).title, "This version of Harbormaster can't take a key for Instabox yet");
 });
 
 test("the setup line counts providers only once more than one is ready", () => {

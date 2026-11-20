@@ -483,7 +483,7 @@ test("an invalid file is refused with a clear reason, and nothing changes", asyn
   const before = await exported();
   const cases: [unknown, RegExp][] = [
     ["{ not json", /The file isn't valid JSON/],
-    [{ format: "something-else", version: 1 }, /This isn't a Boat backup: its "format" should be "bb-plugin-boat-config"/],
+    [{ format: "something-else", version: 1 }, /This isn't a Harbormaster backup: its "format" should be "bb-plugin-boat-config"/],
     [{ format: CONFIG_FORMAT, version: 3 }, /format version 3, and this plugin reads versions up to 2\. Update the plugin first\./],
     [{ format: CONFIG_FORMAT, version: 0 }, /Unknown format version 0\./],
     [
@@ -563,8 +563,8 @@ test("the settings section's RPCs: export, preview (changes nothing) and import"
 
   // Problems come back as data, so the dialog can show them.
   const bad = (await harness.callRpc("previewConfigImport", { text: "[]", replaceProjects: false })) as { problems: string[] };
-  assert.match(bad.problems[0] ?? "", /This isn't a Boat backup/);
-  await assert.rejects(harness.callRpc("importConfig", { text: "[]", replaceProjects: false }), /This isn't a Boat backup/);
+  assert.match(bad.problems[0] ?? "", /This isn't a Harbormaster backup/);
+  await assert.rejects(harness.callRpc("importConfig", { text: "[]", replaceProjects: false }), /This isn't a Harbormaster backup/);
 
   const done = (await harness.callRpc("importConfig", { text, replaceProjects: false })) as { changes: number };
   assert.equal(done.changes, preview.changes);

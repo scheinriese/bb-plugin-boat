@@ -14,14 +14,14 @@ chats keep their review history, transcript, preview and sandbox facts together.
 ## Requirements and costs
 
 Requires bb 0.48.1, a boat.dev plan, a connected agent subscription or API key,
-and GitHub access for repository work. bb Connect is required for native Boat
+and GitHub access for repository work. bb Connect is required for native boat.dev
 sandbox chats and task chats. Sandbox time and agent usage are billed by
 those services; the plugin adds no service charge. Current plans: https://boat.dev.
 
 ## Trust and setup
 
-This is full-trust plugin code. It runs the Boat CLI with your login and lets
-agents work with the access and secrets supplied by your Boat environment.
+This is full-trust plugin code. It runs the boat.dev CLI with your login and lets
+agents work with the access and secrets supplied by your boat.dev environment.
 Plugin-prepared delegated checkouts guard protected branches; native checkouts
 and machine lifecycle stay with bb. Read the security policy before installing.
 

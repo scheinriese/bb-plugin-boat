@@ -143,7 +143,7 @@ export function createProjectSources(bb: BbPluginApi): ProjectSources {
             (deleteError: unknown) => (deleteError instanceof Error ? deleteError.message : String(deleteError)),
           );
           if (kept === null) throw error;
-          throw new Error(`${error instanceof Error ? error.message : String(error)}; bb kept source ${row.sourceId}, which Boat couldn't record or remove (${kept})`);
+          throw new Error(`${error instanceof Error ? error.message : String(error)}; bb kept source ${row.sourceId}, which Harbormaster couldn't record or remove (${kept})`);
         }
         return { sourceId: row.sourceId, created: true, own: true, isDefault: source.isDefault === true };
       }),

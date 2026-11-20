@@ -1068,7 +1068,7 @@ export class SandboxSizes {
     this.failures.delete(task.id);
     const done = this.run(job, request);
     job.done = done;
-    const outcome = await Promise.race([done, delay(request.waitMs).then(() => null)]);
+    const outcome = await within(done, request.waitMs);
     if (outcome === null) {
       job.callerWaiting = false;
       return { task: this.deps.store.get(task.id) ?? task, pending: true, from: job.from, to: job.to, moved: job.moved, sent: false };

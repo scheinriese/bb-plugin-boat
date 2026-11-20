@@ -262,7 +262,7 @@ function BoatTranscript({ task }: { task: TaskDetailDto }) {
         </div>
       </details></li>)}
     </ol>}
-    <p className="text-xs text-muted-foreground">Latest 500 events. Boat reports tool names, without their output.</p>
+    <p className="text-xs text-muted-foreground">Latest 500 events. Harbormaster reports tool names, without their output.</p>
   </>;
 }
 

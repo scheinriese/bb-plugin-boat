@@ -282,7 +282,7 @@ test("without a key, Instabox isn't enabled: its tasks refuse, nothing goes to b
   assert.equal(status.ok, false);
   const key = status.checks.find((check) => check.id === "key")!;
   assert.equal(key.state, "missing");
-  assert.match(key.fix!.text, /Settings → Plugins → Boat Cloud Agents → Instabox API key/);
+  assert.match(key.fix!.text, /Settings → Plugins → Harbormaster → Instabox API key/);
   await assert.rejects(instaboxPreflight(setup), (error: unknown) => error instanceof TaskError && error.code === "setup_required");
   // Stored: enabled.
   keyPresent = true;

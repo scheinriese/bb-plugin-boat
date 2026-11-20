@@ -12,7 +12,7 @@ const HYDRATOR = "ascii-agents-server[812]: [lazyfs] [ERROR] HYDRATOR FAILED att
 const KEY_STEP = "Machine bootstrap command failed: grep: /home/user/.ssh/authorized_keys: Input/output error";
 const RATE = "Resume failed: Failed to restore snapshot: Please reduce your request rate.";
 
-test("the retry schedule: 2, 4, 8, 16 minutes, at most 30, and Boat gives up at the 5th failure", () => {
+test("the retry schedule: 2, 4, 8, 16 minutes, at most 30, and Harbormaster gives up at the 5th failure", () => {
   assert.deepEqual([1, 2, 3, 4, 5, 6, 12].map((failures) => retryDelayMs(failures) / 60_000), [2, 4, 8, 16, 30, 30, 30]);
   const now = 1_000_000;
   let previous = null as ReturnType<typeof nextFailure> & { [key: string]: unknown } | null;
@@ -75,7 +75,7 @@ async function env(options: { maxWaitMs?: number; moves?: { forkCheck?: boolean 
   };
 }
 
-test("a disk still restoring: Boat retries later, refuses earlier resumes without asking boat.dev, then hands over to Needs you", async () => {
+test("a disk still restoring: Harbormaster retries later, refuses earlier resumes without asking boat.dev, then hands over to Needs you", async () => {
   const e = await env();
   let runs = 0;
   const failing = async (permit: () => Promise<unknown>) => { runs += 1; await permit(); throw new Error(KEY_STEP); };
@@ -83,7 +83,7 @@ test("a disk still restoring: Boat retries later, refuses earlier resumes withou
   for (const [index, minutes] of delays.entries()) {
     const start = e.now();
     await assert.rejects(e.guard.machine(e.wake(), failing), (error: Error) => {
-      assert.equal(error.message, `boat.dev is still restoring this sandbox's disk (its storage is returning errors). Boat will retry at ${new Date(start + minutes * 60_000).toISOString().slice(11, 16)} UTC; pressing Resume earlier won't help.`);
+      assert.equal(error.message, `boat.dev is still restoring this sandbox's disk (its storage is returning errors). Harbormaster will retry at ${new Date(start + minutes * 60_000).toISOString().slice(11, 16)} UTC; pressing Resume earlier won't help.`);
       return true;
     });
     const plan = (await e.guard.scheduled(e.sandboxId))!;
@@ -101,7 +101,7 @@ test("a disk still restoring: Boat retries later, refuses earlier resumes withou
   }
   // The 5th failure: Boat stops, and the orchestrator gets a Needs you item naming the sandbox and boat.dev's error.
   await assert.rejects(e.guard.machine(e.wake(), failing), (error: Error) => {
-    assert.match(error.message, /^boat\.dev still couldn't restore this sandbox's disk after 5 tries \(its storage is returning errors\), so Boat stopped retrying on its own\. It's under Needs you\. Press Resume after \d\d:\d\d UTC, or try now with `bb boat sandbox resume bx_\w+`\.$/);
+    assert.match(error.message, /^boat\.dev still couldn't restore this sandbox's disk after 5 tries \(its storage is returning errors\), so Harbormaster stopped retrying on its own\. It's under Needs you\. Press Resume after \d\d:\d\d UTC, or try now with `bb boat sandbox resume bx_\w+`\.$/);
     return true;
   });
   const plan = (await e.guard.scheduled(e.sandboxId))!;
@@ -132,7 +132,7 @@ test("a disk still restoring: Boat retries later, refuses earlier resumes withou
 
 test("a wake that works ends the plan, and resets the account's pause", async () => {
   const e = await env();
-  await assert.rejects(e.guard.machine(e.wake(), async (permit) => { await permit(); throw new Error(RATE); }), /asked Boat to slow down\. Boat will retry at 01:02 UTC/);
+  await assert.rejects(e.guard.machine(e.wake(), async (permit) => { await permit(); throw new Error(RATE); }), /asked Harbormaster to slow down\. Harbormaster will retry at 01:02 UTC/);
   assert.equal((await e.pacer.snapshot()).failures, 1, "a failed wake pauses the next one account-wide");
   assert.equal((await e.guard.scheduled(e.sandboxId))!.kind, "restore-rate-limited");
   e.advance(2 * 60_000);
@@ -179,12 +179,12 @@ test("a due node move starts even when time moves on while the pass reads its pl
   assert.equal(e.boat.forks.length, 1, "the move's test fork ran");
 });
 
-test("too many wakes at once: the third is told when Boat wakes it, and Boat does", async () => {
+test("too many wakes at once: the third is told when Harbormaster wakes it, and Harbormaster does", async () => {
   const e = await env({ maxWaitMs: 0 });
   await e.pacer.acquire();
   await e.pacer.acquire();
   await assert.rejects(e.guard.machine(e.wake(), async (permit) => { await permit(); return "up"; }), (error: Error) => {
-    assert.equal(error.message, "Boat wakes at most 2 sandboxes a minute and others are waking now. Boat will wake this one at 01:01 UTC.");
+    assert.equal(error.message, "Harbormaster wakes at most 2 sandboxes a minute and others are waking now. Harbormaster will wake this one at 01:01 UTC.");
     return true;
   });
   const plan = (await e.guard.scheduled(e.sandboxId))!;
@@ -203,7 +203,7 @@ test("a stuck SSH login and a daemon stuck on the disk are retried later; other 
   assert.equal((await e.guard.scheduled(e.sandboxId))!.kind, "ssh-session-stuck");
   e.advance(2 * 60_000);
   e.setCheck("BOAT_DSTATE 4242 request_wait_answer fuse_simple_request fuse_send_open fuse_file_open  node host-daemon/main.js\nBOAT_DISK_END\n");
-  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error("Machine daemon did not start within 20 seconds"); }), /boat\.dev is still restoring this sandbox's disk \(files bb needs there aren't readable yet\)\. Boat will retry at/);
+  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error("Machine daemon did not start within 20 seconds"); }), /boat\.dev is still restoring this sandbox's disk \(files bb needs there aren't readable yet\)\. Harbormaster will retry at/);
   const plan = (await e.guard.scheduled(e.sandboxId))!;
   assert.equal(plan.kind, "disk-restoring");
   assert.equal(plan.failures, 2);
@@ -213,7 +213,7 @@ test("a stuck SSH login and a daemon stuck on the disk are retried later; other 
   assert.equal(await e.guard.scheduled(e.sandboxId), null);
   // SSH that doesn't answer (nothing wrong on the disk): told plainly, no plan.
   e.setCheck("BOAT_DISK ok .profile\nBOAT_DISK_END\n");
-  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error("ssh: connect to host 203.0.113.7 port 22: Connection refused"); }), /^Error: Boat couldn't reach the sandbox over SSH to restart bb there/);
+  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error("ssh: connect to host 203.0.113.7 port 22: Connection refused"); }), /^Error: Harbormaster couldn't reach the sandbox over SSH to restart bb there/);
   assert.equal(await e.guard.scheduled(e.sandboxId), null);
 });
 
@@ -239,15 +239,15 @@ async function failUntilStuck(e: Awaited<ReturnType<typeof env>>, wake: MachineW
   }
 }
 
-test("lazyfs's own count moves nothing: the incident's first look is a normal retry; Boat's own looks over 15 minutes are what count", async () => {
+test("lazyfs's own count moves nothing: the incident's first look is a normal retry; Harbormaster's own looks over 15 minutes are what count", async () => {
   const e = await env({ moves: {} });
   e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
-  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error(KEY_STEP); }), /Boat will retry at 01:02 UTC/);
+  await assert.rejects(e.guard.machine(e.wake(), async () => { throw new Error(KEY_STEP); }), /Harbormaster will retry at 01:02 UTC/);
   assert.equal((await e.guard.scheduled(e.sandboxId))!.move ?? null, null, "attempt 77 on the first look isn't stuck");
   assert.deepEqual(await e.guard.track(e.sandboxId), { object: "chunk 1 GET 0000.tar.zst", firstAt: e.now(), attempts: 77, seen: 1 });
   e.advance(2 * 60_000);
   const error = await failUntilStuck(e, e.wake());
-  assert.equal(error.message, "boat.dev keeps failing to restore this sandbox's disk on the node it runs on (Boat saw the same file fail 5 times since 01:00 UTC). Boat moves it to a new node if nothing there could be lost, else asks you first under Needs you.");
+  assert.equal(error.message, "boat.dev keeps failing to restore this sandbox's disk on the node it runs on (Harbormaster saw the same file fail 5 times since 01:00 UTC). Harbormaster moves it to a new node if nothing there could be lost, else asks you first under Needs you.");
   assert.equal(e.now(), Date.parse("2026-11-19T01:30:00Z"), "the 5th failure, 30 minutes after the first");
 });
 
@@ -259,7 +259,7 @@ test("an orchestrator's sandbox with no chat at work and clean checkouts: a test
   await failUntilStuck(e, wake);
   // Resumes wait for the move.
   let runs = 0;
-  await assert.rejects(e.guard.machine(wake, async () => { runs += 1; }), /Boat moves it to a new node if nothing there could be lost/);
+  await assert.rejects(e.guard.machine(wake, async () => { runs += 1; }), /Harbormaster moves it to a new node if nothing there could be lost/);
   assert.equal(runs, 0);
   assert.equal(await e.pass(), orch.id);
   assert.deepEqual(e.boat.forks.map((fork) => [fork.from, fork.noSnapshots, fork.ttlSeconds]), [[orch.id, true, 600]]);
@@ -347,7 +347,7 @@ test("a stop boat says nothing about, with the sandbox still up, is looked at on
   assert.equal(e.boat.calls.filter((call) => call === `stop ${orch.id}`).length, 1, "never stopped again to see");
 });
 
-test("no Boat task there, but a chat mid-turn, a checkout with work, or chats Boat can't see: Needs you, nothing stopped", async () => {
+test("no Harbormaster task there, but a chat mid-turn, a checkout with work, or chats Harbormaster can't see: Needs you, nothing stopped", async () => {
   for (const [label, setup] of [
     ["a chat mid-turn", (e: Awaited<ReturnType<typeof env>>) => e.setThreads([{ id: "thr_orch", title: "Orchestrator", status: "active" }])],
     ["an untracked file", (e: Awaited<ReturnType<typeof env>>) => e.setScan("BOAT_GIT_AT ahead=0 dirty=1 stash=0 /home/user/notes\nBOAT_GIT_SCAN_END\n")],
@@ -368,10 +368,10 @@ test("no Boat task there, but a chat mid-turn, a checkout with work, or chats Bo
   await failUntilStuck(blind, { ...blind.wake(), sandboxId: orch.id, hostId: "host_orch" });
   await blind.pass();
   assert.equal((await blind.guard.scheduled(orch.id))!.move!.state, "asked");
-  assert.match(blind.store.decisions({ statuses: ["open"] })[0]!.recommendation, /because Boat couldn't see which chats run there/);
+  assert.match(blind.store.decisions({ statuses: ["open"] })[0]!.recommendation, /because Harbormaster couldn't see which chats run there/);
 });
 
-test("a task with unpushed commits: Boat asks first, with the exact commands and what would be lost", async () => {
+test("a task with unpushed commits: Harbormaster asks first, with the exact commands and what would be lost", async () => {
   const e = await env({ moves: {} });
   e.setCheck(`BOAT_HYDRATOR ${STUCK}\nBOAT_DISK_END\n`);
   e.store.update(e.task.id, { status: "idle", repoPath: "/home/user/work/web" });
@@ -385,7 +385,7 @@ test("a task with unpushed commits: Boat asks first, with the exact commands and
   const decision = e.store.decisions({ statuses: ["open"] }).find((entry) => entry.shortLabel === "Sandbox stuck on a node")!;
   assert.equal(decision.orchestratorThreadId, "thr_orch");
   assert.equal(decision.question, `Sandbox ${e.sandboxId} is stuck on a boat.dev node that keeps failing its disk. Move it to a new node? If boat can't take a fresh snapshot, that loses what changed there since 00:41 UTC (its last completed snapshot), files git ignores (a local .env, build output) included.`);
-  assert.equal(decision.recommendation, `Move it if nothing written since then matters: run \`boat stop ${e.sandboxId}\` (if boat refuses it, \`boat stop ${e.sandboxId} --force\`), then \`bb boat sandbox resume ${e.sandboxId}\`. Boat didn't do it itself because task ${e.task.id} has 2 unpushed commits. Otherwise wait for boat.dev to recover.`);
+  assert.equal(decision.recommendation, `Move it if nothing written since then matters: run \`boat stop ${e.sandboxId}\` (if boat refuses it, \`boat stop ${e.sandboxId} --force\`), then \`bb boat sandbox resume ${e.sandboxId}\`. Harbormaster didn't do it itself because task ${e.task.id} has 2 unpushed commits. Otherwise wait for boat.dev to recover.`);
   assert.match(decision.context ?? "", /HYDRATOR FAILED attempt 77 .*status code 503\. A test fork from the same snapshot restored fine on another node\.$/);
   assert.match(e.store.events(e.task.id, 50).filter((event) => event.kind === WAKE_EVENT).at(-1)!.text, /could lose what changed since 00:41 UTC \(its last completed snapshot\), and task t_\w+ has 2 unpushed commits, so it's under Needs you\.$/);
   await assert.rejects(e.guard.machine(e.wake(), async () => "up"), /could lose unsaved work, so it's under Needs you/);
@@ -406,7 +406,7 @@ test("a task mid-turn is asked about; a clean, idle one is moved", async () => {
   await failUntilStuck(idle, idle.wake());
   await idle.pass();
   assert.equal((await idle.guard.scheduled(idle.sandboxId))!.move!.state, "moved");
-  assert.match(idle.store.events(idle.task.id, 50).filter((event) => event.kind === WAKE_EVENT).at(-1)!.text, /^boat\.dev stopped this sandbox with a fresh snapshot, so nothing was lost\. Boat resumes it now on a new boat\.dev node\. A test fork had restored fine\.$/);
+  assert.match(idle.store.events(idle.task.id, 50).filter((event) => event.kind === WAKE_EVENT).at(-1)!.text, /^boat\.dev stopped this sandbox with a fresh snapshot, so nothing was lost\. Harbormaster resumes it now on a new boat\.dev node\. A test fork had restored fine\.$/);
 });
 
 test("a test fork that couldn't tell: tried again later, then the user decides; nothing is forced", async () => {
@@ -425,7 +425,7 @@ test("a test fork that couldn't tell: tried again later, then the user decides; 
   plan = (await e.guard.scheduled(orch.id))!;
   assert.equal(plan.move!.state, "asked");
   assert.ok(!e.boat.calls.some((call) => call.startsWith(`stop ${orch.id}`)));
-  assert.match(e.store.decisions({ statuses: ["open"] })[0]!.recommendation, /because Boat couldn't check the snapshot with a test fork/);
+  assert.match(e.store.decisions({ statuses: ["open"] })[0]!.recommendation, /because Harbormaster couldn't check the snapshot with a test fork/);
 });
 
 test("the snapshot itself doesn't restore: nothing stopped, and Needs you says so", async () => {
@@ -441,7 +441,7 @@ test("the snapshot itself doesn't restore: nothing stopped, and Needs you says s
   assert.equal(e.store.decisions({ statuses: ["open"] })[0]!.shortLabel, "Sandbox won't restore");
 });
 
-test("a refused stop moves it only once Boat has seen the same hydrator failure for a while; a disk only restoring backs off", async () => {
+test("a refused stop moves it only once Harbormaster has seen the same hydrator failure for a while; a disk only restoring backs off", async () => {
   const e = await env({ moves: {} });
   const orch = e.boat.addSandbox("bx_orchbox", "small", "idle");
   // Normal restoring after a wake: "hydration in progress", a read waiting on lazyfs.
@@ -511,7 +511,7 @@ test("checked again right before --force: a turn that started while the stop was
   await failUntilStuck(e, { ...e.wake(), sandboxId: orch.id, hostId: "host_orch" });
   await e.pass();
   assert.equal((await e.guard.scheduled(orch.id))!.move!.state, "stopping");
-  assert.equal(await e.guard.moving(orch.id), true, "Boat's own dispatches wait meanwhile");
+  assert.equal(await e.guard.moving(orch.id), true, "Harbormaster's own dispatches wait meanwhile");
   // The sandbox is up while boat works on the stop: a turn starts there, then boat gives up on the stop.
   e.setThreads([{ id: "thr_orch", title: "Orchestrator", status: "active" }]);
   e.boat.stopStatuses.set("stop_1", "failing");

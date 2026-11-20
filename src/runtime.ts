@@ -251,8 +251,8 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
           `No project "${ref.id}".`,
           "project_not_found",
           known.length > 0
-            ? `Known projects: ${known.join(", ")} (or local:<bb project id>). Add one in Settings → Plugins → Boat Cloud Agents.`
-            : "Add one in Settings → Plugins → Boat Cloud Agents, or with `bb boat project add`.",
+            ? `Known projects: ${known.join(", ")} (or local:<bb project id>). Add one in Settings → Plugins → Harbormaster.`
+            : "Add one in Settings → Plugins → Harbormaster, or with `bb boat project add`.",
         );
       }
       await validateLocalProjectLink(bb, project.localBbProjectId, project.repos[0]!.repo);
@@ -363,7 +363,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       movedTaskIds = service.store.reassignOpenTasks(old, threadId);
       service.store.reassignOpenDecisions(old, threadId);
       await bb.storage.kv.delete(relayKey(old)).catch(() => undefined);
-      // It loses the boat tools on its next turn, and the relay never moves it again.
+      // It loses the Harbormaster tools on its next turn, and the relay never moves it again.
       await bb.sdk.threads
         .updatePluginMetadata({ threadId: old, pluginId: bb.pluginId, set: { role: "former-orchestrator", successor: threadId } } as never)
         .catch((error: unknown) => bb.log.warn(`retire ${old}: ${message(error)}`));
@@ -604,7 +604,7 @@ export function createRuntime(deps: RuntimeDeps): Runtime {
       throw new TaskError(
         `Only ${AGENT_NAME[only]} is set up (Coding agents), so an orchestrator can't move to ${AGENT_NAME[to]}.`,
         "agent_unavailable",
-        "Connect both in boat.dev (Coding agents set to Auto-detect), or pick Claude and Codex in Settings → Plugins → Boat Cloud Agents.",
+        "Connect both in boat.dev (Coding agents set to Auto-detect), or pick Claude and Codex in Settings → Plugins → Harbormaster.",
       );
     }
     const view = await orchestratorView(threadId);

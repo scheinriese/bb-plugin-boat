@@ -17,7 +17,7 @@ test('Claude extra usage line names the real state and when the Pooler checked',
  assert.equal(claudeExtraUsageLine(undefined,true,now),'Claude extra usage: available');
  assert.equal(claudeExtraUsageLine({status:'unknown',observedAt:null,pool:'off'},false,now),'Claude extra usage: unknown (Account Pooler off)');
  assert.equal(claudeExtraUsageLine(undefined,false,now),'Claude extra usage: unknown (Account Pooler off)');
- assert.match(claudeExtraUsageLine({status:'allowed',observedAt:at,pool:'on'},false,now),/available at the last check · last checked .* · Boat waits for a newer check/);
+ assert.match(claudeExtraUsageLine({status:'allowed',observedAt:at,pool:'on'},false,now),/available at the last check · last checked .* · Harbormaster waits for a newer check/);
  assert.equal(claudeExtraUsageLine({status:'unknown',observedAt:null,pool:'on'},false,now),'Claude extra usage: unknown (no Account Pooler reading yet)');
  assert.doesNotMatch(claudeExtraUsageLine({status:'rejected',observedAt:at,pool:'on'},false,now),/permitted/);
 });

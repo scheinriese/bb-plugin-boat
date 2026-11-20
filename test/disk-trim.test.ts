@@ -172,7 +172,7 @@ test("a sandbox that isn't running isn't trimmed: exec must never wake it", asyn
   assert.deepEqual(await trimFreedBlocks(slow as never, "bx_slow", { signal: cancelled.signal }), { status: "skipped", reason: "the stop was cancelled" });
 });
 
-test("Boat's other stops trim first too: an explicit stop of a headless sandbox", async () => {
+test("Harbormaster's other stops trim first too: an explicit stop of a headless sandbox", async () => {
   const env = setup();
   const sandbox = env.boat.addSandbox("bx_headless", "small", "idle");
   env.boat.execResult = answer(FSTRIM);
@@ -181,7 +181,7 @@ test("Boat's other stops trim first too: an explicit stop of a headless sandbox"
   assert.deepEqual(env.debugs, [`disk trim ${sandbox.id}: trimmed 124.2 GiB (0 B on /dev/vda15, 124.2 GiB on /dev/vda1)`]);
 });
 
-test("Boat's other stops trim first too: the idle stop of a finished headless task", async () => {
+test("Harbormaster's other stops trim first too: the idle stop of a finished headless task", async () => {
   const env = makeService({ settings: { stopIdleAfterMinutes: 1 } });
   const execBefore = env.boat.exec.bind(env.boat);
   env.boat.exec = async (sandboxId, script, opts) => {
@@ -235,7 +235,7 @@ test("too large for its size: plain words, and Needs you with the exact way back
   assert.equal(asked.question, "Sandbox bx_acme01 won't start: its data is 84.1 GB, too large for its size (Small fits 76.0 GB). Bring it back to Small with one start on Large?");
   assert.match(asked.recommendation, /^Usually most of it is space from deleted files, which boat\.dev still counts until the disk is trimmed\. One start on Large plus a cleanup brings it back to Small: /);
   assert.match(asked.recommendation, /resume it on Large, trim its disk and remove dangling Docker images, stop it, then resume it on Small \(the commands are below\)\. If that last resume still fails, also remove the Docker images no container uses \(`boat exec bx_acme01 -- sudo -n docker image prune -af`; they download or build again when needed\), then stop and resume it again\. /);
-  assert.match(asked.recommendation, /Boat doesn't do this on its own: a start on Large costs more\.$/);
+  assert.match(asked.recommendation, /Harbormaster doesn't do this on its own: a start on Large costs more\.$/);
   assert.deepEqual(asked.options, ["I'll do it", "Leave it for now"]);
   assert.equal(asked.shortLabel, "Sandbox too large for its size");
   assert.deepEqual(asked.context.split("\n"), [

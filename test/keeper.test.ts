@@ -310,7 +310,7 @@ test("a running task chat counts even when bb lists no chats there; bb not answe
   assert.deepEqual(idle.suspended, []);
 });
 
-test("chats on a Boat sandbox without a task (a cloud orchestrator) are kept on too, and suspended once idle", async () => {
+test("chats on a boat.dev sandbox without a task (a cloud orchestrator) are kept on too, and suspended once idle", async () => {
   const time = clock();
   const boat = new FakeBoat();
   const store = memoryStore();
@@ -573,7 +573,7 @@ test("background commands and bb workflows keep a chat's sandbox on after its tu
   }
 });
 
-test("a child chat working elsewhere keeps its parent's sandbox on; one on another Boat sandbox doesn't", async () => {
+test("a child chat working elsewhere keeps its parent's sandbox on; one on another boat.dev sandbox doesn't", async () => {
   const idle = () => ({ id: "thr_orch", status: "idle", queuedWork: "none", activity: { activeBackgroundAgentCount: 0 } });
   const elsewhere = orchestratorMachine(idle, { children: { thr_orch: [{ id: "thr_sub", status: "active", environmentHostId: "host_laptop" }] } });
   const sandbox = await elsewhere.start();
