@@ -327,6 +327,8 @@ export const taskSchema = z.object({
   phase: z.enum(["starting", "working", "waiting", "failed", "ready", "done", "cancelled"]),
   /** Shared v1 status, additive for older cached task responses. */
   publicStatus: taskPublicStatusSchema.optional(),
+  /** A zero-turn task awaiting task-scoped Mac rental consent. */
+  macRentalPending: z.boolean().optional(),
   /** The orchestrator's note when it marked the work ready for review. */
   readyNote: z.string().nullable(),
   /** Latest review of an implementation: "reviewing", "approve", "changes-requested", … */

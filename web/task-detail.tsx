@@ -166,7 +166,7 @@ function TaskHeader({ task, now }: { task: TaskDetailDto; now: number }) {
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span>{ROLE_LABEL[task.role]}</span>
           <AgentBadge provider={task.provider} model={task.model} />
-          <span className="tabular-nums">{plural(task.turns, "turn")}</span>
+          <span className="tabular-nums">{task.macRentalPending ? "Not started" : plural(task.turns, "turn")}</span>
           <span className="font-mono">{task.id}</span>
           <span className="tabular-nums">updated {relativeTime(task.updatedAt, now)}</span>
         </div>
@@ -285,12 +285,12 @@ function TaskMeta({ task, link }: { task: TaskDetailDto; link: SandboxLinkState 
         <MetaRow label="Started" icon="Clock">
           <span className="text-xs tabular-nums text-muted-foreground">
             {dateTime(task.createdAt)}
-            {task.finishedAt ? ` · finished ${dateTime(task.finishedAt)}` : ""}
+            {task.finishedAt && !task.macRentalPending ? ` · finished ${dateTime(task.finishedAt)}` : ""}
           </span>
         </MetaRow>
       </dl>
       {/* Out of memory: the size panel below says it, with what to do. */}
-      <LiveOwnMacNotices taskId={task.id}/>{task.providerFailure ? <TaskProviderFailure task={task}/> : task.error && !task.memory?.oom ? <InlineAlert>{task.error}</InlineAlert> : null}
+      <LiveOwnMacNotices taskId={task.id}/>{task.providerFailure ? <TaskProviderFailure task={task}/> : !task.macRentalPending && task.error && !task.memory?.oom ? <InlineAlert>{task.error}</InlineAlert> : null}
     </div>
   );
 }
@@ -399,7 +399,7 @@ function TaskActions({ task, link }: { task: TaskDetailDto; link: SandboxLinkSta
   const chatId = workerChatId(task);
   // Continue as a chat: open headless tasks, where this bb runs task chats.
   const taskChats = useOverview().data?.taskChats;
-  const movable = task.runner === "boat" && !closed && !isTestTask(task) && taskChats !== false;
+  const movable = !task.macRentalPending && task.runner === "boat" && !closed && !isTestTask(task) && taskChats !== false;
   const moveStatus = useMoveStatus(task, movable);
   const move = movable ? moveStatus.data : undefined;
   const inFlight = task.movingToChat || move?.moving === true;
@@ -677,7 +677,9 @@ function ChatTranscriptNote({ task, moved = false }: { task: TaskDetailDto; move
   return (
     <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border px-4 py-6 text-center">
       <p className="text-sm text-pretty text-muted-foreground">
-        {chatId && moved
+        {task.macRentalPending
+          ? "The task starts after you approve a Mac rental above."
+          : chatId && moved
           ? "This task moved to a bb chat. Its steps since then are there."
           : chatId
           ? "This task runs as a bb chat. Its steps, tool calls and messages are there."
@@ -861,7 +863,9 @@ function ReplyBox({ task }: { task: TaskDetailDto }) {
   const chat = task.runner === "chat";
   const switching = agent !== "keep" && agent !== "room" && agent !== task.provider;
   const steering = running && steer;
-  const blocked = task.movingToChat
+  const blocked = task.macRentalPending
+    ? "Choose a Mac rental above before the task can start."
+    : task.movingToChat
     ? "Moving to a chat. Follow-ups go there once it's open."
     : isClosed(task.status)
     ? `This task is ${STATUS_LABEL[task.status].toLowerCase()}. Start a new task to continue the work.`

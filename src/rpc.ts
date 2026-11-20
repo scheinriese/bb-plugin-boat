@@ -1,3 +1,5 @@
+import type { OwnMacNotice } from "../contract-ownmac.ts";
+import { ownMacTaskNotice } from "./ownmac-notices.ts";
 import { providerFailureCard } from "../provider-failure.ts";
 import { macRunsOnBatch } from "./mac-lease-view.ts";
 import { projectSnapshotHandlers } from "./project-snapshot.ts";
@@ -76,9 +78,15 @@ export function shipApprovalDto(task: Pick<Task, "turns" | "shipApproval">): Tas
   };
 }
 
+/** Waiting for a rental choice is an unstarted request, not a failed worker. */
+export function awaitsMacRentalChoice(task: Pick<Task, "status" | "turns" | "sandboxId" | "hostId">, notice: OwnMacNotice | null): boolean {
+  return task.status === "failed" && task.turns === 0 && !task.sandboxId && !task.hostId && !!notice &&
+    (!!notice.offer || notice.offers !== undefined) && !notice.replacementId && notice.answer !== "failed";
+}
+
 export function toTaskDto(
   task: Task,
-  extras: { providerFailure?: TaskDto["providerFailure"]; ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean; publicStatus?: TaskPublicStatus; runsOn?: RunsOnDto } = {},
+  extras: { macRentalPending?: boolean; providerFailure?: TaskDto["providerFailure"]; ready?: boolean; latestReview?: string | null; untrustedRepo?: boolean; previewUrl?: string | null; source?: TaskSourceDto; movingToChat?: boolean; publicStatus?: TaskPublicStatus; runsOn?: RunsOnDto } = {},
 ): TaskDto {
   const report = task.result ? parseReport(task.result) : { status: null, verdict: null };
   const unshipped = holdsUnshippedWork(task);
@@ -87,6 +95,7 @@ export function toTaskDto(
       extras.source ??
       (task.orchestratorThreadId === null ? { kind: "page", threadId: null, title: null } : { kind: "chat", threadId: task.orchestratorThreadId, title: null }),
     phase: phaseOf(task, extras.ready ?? task.readyAt !== null),
+    macRentalPending: extras.macRentalPending ?? false,
     publicStatus: extras.publicStatus ?? resolveTaskStatus(task, { ready: extras.ready, latestReview: extras.latestReview }),
     readyNote: task.readyNote,
     latestReview: extras.latestReview ?? null,
@@ -365,6 +374,7 @@ export function registerRpc(runtime: Runtime): void {
     toTaskDto(task, {
       runsOn: runsOn(task, macView),
       providerFailure: providerFailure(task),
+      macRentalPending: awaitsMacRentalChoice(task, ownMacTaskNotice(service.store, task)),
       publicStatus: service.publicStatus(task, { ready: isReady(task, all ?? service.store.list({ parentTaskId: task.id, limit: 100 }).concat(task), latestReview, sources.isOrchestrator) }),
       untrustedRepo: untrusted(task),
       movingToChat: service.isMovingToChat(task.id),

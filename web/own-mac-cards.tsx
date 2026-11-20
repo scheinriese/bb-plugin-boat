@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { OwnMacFacts, OwnMacNotice } from "../contract-ownmac";
 import { OWN_MAC_GUIDE } from "../contract-ownmac";
 import { money, leaseTime } from "./provider-format";
@@ -179,149 +179,91 @@ export function OwnMacRefusalCard({
 export function OwnMacRentalCard({
   notice,
   onAnswer,
+  onSelect,
+  onRefresh,
   busy,
+  approving,
+  error,
   onOwnWords,
 }: {
   notice: OwnMacNotice;
   onAnswer?: (answer: "rent" | "wait") => void;
+  onSelect?: (quoteId: string) => void;
+  onRefresh?: () => void;
   busy?: boolean;
+  approving?: boolean;
+  error?: string;
   onOwnWords?: () => void;
 }) {
+  const group = useId();
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(timer);
+  }, []);
   const q = notice.offer;
-  if (!q) return null;
-  const price = money(q.minimumCost, q.currency),
-    rate = money(q.hourPrice, q.currency);
-  if (notice.answer === "failed" && notice.replacementId)
-    return (
-      <p className="text-xs text-[#A8A8A8]">
-        The start failed. Inspect the task before retrying.
-      </p>
-    );
+  const offers = notice.offers ?? (q ? [q] : []);
+  const expired = !q || !Number.isFinite(Date.parse(q.expiresAt)) || Date.parse(q.expiresAt) <= now;
+  const price = q ? money(q.minimumCost, q.currency) : "";
+  if (notice.answer === "failed")
+    return <p role="alert" className="rounded-lg border border-[#3A2424] bg-[#181818] px-3.5 py-3 text-[13px] leading-5 text-[#A8A8A8]">The start failed. Inspect the task and the provider’s machines before retrying; a rental may already exist. No other provider was approved.</p>;
   if (notice.answer === "auto")
-    return (
-      <p className="flex items-start gap-2.5 text-[13px] leading-5 text-[#A8A8A8]">
-        <span aria-hidden className="text-[#8A8A8A]">
-          <InfoIcon />
-        </span>
-        <span>
-          Your Mac is available again, so “{notice.title}” runs on your Mac.{" "}
-          <span className="text-[#6E6E6E]">No extra cost.</span>
-        </span>
-      </p>
-    );
-  if (notice.answer && notice.answer !== "failed")
-    return (
-      <div className="max-w-[720px] rounded-[10px] border border-[#2A2A2A] bg-[#181818] px-3.5 py-3 text-xs text-[#A8A8A8]">
-        ✓{" "}
-        {notice.answer === "wait" && !notice.replacementId
-          ? "Waiting for your Mac"
-          : `You chose Rent for ${price} · ${q.label} ${q.modelLabel}`}
-        {!notice.replacementId && (
-          <button
-            className={cn(link, "ml-3")}
-            onClick={() => onAnswer?.("rent")}
-          >
-            Rent for {price} instead
-          </button>
-        )}
-      </div>
-    );
+    return <p className="text-[13px] leading-5 text-[#A8A8A8]">Your Mac is available again, so “{notice.title}” runs on your Mac. No extra cost.</p>;
+  if (notice.answer === "rent" && notice.replacementId)
+    return <div role="status" className="max-w-[720px] rounded-[10px] border border-[#2A2A2A] bg-[#181818] px-3.5 py-3 text-[13px] leading-5 text-[#A8A8A8]">You approved one {q?.label} {q?.modelLabel} rental for {price} {q?.currency} minimum. Starting the task; check its status below.</div>;
   return (
-    <section className="max-w-[720px] overflow-hidden rounded-[10px] border border-[#3D3420] bg-[#181818]">
+    <section aria-label="Mac rental choice" aria-busy={busy || undefined} className="min-w-0 max-w-[720px] overflow-hidden rounded-[10px] border border-[#3D3420] bg-[#181818]">
       <div className="flex flex-wrap items-center gap-2 border-b border-[#242424] px-3.5 py-2.5 text-xs leading-4">
         <span className="size-1.5 rounded-full bg-[#F0B135]" />
-        <span className="font-medium text-[#F0B135]">Needs you</span>
-        <span className="text-[#6E6E6E]">
-          from Harbormaster · Mac tasks · just now
-        </span>
+        <span role="status" className="font-medium text-[#F0B135]">{approving ? "Starting rental…" : notice.answer === "wait" ? "Waiting for your Mac" : "Waiting for you"}</span>
+        <span className="text-[#6E6E6E]">Mac task</span>
       </div>
-      <div className="px-3.5 pt-3.5 pb-2.5">
-        <h3 className="text-[15px] font-medium leading-[22px] text-[#EDEDED]">
-          Rent a Mac for “{notice.title}”?
-        </h3>
-        <p className="mt-1 text-[13px] leading-5 text-[#A8A8A8]">
-          {notice.canWaitForOwnMac === false
-            ? "The project's Runs on selects a rented Mac."
-            : `Your Mac ${notice.reason === "can't be used" ? "can't be used" : `is ${notice.reason}`}, and no monthly or rented Mac is free.`}{" "}
-          The task waits until you choose; nothing is rented yet.
-        </p>
-      </div>
-      <div className="overflow-x-auto px-3.5 pt-1">
-        <table className="w-full min-w-[560px] table-fixed text-left text-[13px] leading-5">
-          <thead className="h-[30px] border-b border-[#262626] text-xs leading-4 text-[#6E6E6E]">
-            <tr>
-              <th className="font-normal">Option</th>
-              <th className="w-[110px] font-normal">Cost</th>
-              <th className="w-[110px] font-normal">Starts</th>
-              <th className="w-[180px] font-normal">Verdict</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr className="border-b border-[#262626]">
-              <td className="py-2.5 pr-4">
-                <p className="font-medium text-[#EDEDED]">
-                  Rent {q.label === "Instabox" ? "an" : "a"} {q.label} Mac
-                </p>
-                <p className="text-xs text-[#8A8A8A]">
-                  {q.modelLabel} · {q.minimumHours} h minimum
-                </p>
-              </td>
-              <td>
-                <p className="tabular-nums text-[#FC8C45]">{price}</p>
-                <p className="text-xs text-[#8A8A8A]">then {rate} / h</p>
-              </td>
-              <td className="text-[#C1C1C1]">when ready</td>
-              <td className="text-[#5BD08A]">
-                Runs now; other Mac tasks can share it
-              </td>
-            </tr>
-            {notice.canWaitForOwnMac !== false && (
-              <tr>
-                <td className="py-2.5 pr-4 text-[#D0D0D0]">
-                  <p>Wait for your Mac</p>
-                  <p className="text-xs text-[#8A8A8A]">
-                    {notice.alias} · {notice.reason}
-                  </p>
-                </td>
-                <td className="text-[#C1C1C1]">$0</td>
-                <td className="text-[#C1C1C1]">when it's back</td>
-                <td className="text-[#FC8C45]">Could be hours</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-      <p className="px-3.5 pt-2.5 text-xs leading-4 text-[#8A8A8A]">
-        Harbormaster never rents without asking. {q.label} bills at least{" "}
-        {q.minimumHours} h; you can hand the Mac back after that.
-        {notice.canWaitForOwnMac === false &&
-          " Choose Your Mac in Runs on to wait for it."}
-      </p>
-      <div className="flex flex-wrap items-center gap-2 p-3.5">
-        <button
-          className={primary}
-          disabled={busy || !onAnswer}
-          onClick={() => onAnswer?.("rent")}
-        >
-          Rent for {price}
-        </button>
-        {notice.canWaitForOwnMac !== false && (
-          <button
-            className={secondary}
-            disabled={busy || !onAnswer}
-            onClick={() => onAnswer?.("wait")}
-          >
-            Wait for your Mac
-          </button>
-        )}
-        {onOwnWords && (
-          <button
-            className="ml-auto text-xs text-[#8A8A8A]"
-            onClick={onOwnWords}
-          >
-            Answer in your own words
-          </button>
-        )}
+      <div className="space-y-3 p-3.5">
+        <div>
+          <h3 className="break-words text-[15px] font-medium leading-[22px] text-[#EDEDED]">Choose a Mac for “{notice.title}”</h3>
+          <p className="mt-1 text-[13px] leading-5 text-[#A8A8A8]">
+            {notice.canWaitForOwnMac === false
+              ? "The project's Runs on selects a rented Mac."
+              : `Your Mac ${notice.reason === "can't be used" ? "can't be used" : `is ${notice.reason}`}.`}{" "}
+            {approving ? "Checking the selected quote and starting one rental." : "The task waits until you choose; nothing is rented yet."}
+          </p>
+        </div>
+        {error && <p role="alert" className="break-words rounded-md border border-[#3A2424] px-3 py-2 text-[13px] leading-5 text-[#E06C6C]">{error}</p>}
+        {offers.length > 0 && <fieldset disabled={busy} className="m-0 min-w-0 space-y-2 border-0 p-0">
+          <legend className="mb-2 text-xs leading-4 text-[#8A8A8A]">Choose for this task only</legend>
+          <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+            {offers.map(offer => {
+              const selected = q?.id === offer.id;
+              const recommended = notice.recommendedQuoteId === offer.id;
+              const outOfDate = Date.parse(offer.expiresAt) <= now;
+              return <label key={offer.id} className={cn("flex min-w-0 cursor-pointer items-start gap-2.5 rounded-lg border p-3 text-[13px] leading-5", selected ? "border-[#6B5B36] bg-[#211E18]" : "border-[#303030] bg-[#151515]", busy && "opacity-60")}>
+                <input type="radio" name={group} checked={selected} disabled={busy || !onSelect || outOfDate} onChange={() => onSelect?.(offer.id)} className="mt-1 shrink-0 accent-[#F0B135]" />
+                <span className="min-w-0 flex-1 break-words">
+                  <span className="block font-medium text-[#EDEDED]">{offer.label} · {offer.modelLabel}</span>
+                  {recommended && <span className="mt-1 block text-xs text-[#5BD08A]">Recommended</span>}
+                  <span className="mt-2 block text-base font-medium tabular-nums text-[#EDEDED]">{money(offer.minimumCost, offer.currency)} {offer.currency} total minimum</span>
+                  <span className="block text-xs text-[#A8A8A8]">{offer.minimumHours} h minimum · then {money(offer.hourPrice, offer.currency)} / h</span>
+                  {outOfDate && <span className="mt-1 block text-xs text-[#FC8C45]">Quote expired</span>}
+                </span>
+              </label>;
+            })}
+          </div>
+        </fieldset>}
+        {notice.recommendationReason && <p className="text-xs leading-[18px] text-[#A8A8A8]">{notice.recommendationReason}</p>}
+        {!offers.length && <p role="status" className="text-[13px] leading-5 text-[#FC8C45]">No rental offer is available. Refresh to check again.</p>}
+        {expired && offers.length > 0 && <p role="status" className="text-[13px] leading-5 text-[#FC8C45]">This quote expired. Refresh offers to see the current cost before approving.</p>}
+        {(notice.unavailable?.length ?? 0) > 0 && <details className="text-xs leading-[18px] text-[#8A8A8A]">
+          <summary className="cursor-pointer">Unavailable choices ({notice.unavailable!.length})</summary>
+          <ul className="mt-2 space-y-1">{notice.unavailable!.map((option, index) => <li key={`${option.provider}:${index}`} className="break-words"><span className="text-[#D0D0D0]">{option.label}:</span> {option.reason}</li>)}</ul>
+        </details>}
+        {q && <p className="text-xs leading-[18px] text-[#8A8A8A]">Approve one {q.label} {q.modelLabel} rental for this task: {price} {q.currency} total for at least {q.minimumHours} h, then {money(q.hourPrice, q.currency)} {q.currency} / h until released. This does not approve another provider or paid Claude usage.</p>}
+        <div className="flex flex-wrap items-center gap-2">
+          {q && <button className={primary} disabled={busy || expired || !onAnswer} onClick={() => onAnswer?.("rent")}>{approving ? "Starting rental…" : `Rent for ${price} ${q.currency} · ${q.label}`}</button>}
+          {notice.canWaitForOwnMac !== false && <button className={secondary} disabled={busy || !onAnswer} onClick={() => onAnswer?.("wait")}>Wait for your Mac</button>}
+          {onRefresh && <button className={secondary} disabled={busy} onClick={onRefresh}>{busy && !approving ? "Updating…" : "Refresh offers"}</button>}
+        </div>
+        {notice.canWaitForOwnMac === false && <p className="text-xs leading-4 text-[#6E6E6E]">Choose Your Mac in Runs on to wait for it.</p>}
+        {onOwnWords && <button className={link} onClick={onOwnWords}>Ask about this rental</button>}
       </div>
     </section>
   );

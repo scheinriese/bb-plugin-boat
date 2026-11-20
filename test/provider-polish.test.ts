@@ -276,7 +276,7 @@ test("cleanup uses the generic failed-check card and exact command family",()=>{
 });
 test("refusal, fallback and consent cards use the supplied style and real quote fields",()=>{
   const refusal=renderScene("ownmac-refusals");assert.match(refusal,/your own login/);assert.match(refusal,/physical Mac/);assert.match(refusal,/at no extra cost/);
-  const card=renderScene("ownmac-fallback");for(const text of ["Needs you","nothing is rented yet","Rent for $10.80","then $0.45 / h","Wait for your Mac","no new cost"])assert.ok(card.includes(text),text);
+  const card=renderScene("ownmac-fallback");for(const text of ["Waiting for you","nothing is rented yet","Rent for $10.80","then $0.45 / h","Wait for your Mac","no new cost"])assert.ok(card.includes(text),text);
 });
 test("footer and usage include task counts, no meter and zero rent",()=>{
   const html=renderScene("ownmac-footer");for(const text of ["7 on","Running 1 of 1","$0 · fake-mac-agents · on power","9 tasks this month","$0 rent","Your Mac · VM"])assert.ok(html.includes(text),text);
@@ -298,4 +298,39 @@ test("separate-user setup explains how the owner makes the personal home private
 });
 test("unknown power has the orange status and routes new starts elsewhere",()=>{
   const html=renderScene("ownmac-power-unknown");assert.match(html,/Power state unknown/);assert.match(html,/bg-\[#FC8C45\]/);assert.match(html,/next Mac in line/);assert.doesNotMatch(html,/Asleep or unreachable/);
+});
+
+
+test("Mac rental choices use responsive controls and bind visible consent to one provider", () => {
+  const html = renderScene("ownmac-rental-choices");
+  assert.doesNotMatch(html, /min-w-\[560px\]|<table|overflow-x-auto|Runs now/);
+  assert.equal((html.match(/type="radio"/g) ?? []).length, 2);
+  assert.equal((html.match(/>Rent for /g) ?? []).length, 1, "one visible approve action");
+  for (const text of ["$10.80 USD total minimum", "€5.28 EUR total minimum", "24 h minimum", "then €0.22 / h", "Recommended", "Project preference: Scaleway", "no currency conversion", "Approve one Scaleway Mac mini M4 rental for this task", "paid Claude usage", "Unavailable choices", "No compatible model", "Refresh offers"]) assert.ok(html.includes(text), text);
+  assert.match(html, /Rent for €5.28 EUR · Scaleway/);
+  assert.match(html, /type="radio"[^>]*checked=""[^>]*\/>/);
+});
+
+test("Mac rental expiry, starting, failure and unavailable states stay actionable", () => {
+  const expired = renderScene("ownmac-rental-expired");
+  assert.match(expired, /This quote expired/);
+  assert.match(expired, /<button[^>]*disabled=""[^>]*>Rent for/);
+  assert.match(expired, /Refresh offers/);
+  const starting = renderScene("ownmac-rental-starting");
+  assert.match(starting, /aria-busy="true"/);
+  assert.match(starting, /Starting rental…/);
+  assert.match(starting, /<fieldset disabled=""/);
+  assert.match(renderScene("ownmac-rental-error"), /role="alert"[^>]*>The selected model is no longer available/);
+  const unavailable = renderScene("ownmac-rental-unavailable");
+  assert.match(unavailable, /No rental offer is available/);
+  assert.match(unavailable, /Refresh offers/);
+  assert.doesNotMatch(unavailable, />Rent for /);
+  assert.match(renderScene("ownmac-explicit-rental"), /Rent for \$10.80 USD · Instabox/, "legacy single offer remains readable");
+});
+
+test("an ambiguous rental start offers inspection without another approval", () => {
+  const html = renderScene("ownmac-rental-unknown");
+  assert.match(html, /a rental may already exist/);
+  assert.match(html, /Inspect the task/);
+  assert.doesNotMatch(html, /nothing is rented|>Rent for |Refresh offers/);
 });

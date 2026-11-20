@@ -136,6 +136,7 @@ test("starters: the repo check names the repo and offers a snapshot later; the t
 test("closed tasks: no review, and a sandbox link only while boat still has the sandbox", () => {
   const task = { role: "custom" as const, status: "idle" as const, title: "Check acme/web runs in a sandbox", repo: "acme/web", sandboxId: "bx_1" };
   assert.equal(canRequestReview(task), true);
+  assert.equal(canRequestReview({ ...task, macRentalPending: true }), false, "an unstarted rental has no work to review");
   for (const status of ["done", "cancelled"] as const) assert.equal(canRequestReview({ ...task, status }), false, status);
   assert.equal(canRequestReview({ ...task, role: "review" }), false);
   assert.equal(canRequestReview({ ...task, title: "Test task", repo: null }), false);
