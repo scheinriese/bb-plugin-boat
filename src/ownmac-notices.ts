@@ -40,6 +40,20 @@ export function ownMacTaskNotice(
     replacementId?: string;
   } | null;
   const fallback = data(store, task.id, "ownmac-fallback");
+  const linked = answer?.replacementId ? store.get(answer.replacementId) : null;
+  const allocation = linked ? data(store, linked.id, "ownmac-allocation") as {machineId?:unknown;provider?:unknown;leaseId?:unknown}|null : null;
+  const machineId = linked?.sandboxId ?? (typeof allocation?.machineId === "string" ? allocation.machineId : null);
+  // Prefer this task's attachment over the machine's later rental. An ended
+  // local row is still useful evidence; it does not confirm provider handback.
+  const snapshot = linked && machineId ? store.macLeases.snapshot() : null;
+  const attached = snapshot?.tasks.find(entry => entry.taskId === linked?.id)?.leaseId;
+  const lease = snapshot?.leases.find(entry => entry.id === (attached ?? allocation?.leaseId))
+    ?? snapshot?.leases.filter(entry => entry.machineId === machineId && entry.provider === linked?.sandboxProvider).at(-1);
+  const linkedTask = linked ? {
+    taskId: linked.id, status: linked.status, turns: linked.turns, error: linked.error,
+    machineId,
+    ...(lease ? {lease:{provider:lease.provider,model:lease.size,minimumCost:lease.minimumCost,hourPrice:lease.hourPrice,currency:lease.currency,paidUntil:lease.paidUntil,releaseAt:lease.releaseAt,endedAt:lease.endedAt}} : {}),
+  } : undefined;
   if (task.status === "cancelled" && !answer?.replacementId) return null;
   if (!skipped.success && !quote.success && !choices) return null;
   const state = skipped.success ? skipped.data : null;
@@ -78,6 +92,7 @@ export function ownMacTaskNotice(
         unavailable: choices?.unavailable,
         answer: answer?.answer,
         replacementId: answer?.replacementId,
+        linkedTask,
       }).filter(([, value]) => value !== undefined),
     ),
   );

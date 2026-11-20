@@ -101,6 +101,19 @@ export const ownMacNoticeSchema = z.object({
   unavailable: z.array(z.object({provider:z.string(),label:z.string(),reason:z.string()})).optional(),
   answer: z.enum(["wait", "rent", "queue", "auto", "failed"]).optional(),
   replacementId: z.string().optional(),
+  /** Recorded task and lease facts, never a promise of current provider billing. */
+  linkedTask: z.object({
+    taskId: z.string(),
+    status: z.string(),
+    turns: z.number().int().nonnegative(),
+    error: z.string().nullable(),
+    machineId: z.string().nullable(),
+    lease: z.object({
+      provider: z.string(), model: z.string(), minimumCost: z.number(),
+      hourPrice: z.number(), currency: z.string(), paidUntil: z.string(),
+      releaseAt: z.string().nullable(), endedAt: z.string().nullable(),
+    }).optional(),
+  }).optional(),
   cleanup: ownMacFactsSchema.shape.cleanup,
   disconnect: z.string().optional(),
 });
@@ -143,6 +156,10 @@ export const ownMacRpcMethods = {
   selectMacRentalOffer: {
     input: z.object({taskId:z.string(),quoteId:z.string()}),
     output: z.object({notice:ownMacNoticeSchema}),
+  },
+  recoverAllocatedMac: {
+    input: z.object({taskId:z.string(),machineId:z.string(),userApproved:z.boolean()}),
+    output: z.object({taskId:z.string(),machineId:z.string()}),
   },
   answerOwnMacRental: {
     input: z.object({
