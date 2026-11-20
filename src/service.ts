@@ -1,3 +1,4 @@
+import { ensureCodexHealthy } from "./codex-health.ts";
 import { providerFailureCard } from "../provider-failure.ts";
 import { canHostMac, macTaskResources } from "./providers/types.ts";
 import type { MacLease, MacWorkOutcome } from "./mac-leases.ts";
@@ -2245,6 +2246,8 @@ export class BoatService {
    * source.
    */
   private async spawnTaskChat(args: ChatSpawn, stillWanted: () => void = () => undefined): Promise<{ threadId: string; environmentId: string | null }> {
+    const task = this.store.get(args.taskId);
+    if (task?.sandboxId) await ensureCodexHealthy(this.sandboxProvider(task), task.sandboxId, args.provider, line => this.store.addEvent(task.id, "machine", line));
     const chat = this.hooks.chat!;
     const { where, projectId } = args;
     if (where.kind !== "machine" || where.path === null || isPersonalProject(projectId)) return chat.spawn(args);
@@ -3394,6 +3397,7 @@ export class BoatService {
         : {};
     // A new agent in the same sandbox: a stop that cut off background work concerns it too.
     const note = await this.resumeNoteFor(task.id);
+    if (task.sandboxId) await ensureCodexHealthy(this.sandboxProvider(task), task.sandboxId, next.provider, line => this.store.addEvent(task.id, "machine", line));
     const spawned = await this.hooks.chat!.spawn({
       taskId: task.id,
       title: this.chatTitle(task, next.provider),
@@ -3725,6 +3729,7 @@ export class BoatService {
     const environmentId = current?.environmentId ?? task.environmentId;
     if (environmentId !== null && environmentId !== task.environmentId) this.store.update(task.id, { environmentId });
     if (environmentId === null) throw new TaskError(`Task ${task.id}'s workspace isn't ready yet.`, "task_not_dispatched", "Try again in a moment.");
+    if (task.sandboxId) await ensureCodexHealthy(this.sandboxProvider(task), task.sandboxId, request.providerId, line => this.store.addEvent(task.id, "machine", line));
     const { threadId } = await chat.spawnComposed({
       taskId: task.id,
       request,
