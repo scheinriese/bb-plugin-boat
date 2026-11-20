@@ -263,13 +263,20 @@ function authoritativeProviderReads(env:Awaited<ReturnType<typeof fixture>>) {
 test("public RPC explicitly adopts the same legacy deleted lease ended just after failed admission",async t=>{
   const env=await legacyDeletedFixture(t),harness=await publicHarness(env,t);
   authoritativeProviderReads(env);
+  env.provider.scheduleLeaseRelease=async()=>{env.calls.push("schedule-release");};
+  env.calls.length=0; // The physical allocation predates this recovery operation.
   const rawBefore=(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db().prepare("SELECT * FROM mac_leases WHERE id=?").get(env.lease.id);
   assert.deepEqual(await harness.callRpc("recoverAllocatedMac",{taskId:env.failed.id,machineId:env.machine().id,userApproved:true,adoptLegacyLease:env.adoption}),{taskId:env.failed.id,machineId:env.machine().id});
   assert.equal(env.store.get(env.failed.id)!.turns,1);assert.equal(env.store.list({limit:10}).length,2);
   assert.equal(env.store.macLeases.held()[0]!.id,env.lease.id);assert.equal(env.store.macLeases.held()[0]!.releaseAt,env.machine().scheduledReleaseAt);
   assert.equal(env.store.macLeases.list().length,1);assert.equal(env.store.macLeases.summary().month.costs.USD,10.8);
+  const usage=await harness.callRpc("macUsage",null) as import("../contract-providers.ts").MacUsageDto;
+  assert.equal(usage.held.length,1);assert.equal(usage.month.costs.USD,10.8);
+  assert.equal(usage.adoptions?.[0]?.operatorProof.ledgerId,env.lease.id);
+  assert.equal(usage.adoptions?.[0]?.original.endedAt,env.endedAt);
+  assert.match(usage.notices?.[0]?.text ?? "",/Original history is retained/);
   const rawAfter=(env.store as unknown as {db:()=>import("node:sqlite").DatabaseSync}).db().prepare("SELECT * FROM mac_leases WHERE id=?").get(env.lease.id);assert.deepEqual(rawAfter,rawBefore);
-  assert.deepEqual(env.calls.filter(call=>["create","delete","resume","extend","cancel-release"].includes(call)),["create"]);
+  assert.deepEqual(env.calls.filter(call=>["create","delete","resume","extend","cancel-release","schedule-release"].includes(call)),[],"zero physical allocation, renewal, extension or release-schedule mutations during recovery");
 });
 
 test("public CLI requires explicit exact evidence to adopt a legacy deleted physical lease",async t=>{
