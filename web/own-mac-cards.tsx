@@ -335,7 +335,7 @@ export function OwnMacRentalCard({
             <p className="mt-2">A rental quote does not confirm GUI automation readiness.</p>
           </details>
         </div>}
-        <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
+        <div role="group" aria-label="Other rental actions" className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
           <button className={rentalAction} disabled={busy || !onAnswer} onClick={() => onAnswer?.("queue")}>{notice.answer === "queue" ? "Kept queued" : "Keep it queued"}</button>
           {notice.canWaitForOwnMac !== false && <button className={rentalAction} disabled={busy || !onAnswer} onClick={() => onAnswer?.("wait")}>Wait for your Mac</button>}
           {onRefresh && <button className={cn(rentalAction,notice.canWaitForOwnMac !== false && "max-sm:col-span-2")} disabled={busy} onClick={onRefresh}>{busy && !approving ? "Updating…" : "Refresh offers"}</button>}
