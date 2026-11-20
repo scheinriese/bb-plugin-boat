@@ -216,8 +216,10 @@ async function legacyDeletedFixture(t:TestContext) {
   const approvalAt=at(11_000),createdAt=at(11_200),failedAt=at(31_299),endedAt=at(32_793);
   const startedAt=at(27_670).replace("670Z","670853Z");
   const paidUntil=new Date(minute+27_670+86_400_000).toISOString().replace("670Z","670853Z");
-  env.store.update(env.source.id,{createdAt:at(5000),updatedAt:at(31_301),finishedAt:at(6000)});
-  env.store.update(env.failed.id,{createdAt,updatedAt:failedAt,finishedAt:failedAt,sandboxId:null});
+  db.prepare("UPDATE tasks SET created_at=? WHERE id=?").run(at(5000),env.source.id);
+  db.prepare("UPDATE tasks SET created_at=? WHERE id=?").run(createdAt,env.failed.id);
+  env.store.update(env.source.id,{updatedAt:at(31_301),finishedAt:at(6000)});
+  env.store.update(env.failed.id,{updatedAt:failedAt,finishedAt:failedAt,sandboxId:null});
   const quote={...env.quote,checkedAt:at(10_000),expiresAt:at(610_000)};
   env.store.addOwnMacEvent(env.source.id,"ownmac-rental-offer","Synthetic pre-approval quote",quote);
   db.prepare("UPDATE task_events SET at=? WHERE task_id=? AND kind='ownmac-rental-offer'").run(at(10_000),env.source.id);
