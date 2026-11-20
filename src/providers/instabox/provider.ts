@@ -300,7 +300,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     async beforeRepo(sandboxId, signal) {
       // Print presence only, never the placeholder. A fresh login shell after
       // push reads /etc/profile.d/zz-instabox-secrets.sh before repo prep.
-      const result = await exec(sandboxId, 'case "${GH_TOKEN:-}" in ibsec_*) echo BOAT_GH_SECRET_present ;; *) echo BOAT_GH_SECRET_missing ;; esac', { signal });
+      const result = await exec(sandboxId, 'case "${GH_TOKEN:-}" in (ibsec_*) echo BOAT_GH_SECRET_present ;; (*) echo BOAT_GH_SECRET_missing ;; esac', { signal });
       if (result.exitCode !== 0) throw new InstaboxError("Could not check the Instabox machine's GitHub Secret.", { code: "repo_access" });
       if (!result.stdout.includes("BOAT_GH_SECRET_present")) await secrets.apply(sandboxId, signal);
     },
