@@ -104,6 +104,7 @@ export function toTaskDto(
     designClaudePreference: task.designClaudePreference === true,
     claudePaidContinuation: task.claudePaidContinuation === true,
     claudePaidContinuationRevoked: task.claudePaidContinuationRevoked === true,
+    claudeNormalRouting: task.claudeNormalRouting === true,
     role: task.role,
     status: task.status,
     orchestratorThreadId: task.orchestratorThreadId,

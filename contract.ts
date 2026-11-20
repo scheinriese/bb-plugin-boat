@@ -307,6 +307,7 @@ export const taskSchema = z.object({
   /** Native owner approval for this task only; absent on older tasks. */
   claudePaidContinuation: z.boolean().optional(),
   claudePaidContinuationRevoked: z.boolean().optional(),
+  claudeNormalRouting: z.boolean().optional(),
   purpose: z.literal("design").nullable().optional(),
   designClaudePreference: z.boolean().optional(),
   model: z.string().nullable(),

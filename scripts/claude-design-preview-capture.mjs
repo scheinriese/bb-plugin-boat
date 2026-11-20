@@ -28,7 +28,7 @@ try {
   await page.reload({waitUntil:"networkidle"});
   assert.equal(await page.getByText("Paid Claude continuation is separately approved for this task.",{exact:true}).count(),1,"scoped fixture permission persists through reload");
   await page.screenshot({path:join(output,"design-paid-consent-active.png"),fullPage:true});
-  await page.getByRole("button",{name:"Return to normal routing"}).click();
+  await page.getByRole("region",{name:"In-chat task controls"}).getByRole("button",{name:"Return to normal routing"}).click();
   await page.reload({waitUntil:"networkidle"});
   assert.equal(await page.getByText("Design task · normal routing",{exact:true}).count(),1);
   assert.equal(await page.getByText("Paid Claude continuation is separately approved for this task.",{exact:true}).count(),0,"normal routing revokes scoped fixture permission");
