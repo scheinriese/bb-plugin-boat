@@ -4,10 +4,12 @@ import {
   monthlyMacSuggestionSchema,
   type MonthlyMacSuggestion,
   type MonthlyMacPrice,
+  type MonthlyMacComparison,
 } from "../contract-monthly-macs.ts";
 import { MacLeaseLedger, LEASE_DAY_MS as DAY } from "./mac-leases.ts";
 import {
   chipMeets,
+  compareChips,
   leaseChip,
   monthlyMacRule,
   type WeeklyForecast,
@@ -34,15 +36,78 @@ export class MonthlyMacAdvisor {
         .all() as { body: string }[]
     )
       .map((row) => monthlyMacSuggestionSchema.parse(JSON.parse(row.body)))
-      .filter((item) => item.answer === null);
+      .filter((item) => item.answer === null && item.kind === "rent");
   }
-  forThread(threadId: string): MonthlyMacSuggestion[] {
+  /** Claim only when the directive is returned in a tool result, never while
+   * resolving instructions (a running provider may ignore new instructions). */
+  takeForTool(threadId: string): MonthlyMacSuggestion[] {
     return this.active().filter(
       (item) =>
         this.db()
           .prepare("INSERT OR IGNORE INTO monthly_mac_shown VALUES (?,?)")
           .run(item.id, threadId).changes > 0,
     );
+  }
+  /** Read-only price comparison: independent of history gates, snoozes,
+   * answers and delivery state. The meter should show the target beforehand. */
+  comparisons(
+    prices: readonly MonthlyMacPrice[],
+    now = Date.now(),
+  ): MonthlyMacComparison[] {
+    const groups = new Map<string, ReturnType<MacLeaseLedger["list"]>>();
+    for (const lease of this.ledger.list()) {
+      const key = `${lease.provider}:${lease.currency}`;
+      groups.set(key, [...(groups.get(key) ?? []), lease]);
+    }
+    return [...groups.values()].flatMap((all) => {
+      const recent = all.filter(
+        (l) =>
+          Date.parse(l.startedAt) < now &&
+          Math.max(
+            Date.parse(l.paidUntil),
+            l.endedAt ? Date.parse(l.endedAt) : now,
+          ) >
+            now - 30 * DAY,
+      );
+      const required = recent.length ? recent : all.slice(-1);
+      if (required.some((l) => !leaseChip(l.size))) return [];
+      const candidate = prices
+        .filter(
+          (p) =>
+            p.available &&
+            p.billing === "monthly" &&
+            p.currency === all[0]!.currency &&
+            required.every(
+              (l) =>
+                p.ramGB * 1024 >= l.memoryMiB &&
+                chipMeets(p.chip, leaseChip(l.size)!),
+            ),
+        )
+        .sort((a, b) => a.monthlyPrice - b.monthlyPrice)[0];
+      if (!candidate) return [];
+      const usage = this.ledger.between(
+        now - 30 * DAY,
+        now,
+        now,
+        undefined,
+        all[0]!.provider,
+        candidate.currency,
+      );
+      const dayRate =
+        usage.leaseDays > 0
+          ? (usage.costs[candidate.currency] ?? 0) / usage.leaseDays
+          : all.at(-1)!.hourPrice * 24;
+      return dayRate > 0
+        ? [
+            {
+              dayProvider: all[0]!.provider,
+              currency: candidate.currency,
+              candidate,
+              breakEven: candidate.monthlyPrice / dayRate,
+            },
+          ]
+        : [];
+    });
   }
   get(id: string): MonthlyMacSuggestion | null {
     const row = this.db()
@@ -52,6 +117,9 @@ export class MonthlyMacAdvisor {
   }
   /** Integration seam for Your Mac: recording enrollment never buys a contract. */
   recordEnrolled(group: string, price: MonthlyMacPrice | null): void {
+    this.db()
+      .prepare("UPDATE monthly_mac_suggestions SET active=0 WHERE group_id=?")
+      .run(group);
     if (price)
       this.db()
         .prepare("INSERT OR REPLACE INTO monthly_mac_enrolled VALUES (?,?)")
@@ -112,13 +180,14 @@ export class MonthlyMacAdvisor {
           ) >
             now - 30 * DAY,
       );
-      // Retain hardware for an enrolled Mac even when recent day use is zero.
+      // Retain the last known hardware if there is no recent day use.
       const required = recent.length ? recent : all.slice(-1);
       if (!required.length || required.some((l) => !leaseChip(l.size)))
         continue;
       const chip = required
         .map((l) => leaseChip(l.size)!)
-        .sort((a, b) => (chipMeets(a, b) ? -1 : 1))[0]!;
+        .sort(compareChips)
+        .at(-1)!;
       const ramGB = Math.max(...required.map((l) => l.memoryMiB / 1024));
       const eligible = prices.filter(
         (p) =>
@@ -132,20 +201,17 @@ export class MonthlyMacAdvisor {
       const enrolledRow = this.db()
         .prepare("SELECT price FROM monthly_mac_enrolled WHERE group_id=?")
         .get(group) as { price: string } | undefined;
-      const enrolled = enrolledRow
-        ? (JSON.parse(enrolledRow.price) as MonthlyMacPrice)
-        : null;
-      const candidate =
-        enrolled ??
-        eligible
-          .filter(
-            (p) => p.currency === all[0]!.currency && p.billing === "monthly",
-          )
-          .sort((a, b) => a.monthlyPrice - b.monthlyPrice)[0];
+      // Enrollment alone says nothing about demand. Keep cancellation inert
+      // until Your Mac supplies utilization of the enrolled machine itself.
+      if (enrolledRow) continue;
+      const candidate = eligible
+        .filter(
+          (p) => p.currency === all[0]!.currency && p.billing === "monthly",
+        )
+        .sort((a, b) => a.monthlyPrice - b.monthlyPrice)[0];
       if (!candidate || candidate.currency !== all[0]!.currency) continue;
       // A single monthly machine cannot replace overlapping physical leases.
       if (
-        !enrolled &&
         recent.some((a, i) =>
           recent
             .slice(i + 1)
@@ -188,9 +254,7 @@ export class MonthlyMacAdvisor {
       // Price/hardware changes reset the pair's weekly evidence, never reuse an
       // old forecast against newly edited terms. No historic forecasts invented.
       const key = createHash("sha256")
-        .update(
-          JSON.stringify([group, candidate, chip, ramGB, Boolean(enrolled)]),
-        )
+        .update(JSON.stringify([group, candidate, chip, ramGB, false]))
         .digest("hex");
       const latestRow = this.db()
         .prepare(
@@ -234,12 +298,8 @@ export class MonthlyMacAdvisor {
         historySince,
         monthlyPrice: candidate.monthlyPrice,
         forecasts,
-        enrolled: Boolean(enrolled),
       });
-      if (
-        !passes ||
-        (!enrolled && window.leaseDays <= candidate.monthlyPrice / dayRate)
-      )
+      if (!passes || window.leaseDays <= candidate.monthlyPrice / dayRate)
         continue;
       const weekly = [0, 1, 2, 3].map((i) =>
         Math.min(
@@ -260,10 +320,11 @@ export class MonthlyMacAdvisor {
       if (
         existing &&
         !existing.answer &&
+        now - Date.parse(existing.createdAt) < 30 * DAY &&
         JSON.stringify(existing.candidate) === JSON.stringify(candidate) &&
         existing.chip === chip &&
         existing.ramGB === ramGB &&
-        existing.kind === (enrolled ? "cancel" : "rent")
+        existing.kind === "rent"
       ) {
         const updated = {
           ...existing,
@@ -293,15 +354,15 @@ export class MonthlyMacAdvisor {
           monthlyPrice: candidate.monthlyPrice,
           forecasts,
           lastSuggestedAt: last?.at,
+          lastAnswer: existing?.answer,
           snoozedUntil: last?.snooze,
-          enrolled: Boolean(enrolled),
         })
       )
         continue;
       const suggestion: MonthlyMacSuggestion = {
         id: randomUUID(),
         group,
-        kind: enrolled ? "cancel" : "rent",
+        kind: "rent",
         createdAt: new Date(now).toISOString(),
         candidate,
         alternatives: eligible.filter((p) => p.id !== candidate.id),

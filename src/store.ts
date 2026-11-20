@@ -567,7 +567,10 @@ export class TaskStore {
   static migrations(): string[] {
     return [...MIGRATIONS, ...MAC_LEASE_MIGRATIONS, `ALTER TABLE tasks ADD COLUMN sandbox_system TEXT NOT NULL DEFAULT 'linux'`,
       `ALTER TABLE mac_leases ADD COLUMN billing_increment_seconds INTEGER NOT NULL DEFAULT 1`,
-      `ALTER TABLE tasks ADD COLUMN start_options TEXT`, ...MONTHLY_MAC_MIGRATIONS];
+      `ALTER TABLE tasks ADD COLUMN start_options TEXT`, ...MONTHLY_MAC_MIGRATIONS,
+      // Older builds claimed delivery while resolving instructions, even for
+      // live sessions that could never receive them. Reset those false claims.
+      `DELETE FROM monthly_mac_shown`];
   }
 
   insert(task: Task): Task {

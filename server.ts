@@ -659,7 +659,7 @@ export default async function plugin(bb: BbPluginApi) {
         tools: [...TOOL_NAMES],
         skills: ["boat", "boat-orchestrator"],
         // bb caps instructions at 4096 characters; the full protocol comes from boat_protocol.
-        instructions: `${store.monthlyMacs.forThread(context.thread.id).filter(item => item.answer === null).map(item => `Mac cost guidance (blocks nothing): include ::boat-monthly-mac{id="${item.id}"} after your reply. Do not rent, sign up or cancel; the card opens the owner’s browser.\n`).join("")}${orchestratorInstructions(tasksBeforeAsking)}${context.pluginMetadata.continuationGoal ? "\n- A goal was carried into this chat. Read boat_goal or boat_protocol after compaction; preserve its scope, state and original budget. This is not native goal scheduling." : ""}${projectInstructions(parseOrchestratorProject(context.pluginMetadata.project))}`.slice(0, 4096),
+        instructions: `${orchestratorInstructions(tasksBeforeAsking)}${context.pluginMetadata.continuationGoal ? "\n- A goal was carried into this chat. Read boat_goal or boat_protocol after compaction; preserve its scope, state and original budget. This is not native goal scheduling." : ""}${projectInstructions(parseOrchestratorProject(context.pluginMetadata.project))}`.slice(0, 4096),
       };
     }
     // Another chat in a worker's workspace learns where it is and who else works there.

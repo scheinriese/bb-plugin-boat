@@ -50,9 +50,9 @@ A weekly forecast extrapolates the last seven days to 30, capped at one
 machine's 30 days. The low and high range uses the last four weekly buckets.
 At least 30 days of history and two consecutive observations at least seven
 and less than fourteen days apart must exceed 120% of break-even; savings
-must also exceed 20% of forecast day cost. Forecasts are recorded by the
-maintenance loop and suggestions RPC, not invented retrospectively on
-installation. The trailing 30 days must also exceed break-even before the card
+must also exceed 20% of forecast day cost. Forecasts are recorded only by the
+maintenance loop, not invented retrospectively on installation. Query RPCs
+read the persisted suggestions and calculate usage comparisons without writes. The trailing 30 days must also exceed break-even before the card
 or usage link appears. Repeated reads do not count as another weekly forecast.
 
 A candidate must meet the RAM and chip of every recently leased Mac. A newer
@@ -62,19 +62,32 @@ replace concurrent machines. Storage, GUI, OS, region, idle fraction and
 failure risk are not recorded reliably enough for automatic matching or
 claims; review them on the provider page.
 
-A new suggestion is suppressed for 30 days after issuance. **Keep day leases**
-also snoozes for 14 days; the 30-day duplicate quiet period still applies. Saved
-chat cards become receipts and remain readable after restart. Suggestions
-are separate from decisions, so they never affect needs-you or sidebar counts.
-The orchestrator receives a card directive on its next turn, once per card and
-chat; the plugin never wakes it to deliver cost guidance. Today shows the same
-card. The usage link and shared meter only appear for an eligible suggestion.
+An unanswered suggestion is offered once per chat, with a new offer allowed
+at exactly 30 days if the rule still holds. **Keep day leases** overrides that
+quiet period: it returns at exactly 14 days from the answer if the rule still
+holds. Rent and own-Mac answers retain the 30-day quiet period. Saved chat cards
+remain receipts after restart. Suggestions are separate from decisions, so they
+never affect needs-you or sidebar counts.
 
-`MonthlyMacAdvisor.recordEnrolled(group, price)` is the integration seam for
-the future Your Mac task. It records an enrolled contract without purchasing
-anything. Two weekly forecasts strictly below 70% of break-even then suggest
-reviewing cancellation. The owner checks notice deadlines, drains work and
-cancels; no contract cancellation or machine termination is automated.
+The `boat_tasks`, `boat_status` and `boat_protocol` tools return a cost directive
+once per suggestion and chat. Resolving a chat's instructions never consumes or
+adds guidance: an already-running provider session can receive the directive
+from its next tool result. Upgrade clears older instruction-time delivery claims.
+The plugin never wakes an orchestrator to deliver cost guidance.
+
+Today shows the same card. The usage meter shows break-even whenever an
+available, matching monthly contract price exists, including before enough
+history exists for advice and while snoozed. The blue disclosure link is only
+shown for an eligible suggestion above break-even. Exact prices have no ≈.
+
+`MonthlyMacAdvisor.recordEnrolled(group, price)` records a future contract
+integration without purchasing anything, but **cancellation advice is inert**.
+Day-lease use often drops to zero when a busy monthly Mac takes the work; that
+is not evidence for cancelling it. The Your Mac integration must collect demand
+on the identified enrolled machine and supply two actual weekly demand forecasts
+below 70% of break-even, plus contract dates and notice deadlines. The pure rule
+requires explicit enrolled-machine demand and refuses cancellation without it.
+No contract cancellation or machine termination is automated.
 
 ## Component preview
 
@@ -85,6 +98,7 @@ npm run preview:providers -- --host 0.0.0.0 --port 4173
 ```
 
 Scenes: `/?scene=monthly-chat`, `/?scene=monthly-today`,
-`/?scene=monthly-usage`, `/?scene=monthly-receipt`, `/?scene=monthly-cancel`.
+`/?scene=monthly-usage`, `/?scene=monthly-receipt`, `/?scene=monthly-below`,
+`/?scene=monthly-today-alone`.
 At 390px, chat uses the mobile option blocks. The harness renders the actual
 components with neutral data and inert action callbacks.

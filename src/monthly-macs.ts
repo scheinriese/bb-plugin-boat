@@ -109,10 +109,32 @@ export function chipMeets(candidate: string, required: string): boolean {
   );
 }
 export function leaseChip(size: string): string | null {
+  // Scaleway catalog sizes are SKUs, not chip names: M2-L and M4-XL are
+  // Pro chips. Never drop an unknown SKU suffix and assume a base chip.
+  const scaleway: Record<string, string> = {
+    "M1-M": "M1",
+    "M2-M": "M2",
+    "M2-L": "M2 Pro",
+    "M4-S": "M4",
+    "M4-SP": "M4",
+    "M4-M": "M4",
+    "M4-XL": "M4 Pro",
+  };
+  if (scaleway[size.toUpperCase()]) return scaleway[size.toUpperCase()]!;
   const match = /^m(\d+)(?:[-_ ]?(pro|max|ultra))?$/i.exec(size);
   return match
     ? `M${match[1]}${match[2] ? ` ${match[2][0]!.toUpperCase()}${match[2].slice(1).toLowerCase()}` : ""}`
     : null;
+}
+/** A stable display order, separate from the partial hardware eligibility relation. */
+export function compareChips(a: string, b: string): number {
+  const parts = (chip: string) => /M(\d+)(?: (Pro|Max|Ultra))?/.exec(chip)!;
+  const x = parts(a),
+    y = parts(b);
+  const tiers = [undefined, "Pro", "Max", "Ultra"];
+  return (
+    Number(x[1]) - Number(y[1]) || tiers.indexOf(x[2]) - tiers.indexOf(y[2])
+  );
 }
 export interface WeeklyForecast {
   at: number;
@@ -126,9 +148,17 @@ export function monthlyMacRule(input: {
   forecasts: readonly WeeklyForecast[];
   lastSuggestedAt?: number;
   snoozedUntil?: number;
+  lastAnswer?: "rent" | "keep" | "own" | "cancel" | null;
   enrolled?: boolean;
+  /** Future enrollment integration must supply demand on this actual machine.
+   * Spillover day leases are not evidence of monthly-machine utilization. */
+  enrolledDemand?: { machineId: string; forecasts: readonly WeeklyForecast[] };
 }): boolean {
-  const { now, forecasts, monthlyPrice } = input;
+  const { now, monthlyPrice } = input;
+  if (input.enrolled && !input.enrolledDemand?.machineId) return false;
+  const forecasts = input.enrolled
+    ? input.enrolledDemand!.forecasts
+    : input.forecasts;
   if (
     !Number.isFinite(monthlyPrice) ||
     monthlyPrice <= 0 ||
@@ -138,7 +168,8 @@ export function monthlyMacRule(input: {
   if (
     now - input.historySince < 30 * 86400000 ||
     now < (input.snoozedUntil ?? 0) ||
-    now - (input.lastSuggestedAt ?? -Infinity) < 30 * 86400000
+    (input.lastAnswer !== "keep" &&
+      now - (input.lastSuggestedAt ?? -Infinity) < 30 * 86400000)
   )
     return false;
   const [previous, latest] = forecasts.slice(-2);

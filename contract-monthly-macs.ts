@@ -22,6 +22,13 @@ export const monthlyMacPricesSchema = z
     "Use unique price IDs.",
   );
 export type MonthlyMacPrice = z.infer<typeof monthlyMacPriceSchema>;
+export const monthlyMacComparisonSchema = z.object({
+  dayProvider: z.string(),
+  currency: z.string(),
+  candidate: monthlyMacPriceSchema,
+  breakEven: z.number().positive(),
+});
+export type MonthlyMacComparison = z.infer<typeof monthlyMacComparisonSchema>;
 export const monthlyMacSuggestionSchema = z.object({
   id: z.string(),
   group: z.string(),

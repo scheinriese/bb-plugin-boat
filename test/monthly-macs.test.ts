@@ -8,6 +8,7 @@ import {
   monthlyMacPrices,
   monthlyMacRule,
   chipMeets,
+  compareChips,
   leaseChip,
 } from "../src/monthly-macs.ts";
 import { monthlyMacPricesSchema } from "../contract-monthly-macs.ts";
@@ -95,23 +96,35 @@ test("enrolled Macs require two forecasts strictly below 70% for cancellation ad
   const cancel = {
     ...input,
     enrolled: true,
-    forecasts: input.forecasts.map((f) => ({ ...f, days: 8.4 })),
+    enrolledDemand: {
+      machineId: "monthly-1",
+      forecasts: input.forecasts.map((f) => ({ ...f, days: 8.4 })),
+    },
   };
   assert.equal(monthlyMacRule(cancel), false);
   assert.equal(
     monthlyMacRule({
       ...cancel,
-      forecasts: cancel.forecasts.map((f) => ({ ...f, days: 8.399 })),
+      enrolledDemand: {
+        machineId: "monthly-1",
+        forecasts: cancel.enrolledDemand.forecasts.map((f) => ({
+          ...f,
+          days: 8.399,
+        })),
+      },
     }),
     true,
   );
   assert.equal(
     monthlyMacRule({
       ...cancel,
-      forecasts: [
-        { ...cancel.forecasts[0]!, days: 9 },
-        { ...cancel.forecasts[1]!, days: 1 },
-      ],
+      enrolledDemand: {
+        machineId: "monthly-1",
+        forecasts: [
+          { ...cancel.enrolledDemand.forecasts[0]!, days: 9 },
+          { ...cancel.enrolledDemand.forecasts[1]!, days: 1 },
+        ],
+      },
     }),
     false,
   );
@@ -147,7 +160,7 @@ function fixture() {
   for (const sql of TaskStore.migrations()) db.exec(sql);
   const store = new TaskStore(() => db as unknown as Database.Database);
   // One physical Mac, five days a week; task overlap is deliberately absent.
-  for (let d = 0; d < 85; d++)
+  for (let d = 0; d < 200; d++)
     if (d % 7 < 5) {
       const start = now - 70 * DAY + d * DAY;
       store.macLeases.record({
@@ -182,14 +195,27 @@ test("advisor persists weekly evidence, receipts, snooze and quiet across restar
   assert.ok(Math.abs(s.breakEven - 119.99 / 10.8) < 1e-8);
   assert.ok(s.alternatives.some((p) => p.currency === "EUR"));
   assert.ok(!s.alternatives.some((p) => !p.available));
-  assert.equal(store.monthlyMacs.forThread("chat-one").length, 1);
-  assert.equal(store.monthlyMacs.forThread("chat-one").length, 0);
+  assert.equal(store.monthlyMacs.takeForTool("chat-one").length, 1);
+  assert.equal(store.monthlyMacs.takeForTool("chat-one").length, 0);
   store.monthlyMacs.answer(s.id, "keep", now + 7 * DAY);
   const restarted = new TaskStore(() => db as unknown as Database.Database);
   assert.equal(restarted.monthlyMacs.get(s.id)?.answer, "keep");
+  restarted.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 14 * DAY);
   assert.equal(
-    restarted.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 21 * DAY).length,
+    restarted.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 21 * DAY - 1)
+      .length,
     0,
+  );
+  const [resurfaced] = restarted.monthlyMacs.refresh(
+    MONTHLY_MAC_PRICES,
+    now + 21 * DAY,
+  );
+  assert.ok(resurfaced);
+  assert.notEqual(resurfaced.id, s.id);
+  assert.equal(
+    restarted.monthlyMacs.get(s.id)?.answer,
+    "keep",
+    "the old receipt stays answered",
   );
   const row = db
     .prepare("SELECT snoozed_until FROM monthly_mac_suggestions WHERE id=?")
@@ -234,20 +260,29 @@ test("hardware changes, RAM, currency, hourly estimates and overlapping machines
   );
   db.close();
 });
-test("enrollment seam only records a contract and produces cancellation guidance after two low weeks", () => {
+test("enrollment seam is inert without demand from the enrolled Mac", () => {
   const { store, db } = fixture();
   store.monthlyMacs.recordEnrolled("instabox:USD", MONTHLY_MAC_PRICES[1]!);
+  assert.deepEqual(store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now), []);
+  assert.deepEqual(
+    store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 7 * DAY),
+    [],
+  );
+  // No spillover day leases, even for months, must not mean a busy monthly
+  // machine is idle. Demand collection is not implemented by enrollment yet.
+  assert.deepEqual(
+    store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 300 * DAY),
+    [],
+  );
+  assert.deepEqual(
+    store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 307 * DAY),
+    [],
+  );
+  assert.equal(monthlyMacRule({ ...input, enrolled: true }), false);
   assert.equal(
-    store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 70 * DAY).length,
+    db.prepare("SELECT COUNT(*) AS n FROM monthly_mac_forecasts").get()!.n,
     0,
   );
-  const [s] = store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 77 * DAY);
-  assert.equal(s?.kind, "cancel");
-  assert.throws(
-    () => store.monthlyMacs.answer(s!.id, "rent"),
-    /Choose an option/,
-  );
-  assert.equal(store.macLeases.held().length, 0);
   store.monthlyMacs.recordEnrolled("instabox:USD", null);
   db.close();
 });
@@ -286,4 +321,153 @@ test("suggestions and receipts leave board decisions and sidebar attention count
   assert.deepEqual(board(), before);
   assert.equal(store.macLeases.held().length, 0);
   db.close();
+});
+
+test("an unanswered suggestion is returned again exactly at 30 days, never as a repeated tool card before then", () => {
+  const { store, db } = fixture();
+  store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now);
+  const [first] = store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 7 * DAY);
+  assert.ok(first);
+  assert.equal(store.monthlyMacs.takeForTool("chat").length, 1);
+  for (const days of [7, 14, 21, 28]) {
+    const [s] = store.monthlyMacs.refresh(
+      MONTHLY_MAC_PRICES,
+      now + (7 + days) * DAY,
+    );
+    assert.equal(s?.id, first.id);
+    assert.equal(store.monthlyMacs.takeForTool("chat").length, 0);
+  }
+  assert.equal(
+    store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 37 * DAY - 1)[0]?.id,
+    first.id,
+  );
+  const [again] = store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 37 * DAY);
+  assert.ok(again);
+  assert.notEqual(again.id, first.id);
+  assert.equal(store.monthlyMacs.takeForTool("chat").length, 1);
+  db.close();
+});
+
+test("Scaleway sizes and chip display sorting are stable", () => {
+  for (const [size, chip] of [
+    ["M4-S", "M4"],
+    ["M2-M", "M2"],
+    ["M4-SP", "M4"],
+    ["M4-XL", "M4 Pro"],
+    ["m2-pro", "M2 Pro"],
+    ["M2-L", "M2 Pro"],
+  ])
+    assert.equal(leaseChip(size!), chip);
+  const chips = ["M2", "M4", "M2 Pro", "M4 Max", "M4 Ultra"];
+  for (const a of chips)
+    for (const b of chips) {
+      assert.equal(
+        Math.sign(compareChips(a, b)) + Math.sign(compareChips(b, a)),
+        0,
+      );
+      assert.equal(compareChips(a, a), 0);
+    }
+  assert.deepEqual(
+    [...chips].reverse().sort(compareChips),
+    [...chips].sort(compareChips),
+  );
+});
+
+test("price comparisons exist below break-even, before history qualifies and after a snooze", async () => {
+  const { store, db } = fixture();
+  const before = Number(db.prepare("SELECT total_changes() AS n").get()!.n);
+  const comparisons = store.monthlyMacs.comparisons(MONTHLY_MAC_PRICES, now);
+  assert.equal(
+    Number(db.prepare("SELECT total_changes() AS n").get()!.n),
+    before,
+  );
+  assert.equal(comparisons[0]?.candidate.id, "hostmyapple-m4");
+  assert.ok(Math.abs(comparisons[0]!.breakEven - 119.99 / 10.8) < 1e-8);
+  store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now);
+  const [s] = store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 7 * DAY);
+  store.monthlyMacs.answer(s!.id, "keep", now + 7 * DAY);
+  assert.equal(
+    store.monthlyMacs.comparisons(MONTHLY_MAC_PRICES, now + 8 * DAY).length,
+    1,
+  );
+  const { providerHandlers } = await import("../src/rpc-providers.ts");
+  const { createProviderRegistry, unavailableProvider } =
+    await import("../src/providers/registry.ts");
+  const handlers = providerHandlers(
+    {
+      service: {
+        store,
+        sandboxProviders: createProviderRegistry([unavailableProvider("boat")]),
+      },
+      settings: { get: async () => ({ monthlyMacPricesJson: "" }) },
+      bb: {},
+    } as unknown as import("../src/runtime.ts").Runtime,
+    () => now + 8 * DAY,
+  );
+  const changes = Number(db.prepare("SELECT total_changes() AS n").get()!.n);
+  assert.deepEqual(handlers.monthlyMacSuggestions(), { suggestions: [] });
+  const usage = await handlers.macUsage();
+  assert.equal(usage.monthlyComparisons.length, 1);
+  assert.equal(
+    Number(db.prepare("SELECT total_changes() AS n").get()!.n),
+    changes,
+    "query RPCs do not write forecasts, suggestions or delivery claims",
+  );
+  db.close();
+});
+
+test("upgrade discards false instruction-time delivery claims", () => {
+  const { store, db } = fixture();
+  store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now);
+  const [s] = store.monthlyMacs.refresh(MONTHLY_MAC_PRICES, now + 7 * DAY);
+  assert.ok(s);
+  db.prepare("INSERT INTO monthly_mac_shown VALUES (?,?)").run(s.id, "chat");
+  db.exec(TaskStore.migrations().at(-1)!);
+  assert.equal(store.monthlyMacs.takeForTool("chat").length, 1);
+  assert.equal(store.monthlyMacs.takeForTool("chat").length, 0);
+  db.close();
+});
+
+test("Scaleway SKU comparisons use same-currency actual costs and match Pro hardware", () => {
+  const { store, db } = fixture();
+  const start = now - DAY;
+  store.macLeases.record({
+    id: "scaleway-1",
+    provider: "scaleway",
+    machineId: "scaleway-1",
+    size: "M4-S",
+    memoryMiB: 16384,
+    cpus: 10,
+    startedAt: new Date(start).toISOString(),
+    paidUntil: new Date(now).toISOString(),
+    minimumCost: 5.28,
+    hourPrice: 0.22,
+    currency: "EUR",
+  });
+  const price = { ...MONTHLY_MAC_PRICES[4]!, available: true };
+  const [comparison] = store.monthlyMacs
+    .comparisons([price], now)
+    .filter((c) => c.dayProvider === "scaleway");
+  assert.ok(comparison);
+  assert.ok(Math.abs(comparison.breakEven - 115 / 5.28) < 1e-8);
+  db.prepare(
+    "UPDATE mac_leases SET size='M4-XL' WHERE provider='scaleway'",
+  ).run();
+  assert.equal(
+    store.monthlyMacs
+      .comparisons([price], now)
+      .filter((c) => c.dayProvider === "scaleway").length,
+    0,
+    "a base M4 is not a replacement for M4 Pro",
+  );
+  db.close();
+});
+
+test("one day of history already has a break-even comparison without creating guidance",()=>{
+ const {store,db}=fixture();db.prepare("DELETE FROM mac_leases").run();
+ store.macLeases.record({id:"first-mac",provider:"instabox",machineId:"first-mac",size:"m2",memoryMiB:16384,cpus:8,startedAt:new Date(now-DAY).toISOString(),paidUntil:new Date(now).toISOString(),minimumCost:10.8,hourPrice:.45,currency:"USD"});
+ const comparisons=store.monthlyMacs.comparisons(MONTHLY_MAC_PRICES,now);
+ assert.equal(comparisons.length,1);assert.ok(Math.abs(comparisons[0]!.breakEven-119.99/10.8)<1e-8);
+ assert.deepEqual(store.monthlyMacs.active(),[]);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM monthly_mac_forecasts").get()!.n,0);db.close();
 });

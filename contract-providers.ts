@@ -1,4 +1,4 @@
-import { monthlyMacRpcMethods, monthlyMacSuggestionSchema } from "./contract-monthly-macs.ts";
+import { monthlyMacRpcMethods, monthlyMacSuggestionSchema, monthlyMacComparisonSchema } from "./contract-monthly-macs.ts";
 // Sandbox providers in the RPC contract (contract.ts spreads
 // providerRpcMethods into it and puts runsOn on tasks and sandboxes):
 // - sandboxProviders: the providers Boat knows, whether each is on and
@@ -141,6 +141,7 @@ export type SandboxProvidersResultDto = z.infer<typeof sandboxProvidersResultSch
 export const macUsageWindowSchema = z.object({ leaseDays: z.number(), costs: z.record(z.string(),z.number()) });
 export const macUsageSchema = z.object({
   monthlySuggestions: z.array(monthlyMacSuggestionSchema).optional(),
+  monthlyComparisons: z.array(monthlyMacComparisonSchema).optional(),
   month: macUsageWindowSchema, rolling30: macUsageWindowSchema,
   byProvider: z.array(z.object({ id: z.string(), label: z.string(), month: macUsageWindowSchema, rolling30: macUsageWindowSchema })).optional(),
   today: z.record(z.string(),z.number()).optional(),

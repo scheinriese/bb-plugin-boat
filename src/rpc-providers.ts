@@ -347,7 +347,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
   }
 
   return {
-    monthlyMacSuggestions: async () => ({ suggestions: service.store.monthlyMacs.refresh(monthlyMacPrices((await runtime.settings.get()).monthlyMacPricesJson), now()) }),
+    monthlyMacSuggestions: () => ({ suggestions: service.store.monthlyMacs.active() }),
     monthlyMacSuggestion: ({id}: {id:string}) => ({ suggestion: service.store.monthlyMacs.get(id) }),
     answerMonthlyMacSuggestion: ({id,answer}: {id:string;answer:"rent"|"keep"|"own"|"cancel"}) => {
       try {
@@ -362,13 +362,15 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       bb.rpc.experimental_invalidate([PROVIDERS_TAG]);
       return result;
     },
-    macUsage: (input?: {timezoneOffsetMinutes:number}|null) => {
+    macUsage: async (input?: {timezoneOffsetMinutes:number}|null) => {
+      const prices = monthlyMacPrices((await runtime.settings?.get?.())?.monthlyMacPricesJson ?? "");
       const summary = service.store.macLeases.summary();
       const now = Date.now(), date = new Date(now);
       const monthStart = Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1), monthEnd = Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1);
       const label = (id: string) => providerLabel(id, service.sandboxProviders.all.find(provider=>provider.id===id));
       return { ...summary,
         monthlySuggestions: service.store.monthlyMacs.active(),
+        monthlyComparisons: service.store.monthlyMacs.comparisons(prices, now),
         byProvider: summary.providers.map(id => ({id,label:label(id),month:service.store.macLeases.between(monthStart,monthEnd,now,undefined,id),rolling30:service.store.macLeases.between(now-30*86400000,now,now,undefined,id)})),
         today: service.store.macLeases.between(Date.parse(usageWindows(date,input?.timezoneOffsetMinutes ?? 0).day.since),now,now).costs,
         providers: summary.providers.map(id=>({id,label:label(id)})),

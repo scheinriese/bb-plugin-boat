@@ -90,6 +90,8 @@ const approvedParam = z
 
 export function registerTools(runtime: Runtime): void {
   const { bb, service } = runtime;
+  const monthlyCards = (threadId: string) => service.store.monthlyMacs.takeForTool(threadId)
+    .map(item => `Show this returned cost suggestion once after your reply; it blocks no task:\n::boat-monthly-mac{id="${item.id}"}`).join("\n");
 
   bb.agents.registerTool({
     name: "boat_protocol",
@@ -104,7 +106,7 @@ export function registerTools(runtime: Runtime): void {
         const project = params.project
           ? await runtime.resolveProject(parseProjectRef(params.project))
           : await runtime.projectForThread(ctx.threadId);
-        return [await runtime.orchestratorProtocol(project, ctx.signal), continuationGoalText(await runtime.continuationGoal(ctx.threadId))].filter(Boolean).join("\n\n");
+        return [await runtime.orchestratorProtocol(project, ctx.signal), continuationGoalText(await runtime.continuationGoal(ctx.threadId)), monthlyCards(ctx.threadId)].filter(Boolean).join("\n\n");
       }),
   });
 
@@ -138,6 +140,7 @@ export function registerTools(runtime: Runtime): void {
           "",
           `Your open tasks (${mine.length}):`,
           taskTable(mine, (task) => (task.role === "implement" ? (service.store.latestEvent(task.id, "review")?.text ?? null) : null)),
+          monthlyCards(ctx.threadId),
         ]
           .filter((line) => line !== null)
           .join("\n");
@@ -359,6 +362,7 @@ export function registerTools(runtime: Runtime): void {
           taskTable(tasks, (task) => taskNote(task, service.store.latestEvent(task.id, "review")?.text ?? null)),
           "",
           `Overview for the user: ${overviewLink(params.scope === "all" ? null : ctx.threadId)}`,
+          monthlyCards(ctx.threadId),
         ]
           .filter((line) => line !== null)
           .join("\n");
