@@ -111,7 +111,7 @@ export function ProviderFailureCard({
         )}
         {card.kind === "fresh" && (
           <a className={primary} href="/settings/plugins/boat">
-            Set up an Instabox Mac
+            Set up machine credentials
           </a>
         )}
       </div>

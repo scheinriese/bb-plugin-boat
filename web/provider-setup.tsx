@@ -111,7 +111,7 @@ export function ProviderSetup({
                     Add or replace key in bb secrets
                   </button>
                 )}
-                {s.id === "enabled" && (
+                {s.id === "enabled" && provider.id === "instabox" && (
                   <button
                     type="button"
                     disabled={busy}

@@ -134,19 +134,21 @@ export const scaleway: SandboxProviderDto = {
       detail: "Paris Apple silicon",
     },
     {
-      id: "enabled",
-      label: "On",
-      done: true,
-      possible: true,
-      detail: "Held Macs only",
+      id: "rented-github", label: "GitHub token stored", done: false, possible: true,
+      detail: "Add GitHub token for rented machines in bb secret settings: selected repos; Contents, Pull requests and Workflows read and write; 90-day expiry",
+    },
+    {
+      id: "agent-route", label: "Agent route available", done: true, possible: true,
+      detail: "Account Pooler via bb Connect: Codex",
     },
     {
       id: "logins",
       label: "Logins on fresh Macs",
       done: false,
-      possible: false,
-      detail: "not possible yet",
+      possible: true,
+      detail: "Complete the GitHub and agent checks above",
     },
+    { id: "enabled", label: "On", done: false, possible: true, detail: "Credentials are checked for the chosen agent and repositories before rental" },
   ],
 };
 export function scene(name: string) {

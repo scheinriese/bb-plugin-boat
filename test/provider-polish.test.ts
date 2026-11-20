@@ -98,15 +98,16 @@ for (let step = 0; step < 5; step++)
     assert.match(html, new RegExp(`${step + 1}<\/span>`));
     assert.doesNotMatch(html, /value="ibk_|test-only/);
   });
-test("setup regression, waiting owner, complete collapse, and impossible Scaleway step", () => {
+test("setup regression, waiting owner, complete collapse, and actionable Scaleway credentials", () => {
   assert.match(renderScene("waiting"), /1 task waiting/);
   assert.match(renderScene("waiting"), /#3D3420/);
   assert.match(renderScene("regressed"), /Instabox rejected the key/);
   assert.doesNotMatch(renderScene("complete"), />Next<|setup steps/);
   const html = renderScene("settings");
-  assert.match(html, /Held Macs only/);
+  assert.match(html, /GitHub token stored/);
+  assert.match(html, /Agent route available/);
   assert.match(html, /Logins on fresh Macs/);
-  assert.match(html, /border-dashed/);
+  assert.doesNotMatch(html, /border-dashed/);
   assert.match(html, /target="_blank"/);
 });
 for (const name of ["github", "key", "capacity", "fresh", "failed", "released"])
