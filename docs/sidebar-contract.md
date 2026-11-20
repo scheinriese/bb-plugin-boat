@@ -12,6 +12,15 @@ The timezone field is optional, integer, bounded to -840..840, and uses the
 JavaScript sign: local time is UTC minus the offset. `{version:1}` remains
 valid with the producer's server-local fallback. Berlin winter time is -60.
 
+A fixed offset is the reader's offset now. Day-named reset lines can be days
+ahead, so across a daylight saving change one can read an hour off: on a
+Friday in Berlin summer time (-120), a Monday 1:00 am reset after the change
+reads `Mon 2:00 am`. Consumers can also send the optional additive
+`timeZone`, an IANA name such as
+`Intl.DateTimeFormat().resolvedOptions().timeZone` (at most 64 characters).
+A name the producer knows wins and follows daylight saving time; an unknown
+name falls back to the offset. Older producers ignore it.
+
 The response is `{version:1, revision:string, threads:SidebarThreadDto[],
 truncated:boolean}`; at most 2000 records. Every record contains:
 
@@ -101,6 +110,15 @@ always emits the field and includes its ordered contents in `revision`.
 | state | waiting, dispatching, or started |
 | taskId | Actual started task registry id, otherwise null |
 | taskThreadId | Verified open BB chat for that task, otherwise null |
+| secondLine | Additive, optional: `{text,tone:"neutral"}` for a waiting request, otherwise null |
+
+`secondLine` is Harbormaster's own reset line in the requested `timeZone`, else
+`timezoneOffsetMinutes`,
+worded like its chat cards: `Waits for reset · 1:00 am` later today or
+overnight (next day, under 12 hours away), `· tomorrow 1:00 am`, `· Thu 1:00 am`
+within the week, `· Nov 26, 1:00 am` further out, or `Waits for reset` with no
+known time. Thread rows' `waiting-reset` lines follow the same rules. A
+consumer that prints its own clock should prefer this text.
 
 This separate collection never manufactures a BB thread. Waiting/dispatching
 requests retain capacity before started receipts, independently of the most
@@ -130,3 +148,21 @@ no mutation method. Queue projection reads never transition a request, provision
 a sandbox, start a provider, send a message, or change a task. Internal input
 briefs, project settings, digests and errors are excluded from the DTO. A queue
 read failure preserves the ordinary sidebar and marks its response truncated.
+
+### Opening a waiting request
+
+A waiting request has no chat of its own, and bb's navigation opens a chat but
+not one of its messages (`toThread(threadId, {split})`, SDK 0.6.146). Harbormaster
+therefore brings the request's card into view itself. Its content script
+watches for a plain left click on a link with an `href` inside an element
+marked `data-queued-start-id="<id>"` and `data-queued-start-state="waiting"` or
+`"dispatching"`. That is how Workbench's row is marked today. For the next 10
+seconds, the live `::boat-start-queue` card listing that request scrolls into
+view and is outlined briefly once it renders. When several cards list it, the
+card whose own marker is that request wins; another card listing it (such as
+an older group card) takes it only after 300 ms without one. In a group card,
+that request is selected for **Start now on paid usage…**. A wheel or touch
+scroll after the click cancels a reveal that hasn't happened yet. The consumer still navigates to
+`sourceThreadId` itself. Nothing is sent, started or changed. A card that bb
+hasn't rendered, such as one far up a long chat, stays where it is; the chat's
+context row still says how many requests wait.

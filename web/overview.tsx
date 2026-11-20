@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
+import { resetTimeText } from "@/lib/reset-time";
 import { Board, BoardSection } from "./board";
 import { PreviewsSection } from "./previews";
 import { ConfirmDialog, NewOrchestratorDialog, NewTaskDialog } from "./dialogs";
@@ -205,8 +206,8 @@ function StatusLine({ state }: { state: PageState }) {
   const usage = relay ? usageSummary(relay.agents) : null;
   const switching = state === "orchestrators" && relay?.enabled === true && relay.onlyAgent === null;
   const resets = (relay?.agents ?? [])
-    .filter((agent) => agent.resetsAt)
-    .map((agent) => `${AGENT_LABEL[agent.provider]} resets ${new Date(agent.resetsAt!).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", hourCycle:"h23" })}`)
+    .filter((agent) => resetTimeText(agent.resetsAt))
+    .map((agent) => `${AGENT_LABEL[agent.provider]} resets ${resetTimeText(agent.resetsAt)}`)
     .join(" · ");
   return (
     <div className="space-y-2">

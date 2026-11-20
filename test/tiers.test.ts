@@ -220,6 +220,25 @@ test("the built-in protocol is adapted to boat: tools, tiers, reconcile on wake"
   assert.doesNotMatch(DEFAULT_PROTOCOL, /conductor (session|workspace)|ledger\.md|--message-id/);
 });
 
+test("chats are bare @thread mentions, never Markdown link targets (bb opens those as a missing file)", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const rule = /Refer to a chat as a bare `@thread:thr_…` \(or `@thread:thr_…#msg=N` for one message\); bb shows that as a chat link\. Never put one inside a Markdown link target such as `\[chat\]\(@thread:thr_…\)`: bb opens that as a missing file\. Use Markdown links only for URLs and files\./;
+  const rendered = renderSharedProtocol(DEFAULT_PROTOCOL, DEFAULT_TIERS, defaultSettings());
+  assert.match(rendered, rule);
+  assert.ok(rendered.search(rule) > rendered.indexOf("## 6. Reporting to me"), "it's part of reporting to the user");
+  for (const skill of ["boat", "boat-orchestrator"]) {
+    const text = readFileSync(new URL(`../skills/${skill}/SKILL.md`, import.meta.url), "utf8").replace(/\s+/g, " ");
+    assert.match(text, /a bare `@thread:thr_…`.*never .*inside a Markdown link target/i, skill);
+  }
+  // Text the plugin writes itself mentions chats bare; the protocol's example is the only link target.
+  const sources = readdirSync(new URL("../src/", import.meta.url)).filter((file) => file.endsWith(".ts"));
+  for (const file of sources) {
+    const text = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+    assert.doesNotMatch(text, /\]\(@thread:\$\{|\]\(\/threads\/\$\{/, file);
+    if (file !== "default-protocol.ts") assert.doesNotMatch(text, /\]\(@thread:/, file);
+  }
+});
+
 test("the built-in protocol is generic: no personal setup, setting-dependent facts are placeholders", () => {
   // The owner-specific effort guidance (a media pipeline) is gone.
   assert.doesNotMatch(DEFAULT_PROTOCOL, /pipeline|intake|receipts|re-crops/i);

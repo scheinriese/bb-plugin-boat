@@ -900,6 +900,10 @@ checklist warns and offers **Use Auto-detect**.
   at the configured limit. No task or sandbox is allocated
   while waiting. The queue survives reloads, and cancelled or stale source
   requests cannot start later. Chats already running carry on.
+- A waiting request shows in its chat as a live card. Its reset time names
+  the day unless it's later today or overnight (`starts Thu 1:00 am`).
+  Opening the request from the Workbench sidebar or the new-thread summary
+  opens that chat and scrolls to the card.
 - **Start now on paid usage…** opens an in-thread confirmation for one
   queued request. It defaults to Wait and rechecks the request, project,
   settings, provider and usage before insertion. It does not enable a

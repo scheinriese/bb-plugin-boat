@@ -43,7 +43,7 @@ test("sidebar queue is additive, ordered, revisioned and publishes only display 
  assert.equal(sidebarRpcMethods.sidebarState.output.safeParse(sidebarState(e.service)).success,true,"older producer still validates without the optional field");
  assert.equal(sidebarRpcMethods.sidebarState.output.safeParse(result).success,true);
  assert.deepEqual(result.queuedStarts.map(q=>[q.title,q.state,q.provider]),[["First","waiting",null],["Second","dispatching","claude"]]);
- assert.deepEqual(Object.keys(result.queuedStarts[0]!).sort(),["createdAt","id","provider","resetsAt","revision","sourceThreadId","state","taskId","taskThreadId","title"].sort());
+ assert.deepEqual(Object.keys(result.queuedStarts[0]!).sort(),["createdAt","id","provider","resetsAt","revision","secondLine","sourceThreadId","state","taskId","taskThreadId","title"].sort());
  assert.ok(result.queuedStarts.every(q=>q.sourceThreadId==="thr_source"&&q.taskId===null&&q.taskThreadId===null));
  assert.ok(!JSON.stringify(result).includes("Private"));assert.ok(!JSON.stringify(result).includes("Internal queue receipt"));
  assert.equal((await e.handlers.sidebarState({version:1})).revision,result.revision);
@@ -52,6 +52,33 @@ test("sidebar queue is additive, ordered, revisioned and publishes only display 
  // Restore the one deliberate test mutation before checking producer read-only behavior.
  e.db.prepare("update start_queue set state='waiting',revision=0,updated_at=?,message=?,resets_at=? where id=?").run(b.dto.updatedAt,b.dto.message,b.dto.resetsAt,b.dto.id);
  assert.equal(e.snapshot(),before);assert.equal(e.boat.calls.length,0);
+});
+
+test("a waiting request carries the local reset line with its day; other states leave it to the consumer",async t=>{
+ const e=setup();t.after(()=>e.dispose());
+ // Two calendar days ahead at 01:00 local, in UTC+1 (JavaScript offset -60).
+ const today=new Date(Date.now()+60*60_000);const at=Date.UTC(today.getUTCFullYear(),today.getUTCMonth(),today.getUTCDate()+2,0,0);
+ const day=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][new Date(at+60*60_000).getUTCDay()];
+ const waiting=e.enqueue("Lab notebook","claude"),noReset=e.enqueue("No reset known"),starting=e.enqueue("Starting");
+ e.db.prepare("update start_queue set resets_at=? where id in (?,?)").run(new Date(at).toISOString(),waiting.dto.id,starting.dto.id);
+ e.db.prepare("update start_queue set resets_at=null where id=?").run(noReset.dto.id);
+ e.queued.transition(starting.dto.id,0,["waiting"],"dispatching","Checking",new Date(at).toISOString());
+ const result=await e.handlers.sidebarState({version:1,timezoneOffsetMinutes:-60});
+ assert.equal(sidebarRpcMethods.sidebarState.output.safeParse(result).success,true);
+ const rows=new Map(result.queuedStarts.map(row=>[row.title,row]));
+ assert.deepEqual(rows.get("Lab notebook")!.secondLine,{text:`Waits for reset · ${day} 1:00 am`,tone:"neutral"});
+ assert.deepEqual(rows.get("No reset known")!.secondLine,{text:"Waits for reset",tone:"neutral"});
+ assert.equal(rows.get("Starting")!.secondLine,null);
+ // The same request read from UTC-5 is still two days out, five hours earlier on the clock.
+ const east=await e.handlers.sidebarState({version:1,timezoneOffsetMinutes:300});
+ assert.match(east.queuedStarts.find(row=>row.title==="Lab notebook")!.secondLine!.text,/^Waits for reset · (Sun|Mon|Tue|Wed|Thu|Fri|Sat|tomorrow) 7:00 pm$/);
+ assert.notEqual(east.revision,result.revision);
+ // An IANA zone wins over the offset; an unknown name falls back to it.
+ const named=await e.handlers.sidebarState({version:1,timezoneOffsetMinutes:300,timeZone:"Etc/GMT-1"});
+ assert.equal(sidebarRpcMethods.sidebarState.input.safeParse({version:1,timezoneOffsetMinutes:300,timeZone:"Etc/GMT-1"}).success,true);
+ assert.equal(named.queuedStarts.find(row=>row.title==="Lab notebook")!.secondLine!.text,`Waits for reset · ${day} 1:00 am`);
+ const unknown=await e.handlers.sidebarState({version:1,timezoneOffsetMinutes:-60,timeZone:"Mars/Olympus"});
+ assert.equal(unknown.queuedStarts.find(row=>row.title==="Lab notebook")!.secondLine!.text,`Waits for reset · ${day} 1:00 am`);
 });
 
 test("started queue association uses real open tasks and verified chats; headless has no invented thread",async t=>{

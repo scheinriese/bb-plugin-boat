@@ -20,8 +20,10 @@ export const sidebarQueuedStartSchema = z.object({
   resetsAt: z.string().max(100).nullable(), createdAt: z.string().max(100),
   state: z.enum(["waiting", "dispatching", "started"]),
   taskId: z.string().max(200).nullable(), taskThreadId: z.string().max(200).nullable(),
+  /** Additive: the local reset line for a waiting request, the same words as Harbormaster's cards. */
+  secondLine: z.object({ text: z.string().max(200), tone: z.literal("neutral") }).nullable().optional(),
 });
 export type SidebarQueuedStartDto = z.infer<typeof sidebarQueuedStartSchema>;
 export const sidebarRpcMethods = {
-  sidebarState: { input: z.object({ version: z.literal(1), timezoneOffsetMinutes: z.number().int().min(-840).max(840).optional() }), output: z.object({ version: z.literal(1), revision: z.string(), threads: z.array(sidebarThreadSchema).max(2000), queuedStarts: z.array(sidebarQueuedStartSchema).max(200).optional(), truncated: z.boolean() }) },
+  sidebarState: { input: z.object({ version: z.literal(1), timezoneOffsetMinutes: z.number().int().min(-840).max(840).optional(), timeZone: z.string().max(64).optional() }), output: z.object({ version: z.literal(1), revision: z.string(), threads: z.array(sidebarThreadSchema).max(2000), queuedStarts: z.array(sidebarQueuedStartSchema).max(200).optional(), truncated: z.boolean() }) },
 };

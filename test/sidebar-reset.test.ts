@@ -6,8 +6,10 @@ import { sidebarState } from "../src/sidebar.ts";
 import { makeService } from "./fakes.ts";
 test("reset clock uses JS timezone offset sign, with no inferred quota timestamp", () => {
   const at = Date.parse("2026-11-08T15:00:00Z");
-  assert.equal(resetWaitText(at, -60), "Waits for reset · 4:00 pm");
-  assert.equal(resetWaitText(at, 0), "Waits for reset · 3:00 pm");
+  const now = at - 60 * 60_000;
+  assert.equal(resetWaitText(at, -60, now), "Waits for reset · 4:00 pm");
+  assert.equal(resetWaitText(at, 0, now), "Waits for reset · 3:00 pm");
+  assert.equal(resetWaitText(at + 2 * 86_400_000, 0, now), "Waits for reset · Tue 3:00 pm");
 });
 test("only a live scheduled provider subscription retry on an idle/error thread supplies a reset", async () => {
   const now = Date.now();

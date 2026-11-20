@@ -250,6 +250,10 @@ environment (`EVIDENCE_BUCKET`, `EVIDENCE_ACCESS_KEY_ID`,
 ## Rules
 
 - Use task ids from command output. Never guess them.
+- Refer to a chat as a bare `@thread:thr_…` (or `@thread:thr_…#msg=N`), as
+  command output does. Never put one inside a Markdown link target like
+  `[chat](@thread:thr_…)`: bb opens that as a missing file. Markdown links
+  are for URLs and files only.
 - Prefer one task per independent change; don't run two `implement` tasks
   on the same branch.
 - Never point a task at a protected branch: `main`, `master`, the task's
