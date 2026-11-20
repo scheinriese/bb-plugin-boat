@@ -2,14 +2,24 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { CHAINED_HOOKS, chainedHook, githubAccessSnippet, githubLogin, prepareRepo, prePushHook, shipScript, type RepoProvider } from "../src/sandbox-repos.ts";
-import { BOOTSTRAP_PREP_SCRIPT } from "../src/providers/instabox/provider.ts";
+import { BOOTSTRAP_PREP_SCRIPT, GITHUB_SECRET_PROBE_SCRIPT } from "../src/providers/instabox/provider.ts";
 import { BOOTSTRAP } from "../src/providers/scaleway/provider.ts";
+import { shipSnapshotScript } from "../src/ship-interaction.ts";
+import { evidenceInstallScript } from "../src/evidence.ts";
+import { sinceApprovalScript } from "../src/ship-approval.ts";
+import { probeScript } from "../src/memory.ts";
 import type { CheckoutMode } from "../src/providers/types.ts";
 
 async function scripts(): Promise<Map<string, string>> {
   const result = new Map<string, string>([
     ["Scaleway bootstrap", BOOTSTRAP],
     ["Instabox bootstrap", BOOTSTRAP_PREP_SCRIPT],
+    ["Instabox beforeRepo", GITHUB_SECRET_PROBE_SCRIPT],
+    ["ship snapshot", shipSnapshotScript([{ path: "/tmp/web", baseBranch: "main" }])],
+    ["evidence install", evidenceInstallScript("console.log('ready');", ["BOAT_TEST_CONFIG"])],
+    ["since approval", sinceApprovalScript({ path: "/tmp/web", baseBranch: "main", head: "abc1234", base: "def5678" })],
+    ["memory probe", probeScript()],
+    ["memory probe with options", probeScript({ task: "task-check", since: 100, stopSampler: true, klog: { mode: "sudo", bootId: null } })],
     ["pre-push", prePushHook()],
     ...CHAINED_HOOKS.map(hook => [hook, chainedHook(hook)] as [string, string]),
     ["ship", shipScript([{ path: "/tmp/web", baseBranch: "main" }])],
@@ -31,7 +41,6 @@ async function scripts(): Promise<Map<string, string>> {
         },
       };
       await prepareRepo(provider, "machine", "acme/web", mode);
-
     }
   }
   await githubLogin({ async exec(_id, script) {
@@ -46,6 +55,34 @@ function check(shell: string, args: string[], name: string, script: string): voi
   assert.equal(checked.error, undefined, `${shell}: ${checked.error}`);
   assert.equal(checked.status, 0, `${name} (${shell} ${args.join(" ")}): ${checked.stderr}`);
 }
+
+// Generated shell uses case headers and ;; arm terminators. Check the text
+// after each boundary, including inline/nested cases and hooks in heredocs.
+// Syntax checks alone on modern bash accept the original bash 3.2 regression.
+function assertBalancedCasePatterns(name: string, script: string): void {
+  const shell = script.replace(/^\s*#.*$/gm, "");
+  for (const boundary of shell.matchAll(/\bcase\s+[^\n;]*?\s+in\b|;;/g)) {
+    const arm = shell.slice(boundary.index! + boundary[0].length).trimStart();
+    if (/^esac\b/.test(arm)) continue;
+    assert.ok(arm.startsWith("("), `${name}: case arm must start with (: ${arm.split("\n")[0]}`);
+  }
+}
+
+test("every generated Mac script uses balanced case patterns", async () => {
+  for (const [name, script] of await scripts()) assertBalancedCasePatterns(name, script);
+});
+
+test("static guard rejects the original access snippet even on modern bash", () => {
+  // The original snippet's only difference was the missing leading parens.
+  const original = githubAccessSnippet(false).replace(/^(\s*)\(/gm, "$1");
+  check("bash", ["--posix", "-n"], "original access snippet", original);
+  assert.throws(() => assertBalancedCasePatterns("original access snippet", original), /case arm must start with/);
+  // Cover later arms, inline arms and nested cases as well as the first arm.
+  for (const script of [
+    'case "$x" in (a) : ;; b) : ;; esac',
+    'case "$x" in (*) case "$y" in a) : ;; esac ;; esac',
+  ]) assert.throws(() => assertBalancedCasePatterns("unbalanced", script), /case arm must start with/);
+});
 
 test("generated repo scripts parse in POSIX-mode bash; hooks also parse as sh", async () => {
   for (const [name, script] of await scripts()) {

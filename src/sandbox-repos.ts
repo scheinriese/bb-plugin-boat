@@ -129,8 +129,10 @@ exit 0
 `;
 }
 
-// Leading parentheses keep case patterns balanced inside $(...) on bash 3.2.
-/** The sandbox's GitHub login and a repo: one line the prepare script prints, and how to fix it. */
+/**
+ * The sandbox's GitHub login and a repo: one line the prepare script prints, and how to fix it.
+ * Leading parentheses keep case patterns balanced inside $(...) on bash 3.2.
+ */
 export const GITHUB_ACCESS_SNIPPET = `ACCESS_OUT=$(gh api "repos/$REPO" --jq '"\\(.permissions.push) \\(.permissions.pull)"' 2>&1) && ACCESS_OK=1 || ACCESS_OK=0
 if [ "$ACCESS_OK" = 0 ]; then
   case "$ACCESS_OUT" in
