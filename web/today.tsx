@@ -1,3 +1,4 @@
+import { TodayStartHereActions } from "./today-start-here";
 import { LiveMonthlyMacCard, MonthlyMacSuggestions } from "./monthly-mac";
 import { hours as providerHours } from "./provider-format";
 import { MacLeaseNotices } from "./mac-lease-notices";
@@ -244,7 +245,7 @@ export function Today() {
               <section className="space-y-2 sm:space-y-[10px]">
                 <h2 className={HEADING}>Start here</h2>
                 {monthly.data?.suggestions.map(s=><LiveMonthlyMacCard key={s.id} suggestion={s}/>)}
-                <div className={cn(SURFACE, "divide-y divide-border/60")}>
+                <TodayStartHereActions>
                   {data.needsYou.map((decision) => (
                     <StartDecision
                       key={decision.id}
@@ -267,7 +268,7 @@ export function Today() {
                         onOpen={() => openChat(task)}
                       />
                     ))}
-                </div>
+                </TodayStartHereActions>
               </section>
             )}
             <section className="space-y-2 sm:space-y-[10px]">

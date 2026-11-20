@@ -203,11 +203,18 @@ test("monthly guidance uses the blue shared decision frame, responsive options, 
  assert.match(renderScene("monthly-cancel"),/Review cancellation ↗/);
  assert.doesNotMatch(renderScene("monthly-receipt"),/Recommended/);
 });
-test("Mac usage adds the actionable monthly link and marker only above break-even",()=>{
+test("Mac usage adds the actionable monthly link and a marker below break-even and a link only above it",()=>{
  const html=renderScene("monthly-usage");
- assert.match(html,/Monthly M4: ≈ \$119.99 \/ mo/);assert.match(html,/Break-even ≈ 11 days/);
+ assert.match(html,/Monthly M4: \$119.99 \/ mo/);assert.match(html,/Break-even ≈ 11 days/);
  assert.match(html,/bg-\[#FC8C45\]/);
- const below=renderScene("monthly-below");assert.doesNotMatch(below,/Monthly M4|Break-even/);
+ const below=renderScene("monthly-below");assert.doesNotMatch(below,/Monthly M4/);assert.match(below,/Break-even ≈ 11 days/);
  assert.match(renderScene("meter-over"),/width:100%/);
  assert.doesNotMatch(renderScene("meter-outside"),/Break-even|h-3.5/);
+});
+
+test("Today has no empty action box when guidance is the only Start here item",()=>{
+ assert.equal(renderScene("today-actions-empty"),"");
+ assert.match(renderScene("today-actions"),/border-border bg-card/);
+ const html=renderScene("monthly-today-alone");assert.match(html,/0 need you/);assert.doesNotMatch(html,/divide-y divide-border/);
+ const card=renderScene("monthly-chat");assert.match(card,/Mac costs · today/);assert.match(card,/>0<\/span>/);assert.doesNotMatch(card,/\$0\.00/);
 });

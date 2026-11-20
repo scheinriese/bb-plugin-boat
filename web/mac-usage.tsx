@@ -23,7 +23,7 @@ export function LeaseDayMeter({days, breakEven, showCount=false}: {days:number;b
       <div className="h-full rounded-[3px] bg-[#6E6E6E]" style={{width:`${fill}%`}}/>
       {marker!==null && <><div className="absolute top-0 h-full rounded-r-[3px] bg-[#FC8C45]" style={{left:`${marker}%`,width:`${Math.max(0,fill-marker)}%`}}/><span className="absolute -top-1 h-3.5 w-0.5 -translate-x-1/2 rounded-[1px] bg-[#EDEDED]" style={{left:`${marker}%`}}/></>}
     </div>
-    <div className="relative mt-1.5 h-4 text-xs leading-4"><span className="absolute right-0 text-[#6E6E6E]">Last 30 days</span>{marker!==null && <span className="absolute -translate-x-1/2 whitespace-nowrap text-[#A8A8A8]" style={{left:`${Math.min(65,Math.max(20,marker))}%`}}>Break-even ≈ {Math.round(breakEven!)} days</span>}</div>
+    <div className="relative mt-1.5 h-4 text-xs leading-4">{showCount && <span className="hidden text-[#6E6E6E] sm:inline">0</span>}<span className="absolute right-0 text-[#6E6E6E]">Last 30 days</span>{marker!==null && <span className="absolute -translate-x-1/2 whitespace-nowrap text-[#A8A8A8]" style={{left:`clamp(64px, ${marker}%, calc(100% - 160px))`}}>Break-even ≈ {Math.round(breakEven!)} days</span>}</div>
   </div>;
 }
 export function CreditWords({ usage }: { usage: LinuxUsageDto }) {
@@ -99,7 +99,7 @@ function Row({
       <td className="provider-usage-meter">{meter}</td>
       <td className={`text-right ${caution ? "text-[#FC8C45]" : ""}`}>
         <p className="truncate">{now}</p>
-        <Sub>{nowSub}</Sub>
+        <div className="text-xs leading-4 text-[color:var(--boat-faint)]">{nowSub}</div>
       </td>
     </tr>
   );
@@ -162,7 +162,7 @@ export function ThisMonthUsage({
       className="provider-usage mb-[27px] text-[13px] leading-[18px] tabular-nums"
       aria-label="Usage"
     >
-      <style>{`.provider-usage{container-type:inline-size}.provider-usage table{table-layout:fixed;min-width:610px}.provider-usage th:first-child{min-width:180px}.provider-usage-meter{width:316px}@container(max-width:820px){.provider-usage-meter{display:none}}`}</style>
+      <style>{`.provider-usage{container-type:inline-size}.provider-usage table{table-layout:fixed;min-width:640px}.provider-usage th:first-child{min-width:180px}.provider-usage-meter{width:316px;padding-right:24px}@container(max-width:900px){.provider-usage-meter{display:none}}`}</style>
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h3 className="font-medium text-[#EDEDED]">Usage</h3>
         <span className="text-xs text-[color:var(--boat-faint)]">
@@ -190,7 +190,7 @@ export function ThisMonthUsage({
               <th className="provider-usage-meter">
                 <span className="sr-only">Usage meter</span>
               </th>
-              <th className="w-[170px] text-right font-normal">Now</th>
+              <th className="w-[220px] text-right font-normal">Now</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#202020] text-[#D2D2D2]">
@@ -282,6 +282,7 @@ export function ThisMonthUsage({
                     ) ?? [],
                   lease = held[0],
                   state = lease ? leaseState(lease) : null;
+                const comparison = mac?.monthlyComparisons?.find(item => item.dayProvider===p.id && Object.keys(p.rolling30.costs).length===1 && Object.hasOwn(p.rolling30.costs,item.currency));
                 const suggestion = mac?.monthlySuggestions?.find(s => s.dayProvider===p.id && s.kind==="rent" && !s.answer && p.rolling30.leaseDays>s.breakEven);
                 return (
                   <Row
@@ -302,9 +303,9 @@ export function ThisMonthUsage({
                         ? "Hourly after 24 h · EUR"
                         : "Bills per second after 24 h"
                     }
-                    meter={<LeaseDayMeter days={p.rolling30.leaseDays} breakEven={suggestion?.breakEven} />}
+                    meter={<LeaseDayMeter days={p.rolling30.leaseDays} breakEven={comparison?.breakEven} />}
                     now={state?.text ?? "No lease now"}
-                    nowSub={suggestion ? <button className="text-[#7AA7FF]" onClick={()=>setSelected(suggestion)}>Monthly {suggestion.candidate.chip}: ≈ {money(suggestion.candidate.monthlyPrice,suggestion.currency)} / mo</button> : [
+                    nowSub={suggestion ? <button className="inline-block max-w-full whitespace-normal text-right text-[#7AA7FF]" onClick={()=>setSelected(suggestion)}>Monthly {suggestion.candidate.chip}: {money(suggestion.candidate.monthlyPrice,suggestion.currency)} / mo</button> : [
                       state?.detail,
                       held.length > 1 ? `${held.length} leases held` : null,
                     ]

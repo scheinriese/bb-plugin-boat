@@ -87,7 +87,7 @@ export function MonthlyMacCard({
           <span className="size-1.5 rounded-full bg-current" />
           Suggestion
         </span>
-        <span className="text-[#6E6E6E]">from Harbormaster · Mac costs</span>
+        <span className="text-[#6E6E6E]">from Harbormaster · Mac costs · today</span>
       </header>
       <div className="pt-2.5 sm:px-3.5 sm:pt-3.5">
         <h3 className="text-base font-medium leading-[22px] text-[#EDEDED] sm:text-[15px]">
@@ -156,8 +156,8 @@ export function MonthlyMacCard({
                     Needs it awake and on power
                   </span>
                 </td>
-                <td>{money(0, s.currency)}</td>
-                <td>{money(0, s.currency)}</td>
+                <td>{money(0, s.currency).replace(/\.00$/, "")}</td>
+                <td>{money(0, s.currency).replace(/\.00$/, "")}</td>
                 <td className="text-[#FC8C45]">Agents run on your machine</td>
               </tr>
             </tbody>
@@ -213,7 +213,7 @@ export function MonthlyMacCard({
               <p className="text-[15px] text-[#EDEDED]">
                 Use my own Mac{" "}
                 <span className="text-sm text-[#8A8A8A]">
-                  {money(0, s.currency)}
+                  {money(0, s.currency).replace(/\.00$/, "")}
                 </span>
               </p>
               <p className="text-sm text-[#A8A8A8]">

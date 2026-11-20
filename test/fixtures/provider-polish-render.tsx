@@ -1,3 +1,4 @@
+import { TodayStartHereActions } from "../../web/today-start-here";
 import { MonthlyMacCard } from "../../web/monthly-mac";
 import { LeaseDayMeter } from "../../web/mac-usage";
 import { MONTHLY_MAC_PRICES } from "../../src/monthly-macs";
@@ -158,10 +159,14 @@ export const monthlySuggestion: MonthlyMacSuggestion = {
   candidate:MONTHLY_MAC_PRICES[1]!,alternatives:[MONTHLY_MAC_PRICES[5]!],dayProvider:"instabox",chip:"M2",ramGB:16,currency:"USD",days:16,cost:172.8,dayRate:10.8,breakEven:119.99/10.8,forecast:{low:15,base:18,high:22},savings:74.41,answer:null,answeredAt:null,
 };
 export function scene(name: string) {
+  if(name==="monthly-today-alone")return <div className="max-w-[720px]"><p className="mb-6 text-[13px] text-[#A8A8A8]">0 need you · 1 in progress</p><h3 className="text-sm font-medium">Start here</h3><MonthlyMacCard suggestion={monthlySuggestion}/><TodayStartHereActions>{[]}{[]}</TodayStartHereActions></div>;
+  if(name==="today-actions")return <TodayStartHereActions><p>Choose a sign-in flow</p></TodayStartHereActions>;
+  if(name==="today-actions-empty")return <TodayStartHereActions>{[]}{null}{false}</TodayStartHereActions>;
+
   if(name==="monthly-chat")return <div className="max-w-[720px]"><p className="mb-4 text-[13px] text-[#A8A8A8]">The UI tests are running on an Instabox Mac. Your Mac leases have added up; one cost suggestion:</p><MonthlyMacCard suggestion={monthlySuggestion} onAnswer={()=>{}}/><p className="mt-4 rounded-lg border border-[#2A2A2A] p-3 text-xs text-[#A8A8A8]">● 1 working · The UI tests go on; nothing waits on this</p></div>;
   if(name==="monthly-today")return <div className="max-w-[720px]"><p className="mb-6 text-[13px] text-[#A8A8A8]"><span className="text-[#F0B135]">● 2 need you</span> · 1 ready · 1 in progress</p><h3 className="text-sm font-medium">Start here</h3><MonthlyMacCard suggestion={monthlySuggestion}/><div className="divide-y divide-[#262626] rounded-lg border border-[#262626] text-[13px]"><p className="p-3.5">Which sign-in flow should the app use?</p><p className="p-3.5">Review the new onboarding screens</p></div></div>;
-  if(name==="monthly-usage")return <ThisMonthUsage plan={plan} instabox={linux} mac={{...mac,byProvider:undefined,month:{leaseDays:16,costs:{USD:172.8}},rolling30:{leaseDays:16,costs:{USD:172.8}},monthlySuggestions:[monthlySuggestion]}} active={3} cap={300} idleMinutes={60}/>;
-  if(name==="monthly-below")return <ThisMonthUsage plan={plan} mac={{...mac,byProvider:undefined,rolling30:{leaseDays:5,costs:{USD:54}},monthlySuggestions:[monthlySuggestion]}}/>;
+  if(name==="monthly-usage")return <ThisMonthUsage plan={plan} instabox={linux} mac={{...mac,byProvider:undefined,month:{leaseDays:16,costs:{USD:172.8}},rolling30:{leaseDays:16,costs:{USD:172.8}},monthlyComparisons:[{dayProvider:"instabox",currency:"USD",candidate:monthlySuggestion.candidate,breakEven:monthlySuggestion.breakEven}],monthlySuggestions:[monthlySuggestion]}} active={3} cap={300} idleMinutes={60}/>;
+  if(name==="monthly-below")return <ThisMonthUsage plan={plan} mac={{...mac,byProvider:undefined,month:{leaseDays:5,costs:{USD:54}},rolling30:{leaseDays:5,costs:{USD:54}},monthlyComparisons:[{dayProvider:"instabox",currency:"USD",candidate:monthlySuggestion.candidate,breakEven:monthlySuggestion.breakEven}],monthlySuggestions:[]}}/>;
   if(name==="monthly-receipt")return <MonthlyMacCard suggestion={{...monthlySuggestion,answer:"keep",answeredAt:"2026-11-20T00:01:00Z"}}/>;
   if(name==="monthly-own")return <MonthlyMacCard suggestion={{...monthlySuggestion,answer:"own",answeredAt:"2026-11-20T00:01:00Z"}}/>;
   if(name==="monthly-cancel")return <MonthlyMacCard suggestion={{...monthlySuggestion,kind:"cancel",days:3,forecast:{low:2,base:3,high:4},savings:-87.59}}/>;

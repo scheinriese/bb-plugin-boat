@@ -6,7 +6,9 @@ import { scene } from "../test/fixtures/provider-polish-render";
 const allScenes = [
   "monthly-chat",
   "monthly-today",
+  "monthly-today-alone",
   "monthly-usage",
+  "monthly-below",
   "monthly-receipt",
   "monthly-own",
   "monthly-cancel",
