@@ -35,8 +35,8 @@ test("Harbormaster copy keeps provider names and existing settings links", () =>
     assert.ok(settings.includes(provider), provider);
   }
   const notice = renderScene("fresh");
-  assert.match(notice, /Harbormaster can&#x27;t yet sign a fresh Mac/);
-  assert.match(notice, /Scaleway can&#x27;t rent a new Mac/);
+  assert.match(notice, /Harbormaster needs a GitHub token/);
+  assert.match(notice, /Scaleway needs task credentials/);
   assert.match(notice, /href="\/settings\/plugins\/boat"/);
   assert.doesNotMatch(notice + settings, /\bBoat\b/);
 });
@@ -206,4 +206,17 @@ test("footer has one on block per Mac lease; fallback hours and failed mobile he
  assert.match(renderScene("running-only"),/running machines only/);
  const failed=renderScene("failed");assert.match(failed,/Mac start/);assert.doesNotMatch(failed,/Instabox setup/);
  assert.doesNotMatch(renderScene("settings"),/\$20.00 monthly/);
+});
+
+test("Settings exposes the pooled quota risk and a working documentation anchor even when steps collapse", () => {
+  const html=renderScene("credential-settings-ready");
+  assert.match(html,/Any process on the Mac can use your pooled AI quota until bb removes the machine/);
+  assert.match(html,/href="https:\/\/github.com\/scheinriese\/bb-plugin-boat\/blob\/main\/docs\/settings.md#rented-machine-credential-risks"/);
+});
+test("emergency delete warning requires acknowledgement and states token revocation and data loss",()=>{
+  const html=renderScene("credential-emergency");
+  assert.match(html,/role="alert"/);assert.match(html,/keeps billing/);assert.match(html,/retry cleanup once SSH works/);
+  assert.match(html,/permanently removes this Mac and its files/);assert.match(html,/must revoke or rotate/);
+  assert.match(html,/type="checkbox"/);assert.doesNotMatch(html,/checked=""/);
+  assert.match(html,/disabled=""/);
 });

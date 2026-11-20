@@ -1,3 +1,5 @@
+import { CLEANUP_NOTICE_PREFIX } from "../credential-warnings";
+import { EmergencyMacDeleteButton } from "./mac-cleanup-actions";
 import type { MacUsageDto } from "../contract-providers";
 
 /** Persistent cost notices also reach work started from the page, which has
@@ -9,6 +11,7 @@ export function MacLeaseNotices({ notices }: { notices: MacUsageDto["notices"] }
       <p className="font-medium text-foreground">Mac lease costs · {notice.label}</p>
       <p className="mt-1 text-muted-foreground">{notice.text.replace(/^\[boat\] /,"")}</p>
       <p className="mt-1 text-xs text-muted-foreground">{notice.machineId} · Manage this lease in Sandboxes</p>
+      {notice.provider === "scaleway" && notice.text.startsWith(CLEANUP_NOTICE_PREFIX) && <EmergencyMacDeleteButton machineId={notice.machineId}/>}
     </div>)}
   </section>;
 }

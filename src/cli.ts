@@ -1,3 +1,4 @@
+import { UNSAFE_DELETE_WARNING } from "../credential-warnings.ts";
 import { compactTitleSchema, decisionOptionInputSchema } from "../contract-fidelity.ts";
 // `bb boat …` — the agent- and human-facing command line.
 import { PluginCliError, cliCommand, defineCli, type PluginCliContext } from "@get-bb/plugin-sdk";
@@ -485,6 +486,8 @@ export function buildCli(runtime: Runtime) {
         options: {
           force: { type: "boolean", description: "Delete even if open tasks still use it (they are cancelled); only when the user asked" },
           discard: { type: "boolean", description: "Also when it holds work that hasn't shipped; only when the user said to throw it away" },
+          "without-verified-cleanup": { type: "boolean", description: "Scaleway emergency deletion only: skip credential cleanup; requires --confirm-revoke-github-token" },
+          "confirm-revoke-github-token": { type: "boolean", description: "Owner acknowledgement: I must revoke or rotate the GitHub token after emergency deletion" },
           json,
         },
         async run({ positionals, options }, ctx) {
@@ -506,13 +509,13 @@ export function buildCli(runtime: Runtime) {
                 });
               }
             }
-            await service.sandboxAction(positionals.id, "delete", 0, ctx.signal);
+            await service.sandboxAction(positionals.id, "delete", 0, ctx.signal, { withoutVerifiedCleanup: options["without-verified-cleanup"] === true, confirmRevokeGithubToken: options["confirm-revoke-github-token"] === true });
             for (const task of live) {
               service.store.update(task.id, { status: "cancelled", finishedAt: new Date().toISOString() });
               service.store.addEvent(task.id, "cancelled", `Sandbox ${positionals.id} deleted`);
             }
             runtime.changed();
-            return out({ ok: true }, options.json, () => `Deleted ${positionals.id}.`);
+            return out({ ok: true, ...(options["without-verified-cleanup"] ? { warning: UNSAFE_DELETE_WARNING } : {}) }, options.json, () => `Deleted ${positionals.id}.${options["without-verified-cleanup"] ? ` ${UNSAFE_DELETE_WARNING}` : ""}`);
           });
         },
       }),

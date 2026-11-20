@@ -49,7 +49,7 @@ export function providerFailureCard(failure: ProviderFailure, message = "") {
       kind: "fresh",
       tone: "neutral",
       title: "Scaleway needs task credentials",
-      body: message ? `${message}${message.includes("Nothing was rented") ? "" : " Nothing was rented."}` : "Store a GitHub token for rented machines and enable the chosen agent in Account Pooler with bb Connect. Nothing was rented.",
+      body: message ? `${message}${message.includes("Nothing was rented") ? "" : " Nothing was rented."}` : "Harbormaster needs a GitHub token for rented machines. Enable the chosen agent in Account Pooler with bb Connect. Nothing was rented.",
     } as const;
   if (
     mac &&

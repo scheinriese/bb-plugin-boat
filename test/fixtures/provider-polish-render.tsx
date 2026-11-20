@@ -1,3 +1,5 @@
+import { CREDENTIAL_RISKS_URL, CLEANUP_NOTICE_PREFIX } from "../../credential-warnings";
+import { EmergencyDeleteWarning } from "../../web/mac-cleanup-actions";
 import { StoppedSandboxActions } from "../../web/sandbox-row-actions";
 // Obviously fake provider/billing fixtures; never used by the installed plugin.
 import { renderToStaticMarkup } from "react-dom/server";
@@ -139,8 +141,8 @@ export const scaleway: SandboxProviderDto = {
       detail: "Only repository tasks need GitHub token for rented machines in bb secret settings: selected repos; Contents, Pull requests and Workflows read and write; 90-day expiry",
     },
     {
-      id: "agent-route", label: "Agent route available", done: true, possible: true,
-      detail: "Account Pooler via bb Connect: Codex",
+      id: "agent-route", label: "Agent route available", done: true, possible: true, docsUrl: CREDENTIAL_RISKS_URL,
+      detail: "Account Pooler via bb Connect: Codex. Any process on the Mac can use your pooled AI quota until bb removes the machine. Held local Keychain logins need separate verification.",
     },
     {
       id: "logins",
@@ -153,6 +155,9 @@ export const scaleway: SandboxProviderDto = {
   ],
 };
 export function scene(name: string) {
+  if(name === "credential-settings-ready") return <ProviderRow provider={{...scaleway,waitingTasks:0}}/>;
+  if(name === "credential-emergency") return <div className="space-y-4"><ProviderRow provider={{...scaleway,releaseNotice:`${CLEANUP_NOTICE_PREFIX} Scaleway Mac example-mac keeps billing. The plugin will retry cleanup once SSH works. Open the Scaleway console → Apple silicon → select the Mac → Delete after its minimum. Revoke or rotate the GitHub token because it may still be on the Mac.`}}/><div className="rounded border border-border p-4"><h3>Delete without verified cleanup</h3><EmergencyDeleteWarning acknowledged={false} onChange={()=>{}}/><button type="button" disabled>Delete without cleanup</button></div></div>;
+
   if(name==="sandbox-actions")return <div className="space-y-3">{[false,true].map(unowned=><div key={String(unowned)} data-owner={unowned ? "unowned" : "task"} className="group flex items-center justify-between rounded-lg border border-[#262626] bg-[#181818] p-3.5 text-[13px]"><span>{unowned ? "Not from a task" : "Rewrite the quickstart guide"}<span className="ml-6 text-[#A8A8A8]">boat.dev · Small</span><span className="ml-6 text-[#8A8A8A]">{unowned ? "Stopped · not resumable" : "Stopped · nothing lost"}</span></span><div className="flex gap-2"><StoppedSandboxActions unowned={unowned} deleteButton={<button className="rounded-md border border-[#333333] px-2.5 py-1">Delete</button>} resumeButton={<button className="rounded-md border border-[#333333] px-2.5 py-1">Resume</button>}/></div></div>)}</div>;
   if(name==="running-only")return <ThisMonthUsage plan={plan} instabox={{...linux,hoursScope:"running-machines"}}/>;
   if(name==="multi-lease-footer")return <div className="w-[298px] space-y-3 rounded-xl border border-[#303030] bg-[#202020] p-3.5"><FooterUsage plan={plan} providers={[instabox]} mac={{...mac,held:[held,{...held,machineId:"fake_mac_2",size:"M4",minimumCost:18,hourPrice:0.75}]}} boatOn={3} cap={300} day={{dollars:0.92,hours:1.6}}/></div>;

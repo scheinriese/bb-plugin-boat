@@ -61,6 +61,7 @@ export const providerStepSchema = z.object({
   possible: z.boolean().default(true),
   /** Optional setup (for example GitHub for repo-less tasks) does not block readiness. */
   required: z.boolean().optional(),
+  docsUrl: z.string().url().optional(),
 });
 export type ProviderStepDto = z.infer<typeof providerStepSchema>;
 export const linuxUsageSchema = z.object({
@@ -102,6 +103,7 @@ export const sandboxProviderSchema = z.object({
   /** Status words when the connection alone doesn't say it ("Awake · on power", "Not available yet"); null: the connection's own. */
   status: z.string().nullable(),
   steps: z.array(providerStepSchema).optional(),
+  releaseNotice: z.string().optional(),
   linuxUsage: linuxUsageSchema.optional(),
   waitingTasks: z.number().optional(),
 });

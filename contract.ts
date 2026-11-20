@@ -869,7 +869,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({ sandbox: sandboxSchema }),
   },
   sandboxAction: {
-    input: z.object({ id: z.string(), action: z.enum(["stop", "resume", "delete"]) }),
+    input: z.object({ id: z.string(), action: z.enum(["stop", "resume", "delete"]), withoutVerifiedCleanup: z.boolean().optional(), confirmRevokeGithubToken: z.boolean().optional() }),
     output: ok,
   },
   /** Save a sandbox's state under a name (a project's "start from"); not for sandboxes that run bb. */

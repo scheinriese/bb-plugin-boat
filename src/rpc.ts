@@ -921,16 +921,17 @@ export function registerRpc(runtime: Runtime): void {
 
     saveSnapshot: ({ sandboxId, name }) => refuse(async () => { const saved = await service.saveSnapshot(sandboxId, name); runtime.changed(); return saved; }),
 
-    sandboxAction: ({ id, action }) =>
+    sandboxAction: ({ id, action, withoutVerifiedCleanup, confirmRevokeGithubToken }) =>
       refuse(async () => {
-        const settings = await service.settings();
-        // The sandbox's own provider's limits (its auto-stop cap), never another's.
-        const { limits } = await service.capacity(undefined, id);
-        const hours = autoStopHours(settings.sandboxTtlHours, limits?.autoStopCapHours ?? null);
-        if (action !== "delete") await service.sandboxAction(id, action, Math.round(hours * 3600));
+        if (action !== "delete") {
+          const settings = await service.settings();
+          const { limits } = await service.capacity(undefined, id);
+          const hours = autoStopHours(settings.sandboxTtlHours, limits?.autoStopCapHours ?? null);
+          await service.sandboxAction(id, action, Math.round(hours * 3600), undefined, { withoutVerifiedCleanup, confirmRevokeGithubToken });
+        }
         else {
           const live = service.store.liveSandboxTasks(id);
-          await service.sandboxAction(id, "delete", 0);
+          await service.sandboxAction(id, "delete", 0, undefined, { withoutVerifiedCleanup, confirmRevokeGithubToken });
           for (const task of live) {
             service.store.update(task.id, { status: "cancelled", finishedAt: new Date().toISOString() });
             service.store.expirePreviews(task.id);

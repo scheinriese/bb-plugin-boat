@@ -86,6 +86,7 @@ export function ProviderSetup({
                   {s.id === "github"
                     ? "Agents push branches from Instabox, so it needs its own GitHub token. Add it in Instabox; Harbormaster only checks that it exists."
                     : s.detail}
+                  {s.docsUrl && <a className="ml-1 text-[#7AA7FF] hover:underline" href={s.docsUrl} target="_blank" rel="noreferrer">Credential risks ↗</a>}
                 </p>
                 {s.id === "github" && (
                   <>
@@ -136,6 +137,7 @@ export function ProviderSetup({
             ) : (
               <span className="text-xs text-[#6E6E6E]">
                 {s.detail}
+                {s.docsUrl && <a className="ml-1 text-[#7AA7FF] hover:underline" href={s.docsUrl} target="_blank" rel="noreferrer">Credential risks ↗</a>}
                 {s.id === "key" && s.done && (
                   <button className={`ml-1 ${link}`} onClick={onKey}>
                     Change

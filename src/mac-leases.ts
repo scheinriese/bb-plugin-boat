@@ -65,9 +65,9 @@ export class MacLeaseLedger {
   schedule(id: string, at: string | null): void { this.db().prepare(`UPDATE mac_leases SET release_at=? WHERE id=? AND ended_at IS NULL`).run(at,id); }
   /** A minimum-end heads-up, then at most one reminder per 24 h. Persist
    * before delivery so a restart cannot duplicate the same reminder. */
-  warn(id: string, now = Date.now(), repeat = false, pageText: string | null = null): boolean {
+  warn(id: string, now = Date.now(), repeat = false, pageText: string | null = null, immediate = false): boolean {
     if (pageText !== null) this.db().prepare(`UPDATE mac_leases SET notice_text=? WHERE id=? AND ended_at IS NULL`).run(pageText,id);
-    return this.db().prepare(`UPDATE mac_leases SET notice_at=?,notice_text=COALESCE(?,notice_text) WHERE id=? AND ended_at IS NULL AND (notice_at IS NULL OR (?=1 AND notice_at<=?))`).run(iso(now),pageText,id,repeat ? 1 : 0,iso(now-LEASE_DAY_MS)).changes > 0;
+    return this.db().prepare(`UPDATE mac_leases SET notice_at=?,notice_text=COALESCE(?,notice_text) WHERE id=? AND ended_at IS NULL AND (?=1 OR notice_at IS NULL OR (?=1 AND notice_at<=?))`).run(iso(now),pageText,id,immediate ? 1 : 0,repeat ? 1 : 0,iso(now-LEASE_DAY_MS)).changes > 0;
   }
   private billableEnd(lease: MacLease, now: number): number {
     const minimumEnd = Date.parse(lease.paidUntil);

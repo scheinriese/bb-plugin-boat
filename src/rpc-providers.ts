@@ -330,6 +330,7 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       projects: runtime.projects.list().map(project => projectRow(project, service.sandboxProviders)),
       providers: result.providers.map(row => ({
         ...row,
+        ...(service.sandboxProviders.all.find(provider => provider.id === row.id)?.releaseNotice?.() ? { releaseNotice: service.sandboxProviders.all.find(provider => provider.id === row.id)!.releaseNotice!()!, status: "Credential cleanup blocked" } : {}),
         ...(row.steps ? { waitingTasks: waiting.filter(task => task.sandboxProvider === row.id && /GitHub|API key|setup|credentials|Account Pooler/i.test(task.error ?? "")).length } : {}),
       })),
     };

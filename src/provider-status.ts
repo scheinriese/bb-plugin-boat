@@ -80,14 +80,15 @@ export async function providerStates(deps: ProviderStatusDeps, options: { force?
           checks: status?.checks.map(check) ?? [],
         };
       }
-      if (provider.id === "scaleway" && !enabled.has(provider.id) && !(await provider.configured?.())) {
+      if (provider.id === "scaleway" && !enabled.has(provider.id) && !(await provider.configured?.()) && !provider.releaseNotice?.()) {
         return {...base(provider),turnedOn:false,keyPresent:null,status:"off",problem:null,checks:[]};
       }
       if (provider.id === "scaleway" && provider.presentation) {
         const presentation = await provider.presentation().catch(() => null);
+        const releaseNotice = provider.releaseNotice?.() ?? null;
         const missing = presentation?.steps.find(step=>step.possible && step.required !== false && !step.done);
         const orphans = presentation?.steps.find(step=>step.id==="project")?.done ? await provider.orphans?.(AbortSignal.timeout(10_000)).catch(()=>undefined) : undefined;
-        return {...base(provider),orphans,turnedOn:presentation?.steps.find(step=>step.id==="project")?.done ?? false,keyPresent:null,status:presentation && !missing ? "ready" : "setup-required",checks:[],problem:missing?.detail ?? (presentation ? null : "Could not check machine credentials.")};
+        return {...base(provider),orphans,turnedOn:presentation?.steps.find(step=>step.id==="project")?.done ?? false,keyPresent:null,status:presentation && !missing && !releaseNotice ? "ready" : "setup-required",checks:[],problem:releaseNotice ?? missing?.detail ?? (presentation ? null : "Could not check machine credentials.")};
       }
       if (enabled.has(provider.id) && provider.orphans) {
         try {

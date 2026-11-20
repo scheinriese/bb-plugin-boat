@@ -25,16 +25,18 @@ gh auth login --hostname github.com --git-protocol https --with-token --insecure
 gh auth setup-git --hostname github.com >/dev/null 2>&1
 find "$HOME/.config/gh" -type f -exec chmod 600 {} \\;
 `;
-export const CREDENTIAL_CLEANUP_SCRIPT = `set +x
+export const GITHUB_CLEANUP_SCRIPT = `set +x
 set -eu
 unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_DEBUG GH_CONFIG_DIR XDG_CONFIG_HOME
 test ! -L "$HOME/.config"
 if command -v gh >/dev/null 2>&1; then gh auth logout --hostname github.com </dev/null >/dev/null 2>&1 || true; fi
+rm -rf "$HOME/.config/gh"
+test ! -e "$HOME/.config/gh" && test ! -L "$HOME/.config/gh"
+`;
+export const CREDENTIAL_CLEANUP_SCRIPT = GITHUB_CLEANUP_SCRIPT + `
 if command -v claude >/dev/null 2>&1; then claude auth logout </dev/null >/dev/null 2>&1 || true; fi
 if command -v codex >/dev/null 2>&1; then codex logout </dev/null >/dev/null 2>&1 || true; fi
-rm -rf "$HOME/.config/gh"
 rm -f "$HOME/.claude/.credentials.json" "$HOME/.codex/auth.json"
-test ! -e "$HOME/.config/gh" && test ! -L "$HOME/.config/gh"
 for file in "$HOME/.claude/.credentials.json" "$HOME/.codex/auth.json"; do test ! -e "$file" && test ! -L "$file"; done
 `;
 
@@ -44,6 +46,7 @@ export interface CredentialSource {
   assertGithubAccess(repos: readonly string[], signal?: AbortSignal): Promise<void>;
   assertReady(agent: Provider, repos: readonly string[], signal?: AbortSignal): Promise<void>;
   ensureGithub(id: string, executor: MachineExecutor, signal?: AbortSignal, force?: boolean): Promise<string | null>;
+  cleanupGithub(id: string, executor: MachineExecutor, signal?: AbortSignal): Promise<void>;
   cleanup(id: string, executor: MachineExecutor, signal?: AbortSignal): Promise<void>;
 }
 
@@ -134,6 +137,10 @@ export function createCredentialSource(options: {
       }
       delivered.set(id, { expiresAt: expiry, fingerprint });
       return expiry;
+    },
+    async cleanupGithub(id, executor, signal) {
+      delivered.delete(id);
+      if (!(await execute(executor, ["bash", "-c", GITHUB_CLEANUP_SCRIPT], undefined, signal))) throw problem("Credential removal could not be verified. The machine is kept; retry cleanup before releasing it.", "credential_cleanup_failed");
     },
     async cleanup(id, executor, signal) {
       delivered.delete(id);

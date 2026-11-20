@@ -178,7 +178,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
         });
         return { status: "created" as const, name: machine.machineLabel(sandbox.id, hostId), resource: { sandboxId: sandbox.id, key, ...(parsed.success && parsed.data.snapshot ? { snapshot: parsed.data.snapshot } : {}), ...(parsed.success && parsed.data.reviewer ? { reviewer: parsed.data.reviewer } : {}) } };
       } catch (error) {
-        if (bootstrapSandbox !== null) await bootstrapFailed(bootstrapSandbox, bootstrapTask);
+        if (bootstrapSandbox !== null) { try { await bootstrapFailed(bootstrapSandbox, bootstrapTask); } catch { bb.log?.warn?.("Bootstrap credential cleanup failed; the tracked machine needs cleanup before release."); } }
         signal.throwIfAborted();
         const transient = retryableBootstrap(error);
         return { status: "failed" as const, message: transient ? bootstrapFailureMessage(transient) : message(error) };
@@ -260,7 +260,7 @@ export function registerSandboxMachine(bb: BbPluginApi, provider: SandboxProvide
           await deps.prepareHost?.({ sandboxId, hostId: hostId ?? null, woke, signal, report });
           report.step("Restarting bb on the sandbox");
           await bb.experimental_machines.bootstrap({ key, executor: bootstrapExecutor(executor(sandboxId), report), report, signal });
-        } catch (error) { await bootstrapFailed(sandboxId); throw error; }
+        } catch (error) { try { await bootstrapFailed(sandboxId); } catch { bb.log?.warn?.("Bootstrap credential cleanup failed; the tracked machine needs cleanup before release."); } throw error; }
       });
       return { resource };
     },
