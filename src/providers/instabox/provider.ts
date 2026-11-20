@@ -175,6 +175,9 @@ export function sizeArgs(type: string | null | undefined): string[] {
 /** The plugin's first prompt carries an id Instabox doesn't know (a UUID): that starts a new conversation. */
 const PLUGIN_CONVERSATION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Presence-only check used before repository preparation. */
+export const GITHUB_SECRET_PROBE_SCRIPT = 'case "${GH_TOKEN:-}" in (ibsec_*) echo BOAT_GH_SECRET_present ;; (*) echo BOAT_GH_SECRET_missing ;; esac';
+
 /**
  * Before bb's setup, on its own (the "steps" within the 600 s limit): keep
  * the user's systemd manager up without a login session (bb's daemon is a
@@ -300,7 +303,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     async beforeRepo(sandboxId, signal) {
       // Print presence only, never the placeholder. A fresh login shell after
       // push reads /etc/profile.d/zz-instabox-secrets.sh before repo prep.
-      const result = await exec(sandboxId, 'case "${GH_TOKEN:-}" in ibsec_*) echo BOAT_GH_SECRET_present ;; *) echo BOAT_GH_SECRET_missing ;; esac', { signal });
+      const result = await exec(sandboxId, GITHUB_SECRET_PROBE_SCRIPT, { signal });
       if (result.exitCode !== 0) throw new InstaboxError("Could not check the Instabox machine's GitHub Secret.", { code: "repo_access" });
       if (!result.stdout.includes("BOAT_GH_SECRET_present")) await secrets.apply(sandboxId, signal);
     },

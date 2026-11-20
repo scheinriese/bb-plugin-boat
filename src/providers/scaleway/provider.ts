@@ -50,7 +50,7 @@ if ! command -v gh >/dev/null 2>&1; then
   find "$tmp/gh" -type f -name gh -exec cp {} "$HOME/.local/bin/gh" \\;
   rm -rf "$tmp"
 fi
-case "$(cat "$HOME/.bash_profile" 2>/dev/null || true)" in *'.local/bin'*) ;; *) printf '\\nexport PATH="$HOME/.local/bin:$PATH"\\n' >> "$HOME/.bash_profile" ;; esac
+case "$(cat "$HOME/.bash_profile" 2>/dev/null || true)" in (*'.local/bin'*) ;; (*) printf '\\nexport PATH="$HOME/.local/bin:$PATH"\\n' >> "$HOME/.bash_profile" ;; esac
 mkdir -p "$HOME/.boat-hooks"
 git config --global core.hooksPath "$HOME/.boat-hooks"
 `;

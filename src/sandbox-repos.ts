@@ -85,10 +85,10 @@ export function prePushHook(): string {
 url="$2"
 local_remote=""
 case "$url" in
-  "") ;;
-  file://*) local_remote=1 ;;
-  *://*) ;;
-  *) case "\${url%%/*}" in *:*) ;; *) local_remote=1 ;; esac ;;
+  ("") ;;
+  (file://*) local_remote=1 ;;
+  (*://*) ;;
+  (*) case "\${url%%/*}" in (*:*) ;; (*) local_remote=1 ;; esac ;;
 esac
 if [ -z "$local_remote" ] && [ -f "$(git rev-parse --git-common-dir 2>/dev/null)/boat-no-push" ]; then
   echo "boat: this project ships after the user approves. Commit on your branch and don't push; the plugin pushes your commits to the base branch once they're approved." >&2
@@ -129,16 +129,19 @@ exit 0
 `;
 }
 
-/** The sandbox's GitHub login and a repo: one line the prepare script prints, and how to fix it. */
+/**
+ * The sandbox's GitHub login and a repo: one line the prepare script prints, and how to fix it.
+ * Leading parentheses keep case patterns balanced inside $(...) on bash 3.2.
+ */
 export const GITHUB_ACCESS_SNIPPET = `ACCESS_OUT=$(gh api "repos/$REPO" --jq '"\\(.permissions.push) \\(.permissions.pull)"' 2>&1) && ACCESS_OK=1 || ACCESS_OK=0
 if [ "$ACCESS_OK" = 0 ]; then
   case "$ACCESS_OUT" in
-    *"rate limit"*) echo "BOAT_ACCESS unknown" ;;
-    *"Bad credentials"*|*"HTTP 401"*) echo "BOAT_ACCESS expired" ;;
-    *"gh auth login"*|*"GH_TOKEN"*|*"not logged"*) echo "BOAT_ACCESS nologin" ;;
-    *"Not Found"*|*"HTTP 404"*) echo "BOAT_ACCESS none" ;;
-    *"HTTP 403"*) echo "BOAT_ACCESS denied" ;;
-    *) echo "BOAT_ACCESS unknown" ;;
+    (*"rate limit"*) echo "BOAT_ACCESS unknown" ;;
+    (*"Bad credentials"*|*"HTTP 401"*) echo "BOAT_ACCESS expired" ;;
+    (*"gh auth login"*|*"GH_TOKEN"*|*"not logged"*) echo "BOAT_ACCESS nologin" ;;
+    (*"Not Found"*|*"HTTP 404"*) echo "BOAT_ACCESS none" ;;
+    (*"HTTP 403"*) echo "BOAT_ACCESS denied" ;;
+    (*) echo "BOAT_ACCESS unknown" ;;
   esac
   printf 'BOAT_ACCESS_DETAIL %s\\n' "$(printf '%s' "$ACCESS_OUT" | head -1 | cut -c1-300)"
 else
@@ -154,7 +157,7 @@ export function githubAccessSnippet(retry = false): string {
 ${GITHUB_ACCESS_SNIPPET}
 )
 case "$ACCESS_LINES" in
-  *"BOAT_ACCESS expired"*)
+  (*"BOAT_ACCESS expired"*)
     sleep 2
     ACCESS_LINES=$(
 ${GITHUB_ACCESS_SNIPPET}
@@ -414,7 +417,7 @@ ${githubAccessSnippet(provider.retryGithubAccess === true)}
 )
 set -e
 printf '%s\\n' "$ACCESS_LINES"
-case "$ACCESS_LINES" in *"BOAT_ACCESS none"*|*"BOAT_ACCESS denied"*|*"BOAT_ACCESS expired"*|*"BOAT_ACCESS nologin"*) exit 4 ;; esac
+case "$ACCESS_LINES" in (*"BOAT_ACCESS none"*|*"BOAT_ACCESS denied"*|*"BOAT_ACCESS expired"*|*"BOAT_ACCESS nologin"*) exit 4 ;; esac
 is_repo() { git -C "$1" remote get-url origin 2>/dev/null | grep -qiE ${shellQuote(`github\\.com[:/]${repoPattern}(\\.git)?$`)}; }
 if [ ${options.useEnvironmentCheckout === true ? "1" : "0"} = 1 ] && [ -d "$HOME/$DIR/.git" ] && is_repo "$HOME/$DIR" \
    && [ -z "$(git -C "$HOME/$DIR" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
@@ -461,7 +464,7 @@ echo "BOAT_SETUP path=$PWD branch=$(git rev-parse --abbrev-ref HEAD) base=$BASE"
 export async function githubLogin(provider: Pick<RepoProvider, "exec">, id: string, signal?: AbortSignal): Promise<GithubLogin> {
   const result = await provider.exec(
     id,
-    `OUT=$(gh api -i user 2>&1); case "$OUT" in *"Bad credentials"*|*"HTTP 401"*) echo "BOAT_LOGIN expired" ;; *"HTTP/"*" 200"*) echo "BOAT_LOGIN ok" ;; *) echo "BOAT_LOGIN unknown" ;; esac
+    `OUT=$(gh api -i user 2>&1); case "$OUT" in (*"Bad credentials"*|*"HTTP 401"*) echo "BOAT_LOGIN expired" ;; (*"HTTP/"*" 200"*) echo "BOAT_LOGIN ok" ;; (*) echo "BOAT_LOGIN unknown" ;; esac
 printf '%s\n' "$OUT" | tr -d '\r' | grep -i '^github-authentication-token-expiration:' | cut -d' ' -f2- | sed 's/^/BOAT_GH_EXPIRES /'`,
     { timeoutMs: 30_000, signal },
   );
