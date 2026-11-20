@@ -111,6 +111,8 @@ switch (command) {
     break;
   case "secrets": {
     if (sub === "ls") {
+      if (state.secretsFail === "network") fail(1, { code: "cli_error", message: "fake DNS lookup failure" });
+      if (state.secretsFail === "unavailable") fail(4, { code: "not_found", message: "Secrets unavailable", status: 404 });
       if (state.secretsFail) fail(state.secretsFail === "transient" ? 75 : 3, { code: state.secretsFail === "transient" ? "host_unavailable" : "missing_scope", message: "fake metadata read failure", status: state.secretsFail === "transient" ? 503 : 403 });
       print({ items: state.secrets.map(({name, delivery, hosts}) => ({name, delivery, hosts})) });
     } else {

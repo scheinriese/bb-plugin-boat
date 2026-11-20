@@ -5,7 +5,7 @@
 // down, with an account that isn't activated, and with no room for a machine.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +23,7 @@ import { createBoatProvider } from "../src/providers/boat/provider.ts";
 import { registerSandboxMachine } from "../src/providers/machine.ts";
 import { ProviderError, type SandboxProvider } from "../src/providers/types.ts";
 import type { BoatApi } from "../src/providers/boat/api.ts";
-import { prepareRepo } from "../src/sandbox-repos.ts";
+import { githubAccessSnippet, prepareRepo } from "../src/sandbox-repos.ts";
 import { BoatService, TaskError, type BoatSettings } from "../src/service.ts";
 import { normalizeProject, toOrchestratorProject } from "../src/projects.ts";
 import { FakeBoat, defaultSettings, memoryStore } from "./fakes.ts";
@@ -1182,7 +1182,7 @@ test("Instabox reports a confirmed allocation when local ledger registration fai
 });
 
 test("create, snapshot and fork use the configured proxy Secret selection", async t => {
-  let choice = "GH_TOKEN";
+  let choice = " GH_TOKEN ";
   const box = await instabox(t, { secrets: async () => choice });
   const first = await box.provider.create({ name: "selected", type: "small", snapshot: "fake-snapshot", ttlSeconds: 3600, gitGuard: false });
   assert.equal(box.state().machines[first.id].secretSelection, "GH_TOKEN");
@@ -1199,6 +1199,8 @@ test("create, snapshot and fork use the configured proxy Secret selection", asyn
 
 test("GitHub preflight refuses missing, mis-scoped, direct or unselected Secrets before creating a machine", async t => {
   for (const scenario of [
+    { secrets: [{ name: "GH_TOKEN", delivery: "proxy", hosts: ["*"] }], choice: "all", message: /exact hosts; wildcard/ },
+    { secrets: [{ name: "GH_TOKEN", delivery: "proxy", hosts: ["github.com", "api.github.com", "*"] }], choice: "all", message: /exact hosts; wildcard/ },
     { secrets: [], choice: "all", message: /has no GitHub login/ },
     { secrets: [{ name: "GH_TOKEN", delivery: "proxy", hosts: ["api.github.com"] }], choice: "all", message: /both github.com and api.github.com/ },
     { secrets: [{ name: "GH_TOKEN", delivery: "env", hosts: [] }], choice: "all", message: /proxy Secret/ },
@@ -1298,4 +1300,50 @@ test("gh auth setup-git gives git the proxy placeholder for HTTPS clone and push
   const credentials = execFileSync("git", ["credential", "fill"], { env, input: "protocol=https\nhost=github.com\n\n", encoding: "utf8" });
   assert.ok(credentials.includes(`password=${placeholder}\n`));
   assert.ok(!readFileSync(join(dir, "gitconfig"), "utf8").includes(placeholder), "the helper config must not store the credential");
+});
+
+test("network and unavailable Secrets reads continue with a task-history note", async t => {
+  for (const secretsFail of ["network", "unavailable"]) {
+    const box = await instabox(t, { state: { secretsFail } });
+    const registry = createProviderRegistry([createBoatProvider(new FakeBoat() as unknown as BoatApi), box.provider]);
+    const store = memoryStore();
+    const service = new BoatService(registry, store, hooks({ projects: () => [WEB] }).hooks);
+    const project = toOrchestratorProject(normalizeProject(WEB));
+    const { task } = await service.launchTask({ title: "Check", role: "implement", brief: "Check repo", project }, 10000);
+    assert.equal(task.status, "running", task.error ?? "");
+    const note = store.latestEvent(task.id, "preflight-warning")?.text ?? "";
+    assert.match(note, /could not be checked temporarily/);
+    assert.doesNotMatch(note, /permission|ibsec_/);
+  }
+});
+
+test("Instabox retries a pending proxy 401 once, and permanent failures remain blocked", t => {
+  const dir = mkdtempSync(join(tmpdir(), "instabox-proxy-race-"));
+  const counter = join(dir, "attempts");
+  const gh = join(dir, "gh");
+  const sleep = join(dir, "sleep");
+  writeFileSync(sleep, "#!/bin/sh\nexit 0\n");
+  chmodSync(sleep, 0o755);
+  const run = (recover: boolean, retry = true) => {
+    writeFileSync(counter, "0");
+    writeFileSync(gh, `#!/bin/sh
+case "$*" in *"-i user"*) exit 0 ;; esac
+count=$(cat '${counter}')
+count=$((count + 1))
+printf %s "$count" > '${counter}'
+if [ "$count" -eq 1 ] || [ '${recover}' = false ]; then
+  echo 'HTTP 401: Bad credentials' >&2
+  exit 1
+fi
+echo 'true true'
+`);
+    chmodSync(gh, 0o755);
+    return execFileSync("bash", ["-c", `REPO=acme/web\n${githubAccessSnippet(retry)}`], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+  };
+  assert.match(run(true), /BOAT_ACCESS ok push=true/);
+  assert.equal(readFileSync(counter, "utf8"), "2");
+  assert.match(run(false), /BOAT_ACCESS expired/);
+  assert.equal(readFileSync(counter, "utf8"), "2");
+  assert.match(run(true, false), /BOAT_ACCESS expired/);
+  assert.equal(readFileSync(counter, "utf8"), "1", "other providers retain one attempt");
 });

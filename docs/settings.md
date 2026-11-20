@@ -122,13 +122,17 @@ provider, off until you turn it on:
    for selected repositories, with **Contents**, **Pull requests** and
    **Workflows** read/write permissions. Enter its value in the Instabox
    dashboard, or use `instabox secrets set GH_TOKEN --host github.com --host api.github.com`
-   (the CLI prompts without echo). Never paste a token into chat or plugin settings.
+   (the CLI prompts without echo). For a team org, add `--org <org>` to
+   save the Secret in the same org as the API key, rather than your personal org. Never paste a token into chat or plugin settings.
 6. New machines select every current and future proxy Secret by default,
    matching Instabox's dashboard. To select names instead, set
    `bb boat config set instaboxSecrets GH_TOKEN,MODEL_KEY`. `none` disables
    proxy Secrets; GitHub tasks require a selection that includes `GH_TOKEN`.
    The plugin checks Secret metadata before renting for repo work and refreshes
-   older machines missing the GitHub placeholder before repo prep. Git uses
+   older machines missing the GitHub placeholder before repo prep. This also
+   applies to user-owned machines attached with `--sandbox`: their proxy Secret
+   selection is replaced with `instaboxSecrets` if the placeholder is missing.
+   Include every Secret you want to keep in that setting. Git uses
    `gh auth setup-git` with the placeholder for HTTPS clone and push, as described
    in [Instabox Org Secrets](https://instabox.sh/docs/security/secrets.md).
 7. Check it: `bb boat doctor` (or `bb boat providers`).

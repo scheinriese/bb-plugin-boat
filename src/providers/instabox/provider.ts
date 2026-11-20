@@ -293,6 +293,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     sizes: INSTABOX_SIZES,
     machine: INSTABOX_MACHINE,
     repoWords: INSTABOX_REPO_WORDS,
+    retryGithubAccess: true,
     async assertTaskReady({ repos, signal, onWarning }) {
       if (repos.length) await secrets.check(signal, onWarning);
     },

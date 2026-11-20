@@ -19,7 +19,7 @@ import {
 } from "./providers/types.ts";
 
 /** What the repo steps need from a provider: its exec, and its words for what goes wrong. */
-export type RepoProvider = Pick<SandboxProvider, "exec" | "repoWords" | "beforeRepo">;
+export type RepoProvider = Pick<SandboxProvider, "exec" | "repoWords" | "beforeRepo" | "retryGithubAccess">;
 
 /** Branches no worker may push to anywhere (plus each project's base and the extra-branches setting). */
 export const DEFAULT_PROTECTED_BRANCHES: readonly string[] = ["main", "master"];
@@ -146,6 +146,23 @@ else
 fi
 GH_EXP=$(gh api -i user 2>/dev/null | tr -d '\\r' | grep -i '^github-authentication-token-expiration:' | cut -d' ' -f2- || true)
 echo "BOAT_GH_EXPIRES \${GH_EXP:-unknown}"`;
+
+/** A proxy grant may still be pending just after secrets push. Retry only 401s. */
+export function githubAccessSnippet(retry = false): string {
+  if (!retry) return GITHUB_ACCESS_SNIPPET;
+  return `ACCESS_LINES=$(
+${GITHUB_ACCESS_SNIPPET}
+)
+case "$ACCESS_LINES" in
+  *"BOAT_ACCESS expired"*)
+    sleep 2
+    ACCESS_LINES=$(
+${GITHUB_ACCESS_SNIPPET}
+)
+    ;;
+esac
+printf '%s\\n' "$ACCESS_LINES"`;
+}
 
 /** Access results that stop a checkout before it clones (the rest let the clone try). */
 export const ACCESS_BLOCKING = ["none", "denied", "expired", "nologin"] as const;
@@ -393,7 +410,7 @@ DIR=${shellQuote(name)}
 # Can boat's GitHub login see this repo (and push to it)? Say so before cloning.
 set +e
 ACCESS_LINES=$(
-${GITHUB_ACCESS_SNIPPET}
+${githubAccessSnippet(provider.retryGithubAccess === true)}
 )
 set -e
 printf '%s\\n' "$ACCESS_LINES"

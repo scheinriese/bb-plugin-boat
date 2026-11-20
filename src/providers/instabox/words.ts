@@ -6,7 +6,7 @@ import type { InstaboxError } from "./cli.ts";
 export const INSTALL_COMMAND = "npm install -g instabox";
 export const DASHBOARD_URL = "https://instabox.sh/dashboard";
 export const KEYS_URL = "https://instabox.sh/docs/security/api-keys.md";
-export const GITHUB_LOGIN_HINT = "The Instabox machine has no GitHub login. Save a GitHub token as an Instabox Secret for github.com and api.github.com (`instabox secrets set GH_TOKEN --host github.com --host api.github.com`), then try again.";
+export const GITHUB_LOGIN_HINT = "The Instabox machine has no GitHub login. Save a GitHub token as an Instabox Secret for github.com and api.github.com (`instabox secrets set GH_TOKEN --host github.com --host api.github.com`). For a team org, add `--org <org>` so the Secret is saved in the API key's org. Then try again.";
 /** Where the owner stores the key: bb's secure entry for this plugin's secret setting. */
 export const KEY_HINT =
   "Add your Instabox API key in bb: Settings → Plugins → Boat Cloud Agents → Instabox API key (create one with `instabox keys create --name bb`). It is kept in bb's secret store.";
