@@ -12,6 +12,7 @@ import { createProjectSources, type EnsuredProjectSource, type OwnProjectSource,
 import { threadSection } from "./sections.ts";
 import { TURN_EVENT_TYPES, type TurnEventRow } from "./steer-retry.ts";
 import type { Provider } from "./store.ts";
+import type { SandboxInfo } from "./providers/types.ts";
 
 export const PERSONAL_PROJECT = "proj_personal";
 
@@ -107,7 +108,7 @@ export interface ChatRunner {
    * machine until settleMachine.
    */
   /** machineProviderId: the sandbox's provider's bb machine provider (default: boat.dev's). */
-  attachMachine(args: { taskId: string; sandboxId: string; signal?: AbortSignal; keepSandbox?: boolean; machineProviderId?: string }): Promise<{ hostId: string; key: string }>;
+  attachMachine(args: { taskId: string; sandboxId: string; signal?: AbortSignal; keepSandbox?: boolean; recoveryLease?: NonNullable<SandboxInfo["mac"]> & {scheduledReleaseAt:string|null}; machineProviderId?: string }): Promise<{ hostId: string; key: string }>;
   /** Undo an attach made with keepSandbox: bb forgets the machine, the sandbox stays. */
   detachMachine(hostId: string, key: string): Promise<void>;
   /** Keep a machine's sandbox when the machine goes (for a move that reuses it). Returns false when it was kept already. */
@@ -202,13 +203,13 @@ export function createChatRunner(bb: BbPluginApi, options: { withdrawBackoffMs?:
   const backoffMs = options.withdrawBackoffMs ?? WITHDRAW_BACKOFF_MS;
   const sources = createProjectSources(bb);
   return {
-    async attachMachine({ taskId, sandboxId, signal, keepSandbox, machineProviderId }) {
+    async attachMachine({ taskId, sandboxId, signal, keepSandbox, recoveryLease, machineProviderId }) {
       const key = keepSandbox ? `task-${taskId}-m${Date.now().toString(36)}` : `task-${taskId}`;
       // Before bb runs the provider: a failed or cut-short creation can't delete the sandbox.
       if (keepSandbox) await bb.storage.kv.set(keepSandboxKey(key), sandboxId);
       const host = (await bb.sdk.hosts.experimental_create({
         machineProviderId: machineProviderId ?? MACHINE_PROVIDER_ID,
-        inputs: keepSandbox ? { sandboxId, taskId, keepSandbox: true } : { sandboxId, taskId },
+        inputs: { sandboxId, taskId, ...(keepSandbox ? {keepSandbox:true}:{}), ...(recoveryLease ? {recoveryLease}: {}) },
         key,
         wait: true,
         ...(signal ? { signal } : {}),

@@ -721,7 +721,7 @@ export function buildCli(runtime: Runtime) {
               : options.refresh
                 ? await service.refreshMacRentalOffers(positionals.id)
                 : await service.ownMacNotice(service.mustGet(positionals.id));
-            return out({ notice }, options.json, () => JSON.stringify({ notice }, null, 2) + "\nNothing was rented. Approve the exact selected cost in the task's rental card.");
+            return out({ notice }, options.json, () => JSON.stringify({ notice }, null, 2) + (notice?.replacementId ? `\nApproval was consumed by existing task ${notice.replacementId}. Inspect its allocation and error before recovery; do not rent again.` : "\nNothing was rented. Approve the exact selected cost in the task's rental card."));
           });
         },
       }),
@@ -804,6 +804,12 @@ export function buildCli(runtime: Runtime) {
             );
           });
         },
+      }),
+      "task recover-mac": cliCommand({
+        summary:"Start a failed zero-turn task on its same allocated, current paid Instabox Mac; never rents or wakes a machine",
+        positionals:[{name:"id",description:"Failed allocated task id",required:true},{name:"machine",description:"Existing allocated Instabox machine id",required:true}],
+        options:{"user-approved":{type:"boolean",description:"The user explicitly requested starting this task on its existing paid Mac"},json},
+        async run({positionals,options}) {return guard(async()=>{const task=await service.recoverAllocatedMac(positionals.id,positionals.machine,options["user-approved"]===true);return out(task,options.json,()=>`Started ${task.id} on existing Mac ${task.sandboxId}; its rental and release schedule are unchanged.`);});},
       }),
       "task reopen": cliCommand({
         summary:"Restore a cancelled task chat on its original existing workspace, only at the user's request; starts no turn",
