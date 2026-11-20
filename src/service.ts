@@ -1,3 +1,4 @@
+import { createCodexHealthCheck } from "./codex-health.ts";
 import { providerFailureCard } from "../provider-failure.ts";
 import { canHostMac, macTaskResources } from "./providers/types.ts";
 import type { MacLease, MacWorkOutcome } from "./mac-leases.ts";
@@ -682,6 +683,7 @@ function errorText(error: unknown): string {
 }
 
 export class BoatService {
+  private readonly codexHealth = createCodexHealthCheck();
   /** Last observed sandbox state; views never start or resume a sandbox. */
   private readonly observedSandboxStates = new Map<string, string>();
   private readonly settlingReviews = new Set<string>();
@@ -2244,7 +2246,10 @@ export class BoatService {
    * under its orchestrator and in its section: the task never fails over a
    * source.
    */
-  private async spawnTaskChat(args: ChatSpawn, stillWanted: () => void = () => undefined): Promise<{ threadId: string; environmentId: string | null }> {
+  private async spawnTaskChat(args: ChatSpawn, stillWanted: () => void = () => undefined, signal: AbortSignal = this.hooks.lifecycle): Promise<{ threadId: string; environmentId: string | null }> {
+    const task = this.store.get(args.taskId);
+    if (task?.sandboxId) await this.codexHealth(this.sandboxProvider(task), task.sandboxId, args.provider, line => this.store.addEvent(task.id, "machine", line), signal);
+    stillWanted();
     const chat = this.hooks.chat!;
     const { where, projectId } = args;
     if (where.kind !== "machine" || where.path === null || isPersonalProject(projectId)) return chat.spawn(args);
@@ -2452,6 +2457,7 @@ export class BoatService {
         where,
       },
       ctx.stillWanted,
+      ctx.signal,
     ).catch((error: unknown) => {
       // Joining another task's workspace: bb's refusal can be a bare "Something went wrong". Say whose and what to do.
       if (where.kind !== "environment" || ctx.parent === null || error instanceof DispatchCancelled || ctx.signal.aborted) throw error;
@@ -3394,6 +3400,7 @@ export class BoatService {
         : {};
     // A new agent in the same sandbox: a stop that cut off background work concerns it too.
     const note = await this.resumeNoteFor(task.id);
+    if (task.sandboxId) await this.codexHealth(this.sandboxProvider(task), task.sandboxId, next.provider, line => this.store.addEvent(task.id, "machine", line), this.hooks.lifecycle);
     const spawned = await this.hooks.chat!.spawn({
       taskId: task.id,
       title: this.chatTitle(task, next.provider),
@@ -3725,6 +3732,7 @@ export class BoatService {
     const environmentId = current?.environmentId ?? task.environmentId;
     if (environmentId !== null && environmentId !== task.environmentId) this.store.update(task.id, { environmentId });
     if (environmentId === null) throw new TaskError(`Task ${task.id}'s workspace isn't ready yet.`, "task_not_dispatched", "Try again in a moment.");
+    if (task.sandboxId) await this.codexHealth(this.sandboxProvider(task), task.sandboxId, request.providerId, line => this.store.addEvent(task.id, "machine", line), this.hooks.lifecycle);
     const { threadId } = await chat.spawnComposed({
       taskId: task.id,
       request,
@@ -4328,6 +4336,7 @@ export class BoatService {
           where: { kind: "machine", hostId, path: initial.repoPath },
         },
         stillWanted,
+        signal,
       );
       spawnedThread = spawned.threadId;
 

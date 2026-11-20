@@ -577,3 +577,10 @@ test("without the user's OK, an orchestrator moves one size up after running out
   const moved = await env.service.sizes.resize(tool({ type: "default" }));
   assert.equal(moved.to, "default");
 });
+
+test("a completed resize clears its long caller deadline and lets Node exit", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { fileURLToPath } = await import("node:url");
+  await promisify(execFile)(process.execPath, [fileURLToPath(new URL("./fixtures/resize-exit.ts", import.meta.url))], { timeout: 10_000 });
+});
