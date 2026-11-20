@@ -131,3 +131,26 @@ test("invalid newer physical terms cannot end or partially replace a valid held 
   await assert.rejects(f.provider.info("m_example"), /Invalid Mac lease billing terms/);
   assert.deepEqual(f.store.macLeases.held(),[original]);
 });
+
+test("a physical lease matching a terminal local row stays visible through a fresh list discrepancy", async () => {
+  const f = fixture(); await f.provider.list({all:true});
+  const lease = f.store.macLeases.held()[0]!;
+  f.store.macLeases.end(lease.id,"handed back",Date.parse(until));
+  const listed = await f.provider.list({all:true});
+  assert.equal(listed[0]?.mac?.leaseId,"71");
+  assert.equal(f.store.macLeases.held().length,0,"a confirmed end must not reopen automatically");
+  assert.match(f.store.macLeases.list()[0]!.noticeText!,/currently reports.*active/);
+  assert.equal(f.calls.at(-1),"get m_example --json");
+});
+
+test("a stale unseen list lease cannot become held after a newer physical lease ended", async () => {
+  const f=fixture();
+  f.setCurrent({...machine("m_example","72"),lease:{id:"72",startedAt:"2026-11-05T13:00:00.000Z",chargeUntil:"2026-11-06T13:00:00.000Z",hourUSD:0.45}});
+  await f.provider.info("m_example");
+  const newer=f.store.macLeases.held()[0]!;
+  f.store.macLeases.end(newer.id,"handed back",Date.parse("2026-11-05T14:00:00Z"));
+  f.setList([machine()]);
+  await f.provider.list({all:true});
+  assert.equal(f.store.macLeases.held().length,0);
+  assert.equal(f.store.macLeases.list().length,1,"stale unseen history must not invent a second paid minimum");
+});

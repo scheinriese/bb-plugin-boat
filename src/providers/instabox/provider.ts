@@ -253,8 +253,9 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       if (authoritativeRevision !== undefined && authoritativeRevision !== ledger.revision()) return sandbox;
       const input = instaboxLeaseInput(ledger, sandbox);
       if (!input) return sandbox;
-      const held = ledger.held(sandbox.id).filter(row => row.provider === "instabox");
-      if (held.some(row => row.id !== input.id && Date.parse(row.startedAt) >= Date.parse(input.startedAt))) return sandbox;
+      const history = ledger.list().filter(row => row.machineId === sandbox.id && row.provider === "instabox");
+      if (history.some(row => row.id !== input.id && Date.parse(row.startedAt) >= Date.parse(input.startedAt))) return sandbox;
+      const held = history.filter(row => !row.endedAt);
       // Lists can be stale. Only a get dispatched after the last local
       // transition may supersede a physical lease or correct an inferred end.
       if (held.some(row => row.id !== input.id) && authoritativeRevision === undefined) return sandbox;
@@ -412,7 +413,21 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
         const sandbox = toSandbox(raw);
         return rec(raw.metadata)?.["created-by"] === "bb-boat" ? remember(sandbox) : sandbox;
       });
-      return listOptions.all ? sandboxes : sandboxes.filter((sandbox) => ACTIVE_STATES.has(sandbox.state));
+      // An active list entry matching a terminal local row needs a fresh
+      // machine read. It may be a stale list after a real hand-back, or an
+      // inferred/legacy end hiding a still-billing physical allocation.
+      const checked: SandboxInfo[] = [];
+      for (const sandbox of sandboxes) {
+        const input = options.ledger ? instaboxLeaseInput(options.ledger, sandbox) : null;
+        const history = options.ledger?.list() ?? [];
+        const ended = input && history.find(lease => lease.id === input.id)?.endedAt;
+        const newer = input && history.some(lease => lease.provider === "instabox" && lease.machineId === sandbox.id && lease.id !== input.id && Date.parse(lease.startedAt) >= Date.parse(input.startedAt));
+        if (ended || newer) {
+          const current = await findInfo(sandbox.id, listOptions.signal);
+          if (current) checked.push(current);
+        } else checked.push(sandbox);
+      }
+      return listOptions.all ? checked : checked.filter((sandbox) => ACTIVE_STATES.has(sandbox.state));
     },
     async info(sandboxId, signal) {
       const { native: _native, ...sandbox } = await info(sandboxId, signal);

@@ -68,7 +68,9 @@ export class MacLeaseLedger {
   restoreCurrent(lease: Omit<MacLease, "endedAt" | "endReason" | "noticeAt" | "noticeText" | "kept" | "releaseAt">, observation: {revision: number; allowLegacy?: boolean}): MacLease | null {
     if (observation.revision !== this.observationRevision) return null;
     validateMacLeaseTerms(lease);
-    const existing = this.list().find(row => row.id === lease.id);
+    const history = this.list();
+    if (history.some(row => row.id !== lease.id && row.provider === lease.provider && row.machineId === lease.machineId && Date.parse(row.startedAt) >= Date.parse(lease.startedAt))) return null;
+    const existing = history.find(row => row.id === lease.id);
     if (!existing) return this.record(lease);
     const same = existing.provider === lease.provider && existing.machineId === lease.machineId && existing.size === lease.size && Date.parse(existing.startedAt) === Date.parse(lease.startedAt) && Date.parse(existing.paidUntil) === Date.parse(lease.paidUntil) && existing.currency === lease.currency && Math.abs(existing.minimumCost - lease.minimumCost) < 1e-8 && Math.abs(existing.hourPrice - lease.hourPrice) < 1e-8 && existing.cpus === lease.cpus && existing.memoryMiB === lease.memoryMiB;
     if (!same) return null;
@@ -82,8 +84,9 @@ export class MacLeaseLedger {
   observeCurrent(lease: LeaseInput, revision: number): MacLease | null {
     if (revision !== this.observationRevision) return null;
     validateMacLeaseTerms(lease);
-    const held = this.held(lease.machineId).filter(row => row.provider === lease.provider && row.id !== lease.id);
-    if (held.some(row => Date.parse(row.startedAt) >= Date.parse(lease.startedAt))) return null;
+    const history = this.list().filter(row => row.machineId === lease.machineId && row.provider === lease.provider && row.id !== lease.id);
+    if (history.some(row => Date.parse(row.startedAt) >= Date.parse(lease.startedAt))) return null;
+    const held = history.filter(row => !row.endedAt);
     const priorRevision = this.observationRevision;
     this.db().exec("SAVEPOINT current_mac_lease");
     try {
