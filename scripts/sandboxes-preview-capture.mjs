@@ -40,6 +40,7 @@ try {
         const text = await main.innerText();
         if (scene === "loading") assert.doesNotMatch(text, /\$0(?:\.00)?|0\.0 h/, "loading never appears as a zero reading");
         if (scene === "unavailable") assert.match(text, /unavailable/i);
+        if (scene === "partial") {assert.match(text, /Saved snapshot/); assert.doesNotMatch(text, /Private snapshot/);}
         if (scene === "active-stale") assert.match(text, /stale/i);
         if (scene === "returned") assert.match(text, /handed back|returned/i);
         if (scene === "stopped-held") {
@@ -49,6 +50,8 @@ try {
           assert.doesNotMatch(text, /Last Mac handed back/);
         }
         if (scene === "loaded-null-plan") {
+          assert.match(text, /Instabox usage unavailable/);
+          assert.doesNotMatch(text, /Checking Instabox usage/);
           const plan = await main.getByRole("article", {name: "boat.dev plan usage"}).innerText();
           assert.match(plan, /unavailable/i);
           assert.doesNotMatch(plan, /Checking plan usage/);

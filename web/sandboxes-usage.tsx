@@ -23,7 +23,12 @@ type Read<T> = {
   isLoading?: boolean;
 };
 type Snapshots = {
-  snapshots: { name: string; provider?: string; status?: string | null }[];
+  snapshots: {
+    name: string;
+    provider?: string;
+    status?: string | null;
+    type?: string | null;
+  }[];
   error: string | null;
   observedAt?: string | null;
   complete?: boolean;
@@ -154,9 +159,7 @@ function AccountUsage({
         </>
       ) : (
         <p className="text-muted-foreground" role="status">
-          {!usage && !failed
-            ? `Checking ${label} usage…`
-            : `${label} usage unavailable`}
+          {label} usage unavailable
         </p>
       )}
       {(usage?.includesMacs || breakdown.length > 0) && (
@@ -217,7 +220,11 @@ function AccountUsage({
         className={`mt-3 border-t border-border pt-3 text-xs leading-[18px] ${failed || usage?.error || (usage?.observedAt && now - Date.parse(usage.observedAt) > 600_000) ? "text-[color:var(--sandboxes-warning)]" : muted}`}
       >
         {label} usage ·{" "}
-        {readingStatus(usage?.observedAt, now, failed || Boolean(usage?.error))}
+        {readingStatus(
+          usage?.observedAt,
+          now,
+          failed || !usage || Boolean(usage?.error),
+        )}
         . Not an invoice.
       </p>
     </article>
@@ -379,7 +386,7 @@ export function SandboxesUsage({
               return (
                 <div
                   key={`${id}:${os}`}
-                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 px-3.5 py-3"
+                  className="grid grid-cols-[minmax(0,1fr)_64px] gap-x-3 px-3.5 py-3"
                 >
                   <div className="min-w-0 break-words">
                     <p className="text-[15px] leading-5">
@@ -453,6 +460,7 @@ export function SandboxesUsage({
                           timeZoneName: "short",
                         })}{" "}
                         · then {money(lease.hourPrice, lease.currency)} / h.{" "}
+                        {lease.kept && "Kept · automatic hand-back off. "}
                         {lease.releaseAt
                           ? `Release scheduled ${new Date(lease.releaseAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" })}.`
                           : ""}
@@ -684,8 +692,7 @@ export function SandboxesUsage({
                   className="p-3.5"
                 >
                   <p className="text-[15px]">
-                    Private snapshot ·{" "}
-                    {providerName(snapshot.provider ?? "boat")}
+                    Saved snapshot · {providerName(snapshot.provider ?? "boat")}
                   </p>
                   <p className="text-[13px] leading-[18px] text-muted-foreground">
                     {snapshot.status === "ready"

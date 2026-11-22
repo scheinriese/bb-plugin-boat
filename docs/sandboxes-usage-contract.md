@@ -66,6 +66,8 @@ Provider guest creation time cannot establish continuous uptime, so no
 invented time-on duration is displayed. Own-Mac task environments are not
 counted as separate physical Macs. Snapshot readiness does not establish a
 successful restore; restore testing remains explicitly unverified.
+The supported snapshot DTO does not establish visibility, so the UI uses the
+neutral label “Saved snapshot” rather than claiming it is private.
 
 The isolated `scripts/sandboxes-preview-server.mjs` renders the real component
 against synthetic, local RPC fixtures. Build first, then run it with

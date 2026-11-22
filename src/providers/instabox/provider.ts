@@ -727,6 +727,10 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     },
     async snapshots(signal) {
       const result = await cli.run(["snapshot", "ls", "--json"], { signal });
+      const rows = Array.isArray(result.value) ? result.value : rec(result.value)?.snapshots;
+      if (!Array.isArray(rows) || rows.some(entry => !str(rec(entry)?.name)?.trim())) {
+        throw new InstaboxError("Instabox returned an invalid saved snapshot inventory", { code: "instabox_bad_output" });
+      }
       return { snapshots: toSnapshots(result.value), included: null, used: null };
     },
     // No named environments: env is fixed at create, secrets are org Secrets.
