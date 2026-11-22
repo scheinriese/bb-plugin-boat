@@ -88,15 +88,16 @@ test("footer variants omit off providers and unheld Macs; Today never converts E
   const all = renderScene("footer"),
     boat = renderScene("boat-footer");
   for (const value of [
-    "6 on",
-    "Instabox · Linux",
-    "Paid until",
+    "Instabox account",
+    "Minimum through",
+    "1 lease held",
     "$0.92 · €1.10",
     "1.6 sandbox hours · Mac lease not included",
     "reset Dec 19",
     "resets Dec 1",
   ])
     assert.ok(all.includes(value), value);
+  assert.doesNotMatch(all, /Instabox · Linux|Paid until|2 on|per second<\/p>/);
   assert.doesNotMatch(boat, /Instabox|Mac ·|€|Sandboxes on/);
   assert.match(boat, /3 on of 300/);
   assert.doesNotMatch(
@@ -202,7 +203,7 @@ test("owned stopped rows retain hover Delete beside Resume; unowned rows only sh
  assert.match(unowned,/>Delete</);assert.doesNotMatch(unowned,/>Resume<|group-hover:opacity-100/);
 });
 test("footer groups held Macs by provider; fallback hours and failed mobile headers are explicit",()=>{
- const html=renderScene("multi-lease-footer");assert.equal((html.match(/2 on ·/g) ?? []).length,2);assert.equal((html.match(/Mac · Instabox/g) ?? []).length,1);assert.doesNotMatch(html,/1 held/);
+ const html=renderScene("multi-lease-footer");assert.equal((html.match(/2 leases held ·/g) ?? []).length,1);assert.equal((html.match(/Mac · Instabox/g) ?? []).length,1);assert.doesNotMatch(html,/2 on ·|1 held|Paid until/);
  assert.match(renderScene("running-only"),/running machines only/);
  const failed=renderScene("failed");assert.match(failed,/Mac start/);assert.doesNotMatch(failed,/Instabox setup/);
  assert.doesNotMatch(renderScene("settings"),/\$20.00 monthly/);
