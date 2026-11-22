@@ -321,9 +321,7 @@ function SandboxTableRow({
   const memory = detail.data?.task?.memory;
   const active = !stopped && !failure && !!state?.moving;
   const unowned = sandbox.uses.length===0;
-  const label = unowned && stopped ? "Stopped · not resumable" : failure
-    ? `Stopped · ${failure.reason.toLowerCase()}`
-    : stopped
+  const label = unowned && stopped ? "Stopped · not resumable" : stopped
       ? use?.kind === "orchestrator"
         ? "Stopped"
         : "Stopped · nothing lost"
@@ -334,6 +332,8 @@ function SandboxTableRow({
           : state?.status === "needs-you"
             ? "Waiting for you · kept on"
             : `Idle${countdown ? ` · ${countdown}` : ""}`;
+  const powerLabel = sandbox.power === "off" ? "Guest stopped"
+    : sandbox.power === "on" ? "Guest on" : "Guest power unknown";
   const tone = failure
     ? "text-[#E06C6C]"
     : state?.status === "needs-you" && !stopped
@@ -443,7 +443,8 @@ function SandboxTableRow({
             />
           )}
           <div className="text-[13px] leading-5">
-            <p>{sandbox.power === "unknown" ? "Guest power unknown" : sandbox.power === "off" ? "Guest stopped" : label}</p>
+            <p>{failure || sandbox.power === "unknown" || sandbox.power === "off" ? powerLabel : label}</p>
+            {failure && <p className="line-clamp-2 break-words">{failure.reason}</p>}
             {task?.previewUrl && !stopped && (
               <UrlLink
                 href={task.previewUrl}
