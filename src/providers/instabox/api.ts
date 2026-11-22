@@ -206,16 +206,17 @@ export class InstaboxRest {
     let total=0,running=0,complete=true;
     for(let offset=0;offset<1000;offset+=100){
       const record=await this.json("GET",`/v1/usage/machines?limit=100&offset=${offset}`,{signal});
-      if(!Array.isArray(record.machines) || num(record.total)===null)return null;
+      const count = num(record.total);
+      if(!Array.isArray(record.machines) || count===null || count<0 || !Number.isInteger(count))return null;
       for(const value of record.machines){
         const row=rec(value),id=str(row?.id),seconds=num(row?.runningSeconds);
         if(id && (knownMac.has(id) || row?.os==="macos" || row?.system==="macos"))continue;
-        if(!id || seconds===null)return null;
+        if(!id || seconds===null || seconds<0)return null;
         if(runningLinux.has(id))running+=seconds/3600;
         if(knownLinux.has(id) || row?.os==="linux" || row?.system==="linux")total+=seconds/3600;
         else complete=false;
       }
-      if(offset+record.machines.length>=num(record.total)!)return {hours:complete ? total : running,scope:complete ? "period" : "running-machines"};
+      if(offset+record.machines.length>=count)return Number.isFinite(total) && Number.isFinite(running) ? {hours:complete ? total : running,scope:complete ? "period" : "running-machines"} : null;
       if(record.machines.length===0)return null;
     }
     return null;

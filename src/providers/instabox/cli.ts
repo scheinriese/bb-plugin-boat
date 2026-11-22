@@ -7,6 +7,7 @@
 // prints `{"error":{"code","message","status",…}}` on stdout and exits
 // non-zero (3: auth, 4: not found, 5: quota or plan, 75: retryable).
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -168,6 +169,15 @@ export class InstaboxCli {
       throw new InstaboxError("No Instabox API key is stored.", { code: "key_missing" });
     }
     return { ...process.env, [KEY_VARIABLE]: key.trim(), INSTABOX_NO_UPDATE_CHECK: "1", NO_COLOR: "1" };
+  }
+
+  /** Private in-process cache identity. Never include this fingerprint in a DTO,
+   * log or persisted record; it only prevents retaining another login's usage. */
+  async usageScope(): Promise<string | null> {
+    const [key, binary] = await Promise.all([this.getKey(), this.getBinary()]);
+    if (!key?.trim() || !binary) return null;
+    return createHash("sha256").update(JSON.stringify([key.trim(), binary,
+      process.env.INSTABOX_API_URL ?? "", process.env.INSTABOX_SERVER ?? ""])).digest("hex");
   }
 
   /** Run `instabox <args>` (the caller puts `--json` where the command takes it) and collect its output. */

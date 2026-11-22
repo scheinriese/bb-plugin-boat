@@ -1,6 +1,8 @@
 import { projectRpcMethods } from "./contract-projects.ts";
 import { sidebarRpcMethods } from "./contract-sidebar.ts";
 import { queuedStartSchema } from "./contract-start-queue.ts";
+import { machinePowerSchema, sandboxInventorySchema, sandboxMacLeaseSchema } from "./contract-sandboxes.ts";
+export * from "./contract-sandboxes.ts";
 export * from "./contract-sidebar.ts";
 // Shared RPC contract between server.ts and app.tsx.
 //
@@ -409,6 +411,7 @@ export const sandboxUseSchema = z.object({
 export type SandboxUseDto = z.infer<typeof sandboxUseSchema>;
 
 export const sandboxSchema = z.object({
+  power: machinePowerSchema.optional(),
   leaseDaysThisWeek: z.number().optional(),
   id: z.string(),
   name: z.string().nullable(),
@@ -628,7 +631,12 @@ export const rpcContract = defineRpcContract({
   },
   sandboxes: {
     input: z.object({ all: z.boolean() }),
-    output: z.object({ sandboxes: z.array(sandboxSchema), error: z.string().nullable() }),
+    output: z.object({
+      sandboxes: z.array(sandboxSchema), error: z.string().nullable(),
+      inventory: sandboxInventorySchema.optional(),
+      macLeases: z.array(sandboxMacLeaseSchema).max(200).optional(),
+      macLeasesTruncated: z.boolean().optional(),
+    }),
     tags: () => [TAGS.sandboxes],
   },
   tasks: {
@@ -947,6 +955,9 @@ export const rpcContract = defineRpcContract({
       included: z.number().nullable(),
       used: z.number().nullable(),
       error: z.string().nullable(),
+      observedAt: z.string().nullable().optional(),
+      complete: z.boolean().optional(),
+      failedProviders: z.array(z.string().max(40)).optional(),
     }),
     tags: () => [TAGS.projects],
   },

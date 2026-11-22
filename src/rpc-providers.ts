@@ -389,8 +389,8 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
     },
     macUsage: async (input?: {timezoneOffsetMinutes:number}|null) => {
       const prices = monthlyMacPrices((await runtime.settings?.get?.())?.monthlyMacPricesJson ?? "");
-      const summary = service.store.macLeases.summary();
       const now = Date.now(), date = new Date(now);
+      const summary = service.store.macLeases.summary(now);
       const monthStart = Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),1), monthEnd = Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1);
       const label = (id: string) => providerLabel(id, service.sandboxProviders.all.find(provider=>provider.id===id));
       // A fresh provider read can contradict an old local end. Keep that
@@ -398,6 +398,8 @@ export function providerHandlers(runtime: Runtime, now = Date.now) {
       const notices: NonNullable<MacUsageDto["notices"]> = [...service.store.macLeases.list().flatMap(lease=>lease.noticeText && lease.noticeAt ? [{id:lease.id,provider:lease.provider,label:label(lease.provider),machineId:lease.machineId,at:lease.noticeAt,text:lease.noticeText}] : []), ...service.store.macLeases.credentialNotices().map(notice=>({...notice,label:label(notice.provider),tokenRevocation:true}))];
       const ownMac = await service.sandboxProviders.all.find(p=>p.id==="ownmac")?.ownMacStatus?.();
       return { ...summary,
+        calculatedAt: new Date(now).toISOString(),
+        monthPeriod: { since: new Date(monthStart).toISOString(), until: new Date(monthEnd).toISOString() },
         adoptions: service.store.macLeases.adoptions().map(({leaseId,original,current,evidence,adoptedAt,endedAt})=>({
           leaseId,provider:original.provider,machineId:original.machineId,taskId:evidence.taskId,sourceTaskId:evidence.sourceTaskId,adoptedAt,endedAt,
           operatorProof:evidence.operatorProof,

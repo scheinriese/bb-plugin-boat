@@ -72,6 +72,14 @@ export const linuxUsageSchema = z.object({
   hoursScope:z.enum(["period","running-machines"]).optional(),
   active: z.number().nullable(), error: z.string().nullable(),
   accountCredit: z.boolean().optional(),
+  /** This usage endpoint reports the whole provider account, including Macs. */
+  scope: z.literal("account-total").optional(),
+  includesMacs: z.literal(true).optional(),
+  currency: z.literal("USD").optional(),
+  /** Time of the successful provider usage read; never the time of a failed attempt. */
+  observedAt: z.string().nullable().optional(),
+  periodStart: z.string().nullable().optional(),
+  periodEnd: z.string().nullable().optional(),
 });
 export type LinuxUsageDto = z.infer<typeof linuxUsageSchema>;
 
@@ -150,6 +158,9 @@ export type SandboxProvidersResultDto = z.infer<typeof sandboxProvidersResultSch
 
 export const macUsageWindowSchema = z.object({ leaseDays: z.number(), costs: z.record(z.string(),z.number()) });
 export const macUsageSchema = z.object({
+  /** Local ledger calculation, never a provider billing observation. */
+  calculatedAt: z.string().optional(),
+  monthPeriod: z.object({ since: z.string(), until: z.string() }).optional(),
   ownMac: ownMacFactsSchema.extend({rent:z.literal(0)}).optional(),
   monthlySuggestions: z.array(monthlyMacSuggestionSchema).optional(),
   monthlyComparisons: z.array(monthlyMacComparisonSchema).optional(),

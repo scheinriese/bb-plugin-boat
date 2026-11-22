@@ -5,6 +5,7 @@ import { macModels as readMacModels } from "./mac.ts";
 import { createInstaboxSecrets } from "./secrets.ts";
 import { GITHUB_LOGIN_HINT } from "./words.ts";
 import type { MacLease, MacLeaseLedger } from "../../mac-leases.ts";
+import type { LinuxUsageDto } from "../../../contract-providers.ts";
 // Instabox (https://instabox.sh) as a sandbox provider: Linux and plan-gated Macs.
 // Its members go through the instabox CLI (./cli.ts) like boat's go
 // through boat's: lifecycle, exec, ports, snapshots, usage and its headless
@@ -399,27 +400,36 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
     for (const lease of delivered) if (lease.noticeText?.startsWith(CLEANUP_NOTICE_PREFIX)) ledger!.clearNotice(lease.id);
   }
 
+  let usageSequence = 0;
+  let lastUsage: { scope: string; value: LinuxUsageDto } | null = null;
+  const nonnegative = (value: unknown) => { const parsed = num(value); return parsed !== null && parsed >= 0 ? parsed : null; };
   const provider: SandboxProvider = {
     id: INSTABOX_PROVIDER_ID,
     displayName: "Instabox",
     caps,
     macModels,
     async presentation({ force, signal } = {}) {
+      const sequence = ++usageSequence;
       if (force) secrets.invalidate();
       let cliFound = false;
       try { await cli.binary(); cliFound = true; } catch { /* Missing CLI is a setup step. */ }
       const key = options.keyPresent?.() ?? true;
+      const scope = cliFound && key ? await cli.usageScope().catch(() => null) : null;
+      if (lastUsage?.scope !== scope) lastUsage = null;
       let raw: JsonRecord | null = null;
       let problem: string | null = null;
+      let observedAt: string | null = null;
       if (cliFound && key) {
-        try { raw = await cli.json(["usage", "--json"], { signal }); }
+        try { raw = await cli.json(["usage", "--json"], { signal }); observedAt = new Date(options.now?.() ?? Date.now()).toISOString(); }
         catch (error) { problem = ["unauthenticated", "unauthorized", "invalid_key"].includes((error as {code?:string}).code ?? "") ? "Instabox rejected the key" : "Could not check Instabox; try again"; }
       }
-      const cost = rec(raw?.cost);
       let hoursScope:"period"|"running-machines"|undefined;
       let linuxHours: number | null = null, active: number | null = null;
       if (raw) try {
-        const listed = machineList((await cli.run(["ls","--json"],{signal})).value).map(toSandbox);
+        const value = (await cli.run(["ls","--json"],{signal})).value;
+        const rows = Array.isArray(value) ? value : rec(value)?.machines;
+        if (!Array.isArray(rows) || rows.some(row => rec(row) === null)) throw new Error("Machine inventory unavailable");
+        const listed = machineList(value).map(toSandbox);
         const machines = listed.filter(m=>m.system!=="macos");
         active=machines.filter(m=>ACTIVE_STATES.has(m.state)).length;
         const knownMac=new Set([...(options.ledger?.list().filter(l=>l.provider==="instabox").map(l=>l.machineId) ?? []),...listed.filter(m=>m.system==="macos").map(m=>m.id)]);
@@ -430,10 +440,25 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
       if (raw) {
         try { await secrets.check(signal, () => { throw new Error("Metadata unavailable"); }); github = true; } catch { /* Metadata only, never key values. */ }
       }
+      if (scope !== null && scope !== await cli.usageScope().catch(() => null)) {
+        raw = null; observedAt = null; active = null; linuxHours = null;
+        problem = "Instabox configuration changed; check again";
+        if (sequence === usageSequence) lastUsage = null;
+      }
+      const usageCost = rec(raw?.cost);
       const plan = str(rec(raw?.org)?.tier);
-      const periodEnd = str(cost?.periodEnd);
+      const periodEnd = str(usageCost?.periodEnd);
       const resetsAt = periodEnd && Number.isFinite(Date.parse(periodEnd)) ? periodEnd : null;
-      const credit = num(cost?.allowanceUSD);
+      const periodStart = str(usageCost?.periodStart);
+      const startsAt = periodStart && Number.isFinite(Date.parse(periodStart)) ? periodStart : null;
+      const invalidPeriod = startsAt !== null && resetsAt !== null && Date.parse(startsAt) >= Date.parse(resetsAt);
+      const credit = nonnegative(usageCost?.allowanceUSD);
+      let linuxUsage: LinuxUsageDto = { plan, used: nonnegative(usageCost?.costUSD), credit, remaining: num(usageCost?.creditRemainingUSD), resetsAt, hours: linuxHours, ...(hoursScope ? {hoursScope} : {}), active, error: problem, accountCredit:(nonnegative(usageCost?.macosUSD) ?? 0)>0,
+        scope: "account-total", includesMacs: true, currency: "USD", observedAt,
+        periodStart: startsAt !== null && !invalidPeriod ? new Date(startsAt).toISOString() : null,
+        periodEnd: resetsAt !== null && !invalidPeriod ? new Date(resetsAt).toISOString() : null };
+      if (raw && scope !== null && sequence === usageSequence) lastUsage = { scope, value: linuxUsage };
+      else if (!raw && scope !== null && lastUsage?.scope === scope) linuxUsage = { ...lastUsage.value, active: null, error: problem ?? "Instabox usage unavailable" };
       return {
         steps: [
           { id: "cli", label: "Instabox CLI installed", done: cliFound, possible: true, detail: cliFound ? "found on this host" : "Install the Instabox CLI on this host" },
@@ -442,7 +467,7 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
           { id: "github", label: "GitHub Secret present", done: github, possible: true, detail: "GH_TOKEN · proxy Secret · github.com, api.github.com" },
           { id: "enabled", label: "Turned on", done: options.enabled?.() ?? true, possible: true, detail: "Linux and Mac tasks can then run here" },
         ],
-        linuxUsage: { plan, used: num(cost?.costUSD), credit, remaining: num(cost?.creditRemainingUSD), resetsAt, hours: linuxHours, ...(hoursScope ? {hoursScope} : {}), active, error: problem, accountCredit:(num(cost?.macosUSD) ?? 0)>0 },
+        linuxUsage,
       };
     },
     classifiesCreateErrors: true,
@@ -492,6 +517,9 @@ export function createInstaboxProvider(cli: InstaboxCli, rest: InstaboxRest, opt
 
     async list(listOptions = {}) {
       const result = await cli.run(["ls", "--json"], { signal: listOptions.signal });
+      if (!Array.isArray(result.value) && !Array.isArray(rec(result.value)?.machines)) throw new InstaboxError("Instabox returned an invalid machine inventory", { code: "instabox_bad_output" });
+      const entries = Array.isArray(result.value) ? result.value : rec(result.value)!.machines as unknown[];
+      if (entries.some(entry => rec(entry) === null)) throw new InstaboxError("Instabox returned an invalid machine inventory", { code: "instabox_bad_output" });
       const sandboxes = machineList(result.value).filter((raw) => nativeState(raw) !== "deleted").map(raw => {
         const sandbox = toSandbox(raw);
         return rec(raw.metadata)?.["created-by"] === "bb-boat" ? remember(sandbox) : sandbox;
