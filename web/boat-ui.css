@@ -19,6 +19,26 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Sandboxes keeps the approved hierarchy in both host appearances. */
+.sandboxes-summary {
+  container-type: inline-size;
+  --sandboxes-link: var(--primary);
+  --sandboxes-warning: var(--destructive);
+  --sandboxes-on: var(--primary);
+}
+@container (max-width: 640px) {
+  .sandbox-management table { display: block; min-width: 0; table-layout: auto; }
+  .sandbox-management thead { display: none; }
+  .sandbox-management tbody { display: block; }
+  .sandbox-management tr { display: grid; grid-template-columns: minmax(0, 1fr); height: auto; padding-block: 8px; }
+  .sandbox-management th, .sandbox-management td { display: block; width: auto; padding: 4px 14px; }
+}
+.dark .sandboxes-summary {
+  --sandboxes-link: #7aa7ff;
+  --sandboxes-warning: #ff8c42;
+  --sandboxes-on: #53cb8c;
+}
+
 /* Match the handoff's dark surfaces through scoped semantic tokens.
    Light appearance keeps bb's tokens. Host chrome is outside this root. */
 .dark .boat-ui {

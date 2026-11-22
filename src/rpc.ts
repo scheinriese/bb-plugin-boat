@@ -2,7 +2,10 @@ import type { OwnMacNotice } from "../contract-ownmac.ts";
 import { ownMacTaskNotice } from "./ownmac-notices.ts";
 import { providerFailureCard } from "../provider-failure.ts";
 import { macRunsOnBatch } from "./mac-lease-view.ts";
+import { inventoryRead, readSandboxInventory, sandboxMacLeases } from "./sandbox-inventory.ts";
+import { machinePower } from "../sandbox-power.ts";
 import { projectSnapshotHandlers } from "./project-snapshot.ts";
+import { readSavedSnapshots } from "./rpc-snapshots.ts";
 import { readProjectCatalog, validateLocalProjectLink } from "./project-catalog.ts";
 import { fidelityHandlers } from "./rpc-fidelity.ts";
 import { shipPresentation } from "./ship-presentation.ts";
@@ -175,12 +178,18 @@ export function sandboxUses(
   ];
 }
 
-function toSandboxDto(sandbox: Sandbox & { provider?: string }, taskIds: string[], uses: SandboxDto["uses"] = [], runsOn?: RunsOnDto): SandboxDto {
+export function toSandboxDto(sandbox: Sandbox & { provider?: string }, taskIds: string[], uses: SandboxDto["uses"] = [], runsOn?: RunsOnDto): SandboxDto {
   const onInstabox = sandbox.provider === "instabox";
+  // A stopped Mac may no longer have a held local lease. The provider's
+  // explicit system remains evidence of its OS even after that lease ends.
+  const currentRunsOn = runsOn && sandbox.system === "macos" && runsOn.os !== "macos"
+    ? { ...runsOn, os: "macos" as const, machine: sandbox.mac ? `Mac ${sandbox.mac.model.toUpperCase()}` : "Mac" }
+    : runsOn;
   return {
     id: sandbox.id,
     name: sandbox.name,
     state: sandbox.state,
+    power: machinePower(sandbox.state),
     health: sandbox.health,
     url: sandbox.url,
     createdAt: sandbox.createdAt,
@@ -190,7 +199,7 @@ function toSandboxDto(sandbox: Sandbox & { provider?: string }, taskIds: string[
     sshCommand: onInstabox ? `instabox ssh ${sandbox.id}` : `boat ssh ${sandbox.id}`,
     taskIds,
     uses,
-    ...(runsOn ? { runsOn } : {}),
+    ...(currentRunsOn ? { runsOn: currentRunsOn } : {}),
   };
 }
 
@@ -300,23 +309,26 @@ export function registerRpc(runtime: Runtime): void {
 
   /** Chats on Boat sandbox machines, by sandbox (kept 30 s; [] when bb can't say). */
   let machineCache: { at: number; chats: MachineChat[] } | null = null;
-  async function machineChats(): Promise<MachineChat[]> {
+  async function machineChats(signal?: AbortSignal): Promise<MachineChat[]> {
     if (machineCache !== null && Date.now() - machineCache.at < 30_000) return machineCache.chats;
     const chats: MachineChat[] = [];
     try {
       const raw = (await bb.sdk.hosts.list()) as unknown;
       const hosts = (Array.isArray(raw) ? raw : ((raw as { hosts?: unknown[] } | null)?.hosts ?? [])) as { id?: string; machineProviderId?: string | null }[];
-      for (const host of hosts) {
+      for (const host of hosts.slice(0, 200)) {
+        if (signal?.aborted) break;
         if (!host.id || service.sandboxProviders.forMachine(host.machineProviderId) === null) continue;
         const resource = (await bb.experimental_machines.getResource(host.id).catch(() => null)) as { sandboxId?: unknown } | null;
+        if (signal?.aborted) break;
         if (typeof resource?.sandboxId !== "string") continue;
-        const rows = rowsOf(await bb.sdk.threads.list({ hostId: host.id } as never).catch(() => []));
+        const rows = rowsOf(await bb.sdk.threads.list({ hostId: host.id } as never).catch(() => [])).slice(0, 200);
+        if (signal?.aborted) break;
         for (const row of rows) if (row.id) chats.push({ sandboxId: resource.sandboxId, threadId: row.id, title: row.title ?? row.titleFallback ?? null });
       }
     } catch {
       // Sandboxes still list; their rows just can't name the chats on them.
     }
-    machineCache = { at: Date.now(), chats };
+    if (!signal?.aborted) machineCache = { at: Date.now(), chats };
     return chats;
   }
 
@@ -490,12 +502,18 @@ export function registerRpc(runtime: Runtime): void {
     sandboxes: async ({ all }) => {
       try {
         // Every enabled provider's (one that can't be read is named in error; the others still show).
-        const [listed, chats] = await Promise.all([service.listSandboxes({ all }), machineChats()]);
+        const metadataDeadline = AbortSignal.timeout(2_000);
+        const [listed, chats] = await Promise.all([
+          readSandboxInventory(service.sandboxProviders.enabled, { all }),
+          inventoryRead(machineChats(metadataDeadline), metadataDeadline).catch(() => machineCache?.chats ?? []),
+        ]);
         const sandboxes = listed.sandboxes;
         const tasks = service.store.list({ limit: 1000 });
         const orchestrators = service.store.orchestratorThreadIds().current;
         const macView = macRunsOnBatch(service.store.macLeases.snapshot(), tasks);
         return {
+          inventory: listed.inventory,
+          ...sandboxMacLeases(service.store.macLeases.snapshot()),
           sandboxes: sandboxes.map((sandbox) => {
             const own = tasks.filter((task) => task.sandboxId === sandbox.id);
             const live = own.find((task) => OPEN_STATUSES.includes(task.status)) ?? null;
@@ -513,10 +531,10 @@ export function registerRpc(runtime: Runtime): void {
             }
             return result;
           }),
-          error: listed.failed.length === 0 ? null : listed.failed.map((entry) => `${PROVIDER_NAMES[entry.provider as keyof typeof PROVIDER_NAMES] ?? entry.provider}: ${entry.error}`).join("; "),
+          error: listed.inventory.providers.some(read => read.status === "unavailable") ? "Some machine inventories are unavailable." : null,
         };
       } catch (error) {
-        return { sandboxes: [], error: message(error) };
+        return { sandboxes: [], error: "Machine inventory is unavailable.", inventory: { providers: service.sandboxProviders.enabled.map(provider => ({ id: provider.id, status: "unavailable" as const, observedAt: null, poweredOn: null, unknown: null, truncated: false })), truncated: false }, ...sandboxMacLeases(service.store.macLeases.snapshot()) };
       }
     },
 
@@ -891,19 +909,7 @@ export function registerRpc(runtime: Runtime): void {
         return await service.projectAccess(project);
       }),
 
-    snapshots: async () => {
-      try {
-        const result = await service.snapshots();
-        return {
-          snapshots: result.snapshots.map(({ name, sizeBytes, createdAt, type, status, provider }) => ({ name, sizeBytes, createdAt, type, status, ...(provider === "boat" ? {} : { provider }) })),
-          included: result.included,
-          used: result.used,
-          error: null,
-        };
-      } catch (error) {
-        return { snapshots: [], included: null, used: null, error: message(error) };
-      }
-    },
+    snapshots: () => readSavedSnapshots(service),
 
     createSandbox: (input) =>
       refuse(async () => {

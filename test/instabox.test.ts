@@ -927,6 +927,10 @@ test("explicit keep_sandbox protects closed unpushed work across restarts and st
   assert.equal(box.state().machines[task.sandboxId!].state,"running");
   const {providerHandlers}=await import("../src/rpc-providers.ts");
   const usage=await providerHandlers({service,bb:{}} as unknown as import("../src/runtime.ts").Runtime).macUsage();
+  const calculated = new Date(usage.calculatedAt);
+  assert.ok(Number.isFinite(calculated.getTime()));
+  assert.equal(usage.monthPeriod.since, new Date(Date.UTC(calculated.getUTCFullYear(), calculated.getUTCMonth(), 1)).toISOString());
+  assert.equal(usage.monthPeriod.until, new Date(Date.UTC(calculated.getUTCFullYear(), calculated.getUTCMonth()+1, 1)).toISOString());
   assert.equal(usage.held[0]!.kept,true);
   assert.equal(box.state().calls.filter((c:string)=>c.startsWith("rm ")).length,0);
 });
@@ -1364,10 +1368,12 @@ echo 'true true'
 });
 
 test("setup presentation uses live allowance and period, and Check again invalidates GitHub metadata",async t=>{
- const f=await instabox(t,{state:{cost:{costUSD:6.4,allowanceUSD:20,creditRemainingUSD:13.6,periodStart:"2026-11-01T00:00:00Z",periodEnd:"2026-12-01T00:00:00Z"}}});
+ const observedAt=Date.parse("2026-11-12T09:00:00Z");
+ const f=await instabox(t,{now:()=>observedAt,state:{cost:{costUSD:6.4,allowanceUSD:20,creditRemainingUSD:13.6,periodStart:"2026-11-01T00:00:00Z",periodEnd:"2026-12-01T00:00:00Z"}}});
  const first=await f.provider.presentation!();
  assert.deepEqual(first.steps.map(s=>s.done),[true,true,true,true,true]);
  assert.deepEqual([first.linuxUsage?.used,first.linuxUsage?.credit,first.linuxUsage?.remaining,first.linuxUsage?.resetsAt],[6.4,20,13.6,"2026-12-01T00:00:00Z"]);
+ assert.deepEqual([first.linuxUsage?.scope,first.linuxUsage?.includesMacs,first.linuxUsage?.currency,first.linuxUsage?.observedAt,first.linuxUsage?.periodStart,first.linuxUsage?.periodEnd],["account-total",true,"USD","2026-11-12T09:00:00.000Z","2026-11-01T00:00:00.000Z","2026-12-01T00:00:00.000Z"]);
  f.setState({secrets:[]});
  assert.equal((await f.provider.presentation!()).steps[3]!.done,true,"ordinary read uses the minute cache");
  assert.equal((await f.provider.presentation!({force:true})).steps[3]!.done,false,"Check again reads metadata now");
@@ -1379,7 +1385,55 @@ test("setup detects a rejected key and unavailable metadata without showing key 
  const reading=await f.provider.presentation!();
  assert.equal(reading.steps[1]!.done,false);assert.match(reading.steps[1]!.detail,/rejected the key/);
  assert.equal(reading.steps[2]!.done,false);assert.equal(reading.steps[3]!.done,false);
+ assert.equal(reading.linuxUsage?.observedAt,null,"failed usage is never stamped as a successful observation");
+ assert.equal(reading.linuxUsage?.used,null);
  assert.doesNotMatch(JSON.stringify(reading),/ibk_fake-rejected-key-0001/);
+});
+test("account billing metadata never invents an aligned period or current machines from credit usage",async t=>{
+ const f=await instabox(t,{state:{cost:{costUSD:27,allowanceUSD:20,creditRemainingUSD:-7,periodEnd:"2026-12-01T00:00:00Z"}}});
+ const reading=await f.provider.presentation!();
+ assert.equal(reading.linuxUsage?.used,27,"cumulative account usage survives an empty machine list");
+ assert.equal(reading.linuxUsage?.active,0);
+ assert.equal(reading.linuxUsage?.periodStart,null,"a missing start cannot be guessed from the reset");
+ assert.equal(reading.linuxUsage?.periodEnd,"2026-12-01T00:00:00.000Z");
+ f.setState({cost:{costUSD:27,periodStart:"2026-12-01T00:00:00Z",periodEnd:"2026-11-01T00:00:00Z"}});
+ const invalid=await f.provider.presentation!();
+ assert.equal(invalid.linuxUsage?.periodStart,null);
+ assert.equal(invalid.linuxUsage?.periodEnd,null,"reversed periods cannot support reconciliation");
+});
+test("failed account usage refresh retains its observation, and changing login or CLI scope discards it", async t => {
+ let key: string | null = KEY, now = Date.parse("2026-11-12T09:00:00Z"), binary = FAKE_CLI;
+ const f = await instabox(t, { state: { cost: { costUSD: 8.4, allowanceUSD: 20 } } });
+ const cli = new InstaboxCli(async () => binary, async () => key);
+ const provider = createInstaboxProvider(cli, f.rest, { now: () => now });
+ const first = (await provider.presentation!()).linuxUsage!;
+ f.setState({ fail: "down" }); now += 60_000;
+ const stale = (await provider.presentation!()).linuxUsage!;
+ assert.equal(stale.used, first.used);
+ assert.equal(stale.observedAt, first.observedAt, "a failed refresh cannot renew the successful observation");
+ assert.equal(stale.active, null, "a remembered bill cannot prove current machine counts");
+ assert.match(stale.error ?? "", /Could not check/);
+ key = "ibk_fake_different_account";
+ const changed = (await provider.presentation!()).linuxUsage!;
+ assert.equal(changed.used, null, "never show the previous login's account total");
+ assert.equal(changed.observedAt, null);
+ key = KEY;
+ const switchedBack = (await provider.presentation!()).linuxUsage!;
+ assert.equal(switchedBack.used, null, "changing away cleared the old reading rather than keeping an account cache");
+ f.setState({ fail: null });
+ assert.equal((await provider.presentation!()).linuxUsage?.used, 8.4);
+ binary = "/fake-bin/instabox";
+ const changedCli = (await provider.presentation!()).linuxUsage!;
+ assert.equal(changedCli.used, null, "a different CLI/configuration cannot inherit the old account observation");
+ assert.doesNotMatch(JSON.stringify([first, stale, changed]), /ibk_fake|[a-f0-9]{64}/, "no credential or cache fingerprint in public metadata");
+});
+test("negative and non-finite account amounts are unavailable while a negative credit remainder is valid", async t => {
+ const f = await instabox(t, { state: { cost: { costUSD: -1, allowanceUSD: -10, creditRemainingUSD: -3 } } });
+ const negative = (await f.provider.presentation!()).linuxUsage!;
+ assert.equal(negative.used, null); assert.equal(negative.credit, null); assert.equal(negative.remaining, -3);
+ f.setState({ cost: { costUSD: NaN, allowanceUSD: Infinity } });
+ const invalid = (await f.provider.presentation!()).linuxUsage!;
+ assert.equal(invalid.used, null); assert.equal(invalid.credit, null);
 });
 test("off-provider setup checks stored key and CLI without enabling or renting",async t=>{
  const f=await instabox(t);
@@ -1468,4 +1522,14 @@ test("Linux hours include classified deleted usage, or explicitly fall back to r
  assert.deepEqual(await rest.linuxHours(new Set(["current"]),new Set()),{hours:3,scope:"period"});
  machines=[{id:"old-unknown",runningSeconds:7200},{id:"current",runningSeconds:3600}];
  assert.deepEqual(await rest.linuxHours(new Set(["current"]),new Set()),{hours:1,scope:"running-machines"});
+});
+test("invalid machine usage cannot become negative or non-finite period hours", async () => {
+ for (const seconds of [-1, NaN, Infinity]) {
+  const rest = new InstaboxRest({ key: async () => KEY, fetch: async () => new Response(JSON.stringify({ machines: [{ id: "demo-linux", os: "linux", runningSeconds: seconds }], total: 1 })) });
+  assert.equal(await rest.linuxHours(new Set(["demo-linux"]), new Set()), null);
+ }
+ for (const total of [-1, 0.5, NaN]) {
+  const rest = new InstaboxRest({ key: async () => KEY, fetch: async () => new Response(JSON.stringify({ machines: [], total })) });
+  assert.equal(await rest.linuxHours(new Set(), new Set()), null);
+ }
 });

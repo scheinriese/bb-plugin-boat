@@ -9,6 +9,7 @@ import {
   leaseState,
 } from "./provider-format";
 import { creditNow } from "./mac-usage";
+import { readingStatus } from "./sandboxes-usage-logic";
 export function FooterMeter({
   label,
   value,
@@ -90,7 +91,7 @@ export function FooterUsage({
       {mac?.ownMac?.enabled && mac.ownMac.code!=="setup" && <FooterMeter label="Your Mac" value={ownMacStatusWords(mac.ownMac)} valueColor={mac.ownMac.code==="cleanup"?"#E06C6C":["available","busy"].includes(mac.ownMac.code ?? "")?"#EDEDED":"#A8A8A8"} detail={["available","busy"].includes(mac.ownMac.code ?? "")?`$0 · ${mac.ownMac.alias} · on power`:"$0 · Mac tasks go to the next Mac"}/>}
       {instabox && (
         <FooterMeter
-          label="Instabox · Linux"
+          label="Instabox account"
           value={creditNow(instabox)}
           fraction={
             instabox.credit && instabox.used !== null
@@ -104,19 +105,19 @@ export function FooterUsage({
               ? "#FC8C45"
               : "#BDBDBD"
           }
-          detail={`${instabox.active ?? "–"} on · ${instabox.used === null ? "Usage unavailable" : `${money(instabox.used)}${instabox.credit === null ? " so far" : ` of ${creditMoney(instabox.credit)}`}`} · per second${instabox.resetsAt ? ` · resets ${resetDate(instabox.resetsAt)}` : ""}`}
+          detail={`${instabox.used === null ? "Usage unavailable" : `${money(instabox.used)} USD${instabox.credit === null ? " so far" : ` of ${creditMoney(instabox.credit)}`}`}${instabox.resetsAt ? ` · resets ${resetDate(instabox.resetsAt)}` : ""} · ${readingStatus(instabox.observedAt, Date.now(), Boolean(instabox.error))}`}
         />
       )}
-      {instabox?.accountCredit && (
+      {instabox && (
         <p className="text-[11px] leading-[14px] text-[#6E6E6E]">
           Instabox account credit includes Mac charges.
         </p>
       )}
 
       {[...macGroups].map(([provider,leases]) => {
-        const states = [...new Set(leases.map(lease=>leaseState(lease).text))];
+        const states = [...new Set(leases.map(lease=>leaseState(lease).text.replace(/^Paid until /, "Minimum through ")) )];
         const terms = [...new Set(leases.map(lease=>`${lease.size.toUpperCase()} · ${money(lease.minimumCost,lease.currency)} minimum, then ${money(lease.hourPrice,lease.currency)} / h`))];
-        return <FooterMeter key={provider} label={`Mac · ${mac?.providers?.find(p=>p.id===provider)?.label ?? (provider === "scaleway" ? "Scaleway" : provider === "instabox" ? "Instabox" : provider)}`} value={states.length===1 ? states[0]! : "Different paid times"} detail={`${leases.length} on · ${terms.join("; ")}${states.length>1 ? ` · ${states.join("; ")}` : ""}`}/>;
+        return <FooterMeter key={provider} label={`Mac · ${mac?.providers?.find(p=>p.id===provider)?.label ?? (provider === "scaleway" ? "Scaleway" : provider === "instabox" ? "Instabox" : provider)}`} value={states.length===1 ? states[0]! : "Different minimum times"} detail={`${leases.length} lease${leases.length === 1 ? "" : "s"} held · ${terms.join("; ")}${states.length>1 ? ` · ${states.join("; ")}` : ""}`}/>;
       })}
       <div className="border-t border-[#2A2A2A] pt-2.5">
         <FooterMeter

@@ -416,7 +416,9 @@ export class BoatApi {
     const raw = await this.cli.json(["list", ...(options.all === true ? ["--all"] : [])], {
       signal: options.signal,
     });
-    const sandboxes = Array.isArray(raw.sandboxes) ? raw.sandboxes : [];
+    if (!Array.isArray(raw.sandboxes)) throw new BoatError("boat returned an invalid sandbox inventory", { code: "boat_bad_output" });
+    const sandboxes = raw.sandboxes;
+    if (sandboxes.some(entry => rec(entry) === null)) throw new BoatError("boat returned an invalid sandbox inventory", { code: "boat_bad_output" });
     return sandboxes
       .map((entry) => rec(entry))
       .filter((entry): entry is JsonRecord => entry !== null)
@@ -588,7 +590,10 @@ export class BoatApi {
   /** Saved snapshots and the plan's allowance for them. */
   async snapshots(signal?: AbortSignal): Promise<{ snapshots: SavedSnapshot[]; included: number | null; used: number | null }> {
     const record = await this.cli.json(["snapshots"], { timeoutMs: 60_000, signal });
-    const named = Array.isArray(record.named) ? record.named : [];
+    if (!Array.isArray(record.named) || record.named.some(entry => !str(rec(entry)?.name)?.trim())) {
+      throw new BoatError("boat returned an invalid saved snapshot inventory", { code: "boat_bad_output" });
+    }
+    const named = record.named;
     const allowance = rec(record.namedAllowance) ?? rec(record.savedAllowance);
     return {
       snapshots: named

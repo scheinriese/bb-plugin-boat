@@ -1,7 +1,6 @@
 import { StoppedSandboxActions } from "./sandbox-row-actions";
-import { hours as providerHours } from "./provider-format";
 import { Fragment } from "react";
-import { ThisMonthUsage } from "./mac-usage";
+import { SandboxesUsage } from "./sandboxes-usage";
 import { useMemo, useState } from "react";
 import {
   UrlLink,
@@ -26,18 +25,16 @@ import {
 import {
   useCloudAgentsNavigation,
   useNow,
-  useOverview,
   useSandboxes,
-  useSetup,
   useSettingRows,
   useProjects,
   useSandboxProviders,
   useTask,
 } from "./hooks";
 import { ResizeDialog } from "./sandbox-size";
-import { AgentLogo, EmptyBox, InlineAlert, showError } from "./ui";
+import { AgentLogo, showError } from "./ui";
 import { sandboxFailure, sandboxPrimaryTask } from "./sandboxes-logic";
-import { runsOnMachine, runsOnNote } from "./providers-logic";
+import { runsOnMachine } from "./providers-logic";
 export { sandboxFailure } from "./sandboxes-logic";
 
 export type SandboxAction = "resume" | "stop" | "delete";
@@ -98,7 +95,7 @@ export function SandboxActionButton({
         size="sm"
         variant="outline"
         className={cn(
-          "h-[26px] border-[color:var(--boat-action-border,var(--border))] text-xs dark:text-[#D0D0D0]",
+          "min-h-11 min-w-11 border-[color:var(--boat-action-border,var(--border))] text-xs dark:text-[#D0D0D0]",
           compact && "px-2.5",
           action === "delete" &&
             "border-[#E06C6C]/25 text-[#E06C6C] dark:text-[#E06C6C]",
@@ -174,8 +171,6 @@ function RunsOnCell({ runsOn, size }: { runsOn: SandboxDto["runsOn"]; size: stri
 export function SandboxTable() {
   const sandboxes = useSandboxes();
   const tasks = useSandboxTasks();
-  const overview = useOverview();
-  const setup = useSetup();
   const projects = useProjects();
   const settings = useSettingRows();
   const now = useNow();
@@ -186,6 +181,7 @@ export function SandboxTable() {
   });
   const providerInfo = useSandboxProviders();
   const macUsage = experimental_useRpcQuery({ contract: rpcContract, method: "macUsage", input: null });
+  const snapshots = experimental_useRpcQuery({ contract: rpcContract, method: "snapshots", input: null });
   const sorted = useMemo(() => {
     const priority = (sandbox: SandboxDto) => {
       const task = sandboxPrimaryTask(sandbox, tasks.data?.tasks ?? []);
@@ -205,27 +201,22 @@ export function SandboxTable() {
     );
   }, [sandboxes.data, tasks.data]);
   const failure = sandboxes.error?.message || sandboxes.data?.error;
-  const hours =
-    usage.data?.plan?.hoursRemaining ?? setup.data?.plan?.vmHoursRemaining;
   const idleMinutes = settings.data?.settings.find(
     (setting) => setting.key === "stopIdleAfterMinutes",
   )?.value;
   return (
-    <div className="pb-10 dark:[--muted-foreground:#A8A8A8]">
-      <ThisMonthUsage instabox={providerInfo.data?.providers.find(p=>p.id==="instabox" && p.enabled)?.linuxUsage ? {...providerInfo.data.providers.find(p=>p.id==="instabox")!.linuxUsage!,active:sandboxes.data ? sandboxes.data.sandboxes.filter(s=>s.runsOn?.provider==="instabox" && s.runsOn?.os!=="macos" && isSandboxActive(s.state)).length : null} : undefined} providersOff={providerInfo.data?.providers.filter(p=>["instabox","scaleway"].includes(p.id)).every(p=>!p.enabled)} mac={macUsage.data} plan={usage.data?.plan} active={overview.data?.activeSandboxes} boatError={Boolean(overview.data?.boatError)} cap={overview.data?.cap} idleMinutes={typeof idleMinutes === "number" ? idleMinutes : undefined} />
-      {failure && <InlineAlert>{failure}</InlineAlert>}
-      {tasks.error && <InlineAlert>{tasks.error.message}</InlineAlert>}
-      {!sandboxes.data && !failure ? (
-        <EmptyBox>Loading sandboxes…</EmptyBox>
-      ) : sorted.length === 0 && !failure ? (
-        <EmptyBox>No sandboxes yet. Start a task to create one.</EmptyBox>
-      ) : (
+    <div className="pb-10">
+      <SandboxesUsage inventory={sandboxes} providers={providerInfo} mac={macUsage} snapshots={snapshots} tasks={tasks.data?.tasks ?? []} plan={usage.data?.plan} planObservedAt={usage.data?.checkedAt} planFailed={Boolean(usage.error || (usage.data && (!usage.data.plan || usage.data.plan.hoursRemaining === null || usage.data.plan.hoursTotal === null)))} now={now}>
+      {(failure || tasks.error) && <p className="text-xs text-muted-foreground" role="status">Some machine or task details are unavailable. Last known details may be shown.</p>}
+      {(
         sorted.length > 0 && (
+          <details className="rounded-xl border border-border">
+          <summary className="flex min-h-11 cursor-pointer items-center px-3.5 text-sm">Machine details and actions</summary>
           <div
-            className="mb-1 overflow-x-auto overscroll-x-contain focus-visible:outline-2 focus-visible:outline-ring"
+            className="sandbox-management mb-1 overflow-x-auto overscroll-x-contain focus-visible:outline-2 focus-visible:outline-ring"
             tabIndex={0}
             role="region"
-            aria-label="Sandboxes table, scroll horizontally for all actions"
+            aria-label="Machine details and actions"
           >
             <table className="w-full min-w-[700px] table-fixed border-collapse text-left text-[13px]">
               <caption className="sr-only">
@@ -283,30 +274,14 @@ export function SandboxTable() {
               </tbody>
             </table>
           </div>
+          </details>
         )
       )}
-      <div className="flex flex-wrap justify-between gap-x-4 gap-y-2 text-xs leading-[18px] text-[color:var(--boat-faint)]">
-        <p className="max-w-[620px]">
-          Stopped Linux sandboxes keep your work and cost nothing; Mac minimums still apply; the next message to
-          the chat resumes them. Deleting one removes its files for good.
-        </p>
-        {usage.data?.week.hours != null && usage.data.week.dollars != null && (
-          <p title="Size-weighted machine time and list-price cost of listed sandboxes">
-            This week:{" "}
-            <span className="text-foreground/75 dark:text-[#C1C1C1]">
-              {providerHours(usage.data.week.hours)}{" "}
-              sandbox hours
-            </span>
-            {" · about "}
-            <span className="text-foreground/75 dark:text-[#C1C1C1]">
-              ${usage.data.week.dollars.toFixed(2)}
-            </span>
-          </p>
-        )}
+      <div className="flex min-h-11 items-center justify-between gap-3 border-t border-border pt-3 text-sm text-muted-foreground">
+        <p>Idle sandboxes {typeof idleMinutes !== "number" ? "· setting unavailable" : idleMinutes === 0 ? "stay on" : `stop after ${idleMinutes % 60 === 0 ? `${idleMinutes / 60} h` : `${idleMinutes} min`}`}</p>
+        <a href="/settings/plugins/boat" className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-end text-[color:var(--sandboxes-link)] hover:underline">Change</a>
       </div>
-      {overview.data?.boatError && (
-        <InlineAlert>{overview.data.boatError}</InlineAlert>
-      )}
+      </SandboxesUsage>
     </div>
   );
 }
@@ -346,9 +321,7 @@ function SandboxTableRow({
   const memory = detail.data?.task?.memory;
   const active = !stopped && !failure && !!state?.moving;
   const unowned = sandbox.uses.length===0;
-  const label = unowned && stopped ? "Stopped · not resumable" : failure
-    ? `Stopped · ${failure.reason.toLowerCase()}`
-    : stopped
+  const label = unowned && stopped ? "Stopped · not resumable" : stopped
       ? use?.kind === "orchestrator"
         ? "Stopped"
         : "Stopped · nothing lost"
@@ -359,6 +332,8 @@ function SandboxTableRow({
           : state?.status === "needs-you"
             ? "Waiting for you · kept on"
             : `Idle${countdown ? ` · ${countdown}` : ""}`;
+  const powerLabel = sandbox.power === "off" ? "Guest stopped"
+    : sandbox.power === "on" ? "Guest on" : "Guest power unknown";
   const tone = failure
     ? "text-[#E06C6C]"
     : state?.status === "needs-you" && !stopped
@@ -398,7 +373,7 @@ function SandboxTableRow({
               {task ? (
                 <button
                   type="button"
-                  className="line-clamp-1 text-left hover:underline"
+                  className="flex min-h-11 items-center text-left hover:underline"
                   onClick={() => openTask(task.id)}
                 >
                   {task.role === "review"
@@ -408,7 +383,7 @@ function SandboxTableRow({
               ) : use && use.kind !== "task" ? (
                 <button
                   type="button"
-                  className="line-clamp-1 text-left hover:underline"
+                  className="flex min-h-11 items-center text-left hover:underline"
                   onClick={() => navigate.toThread(use.id)}
                 >
                   {title}
@@ -468,11 +443,12 @@ function SandboxTableRow({
             />
           )}
           <div className="text-[13px] leading-5">
-            <p>{!active && !stopped && sandbox.runsOn?.os === "macos" ? `Idle · ${runsOnNote(sandbox.runsOn)}` : label}</p>
+            <p>{failure || sandbox.power === "unknown" || sandbox.power === "off" ? powerLabel : label}</p>
+            {failure && <p className="line-clamp-2 break-words">{failure.reason}</p>}
             {task?.previewUrl && !stopped && (
               <UrlLink
                 href={task.previewUrl}
-                className="-ml-3 mt-1 flex h-4 w-fit rounded bg-[#7AA7FF]/15 px-1.5 py-px text-[11px] leading-[14px] text-[#7AA7FF] dark:bg-[#1E2A3D]"
+                className="mt-1 flex min-h-11 w-fit items-center rounded bg-[#7AA7FF]/15 px-1.5 text-xs text-[#7AA7FF] dark:bg-[#1E2A3D]"
               >
                 Preview live
               </UrlLink>
@@ -488,7 +464,7 @@ function SandboxTableRow({
           {failure && memory?.canResize && detail.data?.task ? (
             <Button
               size="sm"
-              className="h-[26px] whitespace-nowrap rounded-md bg-primary px-2.5 text-xs text-primary-foreground hover:bg-primary/90"
+              className="min-h-11 whitespace-nowrap rounded-md bg-primary px-2.5 text-xs text-primary-foreground hover:bg-primary/90"
               onClick={() => setResize(true)}
             >
               Resume on {memory.next?.label ?? "Large"}

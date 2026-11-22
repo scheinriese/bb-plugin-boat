@@ -1,4 +1,4 @@
-import { footerOnCount } from "./own-mac-count";
+import { footerMachineCount } from "./footer-machine-count";
 import { FooterUsage } from "./footer-usage";
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
@@ -10,7 +10,7 @@ import {
 import { rpcContract } from "../contract";
 import { Button } from "../components/ui/button";
 import { Icon } from "../components/ui/icon";
-import { canResumeSandbox, isSandboxActive, PANEL_PATH } from "./format";
+import { canResumeSandbox, PANEL_PATH } from "./format";
 import { useOverview, useSandboxes, useSandboxProviders } from "./hooks";
 import {
   SandboxActionButton,
@@ -157,8 +157,7 @@ function BoatFooterIcon({ className }: { className?: string }) {
     method: "overview",
     input: null,
   });
-  const own=experimental_useRpcQuery({pluginId:"boat",contract:rpcContract,method:"macUsage",input:{timezoneOffsetMinutes:new Date().getTimezoneOffset()}});
-  const count = footerOnCount(sandboxes.data?.sandboxes,own.data?.ownMac?.running);
+  const count = footerMachineCount(sandboxes.data?.inventory, Boolean(sandboxes.error));
   const broken = sandboxes.data?.sandboxes.some((sandbox) =>
     sandboxFailure(sandbox, tasks.data?.tasks ?? []),
   );
@@ -201,9 +200,9 @@ export function BoatFooter({
       }),
     [sandboxes.data, tasks.data],
   );
-  const count = footerOnCount(sandboxes.data?.sandboxes,mac.data?.ownMac?.running) ?? null;
-  const boatOn = sandboxes.data?.sandboxes.filter(s=>s.runsOn?.provider==="boat" && isSandboxActive(s.state)).length ?? null;
-  const providers = providerInfo.data?.providers.map(p=>p.id==="instabox" && p.linuxUsage ? {...p,linuxUsage:{...p.linuxUsage,active:sandboxes.data?.sandboxes.filter(s=>s.runsOn?.provider==="instabox" && s.runsOn?.os!=="macos" && isSandboxActive(s.state)).length ?? null}} : p);
+  const count = footerMachineCount(sandboxes.data?.inventory, Boolean(sandboxes.error));
+  const boatOn = footerMachineCount(sandboxes.data?.inventory, Boolean(sandboxes.error), "boat");
+  const providers = providerInfo.data?.providers;
   function allSandboxes() {
     navigate.toPluginPanel(PANEL_PATH, { subPath: "sandboxes" });
     dismiss();
@@ -213,7 +212,7 @@ export function BoatFooter({
       className="boat-ui w-full max-w-[calc(100vw-24px)] space-y-3 p-3.5 text-xs"
       aria-label="Cloud sandboxes"
     >
-      <h2 className="flex items-center justify-between text-[13px] leading-[18px] font-semibold text-[color:var(--boat-heading)]">Cloud sandboxes <span className="text-xs font-normal text-[#A8A8A8]">{count===null ? "" : `${count} on`}</span></h2>
+      <h2 className="flex items-center justify-between text-[13px] leading-[18px] font-semibold text-[color:var(--boat-heading)]">Cloud sandboxes <span className="text-xs font-normal text-[#A8A8A8]">{count===null ? "Status unknown" : `${count} on`}</span></h2>
       <FooterUsage plan={usage.data?.plan} providers={providers} mac={mac.data} boatOn={boatOn} cap={overview.data?.cap ?? null} day={usage.data?.day}/>
       {exceptions.length > 0 && (
         <div className="flex flex-col border-t border-border pt-1">
