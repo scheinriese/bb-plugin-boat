@@ -245,7 +245,7 @@ queued ──delivered──▶ delivered ──turn starts──▶ running ─
                                                    ├─ team_wait ──────▶ waiting ──event/time/children──▶ running
                                                    ├─ card opened ────▶ needs-user ──answered──────────▶ running
                                                    └─ turn ends, no result ─▶ continue once ─▶ running
-                                                                             └─ again ───────▶ closed(stopped-early)
+                                                                             └─ again ───────▶ paused (stopped early) ──Continue──▶ running
 any open status ── cancel | deadline | budget | refusal | error ──▶ closed(cancelled | expired | refused | failed)
 ```
 
@@ -256,13 +256,14 @@ any open status ── cancel | deadline | budget | refusal | error ──▶ cl
 | `running` | A turn of the assignee started on it |
 | `waiting` | The assignee is waiting on a declared event, a time or its own sub-assignments |
 | `needs-user` | Blocked on a card or grant |
+| `paused` | Stopped early twice (§4.6): kept, resumable with **Continue**, never closed by itself |
 | `closed` | Terminal, with an outcome |
 
-Outcomes: `done`, `partial`, `blocked` (from the result), `stopped-early`,
-`failed` (with a reason), `cancelled` (by whom), `expired` (deadline or
+Outcomes: `done`, `partial`, `blocked` (from the result), `failed` (with a
+reason), `cancelled` (by whom), `expired` (deadline or
 budget), `refused` (`duplicate`, `hop-limit`, `cycle`, `policy`,
 `no-done-when`). Refusals are typed results returned at once, never
-exceptions.
+exceptions. "Stopped early" is a paused state, not an outcome (§4.6).
 
 ### 4.2 Modes
 
@@ -339,9 +340,15 @@ When the assignee's thread goes idle (`thread.idle`), the assignment is still
    finished: your turn ended without a result. Continue until done-when holds,
    or report partial or blocked. If you're waiting on something, call
    team_wait."
-2. If the next turn also ends without a result, the assignment closes as
-   `stopped-early`. The requester is woken, the chief is told, and an Inbox
-   card offers **Continue**, **Reassign** and **Cancel**.
+2. If the next turn also ends without a result, the assignment is
+   **paused** ("stopped early"). It is not closed: its thread, budget, plan
+   and receipts stay as they are.
+   - The requester is woken and the chief is told.
+   - An ask offers **Continue** (resume in the same thread), **Reassign**
+     (a new assignment to another member; this one closes as `cancelled`,
+     reassigned) and **Cancel**.
+   - A paused assignment counts as needs you while its ask is open. After
+     **Continue**, it's running again.
 
 Waiting is legitimate only through `team_wait({until: event | time |
 children, reason, timeout})`, which sets `waiting` and a wake-up (Harbormaster
@@ -356,7 +363,7 @@ already wakes on task events). A progress line never counts as waiting.
 | Turns per assignment | work 20, consult 4 | `expired: budget`, requester woken |
 | Wall time per assignment | 12 h (overnight chains fit) | `expired: deadline` |
 | Turns per root tree | 120 | The tree **pauses** with one Inbox card, "Keep going? (summary, turns used)"; one tap adds the same again |
-| Automatic continues | 1 | `stopped-early` |
+| Automatic continues | 1 | Paused, stopped early (§4.6) |
 | Open assignments per requester / queued per assignee | 16 / 8 | `refused: policy` / stays `queued` with a position |
 | No activity while running | 30 min | One nudge, then an incident |
 | Brief / relayed message | 12,000 / 4,000 characters | Use a file link (§8.3) |
@@ -450,16 +457,25 @@ is read-only apart from actions the user takes.
   events, tool calls and transcript growth in the assignment's thread, as
   the watchdog measures it (§7.5).
   - **Quiet:** 10 minutes without measured activity while running.
-  - **Stalled:** 30 minutes without it; one nudge, then an incident.
+  - **Stalled:** 30 minutes without it; one nudge, then an incident. It's
+    shown in **slate**, "stalled · nudged", never in amber: the user doesn't
+    have to act.
   - A plan that still says "working" doesn't stop an assignment from
     showing as stalled.
 - **Budget projection.**
   - From the turns and wall time used so far and the rate per completed
     plan step, Team projects the total for the assignment and its tree.
-  - **Amber:** the projection passes the budget (§4.7) before done-when.
-  - **Red:** the budget is reached.
-  - Amber is a warning, not an ask. The ask comes only at the limit
-    ("Keep going?", §4.7).
+  - **Amber, "needs attention":** the projection passes the budget (§4.7)
+    before done-when. It's a warning, not an ask.
+  - **At the budget:** the tree pauses with the "Keep going?" ask, an amber
+    needs-you marker. That's not red, because nothing failed.
+- **Colour rules, everywhere:**
+  - **Amber** means needs you (an open ask) or needs attention (an offline
+    machine, a projected overrun).
+  - **Slate** means stalled or paused with no ask open.
+  - **Red** is only for failed work.
+  - Everything else is neutral.
+  - The status words are listed in §10.4.
 
 ## 5. Trust and approvals
 
@@ -541,7 +557,8 @@ How it works:
 - **The card shows** who asks, the exact action and targets, why, the risk,
   and an editable scope: which members (this one by default, or named members; never "any member"),
   expiry (default 24 h, up to 7 days) and uses (once by default, or N). It
-  offers **Approve**, **Approve once** and **Deny**. A decision card offers
+  offers **Approve** and **Deny** (§5.9's verb defaults; a grant is single-use
+  unless the scope says otherwise). A decision card offers
   its options, **Answer in your own words** (fills the composer, sends
   nothing) and the Undo window.
 - **Closing by tap.** A button calls Team's RPC `answerAsk({askId,
@@ -726,8 +743,9 @@ in each section.
 
 Everything that waits on the user is one **ask**: approval and decision
 cards (§5.3), member proposals (§5.8), instructions changes (§6.7),
-stopped-early escalations (§4.6), "Keep going?" (§4.7), rollover prompts
-(§6.8), and Harbormaster's own Needs you decisions. Every surface draws the
+stopped-early escalations (§4.6), "Keep going?" (§4.7), finished work
+waiting for your review, and Harbormaster's own Needs you decisions. A
+rollover is a notice, not an ask (§6.8). Every surface draws the
 same record.
 
 **The ask object** `k_…` (stored in the ledger, reusing Harbormaster's
@@ -735,30 +753,46 @@ same record.
 
 | Field | Meaning |
 | --- | --- |
-| `id` | `k_…` |
+| `id` | `k_…`. Never shown in UI copy (§10.4) |
 | `member` | Who asks (a member or project lead) |
 | `blocks` | The thread it blocks and its assignment, or none |
-| `verb` | **Do** (the user does something outside Team: renew a key, sign in, reconnect a machine), **Decide** (pick an option), **Approve** (grant a scoped action), **Review** (look at finished work, then accept or send it back) |
-| `title` | ≤80 characters, naming the object: "Restart the staging API" |
-| `unblocks` | What happens after the answer (≤120 characters), with the assignment link |
+| `verb` | **Do** (the user does something outside Team: enter a key, sign in, reconnect a machine), **Decide** (pick an option), **Approve** (grant a scoped action), **Review** (finished work waiting for your review: accept or merge, or send it back) |
+| `title` | Exactly one wording, ≤80 characters, naming the object: "Restart the staging API" |
+| `unblocks` | What happens after the answer, in words and never an id (≤120 characters) |
 | `due` | A time or none; past it, the ask shows "overdue" |
 | `tier` | `contained` or `confirm`: the highest tier among its options |
-| `options` | Labelled choices, each with its effect and tier; one is recommended |
+| `options` | Labelled choices, each with its effect and tier. **A recommended option is optional**: at most one, and only when the member actually recommends it |
+| `secondary` | The verb's secondary action (below) |
 | `scope` | Approvals only: action class, targets, members (one by default), expiry, uses |
-| `state` | `open`, `confirming` (Confirm tier only: an option was chosen, waiting for the confirm step), `answered`, `expired`, `withdrawn`, `superseded` |
+| `state` | `open`; `confirming` (Confirm tier: an option was chosen and the confirm step is open); `verifying` (Do asks: the user did it and Team is checking the effect); `answered`; `expired`; `withdrawn`; `superseded` |
 | `answer` | Choice, optional text, time, surface, and **provenance**: `unverified tap` or `typed reply` |
-| `after` | What the answer can still do: `undoUntil` (only for reversible effects), `revocable` (grant uses left), `heldUntil` (a send held before it goes out) |
+| `after` | What the answer can still do: `undoUntil` (only for reversible effects), `revocable` (grant uses left), `heldUntil` (a send held before it goes out), `ranAt` (when the effect happened) |
 | `revision` | Compare-and-swap counter |
 
-**Risk tiers.** The names are chosen to be honest.
+**Defaults per verb.** These are defined once; every surface uses them.
+
+| Verb | Primary | Secondary | Closes when |
+| --- | --- | --- | --- |
+| **Do** | The action, named ("Enter key…", "Reconnect…") | **Not now** | Team has **verified the effect** (a probe passes, a machine reconnects). In between: `verifying`, shown as "key saved · checking". If the check fails, it's open again: "The key didn't work: <reason>" |
+| **Decide** | The options | **Not now** | An option is chosen |
+| **Approve** | **Approve** (with a lock when Confirm) | **Deny** | Approved and applied, or denied |
+| **Review** | **Merge…** for pull requests, **Accept** for other work | **Send back** | Merged or accepted, or sent back. Finished work waiting for a review **is an ask**: it's in Your move and counts |
+
+**Not now** keeps the ask open and moves it below the other open asks for
+the rest of the day. It's never an answer.
+
+**Risk tiers.** The names are chosen to be honest. Tier names aren't shown
+in the UI; only a small **lock** marks actions that need the confirm step
+(§10.4).
 
 | Tier | Covers | Answered | "Undo" | "Pause and revoke" |
 | --- | --- | --- | --- | --- |
-| **Contained** | Reversible or bounded actions and choices inside Team, a sandbox or a non-production system: restart a staging service, pick a layout, continue a stopped-early assignment, add one more tree budget, run a queued local job now, move a job to a sandbox | One tap on any answer surface, including the phone | Shown only when the effect can really be reversed. A choice re-opens with the previous answer within 10 minutes; an unused budget extension is removed; a queued job that hasn't started is cancelled. A staging restart has **no** Undo: its receipt says "Done; can't be undone, limited to staging" | Revokes the grant's unused uses and pauses the asking member's related work: its open assignments in that tree go to `waiting`, with no new turns until **Resume**. It opens a "disputed answer" incident in Problems and lists what already happened. It doesn't reverse effects |
-| **Confirm** | Money (paid usage, paid APIs, a larger sandbox beyond the automatic size-up), production (deploys, production restarts, migrations), shipping (merge, ship to a base branch), messages to people (email, chat, posts, job applications), deleting user data, unattended full access on the Mac | Only with bb open (desktop, web or the phone app, never from a push), plus a second step that restates the scope in plain words: "Send 1 message to the garage from your account and book Thu 08:30? It can't be unsent." Harbormaster's Ship and Merge confirmations are this step for shipping | Only where time honestly allows it: a message to people is held 30 s after confirming ("Sending in 30 s · Cancel"), and Cancel before then is the Undo. Money, production and merges have no Undo; a rollback is a new ask | As for Contained; for a message still held, it also cancels the send |
+| **Contained** | Reversible or bounded actions and choices inside Team, a sandbox or a non-production system: restart a staging service, pick a layout, continue a stopped-early assignment, add one more tree budget, run a queued local job now, move a job to a sandbox | One tap on any answer surface, including the phone | Shown only when the effect can really be reversed. A choice re-opens with the previous answer within 10 minutes; an unused budget extension is removed; a queued job that hasn't started is cancelled. A staging restart has **no** Undo: its receipt says "can't be undone, limited to staging" | Revokes the grant's unused uses and pauses the asking member's related work: its open assignments in that tree go to `waiting`, with no new turns until **Resume**. It opens a "disputed answer" incident in Problems and lists what already happened. It doesn't reverse effects |
+| **Confirm** | Money (paid usage, paid APIs, a larger sandbox beyond the automatic size-up), production (deploys, production restarts, migrations), shipping (merge, ship to a base branch), messages to people (email, chat, posts, job applications), deleting user data, unattended full access on the Mac | Only with **bb open**: the desktop app, web, or the **bb phone app**. Never from a push or the compact Team page. A second step restates the full scope in plain words, including "can't be undone" where it applies, the same on every device | Only where time honestly allows it: a message to people is held 30 s after confirming, and its **Cancel** is the Undo (below). Money, production and merges have no Undo; a rollback is a new ask | As for Contained; for a message still held, it also cancels the send |
 
 - The §5.2 risk classes (`external-send`, `spend`, `ship`, `destroy`,
-  `submit-personal`, `local-full-access`) are all **Confirm**.
+  `submit-personal`, `local-full-access`) are all **Confirm**. These class
+  names never appear in the UI.
 - **Contained approvals** cover the bounded actions that a member's
   standing instructions or trust level ask about, for example
   `restart-nonprod`, `extend-budget` and `run-local-now`.
@@ -774,24 +808,31 @@ same record.
 3. **The strip above the blocked thread's composer**: only the asks that
    block that thread. The timeline card there shows state and points to the
    strip.
-4. **⌘J**: the app-wide quick ask to Nora, plus the full list of waiting
-   asks.
-5. **The phone**, Contained tier only:
+4. **Ask Nora** (default **⌘⇧J**, rebindable): the app-wide quick ask to
+   Nora, plus the full list of waiting asks.
+5. **The phone.**
    - **A push.** Today it can only open a thread (`bb push-notifications
-     send --thread`), so a tap opens the blocked thread and its strip
-     answers: two taps. With notification actions (§5.7 #5), it becomes one
-     tap on the lock screen.
-   - **The compact Team page.**
-   - Confirm asks show "Confirm in bb", which opens the **confirm view**
-     (below), never a confirm button on the phone's lock screen or compact
-     page.
-6. **The Board's detail panel.** This was a decision to make: it does get
-   buttons, because it's where the full context is (brief, evidence, diff),
-   and sending the user elsewhere to answer would cost a jump.
+     send --thread`). A tap opens the blocked thread, whose strip answers a
+     Contained ask, so it takes two taps. With notification actions (§5.7
+     #5), it becomes one tap on the lock screen. A push about a Confirm ask
+     opens Nora's chat in the bb phone app.
+   - **The compact Team page:** Contained asks get buttons. Confirm asks
+     show **Review and confirm**, which opens the confirm step in the bb
+     phone app (below).
+   - **Do asks the phone can't complete**, such as entering a key when bb's
+     secure key form isn't available on the phone, say "Enter the key on
+     your Mac" instead of a button.
+6. **The Board's detail panel.** It gets buttons because it's where the
+   full context is (brief, evidence, diff). It shows the ask's options
+   first. **Confirm** and **Cancel** appear only after an option is chosen,
+   never before.
 
 **Everything else only links:** Board cards (they open the detail panel),
-the check-in (a "what changed since last time" summary that links to its
-asks), sidebar rows, other chats and desktop notifications.
+the check-in, sidebar rows, other chats and desktop notifications.
+
+- **Check-ins name the asks** by title, with a link to each ("Waiting on
+  you: Restart the staging API; Pick a pricing page layout"). They never
+  repeat the count.
 
 **One state, cleared together.**
 
@@ -806,7 +847,7 @@ asks), sidebar rows, other chats and desktop notifications.
   - **The first answer wins** (compare-and-swap on `revision`).
 
 **The Confirm state machine.** Every path goes through it: a button tap on
-any surface, a typed reply (`team_answer_card`), ⌘J, the Board detail
+any surface, a typed reply (`team_answer_card`), Ask Nora, the Board detail
 panel, the Team page, and any other RPC or CLI caller.
 
 ```text
@@ -819,14 +860,11 @@ open ──choose a Confirm option (any path)──▶ confirming ──confirmA
 1. **Choosing a Confirm option** never applies it. `answerAsk` and
    `team_answer_card` record the choice, move the ask to `confirming`, and
    write the restated scope ("Send 1 message to the garage from your
-   account and book Thu 08:30? It can't be unsent").
+   account and book Thu 3 Dec, 08:30? It can't be unsent").
    - `team_answer_card` gives the member only "waiting for the user's
      confirm" and never the token. A member can't finish a Confirm ask.
 2. **The confirm step** shows that restated scope with **Confirm** and
    **Cancel**. Confirm and Cancel are the only buttons there.
-   - It's shown inline on the bb-open surface where the choice was made
-     (the tray, Today, the composer strip, ⌘J, the detail panel), or in
-     the confirm view.
    - Opening it issues a single-use `confirmToken`, valid for 2 minutes and
      bound to the ask's revision.
 3. **Only `confirmAsk({askId, revision, confirmToken})` applies a Confirm
@@ -836,63 +874,108 @@ open ──choose a Confirm option (any path)──▶ confirming ──confirmA
      "approve" CLI command apply it.
    - Harbormaster's Ship and Merge confirmations count as this step for
      shipping, and keep their own fresh checks.
-4. **Deny, Not now and other Contained options** on a Confirm ask apply at
-   once. They never cause a Confirm effect.
+4. **Deny, Not now, Send back and other Contained options** on a Confirm ask
+   apply at once. They never cause a Confirm effect.
 5. **Honesty about check A:** an agent with bb access can still call the
    RPCs that open the confirm step and confirm it, as it can any client
    RPC. The state machine makes sure no path skips the restated step by
    accident, and that no agent tool can finish it. Receipts, the push
    notification and Pause and revoke remain the safety net.
 
-**The confirm view (the fallback destination).** Some asks block no
-thread, such as Scout's application or a "Keep going?" for a whole tree.
-Every "Confirm in bb" link therefore leads to one place:
+**Where the confirm step runs.** One rule applies, the same in Nora's tray
+and everywhere else, and the button is always **Review and confirm**:
 
-- **The Team page's confirm view**, at plugin panel sub-path `ask/<askId>`.
-  It opens with `navigate.toPluginPanel(PANEL_PATH, {subPath:
-  "ask/<askId>"})`, the same navigation Harbormaster uses for its own
-  sub-pages (`web/footer.tsx:208`; the panel path is `PANEL_PATH`,
-  `web/format.ts:11`).
-- It shows the ask with its full context and the confirm step. It works on
-  desktop, web and the phone app.
-- **A push** can only open a thread (`bb push-notifications send
-  --thread`), so a push about a Confirm ask opens **Nora's chat**. Her tray
-  shows the ask with "Confirm in bb", which goes to the confirm view.
-- **An ask that does block a thread** can also be confirmed inline in that
-  thread's composer strip, with the same state machine.
-- **Stale taps.** A tap with an old revision, or on an ask that isn't open,
-  changes nothing.
-  - The surface refreshes and says why: "Already answered 09:05 on the phone
-    (unverified tap): Approve", or "This ask changed; check it again".
-  - A push can't be withdrawn today, so a push for a closed ask opens the
-    thread, whose strip shows the answered state.
-- **After an answer ("Next ask", the after-state from design D):**
-  - The surface shows a receipt line for 10 s: "Approved · Restart the
-    staging API · 09:05 · Wasn't me? Pause and revoke", plus Undo only if
-    `after.undoUntil` is set.
-  - Then **Next ask (N left)** brings the next one. The order is overdue
-    first, then soonest due, Confirm before Contained at the same due time,
-    then oldest.
+- **Merges and ships** always use Harbormaster's Merge or Ship confirmation
+  in the task's chat (checks, exact HEAD, "can't be undone"). On the phone
+  too: **Review and confirm** opens the task's chat in the bb phone app.
+  There's one story for merges on every device.
+- **Scopes that need reading space** open the **confirm view**: documents,
+  a CV or cover letter, a message longer than three lines, or more than one
+  recipient. Example: the job application in [EXAMPLE-DAY.md](EXAMPLE-DAY.md).
+- **Short scopes** confirm **inline**, on the surface where the choice was
+  made. The whole restated scope fits in the strip. Example: one two-line
+  message to the garage.
+- **On the phone**, every non-merge Confirm uses the confirm view,
+  full-screen, with the same full restated scope as on desktop.
+
+**The confirm view.** It also serves as the fallback destination for asks
+that block no thread, such as a job application or a "Keep going?" for a
+whole tree.
+
+- **Where:** the Team page at plugin panel sub-path `ask/<askId>`. It opens
+  with `navigate.toPluginPanel(PANEL_PATH, {subPath: "ask/<askId>"})`, the
+  same navigation Harbormaster uses for its own sub-pages
+  (`web/footer.tsx:208`; the panel path is `PANEL_PATH`,
+  `web/format.ts:11`). It works on desktop, web and the bb phone app.
+- **What it shows:** the ask with its full context, the day's real date and
+  time ("Due Fri 27 Nov, 12:00"), and its options, including the secondary
+  action (**Deny** or **Not now**). After a Confirm option is chosen, it
+  shows the confirm step.
+- **States:**
+  - **Open:** the options, plus Deny or Not now.
+  - **Confirming:** the restated scope, Confirm and Cancel.
+  - **Token expired:** "This confirmation timed out. Review it again", which
+    goes back to open.
+  - **This ask changed:** the ask's revision changed while confirming
+    (Nora updated the cover note, say). It shows what changed and goes back
+    to open.
+  - **Answered:** the receipt.
+
+**After an answer.**
+
+- **Receipts show both times:** when you answered and when it ran.
+  - "Approved 09:05 · ran 09:06 · can't be undone, limited to staging ·
+    Wasn't me? Pause and revoke".
+  - "Approved 13:10 · sent 13:11 · can't be unsent".
+  - Undo appears only if `after.undoUntil` is set.
+- **The receipt line** stays for 10 s on the surface that was used, then
+  moves to **Answered today** on the Team page. That list is ordered
+  newest first. "Wasn't me? Pause and revoke" stays on the receipt until
+  the grant expires.
+- **A held send keeps its Cancel for the whole 30 s,** even after the 10 s
+  receipt has faded. It shows as "Sending in 18 s · Cancel":
+  - on the ask's row at the top of Answered today;
+  - in the blocked thread's strip, when there is one;
+  - as a pill at the top of Nora's tray.
+
+  Once it's sent, the row reads "sent 13:11 · can't be unsent".
+- **Next ask.** One layout everywhere: "Next: <the next ask's title>",
+  with at most "then 1 more" and never a remaining count.
+  - The order: overdue first, then soonest due, Confirm before Contained at
+    the same due time, then oldest.
   - In the blocked thread, the strip collapses to the receipt and goes away
     once the thread resumes.
-  - The receipt with "Wasn't me? Pause and revoke" stays under **Answered
-    today** in Today until the grant expires.
+- **Stale taps.** A tap with an old revision, or on an ask that isn't open,
+  changes nothing. The surface refreshes and says why:
+  - "Already answered 09:05 on the phone: Approve";
+  - "This ask changed; check it again".
+
+  A push can't be withdrawn today, so a push for a closed ask opens the
+  thread, whose strip shows the answered state.
 - **Provenance.**
   - Buttons record `unverified tap` and explicit replies record `typed
     reply` (§5.3). An answer becomes `verified (app)` only after §5.7 #1.
-  - "Contained only on the phone" and "Confirm needs bb open" are UI rules,
-    not a security boundary (check A). Receipts and Pause and revoke are
-    the safety net.
+  - "Contained only from a push or the compact page" and "Confirm needs bb
+    open" are UI rules, not a security boundary (check A). Receipts and
+    Pause and revoke are the safety net.
 
-**One needs-you count, in one place: the Nora tile.**
+**One needs-you count, in one place.**
 
-- Home is Nora's chat, so the count lives on the tile that opens it.
-- It counts every open ask of every member, including project leads'
-  decisions.
-- The Team page's navigation badge is off while Team is on.
-- Today, ⌘J and the tray show the list, not another number.
-- Member rows and project-lead rows keep a per-row needs-you dot, with no
-  number.
+- **With Workbench: on the Nora tile.** Home is Nora's chat, so the count
+  lives on the tile that opens it. The Team page's navigation badge is off.
+- **Without Workbench (the native fallback, §11.2): on the Team nav entry.**
+  There's no Nora tile there, so this is the one exception to "no Team
+  badge".
+- **What it counts:** every open ask of every member, including project
+  leads' decisions and finished work waiting for review.
+- **Not elsewhere:** Today, Ask Nora and the tray show lists, not another
+  number, and check-ins name the asks instead of counting them.
+- **Sidebar markers: one amber marker per ask.**
+  - **The blocked thread is drawn in a project's section:** the marker goes
+    on that task row, and the member row shows a neutral "in <project>".
+  - **Otherwise** (the ask blocks no thread, or a thread outside any
+    project): the marker goes on the asking member's row.
+  - A member row never repeats a marker that a task row already shows.
 
 ## 6. Memory
 
@@ -1170,20 +1253,22 @@ then the compaction count is still shown.
 
 **Timing: a quiet moment only.** This follows Harbormaster's relay, which
 hands an orchestrator over only after it has been quiet for a set time
-("Wait before switching back", `docs/orchestrators.md`). A rollover starts
-only when all of these hold:
+("Wait before switching back", `docs/orchestrators.md`). **Quiet** means exactly two things:
 
-- the home chat is idle, with no turn running or starting;
-- it has no queued messages, and Team's outbox has nothing in flight to it;
-- no card shown in it is waiting on the user;
-- the user hasn't written there for 10 minutes;
-- the user has no unsent draft there. Drafts are only visible in the app
+- no turn is running or starting in the home chat;
+- the user isn't typing a draft there. Drafts are only visible in the app
   (`useSidebarThreadDraftIds`, app 0.6.104 `:23770`, 0.6.202 `:26271`), so
   Team's app part reports them. With no app open, nobody is typing.
 
-If no quiet moment comes within 24 hours, for example because a card stays
-open, an Inbox entry asks "Start fresh now? 1 open card moves with it".
-Nothing is forced.
+Open asks don't block the quiet moment, and neither do queued messages or
+Team's outbox. Asks carry over (below), queued messages are forwarded, and
+in-flight relays are redirected.
+
+**A rollover is a notice, not an ask.** It doesn't wait on the user and
+never counts toward the needs-you count. Its card offers Edit note, Start
+fresh now and Not now, but nothing depends on an answer. If no quiet moment
+comes within 24 hours, the notice says so again; still nothing is forced,
+and nothing is counted.
 
 **The handoff note.** Team assembles it from the ledger and the chat. It is
 never written from memory alone:
@@ -1230,7 +1315,8 @@ The note is shown on a **rollover card** in the old home chat (Codync's
 rollover card): "Starting a fresh chat at the next quiet moment".
 
 - It offers **Edit note**, **Start fresh now** and **Not now** (wait 24 h).
-- Editing counts as activity, so the rollover waits for the user to finish.
+- Editing the note is typing a draft, so the rollover waits for the user to
+  finish.
 - The note is stored in the ledger with the rollover, so it can be read
   again later.
 
@@ -1313,8 +1399,12 @@ rollover card): "Starting a fresh chat at the next quiet moment".
   is re-linked to the new chat. A tap works wherever the card is drawn,
   because it goes by card id. Explicit replies count in the new chat; in
   the old one they're accepted while the card is still open.
+- **Open asks carry over.** They're re-linked to the new chat and keep
+  their state, revision and due time. The tray in the new chat shows them
+  at once.
 - **Grants** belong to members, not threads, and stay as they are. The note
   lists them.
+- **Follow-ups** fire through `replyTo: home`, so they reach the new chat.
 - **Replies to in-flight assignments** go to the requester's current home
   chat. An assignment stores `replyTo: home` (resolved from `homeThreadId`
   when the reply is sent) or `replyTo: thread <id>` for a background thread.
@@ -1386,8 +1476,8 @@ or a result.
   wrote 2 messages there and 1 card was opened. Undo would hide them in an
   earlier conversation"). The user can choose **Undo and bring the new
   items along** instead. That runs Undo and also re-links the new items to
-  the old chat: the new cards, the new assignments' `replyTo`, and any new
-  background threads. The new chat's messages themselves stay in it, as an
+  the old chat: the new asks, the new assignments' `replyTo`, the new
+  follow-ups, and any new background threads. The new chat's messages themselves stay in it, as an
   earlier conversation, listed in the journal entry.
 - Either way, nothing becomes unreachable. Undo is itself journaled.
 
@@ -1483,7 +1573,7 @@ that runs every monitor pass on the bb machine.
 | Leak guard | Background-thread text is never relayed raw: only `team_report` fields go to a requester, after a secret-pattern scan | Any match | The relay is blocked, plus an incident |
 | Mac resources | Harbormaster's own-Mac readings (`web/mac-usage*`) | Free disk <10%, free RAM <2 GB, battery <30% on battery power | Heavy local jobs queue (§8.2), plus an incident |
 | Stale dev servers | Previews and dev servers started for an assignment (port, process, assignment) | Assignment closed, or 24 h idle | Stopped automatically, listed in Health with Stop and Keep |
-| Rollover stuck | A home chat past its rollover threshold with no quiet moment, or a rollover spawn that failed | 24 h without a quiet moment; any spawn failure | Inbox entry ("Start fresh now?") or incident; the pointer never moves on failure |
+| Rollover stuck | A home chat past its rollover threshold with no quiet moment, or a rollover spawn that failed | 24 h without a quiet moment; any spawn failure | A repeated rollover notice (not an ask, not counted), or an incident for a failed spawn; the pointer never moves on failure |
 | Lost assignment | Open with no thread activity, no wait and no queue | Hourly sweep | Re-delivered once, then `failed` |
 
 **Every failure path ends in an incident.** An incident is one message in the
@@ -1681,7 +1771,7 @@ redesigned.
    projected budget overrun turns amber (§4.10).
 6. **The phone** gets a compact Team page, not only push notifications and
    the Board.
-7. **⌘J** stays as an app-wide quick ask plus the full list of waiting asks.
+7. **Ask Nora** (default **⌘⇧J**, rebindable) is the app-wide quick ask plus the full list of waiting asks. The user's decision said ⌘J; bb already binds mod+J to `panel.toggle`, so ⌘⇧J is the default (§13 row 25).
 
 The canonical example day that every design uses is
 [EXAMPLE-DAY.md](EXAMPLE-DAY.md). Nora (chief of staff), Iris (designer who
@@ -1696,21 +1786,22 @@ what it must offer.
 
 | Screen | Must show | Must offer | States |
 | --- | --- | --- | --- |
-| **Sidebar, top to bottom** | One large **Nora tile** (the chief) carrying the one needs-you count; compact member rows; then project sections, each with a small project icon, its lead (the orchestrator) and its task threads nested as today | Open each; drag member rows to reorder; collapse the Team block; every native row behaviour (§11.3) | Team off (no block); no members (first run); Workbench absent (native fallback, §11.2); many members (>8: scroll or collapse) |
-| **Team page (full screen)** | Replaces Harbormaster's Cloud agents page. Tabs: **Today** ("Your move": open asks in the §5.9 order, then Answered today with receipts, then problems), **Board** (by flow: queued, running, waiting, needs you, done today; or by project), **Sandboxes**, **Usage**, **Projects** | Answer asks in Today; switch the Board grouping; open the detail panel (with ask buttons); Pause and revoke from a receipt | Nothing waiting ("You're clear"); overdue asks; a Confirm ask mid-confirmation; many asks (≥20) |
-| **Nora's ask tray** (in Nora's chat, above the composer) | Every open ask: verb, member, title, unblocks, due, tier; the recommended option first | Answer; Next ask; open the blocked thread | Empty (hidden); one; many (collapsed to the first 3 plus "N more") |
-| **Composer strip** (the blocked thread) | The asks that block this thread | Answer; confirm step for Confirm asks; receipt with Undo or Pause and revoke | Open; confirming; answered (receipt); stale ("Already answered…") |
-| **⌘J quick ask** | A one-line ask to Nora from anywhere, and the full list of waiting asks. Note: on the user's bb, mod+J is currently bound to bb's `panel.toggle` (`bb settings keyboard list`), so Team's command must not take it silently (§13 row 25) | Send to Nora; answer any ask; jump to its thread | No asks; many; a Confirm ask (confirm step inline) |
-| **Board detail panel** | The assignment or ask: brief, done-when, "<member>'s plan" (self-reported), measured activity (quiet or stalled), budget with projection (amber or red), evidence, files | Answer its ask; continue, reassign or cancel | Each status (§4.1); amber; stalled |
-| **Nora tile** (the chief) | Avatar, name (renamable; the tile stays large), status, preview line, **the one needs-you count** (open asks of every member), unread | Open Nora's chat (home); start a new request | Idle, working, needs you, unread, problem, paused, offline machine, draft in composer, selected |
-| **Member row** | Avatar, name, preview line by priority: needs you > activity > counts ("2 working · 1 waiting") > last message; unread = new messages + unanswered cards | Open the home chat; expand its background threads; hover actions (pin, mute, edit member) | Idle, unread, needs you, working, waiting (on a member, on a reset), stopped early, failed, paused, offline machine, sensitive, draft, selected, keyboard focus |
+| **Sidebar, top to bottom** | One large **Nora tile** (the chief) carrying the one needs-you count; compact member rows; then project sections, each with a small project icon, its lead (the orchestrator) and its task threads nested as today. Members' work for a project sits in that project's section, and the member row says "in <project>". One amber marker per ask, on the blocked thread's row (§5.9) | Open each; drag member rows to reorder; collapse the Team block; every native row behaviour (§11.3) | Team off (no block); no members (first run); Workbench absent (native fallback, §11.2); many members (>8: scroll or collapse) |
+| **Team page (full screen)** | Replaces Harbormaster's Cloud agents page. Tabs: **Today** ("Your move": open asks in the §5.9 order, then Answered today with receipts, then problems), **Board** (by flow: Queued, Running, Waiting, Needs you, Done today; or by project). Finished work waiting for your review sits in **Needs you** and moves to **Done today** only after it's merged or accepted. A paused (stopped-early) assignment sits in Needs you while its ask is open. Also **Sandboxes**, **Usage** and **Projects**. Answered today is ordered newest first | Answer asks in Today; switch the Board grouping; open the detail panel (with ask buttons); Pause and revoke from a receipt; Cancel a held send | Nothing waiting ("You're clear"); **overdue asks** (first, marked overdue); a Confirm ask mid-confirmation; a held send counting down; **≥20 asks** (grouped by due day, with the first 20 shown and "Show all") |
+| **Nora's ask tray** (in Nora's chat, above the composer) | Every open ask: member, title, unblocks, due; the options with the recommended one first, if the member recommends one; a lock on actions that need the confirm step | Answer; Review and confirm (inline or the confirm view, by the §5.9 rule); Next ask; open the blocked thread; Cancel a held send | Empty (hidden); one; many (the first 3, then "Show all"); **overdue** (first); **≥20 asks** (the first 3, then "Show all" to Today); a held send's pill |
+| **Composer strip** (the blocked thread) | The asks that block this thread | Answer; confirm step for short Confirm scopes; receipt with Undo or Pause and revoke; Cancel a held send | Open; overdue; confirming; held send ("Sending in 18 s · Cancel"); answered (receipt); stale ("Already answered…") |
+| **Ask Nora** (default ⌘⇧J, rebindable) | A one-line ask to Nora from anywhere, and the full list of waiting asks in the §5.9 order. mod+J stays bb's `panel.toggle` (`bb settings keyboard list`) | Send to Nora; answer any ask; jump to its thread | No asks; overdue first; ≥20 asks (searchable list); a Confirm ask (Review and confirm, by the §5.9 rule) |
+| **Board detail panel** | The assignment or ask: brief, done-when, "<member>'s plan" (self-reported), measured activity (quiet, or stalled in slate), budget with projection (amber when projected over), evidence, files; the one copyable id handle (§10.4) | Answer its ask: the options first, and Confirm and Cancel only after a Confirm option is chosen; continue, reassign or cancel | Each status (§4.1); needs attention (amber); stalled · nudged (slate); paused (stopped early) |
+| **Confirm view** (Team page, `ask/<id>`) | The ask with full context, the real date and time, the options with the secondary action (Deny or Not now), then the restated scope | Approve or another option, Deny or Not now; then Confirm or Cancel | Open; confirming; token expired ("This confirmation timed out"); this ask changed; answered (receipt); phone full-screen |
+| **Nora tile** (the chief) | Avatar, name (renamable; the tile stays large), status, preview line, **the one needs-you count** (open asks of every member), unread | Open Nora's chat (home); start a new request | Idle, working, needs you (the count), unread, problem, offline machine (amber, needs attention), draft in composer, selected; just rolled over (a notice, not counted) |
+| **Member row** | Avatar, name, preview line by priority: needs you > activity > counts ("2 working · 1 waiting") > last message; unread = new messages + unanswered cards | Open the home chat; expand its background threads; hover actions (pin, mute, edit member) | The §10.4 status words: idle, working, quiet, stalled · nudged, waiting for…, needs you, needs attention, paused · stopped early, failed, in <project>; plus unread, sensitive, draft, selected, keyboard focus |
 | **Project lead row** | The same row anatomy as a member, with the project name | Open the orchestrator chat; tasks nest as today | As today's orchestrator rows |
 | **Member home chat** | Header: member, role, placement, connections. Timeline: messages; **collapsed bot-to-bot exchange rows** (one per assignment: direction, member, mode, id, status, receipt), expandable to brief, result and files; decision cards; approval cards; result cards; stopped-early notices; follow-up notices; provenance labels. Context row: open assignments, check-in card, grants in effect, compactions since the last fresh start. Header menu: **Earlier conversations** | Reply; answer a card; open an assignment; continue, reassign or cancel; open background threads; **Start fresh**; open an earlier conversation | Empty (first message); busy; waiting on others; card open; home chat moved ("Moved to …, Undo"); rollover pending; just rolled over (note at the top); earlier conversation (banner pointing to the current chat) |
 | **Rollover card** (plugin-rendered, in the old home chat) | Why now (3 compactions, 14 days, 400 turns, or Start fresh), the handoff note (in progress, open plan, last user requests verbatim, pending cards, grants, pointers), "at the next quiet moment" | Edit note, Start fresh now, Not now; Undo after the move | Pending, waiting for a quiet moment, done, undone, failed |
 | **Team board (ledger)** | Every open assignment: title, requester → assignee, mode, status, age, budget used, last progress, receipts; paused trees; "Who knows…" search | Filter (open, needs you, stopped early, done today, by member); open; cancel; continue; reassign; raise the budget | Empty; many (≥50); a tree paused at its budget |
 | **Assignment detail** | Brief, done-when, origin chain, event timeline, deliveries, result block, files, linked tasks and decisions, grants used | Same actions as the board; copy a link | Each status and outcome (§4.1) |
 | **Decision card** (plugin-rendered, never blocks the chat) | Question, options, recommendation, the asking member, related assignment, "closes when you tap or reply to it" | Pick an option (Undo window); answer in own words; dismiss as withdrawn | Open, answered (by tap or reply), withdrawn, expired |
-| **Approval card** (plugin-rendered, never blocks the chat) | Who asks, the exact action and targets, why, risk, scope (members, expiry, uses); who answered ("unknown" for taps until bb core can tell) | Approve, Approve once, Deny; edit the scope; reply in the composer | Open (chat still usable), approved, denied, expired, used, revoked; answered by tap or by reply |
+| **Approval card** (plugin-rendered, never blocks the chat) | Who asks, the exact action and targets, why, risk, scope (members, expiry, uses); who answered ("unknown" for taps until bb core can tell) | Approve or Deny; edit the scope; reply in the composer | Open (chat still usable), approved, denied, expired, used, revoked; answered by tap or by reply |
 | **Member proposal card** | Template, name, role, placement, the reason ("needed N times") with assignment links | Create, edit then create, Not now; with the later opt-in setting: Undo after the chief created a member | Proposed, created, dismissed, undone |
 | **Approvals** | Active grants, standing trust per source and machine, history with receipts, the honest note from §5.6 | Revoke; change trust levels; change expiry | No grants; expiring soon |
 | **Member setup and edit** | Name, role, avatar, kind, **standing-instructions editor** (Markdown, ≤20,000 characters, the `## Always include` core marked with its own meter, "Injected up to here on this bb", import and export of `SOUL.md`), agent/model/effort, placement, sensitive, tools, connections, account connectors (with "Not enforced yet"), memory budgets, rollover thresholds (compactions, age, turns), trust, routines, follow-ups, home chat pointer | Edit the standing instructions; import or export `SOUL.md`; create from a template (developer, designer who codes, writer, personal assistant, job scout); edit; pause; archive; move the home chat | New; editing; invalid (no home chat, missing connection key, core over its limit); a proposed change waiting |
@@ -1720,7 +1811,7 @@ what it must offer.
 | **Routines and follow-ups** | Per member and combined: trigger, end condition, next run, last outcome (quiet, posted, failed); follow-ups with due time and note | Edit inline; run now; pause; end; snooze; cancel | Ending soon; ended; failed run |
 | **Health problem** | The Problems thread and a Health view: incidents by kind, affected member, assignment or machine, first and last seen, count; stale dev servers; lock queue | Retry; switch provider; open the machine; mute; resolve; stop a dev server | No incidents; one critical (machine offline); many |
 | **Empty and first run** | What Team is; create the chief (name, avatar, where it runs); suggested members; existing orchestrators offered as project leads | Create; skip; turn Team off | Harbormaster without Team; Team without Workbench |
-| **Mobile widths** | Phone sidebar drawer (baseline: "Sidebar open") with the Nora tile and member rows; the **compact Team page** (Today with Contained answers, a short Board); the composer strip in a blocked thread; Confirm asks as "Confirm in bb" | Every action above, one-handed; the drawer closes on navigation | Narrow (≤390 px) and tablet widths |
+| **Mobile widths** | Phone sidebar drawer (baseline: "Sidebar open") with the Nora tile and member rows; the **compact Team page** (Today with Contained answers, a short Board); the composer strip in a blocked thread; Confirm asks as **Review and confirm** in the bb phone app (the full-screen confirm view, or the task chat for merges), never from a push or the compact page; Do asks the phone can't complete say "Enter the key on your Mac" | Every action above, one-handed; the drawer closes on navigation | Narrow (≤390 px) and tablet widths |
 
 ### 10.3 Exploration axes
 
@@ -1766,6 +1857,67 @@ what it must offer.
     vs nested under the member row vs only in search. How visible a
     rollover is: a divider card vs a quiet note vs a toast.
 
+### 10.4 User-facing copy and visual rules
+
+**Defaults, pending the user's confirmation:**
+
+- **No ids in copy.** Assignment, task and ask ids (`a…`, `t…`, `k…`, or
+  K1 in the example day) never appear in user-facing text. One id appears
+  only as a copyable handle in the task detail panel.
+- **No tier labels.** "Contained" and "Confirm" aren't shown. Only a small
+  **lock** marks actions that need the confirm step.
+- **Members' project work sits in the project's section.** The member row
+  says "in <project>". Example: Writer's Docs release notes sit under Docs
+  site, and Writer's row reads "in Docs site".
+
+**Rules:**
+
+- **No internal names in the UI**: no `team_wait`, `restart-nonprod`,
+  `submit-personal`, "bb secret request", tool names or record fields. Use
+  plain words: "waiting for CI", "restart the staging API", "apply with
+  your CV", "enter the key in the secure form".
+- **"Idle", not "free"**, for a member with no open work.
+- **Answered today** is ordered newest first.
+- **Design annotations** (callouts, redlines, notes to developers) must be
+  visually separate from UI copy, so no annotation is mistaken for product
+  text.
+- **Ask Nora** has the default shortcut **⌘⇧J**, rebindable in bb's
+  keyboard settings.
+
+**Sidebar status vocabulary.** This is the one list. Rows use these words
+and no others.
+
+| Status | Meaning | Tone |
+| --- | --- | --- |
+| idle | No open work | Neutral |
+| working | Measured activity in the last 10 min | Neutral, with the activity ring |
+| quiet | Running, but 10 min without measured activity | Neutral |
+| stalled · nudged | 30 min without activity, nudged (§4.10) | Slate |
+| waiting for <member / the build Mac / the usage reset / CI> | A declared wait | Neutral |
+| needs you | An ask is open on this row (one marker per ask, §5.9) | Amber |
+| needs attention | An offline machine, or a projected budget overrun | Amber |
+| paused · stopped early | Stopped early with no ask open (resumable) | Slate |
+| failed | The work failed | Red |
+| in <project> | The member's work is shown under that project | Neutral |
+| done | Merged, accepted or finished, with no review waiting | Neutral |
+
+**Light mode must meet WCAG AA**: 4.5:1 for text and 3:1 for UI marks
+(markers, rings, the lock, focus outlines).
+
+The tokens to verify, measured on white (#FFFFFF). Harbormaster's current
+tones are single values tuned for dark mode (`CARD_TONES`,
+`web/cards-logic.ts:65-70`). Light mode needs its own values; the
+candidates below are suggestions for the designer to confirm.
+
+| Token | Current | On white | Passes | Candidate for light mode |
+| --- | --- | --- | --- | --- |
+| Amber (needs you, needs attention) | `#F0B135` | 1.90:1 | Neither text nor marks | `#B45309` (5.02:1) |
+| Success green | `#5BD08A` | 1.94:1 | Neither | `#15803D` (5.02:1) |
+| Red (failed) | `#E06C6C` | 3.22:1 | Marks only | `#B91C1C` (6.47:1) |
+| Neutral second line (waiting for reset) | `#7A7A7A` | 4.29:1 (3.94:1 on #F5F5F5) | Marks only | `#707070` (4.95:1; 4.54:1 on #F5F5F5) |
+| Slate (stalled, paused) | new | — | — | `#64748B` (4.76:1) |
+| Muted text | bb's `--muted-foreground` | to measure in bb's light theme | — | — |
+
 ## 11. Plugin boundary
 
 ### 11.1 Verified sidebar facts
@@ -1792,7 +1944,7 @@ a second thread list.
 | Strategy | Chief tile and Inbox on top | Cost | Verdict |
 | --- | --- | --- | --- |
 | **A. The Team block in Workbench.** Workbench draws the Nora tile (with the one needs-you count) and member rows above its project sections, and the project icons and leads in those sections, from a Team block in `sidebarState`. Member home chats are hidden from their project or section to avoid duplicates | Yes | A Workbench feature plus an additive DTO. No re-implementation, since Workbench already has the native behaviours | **Recommended** |
-| **B. Native fallback** (no Workbench). Home chats in a "Team" section that Harbormaster creates. The preview and status come from the metadata badge (only with Metadata turned on) and row status. The Inbox is the Cloud agents nav badge | No tile; the section's position is the user's preference | Small; it ships so Team works without Workbench | Ship as the fallback |
+| **B. Native fallback** (no Workbench). Home chats in a "Team" section that Harbormaster creates. The preview and status come from the metadata badge (only with Metadata turned on) and row status. The one needs-you count goes on the Team nav entry's badge, since there's no Nora tile; this is the only exception to "no Team badge" (§5.9) | No tile; the section's position is the user's preference | Small; it ships so Team works without Workbench | Ship as the fallback |
 | **C. Team owns the thread list** | Yes | It replaces Workbench, the bots-sidebar breakage, and must re-create everything in §11.3 | Rejected |
 
 ### 11.3 Native behaviours a thread list must keep
@@ -1868,7 +2020,7 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
 | --- | --- |
 | **0. In parallel** | Divergent concepts in Paper on the axes in §10.3. File the bb-core asks in §5.7 (attested RPC surface, form responder attribution, idempotent send, per-thread MCP) |
 | **1. MVP: the chief plus project leads** | The Team switch. The chief member and home chat; existing orchestrators as project leads. The ledger with work, consult and notify; resume, receipts, stopped early, budgets, hop limits and dedupe. Labels and the consent rule. Decision and approval cards with grants (the degraded design). The ask contract (§5.9): the ask object, the tiers, the tray, Today, the composer strip and the detail panel. The Team page replacing Cloud agents. The `team` block in `sidebarState` and the Workbench block (Inbox row, chief tile, member rows); the native fallback section. Problems thread incidents for stopped-early and offline machines. About me and member memory with the journal. Standing instructions (editor, core, `SOUL.md` import and export) and team rules, with proposal cards. Home chat rollover with the handoff note and Earlier conversations (§6.8), the chief first |
-| **2. Specialists** | Templates for developer, designer who codes, writer, personal assistant and job scout. Member-scoped tools and connections (the jobs database, secrets via `bb secret request`). Sandbox placement and isolation. File handover. Topic notes and "who knows". Per-source trust levels. ⌘J quick ask and the compact phone Team page |
+| **2. Specialists** | Templates for developer, designer who codes, writer, personal assistant and job scout. Member-scoped tools and connections (the jobs database, secrets via `bb secret request`). Sandbox placement and isolation. File handover. Topic notes and "who knows". Per-source trust levels. Ask Nora (⌘⇧J) and the compact phone Team page |
 | **3. Routines and health** | Routines with end conditions and code checks; editable follow-ups; check-ins with a silent pass. Mac locks, guards and quiet windows. All health checks in §7.5, including the leak guard, usage-limit switching and stale dev servers |
 | **4. Core features as they land** | Enforced owner-only approvals and strict MCP selection; raise the memory budgets on 32,768-character hosts |
 
@@ -1895,7 +2047,7 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
       18:00;
     - **ask sync case:** a Contained ask answered in the blocked thread's
       strip on the phone at 09:05:
-      - the tray, Today, ⌘J and the Nora count clear within one refresh;
+      - the tray, Today, Ask Nora and the Nora count clear within one refresh;
       - a tray tap at 09:06 with the old revision changes nothing and
         shows "Already answered 09:05";
       - Undo is hidden because the action is a staging restart, and Pause
@@ -1904,7 +2056,7 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
       - a Confirm ask offers no buttons on the compact page, and applies
         only with a valid `confirmToken`;
       - **no bypass:** for a Confirm ask, a tap, a typed "Ich gebe frei"
-        (`team_answer_card`), a ⌘J answer, a detail-panel answer and a raw
+        (`team_answer_card`), an Ask Nora answer, a detail-panel answer and a raw
         `answerAsk` call each leave it in `confirming` with no effect. An
         expired token is refused. Scout's application (no blocked thread)
         is confirmed through the `ask/<id>` view;
@@ -2013,7 +2165,10 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
 | 19 | Lock-screen and phone approvals? | **Resolved by the user:** one tap only for Contained asks, with a record and "Wasn't me? Pause and revoke"; no standing machine-wide grants; grants are per member, time-limited and single-use by default (§5.9) |
 | 20 | How is progress shown? | **Resolved by the user:** "<member>'s plan" for self-reported steps; measured activity for quiet and stalled; amber for a projected budget overrun (§4.10) |
 | 21 | What does the phone get? | **Resolved by the user:** a compact Team page, besides push and the Board |
-| 22 | What does ⌘J do? | **Resolved by the user:** an app-wide quick ask to Nora plus the full list of waiting asks |
-| 23 | Where does the one needs-you count live? | On the Nora tile, since home is Nora's chat. The nav badge is off; Today, ⌘J and the tray show lists, not counts (§5.9) |
+| 22 | What does the quick ask do? | **Resolved by the user:** an app-wide quick ask to Nora plus the full list of waiting asks ("Ask Nora") |
+| 23 | Where does the one needs-you count live? | On the Nora tile, since home is Nora's chat. The nav badge is off, except in the native fallback without Workbench, where the count goes on the Team nav entry. Today, Ask Nora and the tray show lists, not counts (§5.9) |
 | 24 | Does the Board's detail panel get answer buttons? | Yes: it has the full context, and answering there saves a jump. Board cards themselves only link (§5.9) |
-| 25 | ⌘J is already bb's `panel.toggle` binding on the user's bb. Which gives way? | Keep ⌘J for Team as decided, and on first run offer to move `panel.toggle` to another key with one tap (`bb settings keyboard set`). Until the user accepts, Team's command defaults to ⌘⇧J and says why |
+| 25 | ⌘J is already bb's `panel.toggle` binding on the user's bb. Which gives way? | **Decided:** Ask Nora defaults to ⌘⇧J, rebindable; `panel.toggle` keeps ⌘J |
+| 26 | The ask contract details from design round 4 | **Decided by the orchestrator:** "Next ask" shows one title, with at most "then 1 more"; slate for stalled, amber for needs you or needs attention, red only for failed; check-ins name asks; the bb phone app counts as bb open for Confirm, with the full restated scope; Do asks close when the effect is verified; a recommended option is optional; review of finished work is an ask; stopped early is paused, not closed; receipts show both times; one amber marker per ask (§4.10, §5.9, §10.4) |
+| 27 | Is a rollover an ask? | **Decided:** no. It's a notice that never counts; quiet means no running turn and no draft being typed; open asks carry over (§6.8) |
+| 28 | Copy defaults: no ids in copy, no tier labels (only a lock), member project work under the project's section | Pending the user's confirmation (§10.4). Recommendation: keep all three |
