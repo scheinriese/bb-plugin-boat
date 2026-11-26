@@ -1788,9 +1788,13 @@ redesigned.
 
 **Avatars (the user's choice after design round 4):** both systems are
 built.
-- **H3 "Orbit"** is the default.
-- **H2 "Shapes with a face"** is a setting, **Appearance › Calm faces**.
-- The Nora tile's orbit works with both.
+- **H3 "Orbit"** is the default. The Nora tile's orbit belongs to H3 only.
+- **H2 "Shapes with a face"** is a setting, **Appearance › Calm faces**. It
+  has no orbit. Its signature is outline-driven idle and interactive
+  animation:
+  - it breathes in a 4 s loop, blinks and glances;
+  - it reacts on hover and when an ask lands.
+- **Reduced motion** keeps both systems still.
 
 The canonical example day that every design uses is
 [EXAMPLE-DAY.md](EXAMPLE-DAY.md). Nora (chief of staff), Iris (designer who
@@ -1878,7 +1882,7 @@ what it must offer.
 
 ### 10.4 User-facing copy and visual rules
 
-**Defaults, pending the user's confirmation:**
+**Confirmed by the user** (§13 row 28):
 
 - **No ids in copy.** Assignment, task and ask ids (`a…`, `t…`, `k…`, or
   K1 in the example day) never appear in user-facing text. One id appears
@@ -2190,5 +2194,5 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
 | 25 | ⌘J is already bb's `panel.toggle` binding on the user's bb. Which gives way? | **Decided:** Ask Nora defaults to ⌘⇧J, rebindable; `panel.toggle` keeps ⌘J |
 | 26 | The ask contract details from design round 4 | **Decided by the orchestrator:** "Next ask" shows one title, with at most "then 1 more"; slate for stalled, amber for needs you or needs attention, red only for failed; check-ins name asks; the bb phone app counts as bb open for Confirm, with the full restated scope; Do asks close when the effect is verified; a recommended option is optional; review of finished work is an ask; stopped early is paused, not closed; receipts show both times; one amber marker per ask (§4.10, §5.9, §10.4) |
 | 27 | Is a rollover an ask? | **Decided:** no. It's a notice that never counts; quiet means no running turn and no draft being typed; open asks carry over (§6.8) |
-| 28 | Copy defaults: no ids in copy, no tier labels (only a lock), member project work under the project's section | Pending the user's confirmation (§10.4). Recommendation: keep all three |
-| 29 | Which avatar system? | **Resolved by the user:** both. H3 "Orbit" is the default, and H2 "Shapes with a face" is the setting Appearance › Calm faces. The Nora tile's orbit works in both (§10.1) |
+| 28 | Copy defaults: no ids in copy, no tier labels (only a lock), member project work under the project's section | **Resolved by the user:** all three confirmed. No ids in copy, with one copyable handle in the task detail; only a lock for Confirm, with no tier labels; member project work under the project's section, with "in <project>" on the member row (§10.4) |
+| 29 | Which avatar system? | **Resolved by the user:** both. H3 "Orbit" is the default, and only H3 has the Nora-tile orbit. H2 "Shapes with a face" is the setting Appearance › Calm faces, with outline-driven animation (a 4 s breathing loop, blinks, glances, a reaction on hover or when an ask lands). Reduced motion keeps both still (§10.1) |

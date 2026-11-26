@@ -48,7 +48,7 @@ Settings that matter today:
 | Web app | Globe | Web app lead | acme/web, acme/web-api | Has a staging environment |
 | Docs site | Book | Docs lead | acme/docs | — |
 
-**Where work is drawn** (§10.4 default):
+**Where work is drawn** (§10.4, confirmed by the user):
 - A member's work for a project sits in that project's section, and the
   member's row reads "in <project>".
   - Iris's pricing page and Developer's consult are in Web app.
