@@ -78,12 +78,12 @@ once. "Count" is the Nora tile's needs-you count right after the event
 | 9 | 10:15 | Olive | Finds Thu next week, 08:30, at the garage, which fits mornings only. The garage holds it until 17:00 | **K3** Approve · Confirm (`external-send`: 1 message from your account, books the slot) · a3 · 17:00 | 2 |
 | 10 | 10:30 | Web app lead | **a1 done:** PR #128, tests passing, checked on staging. The checkout row turns from running to ready | **K4** Review · Confirm (the merge option) · shipping the fix · 16:00 | 3 |
 | 11 | 10:50 | Docs lead | t5 (a5) has no measured activity for 30 min: **stalled**, nudged. The row turns amber. "Docs lead's plan: step 3 of 4" still says running, but that's self-reported | — | 3 |
-| 12 | 11:15 | You | In Nora's tray: K2 → Layout B. Undo is available until 11:25. Next ask moves to K3 | K2 answered | 2 |
+| 12 | 11:15 | You | In Nora's tray: K2 → Layout B. Undo is available until 11:25. Next ask moves to K4 (due 16:00), then K3 (due 17:00) | K2 answered | 2 |
 | 13 | 11:20 | Docs lead | Still no activity: incident "Docs search task stalled" in Problems. The Docs lead sends t5 a follow-up at 11:25, and the incident resolves at 11:30 when activity resumes | — | 2 |
 | 14 | 11:40 | Writer | **a4 done:** release notes draft shared as a file | **K5** Review · Contained · publishing with Docs 2.4 · 17:00 | 3 |
 | 15 | 12:30 | Iris | Her turn ends on "waiting for CI…" with no result: one automatic continue | — | 3 |
-| 16 | 12:50 | Iris | The turn ends again without a result: a2 **stopped early** | **K6** Decide · Contained (Continue, Reassign or Cancel) · a2 · 14:00 | 4 |
-| 17 | 13:00 | You | In Iris's thread strip: K6 → Continue | K6 answered | 3 |
+| 16 | 12:50 | Iris | The turn ends again without a result: a2 **stopped early**. Incident "Iris stopped early twice on a2" in Problems (§7.5) | **K6** Decide · Contained (Continue, Reassign or Cancel) · a2 · 14:00 | 4 |
+| 17 | 13:00 | You | In Iris's thread strip: K6 → Continue. The continued turn shows measured activity at 13:05, and the stopped-early incident resolves | K6 answered | 3 |
 | 18 | 13:10 | You | On the Mac: K3 → Approve. The confirm step reads "Send 1 message to the garage from your account and book Thu 08:30? It can't be unsent." The send is held 30 s and goes out at 13:11. **a3 done** at 13:12: booked, confirmation in mail | K3 answered | 2 |
 | 19 | 13:40 | Scout | Jobs check: the jobs database connection fails twice. Incident "Jobs database connector dropped" | **K7** Do · Contained · Scout's job search · 18:00 | 3 |
 | 20 | 14:00 | Build Mac | Goes offline while Iris's Safari screenshots are queued there; a2 is waiting. Incident "Build Mac offline" at 14:10 | — | 3 |
@@ -95,7 +95,7 @@ once. "Count" is the Nora tile's needs-you count right after the event
 | 26 | 17:05 | You | K7: enter the new jobs database key in bb's secure form (`bb secret request`). The probe passes at 17:06 and the connector incident resolves. Scout's check re-runs at 17:10 and finds 2 new roles; one is on-site only and is left out | K7 answered | 2 |
 | 27 | 17:20 | Scout | Shortlists one role | **K11** Approve · Confirm (`submit-personal`: apply to the Frontend engineer role at Example Corp with your CV) · the application · Fri 12:00 | 3 |
 | 28 | 17:30 | Build Mac | Back online; the incident resolves | — | 3 |
-| 29 | 18:00 | Nora | **Evening check-in:** "Today: 6 assignments done; PR #128 merged; car service booked for Thu 08:30; 3 incidents opened and resolved; waiting on you: 2 PRs to review and merge (K9, K10), 1 application to approve (K11)" | — (links only) | 3 |
+| 29 | 18:00 | Nora | **Evening check-in:** "Today: 6 assignments done; PR #128 merged; car service booked for Thu 08:30; 4 incidents opened and resolved; waiting on you: 2 PRs to review and merge (K9, K10), 1 application to approve (K11)" | — (links only) | 3 |
 
 ## Counts at three moments
 
@@ -111,7 +111,7 @@ once. "Count" is the Nora tile's needs-you count right after the event
 | Done today | 0 | 4: a7, a1, a4, a3 | 6: a7, a1, a4, a3, a5, a2 |
 | Merged today | 0 | 0 | 1: PR #128 |
 | Incidents open | 0 | 2: jobs connector, build Mac | 0 |
-| Incidents resolved today | 0 | 1: docs task stalled | 3 |
+| Incidents resolved today | 0 | 2: docs task stalled, Iris stopped early | 4 |
 | Answered today, with receipts | 0 | 4: K1, K2, K6, K3 | 8: K1, K2, K6, K3, K8, K4, K5, K7 |
 
 ## Consistency rules this day follows
@@ -125,7 +125,13 @@ once. "Count" is the Nora tile's needs-you count right after the event
 - **Every member has one compute description**, in the cast table.
 - **Every Confirm ask** is answered with bb open and a confirm step: K3 on
   the Mac, and the K4 merge through Harbormaster's confirmation. No Confirm
-  ask is answered from the phone or a push.
+  ask is answered from the phone or a push. K11 blocks no thread, so its
+  confirm happens in the Team page's confirm view (`ask/K11`) tomorrow.
+- **"Next ask" follows the stated order** (overdue, then soonest due, then
+  Confirm before Contained, then oldest): after K2 at 11:15 it's K4 (16:00),
+  then K3 (17:00).
+- **Every incident is counted**, including Iris's stop at 12:50 (§7.5):
+  four incidents open and resolve during the day.
 - **Undo appears only where it works:** K2 (a choice, for 10 minutes) and
   the held message in K3 (30 s). K1's restart has no Undo.
 - **The count on the Nora tile** always equals the open asks in the

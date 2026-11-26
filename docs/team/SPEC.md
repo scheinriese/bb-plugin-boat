@@ -544,12 +544,15 @@ How it works:
   offers **Approve**, **Approve once** and **Deny**. A decision card offers
   its options, **Answer in your own words** (fills the composer, sends
   nothing) and the Undo window.
-- **Closing by tap.** A button calls Team's RPC `answerCard({cardId,
-  revision, choice, scope})`. The revision makes a stale or repeated tap
-  fail, and the card closes.
+- **Closing by tap.** A button calls Team's RPC `answerAsk({askId,
+  revision, option, scope})` (§5.9). The revision makes a stale or repeated
+  tap fail, and the card closes. For a **Confirm** ask a tap doesn't close
+  it: it moves the ask to the confirm step (§5.9).
 - **Closing by explicit reply.** The chat isn't blocked, so the user can
   just type. That starts a normal user-started turn, in which the member
-  calls `team_answer_card(cardId, answer, quote)`. Team checks that:
+  calls `team_answer_card(cardId, answer, quote)`. For a **Confirm** ask
+  this also only moves the ask to the confirm step; the user still confirms
+  on screen (§5.9). Team checks that:
   - the card is open and shown in this thread;
   - the turn's dispatch had initiator `user` and no sender thread;
   - the quote is in the latest user message (`threads.conversationOutline`,
@@ -742,7 +745,7 @@ same record.
 | `tier` | `contained` or `confirm`: the highest tier among its options |
 | `options` | Labelled choices, each with its effect and tier; one is recommended |
 | `scope` | Approvals only: action class, targets, members (one by default), expiry, uses |
-| `state` | `open`, `answered`, `expired`, `withdrawn`, `superseded` |
+| `state` | `open`, `confirming` (Confirm tier only: an option was chosen, waiting for the confirm step), `answered`, `expired`, `withdrawn`, `superseded` |
 | `answer` | Choice, optional text, time, surface, and **provenance**: `unverified tap` or `typed reply` |
 | `after` | What the answer can still do: `undoUntil` (only for reversible effects), `revocable` (grant uses left), `heldUntil` (a send held before it goes out) |
 | `revision` | Compare-and-swap counter |
@@ -779,8 +782,9 @@ same record.
      answers: two taps. With notification actions (§5.7 #5), it becomes one
      tap on the lock screen.
    - **The compact Team page.**
-   - Confirm asks show "Confirm in bb", which opens the blocked thread in
-     the app, where the strip runs the confirm step.
+   - Confirm asks show "Confirm in bb", which opens the **confirm view**
+     (below), never a confirm button on the phone's lock screen or compact
+     page.
 6. **The Board's detail panel.** This was a decision to make: it does get
    buttons, because it's where the full context is (brief, evidence, diff),
    and sending the user elsewhere to answer would cost a jump.
@@ -798,10 +802,64 @@ asks), sidebar rows, other chats and desktop notifications.
   which Workbench polls every 3 s in the foreground.
 - **Answering.** `answerAsk({askId, revision, option, scope?, text?})`.
   - **Contained:** it applies at once.
-  - **Confirm:** it returns the restated scope and a single-use
-    `confirmToken`. `confirmAsk({askId, revision, confirmToken})` within 2
-    minutes applies it.
+  - **Confirm:** see the state machine below.
   - **The first answer wins** (compare-and-swap on `revision`).
+
+**The Confirm state machine.** Every path goes through it: a button tap on
+any surface, a typed reply (`team_answer_card`), ⌘J, the Board detail
+panel, the Team page, and any other RPC or CLI caller.
+
+```text
+open ──choose a Confirm option (any path)──▶ confirming ──confirmAsk with a valid token──▶ answered (applied)
+                                               │
+                                               ├─ Cancel, or 2 minutes pass ───────────────▶ open
+                                               └─ the ask changes (revision) ──────────────▶ open ("This ask changed")
+```
+
+1. **Choosing a Confirm option** never applies it. `answerAsk` and
+   `team_answer_card` record the choice, move the ask to `confirming`, and
+   write the restated scope ("Send 1 message to the garage from your
+   account and book Thu 08:30? It can't be unsent").
+   - `team_answer_card` gives the member only "waiting for the user's
+     confirm" and never the token. A member can't finish a Confirm ask.
+2. **The confirm step** shows that restated scope with **Confirm** and
+   **Cancel**. Confirm and Cancel are the only buttons there.
+   - It's shown inline on the bb-open surface where the choice was made
+     (the tray, Today, the composer strip, ⌘J, the detail panel), or in
+     the confirm view.
+   - Opening it issues a single-use `confirmToken`, valid for 2 minutes and
+     bound to the ask's revision.
+3. **Only `confirmAsk({askId, revision, confirmToken})` applies a Confirm
+   option.** Team's code that carries out a Confirm-tier effect runs only
+   after it has consumed a valid token.
+   - There's no second path: no `answerCard`, no direct tool, and no
+     "approve" CLI command apply it.
+   - Harbormaster's Ship and Merge confirmations count as this step for
+     shipping, and keep their own fresh checks.
+4. **Deny, Not now and other Contained options** on a Confirm ask apply at
+   once. They never cause a Confirm effect.
+5. **Honesty about check A:** an agent with bb access can still call the
+   RPCs that open the confirm step and confirm it, as it can any client
+   RPC. The state machine makes sure no path skips the restated step by
+   accident, and that no agent tool can finish it. Receipts, the push
+   notification and Pause and revoke remain the safety net.
+
+**The confirm view (the fallback destination).** Some asks block no
+thread, such as Scout's application or a "Keep going?" for a whole tree.
+Every "Confirm in bb" link therefore leads to one place:
+
+- **The Team page's confirm view**, at plugin panel sub-path `ask/<askId>`.
+  It opens with `navigate.toPluginPanel(PANEL_PATH, {subPath:
+  "ask/<askId>"})`, the same navigation Harbormaster uses for its own
+  sub-pages (`web/footer.tsx:208`; the panel path is `PANEL_PATH`,
+  `web/format.ts:11`).
+- It shows the ask with its full context and the confirm step. It works on
+  desktop, web and the phone app.
+- **A push** can only open a thread (`bb push-notifications send
+  --thread`), so a push about a Confirm ask opens **Nora's chat**. Her tray
+  shows the ask with "Confirm in bb", which goes to the confirm view.
+- **An ask that does block a thread** can also be confirmed inline in that
+  thread's composer strip, with the same state machine.
 - **Stale taps.** A tap with an old revision, or on an ask that isn't open,
   changes nothing.
   - The surface refreshes and says why: "Already answered 09:05 on the phone
@@ -1845,6 +1903,11 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
       - Next ask picks the next ask in §5.9 order;
       - a Confirm ask offers no buttons on the compact page, and applies
         only with a valid `confirmToken`;
+      - **no bypass:** for a Confirm ask, a tap, a typed "Ich gebe frei"
+        (`team_answer_card`), a ⌘J answer, a detail-panel answer and a raw
+        `answerAsk` call each leave it in `confirming` with no effect. An
+        expired token is refused. Scout's application (no blocked thread)
+        is confirmed through the `ask/<id>` view;
     - **rollover case:** a rollover at midday while the chief has 3 open
       assignments, 2 pending cards and 1 active grant:
       - it starts only once the chat is quiet (none during a turn, an open
