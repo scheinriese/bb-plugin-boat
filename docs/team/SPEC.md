@@ -92,7 +92,7 @@ failures go unnoticed.
 | Concept | Definition |
 | --- | --- |
 | **Member** | A named AI helper with a role, standing instructions, default agent/model/effort, tools and connections, memory, a compute placement and trust settings. Kinds: `lead`, `specialist`, `project-lead`. |
-| **Home chat** | The one bb thread where the user talks with a member. Team stores a fixed pointer (`member.homeThreadId`). It is never inferred from sidebar order, recency or completion. It moves only on a handoff from the current home chat, or on an explicit user action, and every move is journaled with Undo. |
+| **Home chat** | The one bb thread where the user talks with a member. Team stores a fixed pointer (`member.homeThreadId`). It is never inferred from sidebar order, recency or completion. It moves only on a handoff from the current home chat (including Team's automatic rollover of a long-lived chat, §6.8), or on an explicit user action, and every move is journaled with Undo. Earlier home chats stay reachable from the member. |
 | **Background thread** | A child thread of a member's home chat that does one assignment (work or consult). It belongs to that member and nests under the home chat in the sidebar. |
 | **Chief of staff (lead)** | Exactly one member. It receives anything not addressed to someone else, routes it, follows up, owns the Problems thread and runs check-ins. It says that work is *assigned*, never *done*, until a result has arrived. It stays the sidebar's large tile after renaming. |
 | **Project lead** | A Harbormaster orchestrator shown as a member. Its home chat is the orchestrator chat. Assignments to it become orchestrator goals, its tasks stay Harbormaster tasks, and its decisions stay in Needs you. |
@@ -136,7 +136,8 @@ mutable record has `revision` (compare-and-swap) and `createdAt`/`updatedAt`.
 | kind | `lead` (exactly one), `specialist`, `project-lead` |
 | avatar | Initials and colour, or an image file record |
 | standingInstructions | Markdown, up to 20,000 characters. The "Always include" core is a section the user marks (≤900 characters). Injected per §6.6; edited only by the user (§6.7) |
-| homeThreadId, previousHomeThreadIds | The fixed pointer and its history |
+| homeThreadId, previousHomeThreadIds | The fixed pointer and its history ("Earlier conversations") |
+| rollover | Thresholds (§6.8), `compactionsSinceRollover`, `pendingRollover` (note, reason, since) |
 | projectId | bb project of the home chat (Personal by default; a project lead's own project) |
 | orchestratorProjectId | For project leads: the Harbormaster project it coordinates |
 | agent | Default provider, model and effort for its threads |
@@ -155,6 +156,7 @@ mutable record has `revision` (compare-and-swap) and `createdAt`/`updatedAt`.
 | rootId, parentId, depth | The delegation tree |
 | origin | `{kind: user \| member \| routine \| external, id, source}`; fixed for the whole tree |
 | requester, assignee | `user` or a member id; a member id |
+| replyTo | `home` (resolved from the requester's current `homeThreadId` when the reply is sent, so it survives a rollover, §6.8) or `thread <id>` (a background thread) |
 | mode | `work`, `consult`, `notify` |
 | title, brief, doneWhen | ≤120 characters; ≤12,000 characters or a file link; ≤500 characters (required for work) |
 | dedupeKey | Optional caller key (for example `mail:<message id>`), plus a normalized brief hash |
@@ -943,6 +945,121 @@ about 4,113 at setting 0.
   from the member's next session" and Team tells the member about the change
   in its next turn's digest.
 
+### 6.8 Rolling over long-lived home chats
+
+Home chats live for months, the chief's most of all. Each compaction trades
+detail for a summary, so after a few of them the chat's context is mostly
+summaries of summaries. Team therefore moves a member to a fresh home chat
+at a quiet moment, with a handoff note. The ledger stays the source of
+truth: the note helps the member pick up, and it never replaces the ledger.
+
+**Triggers.** The first one reached starts a pending rollover:
+
+| Trigger | Default | Why |
+| --- | --- | --- |
+| Compactions of the home chat (counted from `thread/compacted` events) | **3** | One or two compactions keep enough detail. By the third, most of what the member "remembers" from the chat is summary, and the note plus the ledger and memory carry it better |
+| Age of the home chat | **14 days** for the chief, **30 days** for other members | The chief's chat is busiest and long-lived; two weeks keeps it near one compaction cycle of daily use. Others are quieter |
+| Size: user turns in the home chat | **400** | A backstop for chats that grow quickly without compacting, such as many short turns |
+| **Start fresh** (the user) | Any time | In the member's header menu and on the rollover card |
+
+The thresholds are per member, set in member setup. Off is allowed, but
+then the compaction count is still shown.
+
+**Timing: a quiet moment only.** This follows Harbormaster's relay, which
+hands an orchestrator over only after it has been quiet for a set time
+("Wait before switching back", `docs/orchestrators.md`). A rollover starts
+only when all of these hold:
+
+- the home chat is idle, with no turn running or starting;
+- it has no queued messages, and Team's outbox has nothing in flight to it;
+- no card shown in it is waiting on the user;
+- the user hasn't written there for 10 minutes;
+- the user has no unsent draft there. Drafts are only visible in the app
+  (`useSidebarThreadDraftIds`, app 0.6.104 `:23770`, 0.6.202 `:26271`), so
+  Team's app part reports them. With no app open, nobody is typing.
+
+If no quiet moment comes within 24 hours, for example because a card stays
+open, an Inbox entry asks "Start fresh now? 1 open card moves with it".
+Nothing is forced.
+
+**The handoff note.** Team assembles it from the ledger and the chat. It is
+never written from memory alone:
+
+- in progress: open assignments, with status and links (from the ledger);
+- the open plan: one short member turn on the old chat asks for it (≤1,500
+  characters), the way the relay asks an outgoing orchestrator for its
+  handoff note;
+- the last 5 user requests, verbatim, with links (`threads.conversationOutline`,
+  role user);
+- pending cards and active grants that concern this member, by id;
+- pointers to `team_board`, the assignment ids, and the old chat.
+
+The note is shown on a **rollover card** in the old home chat (Codync's
+rollover card): "Starting a fresh chat at the next quiet moment".
+
+- It offers **Edit note**, **Start fresh now** and **Not now** (wait 24 h).
+- Editing counts as activity, so the rollover waits for the user to finish.
+- The note is stored in the ledger with the rollover, so it can be read
+  again later.
+
+**How the new chat is created.** Team uses bb's native handoff, the same
+path as the app's "Hand off to new thread". `threads.spawn` takes:
+
+- the old chat's project, environment, section, provider, model and effort;
+- the first prompt "Continue from @thread:<old id> — [team · rollover]
+  <note>" (`bb guide threads`, "Handoff").
+
+That first turn runs the member's normal start-up with its standing
+instructions. The member re-posts the open cards' markers, then waits.
+
+**Pointer and sidebar.**
+
+- In one transaction, `homeThreadId` moves to the new chat, the old id goes
+  first in `previousHomeThreadIds`, and the journal records the move with
+  **Undo**. Undo moves the pointer back and makes the new chat an earlier
+  conversation.
+- The member keeps **one row** in the sidebar ("Designer"). The row points
+  to the new chat, and the `team` block lists the old chat in
+  `hideFromSections`.
+- The old chat isn't archived. It stays in bb's search and is reachable
+  from the member's row menu and the home chat header as **Earlier
+  conversations** (date range, title).
+- Open background threads are re-parented to the new home chat
+  (`threads.update` with `parentThreadId`), so they keep nesting under the
+  member.
+
+**Safety: nothing is lost or misrouted.**
+
+- **Cards** are ledger records, and their `threadId` (where they're shown)
+  is re-linked to the new chat. A tap works wherever the card is drawn,
+  because it goes by card id. Explicit replies count in the new chat; in
+  the old one they're accepted while the card is still open.
+- **Grants** belong to members, not threads, and stay as they are. The note
+  lists them.
+- **Replies to in-flight assignments** go to the requester's current home
+  chat. An assignment stores `replyTo: home` (resolved from `homeThreadId`
+  when the reply is sent) or `replyTo: thread <id>` for a background thread.
+  A wake queued before the move is resolved again when it's sent.
+- **Messages already queued for the old chat** at the moment of rollover are
+  forwarded to the new one and removed from the old queue: the user's own
+  messages, and bb's retries of a failed turn. That is the same filter as
+  Harbormaster's relay handover (`forwardable` in `src/runtime.ts:486-494`).
+- **Messages that arrive at the old chat later:**
+  - Team's `message.dispatch` hook on a previous home chat **rejects** a
+    Team relay addressed to it. Team re-sends the relay through the outbox
+    to the current home chat, using the assignment id and keeping its nonce
+    (§4.8).
+  - An agent message arriving there gets the same treatment, with its
+    original label.
+  - The user may still type in an earlier conversation. That proceeds, with
+    a banner: "This is an earlier conversation with Designer. Continue in
+    the current one →".
+  - Team tools called from an old chat still resolve to the member
+    (`previousHomeThreadIds`) and record results in the ledger, not in the
+    chat.
+- **A failure keeps the old state.** If spawning fails, the pointer doesn't
+  move, the rollover stays pending, and an incident is raised (§7.5).
+
 ## 7. Proactivity
 
 ### 7.1 Cheap code checks first
@@ -1010,6 +1127,7 @@ that runs every monitor pass on the bb machine.
 | Leak guard | Background-thread text is never relayed raw: only `team_report` fields go to a requester, after a secret-pattern scan | Any match | The relay is blocked, plus an incident |
 | Mac resources | Harbormaster's own-Mac readings (`web/mac-usage*`) | Free disk <10%, free RAM <2 GB, battery <30% on battery power | Heavy local jobs queue (§8.2), plus an incident |
 | Stale dev servers | Previews and dev servers started for an assignment (port, process, assignment) | Assignment closed, or 24 h idle | Stopped automatically, listed in Health with Stop and Keep |
+| Rollover stuck | A home chat past its rollover threshold with no quiet moment, or a rollover spawn that failed | 24 h without a quiet moment; any spawn failure | Inbox entry ("Start fresh now?") or incident; the pointer never moves on failure |
 | Lost assignment | Open with no thread activity, no wait and no queue | Hourly sweep | Re-delivered once, then `failed` |
 
 **Every failure path ends in an incident.** An incident is one message in the
@@ -1201,14 +1319,15 @@ what it must offer.
 | **Chief tile** | Avatar, name (renamable; the tile stays large), status, preview line, open assignment count, unread | Open the home chat; start a new request | Idle, working, needs you, unread, problem, paused, offline machine, draft in composer, selected |
 | **Member row** | Avatar, name, preview line by priority: needs you > activity > counts ("2 working · 1 waiting") > last message; unread = new messages + unanswered cards | Open the home chat; expand its background threads; hover actions (pin, mute, edit member) | Idle, unread, needs you, working, waiting (on a member, on a reset), stopped early, failed, paused, offline machine, sensitive, draft, selected, keyboard focus |
 | **Project lead row** | The same row anatomy as a member, with the project name | Open the orchestrator chat; tasks nest as today | As today's orchestrator rows |
-| **Member home chat** | Header: member, role, placement, connections. Timeline: messages; **collapsed bot-to-bot exchange rows** (one per assignment: direction, member, mode, id, status, receipt), expandable to brief, result and files; decision cards; approval cards; result cards; stopped-early notices; follow-up notices; provenance labels. Context row: open assignments, check-in card, grants in effect | Reply; answer a card; open an assignment; continue, reassign or cancel; open background threads | Empty (first message); busy; waiting on others; card open; home chat moved ("Moved to …, Undo") |
+| **Member home chat** | Header: member, role, placement, connections. Timeline: messages; **collapsed bot-to-bot exchange rows** (one per assignment: direction, member, mode, id, status, receipt), expandable to brief, result and files; decision cards; approval cards; result cards; stopped-early notices; follow-up notices; provenance labels. Context row: open assignments, check-in card, grants in effect, compactions since the last fresh start. Header menu: **Earlier conversations** | Reply; answer a card; open an assignment; continue, reassign or cancel; open background threads; **Start fresh**; open an earlier conversation | Empty (first message); busy; waiting on others; card open; home chat moved ("Moved to …, Undo"); rollover pending; just rolled over (note at the top); earlier conversation (banner pointing to the current chat) |
+| **Rollover card** (plugin-rendered, in the old home chat) | Why now (3 compactions, 14 days, 400 turns, or Start fresh), the handoff note (in progress, open plan, last user requests verbatim, pending cards, grants, pointers), "at the next quiet moment" | Edit note, Start fresh now, Not now; Undo after the move | Pending, waiting for a quiet moment, done, undone, failed |
 | **Team board (ledger)** | Every open assignment: title, requester → assignee, mode, status, age, budget used, last progress, receipts; paused trees; "Who knows…" search | Filter (open, needs you, stopped early, done today, by member); open; cancel; continue; reassign; raise the budget | Empty; many (≥50); a tree paused at its budget |
 | **Assignment detail** | Brief, done-when, origin chain, event timeline, deliveries, result block, files, linked tasks and decisions, grants used | Same actions as the board; copy a link | Each status and outcome (§4.1) |
 | **Decision card** (plugin-rendered, never blocks the chat) | Question, options, recommendation, the asking member, related assignment, "closes when you tap or reply to it" | Pick an option (Undo window); answer in own words; dismiss as withdrawn | Open, answered (by tap or reply), withdrawn, expired |
 | **Approval card** (plugin-rendered, never blocks the chat) | Who asks, the exact action and targets, why, risk, scope (members, expiry, uses); who answered ("unknown" for taps until bb core can tell) | Approve, Approve once, Deny; edit the scope; reply in the composer | Open (chat still usable), approved, denied, expired, used, revoked; answered by tap or by reply |
 | **Member proposal card** | Template, name, role, placement, the reason ("needed N times") with assignment links | Create, edit then create, Not now; with the later opt-in setting: Undo after the chief created a member | Proposed, created, dismissed, undone |
 | **Approvals** | Active grants, standing trust per source and machine, history with receipts, the honest note from §5.6 | Revoke; change trust levels; change expiry | No grants; expiring soon |
-| **Member setup and edit** | Name, role, avatar, kind, **standing-instructions editor** (Markdown, ≤20,000 characters, the `## Always include` core marked with its own meter, "Injected up to here on this bb", import and export of `SOUL.md`), agent/model/effort, placement, sensitive, tools, connections, account connectors (with "Not enforced yet"), memory budgets, trust, routines, follow-ups, home chat pointer | Edit the standing instructions; import or export `SOUL.md`; create from a template (developer, designer who codes, writer, personal assistant, job scout); edit; pause; archive; move the home chat | New; editing; invalid (no home chat, missing connection key, core over its limit); a proposed change waiting |
+| **Member setup and edit** | Name, role, avatar, kind, **standing-instructions editor** (Markdown, ≤20,000 characters, the `## Always include` core marked with its own meter, "Injected up to here on this bb", import and export of `SOUL.md`), agent/model/effort, placement, sensitive, tools, connections, account connectors (with "Not enforced yet"), memory budgets, rollover thresholds (compactions, age, turns), trust, routines, follow-ups, home chat pointer | Edit the standing instructions; import or export `SOUL.md`; create from a template (developer, designer who codes, writer, personal assistant, job scout); edit; pause; archive; move the home chat | New; editing; invalid (no home chat, missing connection key, core over its limit); a proposed change waiting |
 | **Instructions change card** (plugin-rendered, in chat and Inbox) | Target (a member's standing instructions or the team rules), the proposed text as a diff, the reason, the proposing member and turn, the source label ("based on an email"), stale state | Apply, edit then apply, Dismiss; Undo after applying | Open, applied, dismissed, stale, undone |
 | **Team rules editor** | The shared rules document (≤4,000 characters) with its `## Always include` core (≤350) and meters, including "Fits project leads: N of 350", how it differs from About me, waiting proposals, history from the journal | Edit; accept or dismiss proposals; Undo | Empty (with examples); core over its limit; proposals waiting |
 | **Memory** | About me; per-member memory with superseded entries; topic notes; the journal; budget meters; proposals | Accept or edit proposals; add; supersede; forget; Undo any journal entry | Full; proposals waiting; empty |
@@ -1255,6 +1374,9 @@ what it must offer.
     designed, because the fallback ships too.
 17. **Mobile:** how the tile behaves in the drawer, and card actions at
     phone width.
+18. **Earlier conversations and rollover:** a list in the member's header
+    vs nested under the member row vs only in search. How visible a
+    rollover is: a divider card vs a quiet note vs a toast.
 
 ## 11. Plugin boundary
 
@@ -1356,7 +1478,7 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
 | Phase | Scope |
 | --- | --- |
 | **0. In parallel** | Divergent concepts in Paper on the axes in §10.3. File the bb-core asks in §5.7 (attested RPC surface, form responder attribution, idempotent send, per-thread MCP) |
-| **1. MVP: the chief plus project leads** | The Team switch. The chief member and home chat; existing orchestrators as project leads. The ledger with work, consult and notify; resume, receipts, stopped early, budgets, hop limits and dedupe. Labels and the consent rule. Decision and approval cards with grants (the degraded design). The Inbox extended. The `team` block in `sidebarState` and the Workbench block (Inbox row, chief tile, member rows); the native fallback section. Problems thread incidents for stopped-early and offline machines. About me and member memory with the journal. Standing instructions (editor, core, `SOUL.md` import and export) and team rules, with proposal cards |
+| **1. MVP: the chief plus project leads** | The Team switch. The chief member and home chat; existing orchestrators as project leads. The ledger with work, consult and notify; resume, receipts, stopped early, budgets, hop limits and dedupe. Labels and the consent rule. Decision and approval cards with grants (the degraded design). The Inbox extended. The `team` block in `sidebarState` and the Workbench block (Inbox row, chief tile, member rows); the native fallback section. Problems thread incidents for stopped-early and offline machines. About me and member memory with the journal. Standing instructions (editor, core, `SOUL.md` import and export) and team rules, with proposal cards. Home chat rollover with the handoff note and Earlier conversations (§6.8), the chief first |
 | **2. Specialists** | Templates for developer, designer who codes, writer, personal assistant and job scout. Member-scoped tools and connections (the jobs database, secrets via `bb secret request`). Sandbox placement and isolation. File handover. Topic notes and "who knows". Per-source trust levels |
 | **3. Routines and health** | Routines with end conditions and code checks; editable follow-ups; check-ins with a silent pass. Mac locks, guards and quiet windows. All health checks in §7.5, including the leak guard, usage-limit switching and stale dev servers |
 | **4. Core features as they land** | Enforced owner-only approvals and strict MCP selection; raise the memory budgets on 32,768-character hosts |
@@ -1378,6 +1500,17 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
     - no bot-started risky action without a grant;
     - no card closed by an unrelated message;
     - a reply typed while a card is open starts a turn (the card never blocks the chat);
+    - **rollover case:** a rollover at midday while the chief has 3 open
+      assignments, 2 pending cards and 1 active grant:
+      - it starts only once the chat is quiet (none during a turn, an open
+        draft or a waiting card);
+      - afterwards the open work, the cards (re-linked and still answerable)
+        and the grant are unchanged in the ledger;
+      - the note holds the last 5 user requests verbatim;
+      - a result for an in-flight assignment, and a Team relay addressed to
+        the old chat id, both land in the new home chat exactly once;
+      - the sidebar still shows one row for the chief;
+      - Undo moves the pointer back;
     - **overflow case:** an eight-repo project lead on a 4,096 host, with
       `tasksBeforeAsking` 0 (the largest template), a carried goal, the
       longest review sentence and a 350-character team rules core, gets
@@ -1436,3 +1569,4 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
 | 12 | Should the account-connector opt-out ship before it's enforceable? | Yes, labelled "Not enforced yet", so the setting is ready when core adds strict MCP selection |
 | 13 | Standing instructions and team rules: size, core, who edits | **Resolved by the user:** a `SOUL.md`-like document of up to about 20,000 characters with an always-injected core, edited only by the user, with members proposing on a diff card; plus a shared team rules document (§6.7) |
 | 14 | How is the core marked: a heading in the document or a separate field? | A `## Always include` heading, so it survives `SOUL.md` export and import unchanged; the editor shows it as a pinned box |
+| 15 | When do home chats roll over? | **Resolved by the user:** automatically at a quiet moment, with a handoff note the user can edit, plus a Start fresh action (§6.8). Recommended defaults: 3 compactions, 14 days for the chief and 30 for others, or 400 user turns, whichever comes first; revisit after a month |
