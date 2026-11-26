@@ -1814,7 +1814,7 @@ what it must offer.
 | **Nora's ask tray** (in Nora's chat, above the composer) | Every open ask: member, title, unblocks, due; the options with the recommended one first, if the member recommends one; a lock on actions that need the confirm step | Answer; Approve… or Merge… (with the lock), then the confirm step inline or in the confirm view, by the §5.9 rule; Next ask; open the blocked thread; Cancel a held send | Empty (hidden); one; many (the first 3, then "Show all"); **overdue** (first); **≥20 asks** (the first 3, then "Show all" to Today); a held send's pill |
 | **Composer strip** (the blocked thread) | The asks that block this thread | Answer; confirm step for short Confirm scopes; receipt with Undo or Pause and revoke; Cancel a held send | Open; overdue; confirming; held send ("Sending in 18 s · Cancel"); answered (receipt); stale ("Already answered…") |
 | **Ask Nora** (default ⌘⇧J, rebindable) | A one-line ask to Nora from anywhere, and the full list of waiting asks in the §5.9 order. mod+J stays bb's `panel.toggle` (`bb settings keyboard list`) | Send to Nora; answer any ask; jump to its thread | No asks; overdue first; ≥20 asks (searchable list); a Confirm ask (Approve… or Merge…, then the confirm step by the §5.9 rule) |
-| **Board detail panel** | The assignment or ask: brief, done-when, "<member>'s plan" (self-reported), measured activity (quiet, or stalled in slate), budget with projection (amber when projected over), evidence, files; the one copyable id handle (§10.4) | Answer its ask: the options first, and Confirm and Cancel only after a Confirm option is chosen; continue, reassign or cancel | Each status (§4.1); needs attention (amber); stalled · nudged (slate); paused (stopped early) |
+| **Board detail panel** | The assignment or ask: brief, done-when, "<member>'s plan" (self-reported), measured activity (quiet, or stalled in slate), budget with projection (amber when projected over), evidence, files; the one copyable id handle (§10.4) | Answer its ask: the options first. Only after a Confirm option is chosen does the confirm step appear, with the button that restates the action ("Merge PR #128 into main") and Cancel (§5.9); continue, reassign or cancel | Each status (§4.1); needs attention (amber); stalled · nudged (slate); paused (stopped early) |
 | **Confirm view** (Team page, `ask/<id>`) | The ask with full context, the real date and time, the options with the secondary action (Deny or Not now), then the restated scope | Approve… or another option, Deny or Not now; then the restating button or Cancel | Open; confirming; token expired ("This confirmation timed out"); this ask changed; answered (receipt); phone full-screen |
 | **Nora tile** (the chief) | Avatar, name (renamable; the tile stays large), status, preview line, **the one needs-you count** (open asks of every member), unread | Open Nora's chat (home); start a new request | Idle, working, needs you (the count), unread, problem, offline machine (amber, needs attention), draft in composer, selected; just rolled over (a notice, not counted) |
 | **Member row** | Avatar, name, preview line by priority: needs you > activity > counts ("2 working · 1 waiting") > last message; unread = new messages + unanswered cards | Open the home chat; expand its background threads; hover actions (pin, mute, edit member) | The §10.4 status words: idle, working, quiet, stalled · nudged, waiting for…, needs you, needs attention, paused · stopped early, failed, in <project>; plus unread, sensitive, draft, selected, keyboard focus |
@@ -1940,6 +1940,26 @@ candidates below are suggestions for the designer to confirm.
 | Neutral second line (waiting for reset) | `#7A7A7A` | 4.29:1 (3.94:1 on #F5F5F5) | Marks only | `#707070` (4.95:1; 4.54:1 on #F5F5F5) |
 | Slate (stalled, paused) | new | — | — | `#64748B` (4.76:1) |
 | Muted text | bb's `--muted-foreground` | to measure in bb's light theme | — | — |
+
+### 10.5 Sidebar provider marks and nesting
+
+The user agreed these rules. Workbench's multi-level nesting and its
+provider marks are kept; Team adds to them.
+
+| Row | Provider mark | Other signals |
+| --- | --- | --- |
+| Plain non-Team chat | Workbench's provider icon | The running ring |
+| Nora tile and member rows | **None.** The provider shows in the chat header, the composer and a tooltip | The member's avatar (§10.1) |
+| Lead header (project lead) | A box-blob with a flag in the provider colour | — |
+| Task row | The assignee's face. A provider mark only when the provider is non-default or the task was handed off: a "Claude › Codex" chip, with the time and reason on hover | The running ring |
+| Review row | **Always** a provider mark | As today (italic review rows) |
+
+- **Nesting:** Workbench's multi-level nesting with continuous tree lines
+  stays: project → task → review → sub-thread.
+- **Setting:** "Show provider on every row", off by default. When on, the
+  rows above that omit a mark show one.
+- The provider is a fact about the thread, not about the member, so it
+  never replaces the member's face.
 
 ## 11. Plugin boundary
 
