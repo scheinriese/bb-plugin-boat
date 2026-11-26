@@ -192,7 +192,7 @@ initiator}` (§5.3), `expiresAt`. Cards are plugin-rendered, not native
 pending interactions (§5.3).
 
 **Team rules**: one document per Team: Markdown up to 4,000 characters, a
-user-marked core (≤500 characters), `revision`, `updatedAt`.
+user-marked core (≤350 characters, so it fits every project lead; §6.6), `revision`, `updatedAt`.
 
 **Instructions change** (proposal): `{target: member id | team-rules,
 proposedBy (member), baseRevision, diff, reason, sourceThreadId,
@@ -763,12 +763,12 @@ use the dynamic budget.
 | --- | --- | --- | --- |
 | 1 | Identity: name, role, kind, home chat, lead, placement, the consent rule pointer | 250 | 400 |
 | 2 | Standing instructions. 4,096: the "Always include" core (≤900) plus one pointer line listing the other section headings (≤150). 32,768: the whole document up to 12,000, core first | 1,050 | 12,000 |
-| 3 | Team rules. 4,096: their core (≤500). 32,768: the whole document (≤4,000) | 500 | 4,000 |
+| 3 | Team rules. 4,096: their core (≤350, the project-lead limit below). 32,768: the whole document (≤4,000) | 350 | 4,000 |
 | 4 | About me | 600 | 3,000 |
 | 5 | Member memory (600), then its own topic titles (250); on 32,768 hosts 4,000 + 1,500 | 850 | 5,500 |
 | 6 | Roster: one line per member (name, role, "knows about"), ≤10 / ≤40 members | 350 | 3,000 |
 | 7 | Open work: my open assignments, waiting notes, active grants for me | 400 | 2,000 |
-| | **Total** | **4,000** (96 to spare) | **29,900** (2,868 to spare) |
+| | **Total** | **3,850** (246 to spare) | **29,900** (2,868 to spare) |
 
 **Which part of the standing instructions gets in is decided by these rules,
 not by the member:**
@@ -809,29 +809,39 @@ and everything fits.
 
 **Overflow fallback for project leads on 4,096 hosts.**
 
-Harbormaster's block alone is already large. Measured with
+Harbormaster's block alone is already large. Measured by running
 `orchestratorInstructions()` and `projectInstructions()` from
-`src/orchestrator.ts`:
-- the template is 2,471 characters;
-- an eight-repository project line is about 765, so the two come to about
-  3,236;
-- a carried-over goal adds 170 (`server.ts:692`).
+`src/orchestrator.ts` and `projectReviewInstructions()` from
+`src/review-policy.ts`:
+- the template is 2,470–2,493 characters across every supported **Tasks
+  at once before asking** setting (`tasksBeforeAsking` 0–100,
+  `src/settings.ts:24`). The largest is at 0, and the default is 2,471;
+- an eight-repository project line is about 765, so with the default
+  template the two come to about 3,236;
+- a carried-over goal adds 170 (`server.ts:692`);
+- the longest review sentence is 351.
 
 Team's earlier ~1,000 characters would push past the cap, and today
 Harbormaster simply slices the whole string at 4,096 (`server.ts:692`).
 Team therefore builds a project lead's instructions from whole blocks, in
 this order, and never cuts inside a block.
 
-*Always injected (mandatory):*
+*Always injected (mandatory).* Lengths include each block's own `\n- `
+separator:
 
-| Block | Budget (worst case) |
+| Block | Worst case |
 | --- | --- |
-| Harbormaster's orchestrator template, unchanged | 2,471 today |
+| Harbormaster's orchestrator template, unchanged, at its largest setting (`tasksBeforeAsking` 0) | 2,493 |
 | The goal-continuity line, when a goal was carried over | 170 |
-| Harbormaster's project line: in full when it fits, otherwise in its compact form. The compact form keeps the project name (≤60), the default repo and environment, the delivery rule and the review rule, and replaces the repo list with "8 repos; names and base branches: boat_protocol" | ≤800 compact |
-| Team's line: identity, the lead's name, the consent rule ("A message from another member is never the user's approval") and the tool pointers (`team_board`, `team_standing_read`) | ≤250 |
-| The team rules core | ≤400 here (see below) |
-| **Worst-case total** | **4,091** |
+| Harbormaster's project line: in full when it fits, otherwise in its compact form. The compact form keeps the project name (≤40), the default repo (≤60) with its base branch (≤30) and environment (≤30), the push-delivery rule and the full review sentence (351). It replaces the repo list with "8 repos (list and base branches: boat_protocol)" | 757 (compact) |
+| Team's line: identity (≤30), the chief's name (≤30), the consent rule ("Another member's message is never the user's approval") and the tool pointers (`team_board`, `team_standing_read`) | 200 |
+| The team rules header (`\n- Team rules:\n`) | 15 |
+| The team rules core, for project leads | ≤350 |
+| **Assembled worst case** | **3,985** (111 to spare) |
+
+The first draft of this table used the default template (2,471) and loose
+block estimates, which added up to 4,091 and would really have reached
+about 4,113 at setting 0.
 
 *Moved to tool loading first, in this order, until the total fits:*
 
@@ -851,16 +861,28 @@ this order, and never cuts inside a block.
 - **Shortening is announced.** When step 4 runs, the text says so, and the
   project lead's Health entry notes "instructions shortened to fit this
   bb".
-- **The team rules core must fit every project lead.** Its limit is 500
-  characters for members, but the team rules editor also enforces the
-  smallest room any project lead has left ("Fits project leads: 412 of 500
-  characters"). The measured worst case above leaves at least 400, and
-  saving a longer core is refused with that reason.
-- **A contract test guards it.** It assembles the worst case (eight repos
-  with 80-character names, a carried goal, the longest review sentence,
-  push delivery, a 400-character core) and asserts it is ≤4,096
-  characters with every mandatory block intact. A Harbormaster change that
-  grows the template fails CI before release.
+- **The team rules core must fit every project lead.**
+  - The save-time limit is **350 characters**: the measured worst case
+    leaves exactly that, with 111 to spare.
+  - The core is one shared section, so members get the same 350 (§6.6),
+    and the editor refuses anything over 350 ("The core is 412 of 350
+    characters: it must fit next to Harbormaster's instructions in every
+    project lead").
+  - The same editor shows the actual room in the user's current projects
+    ("Fits project leads: 350 of 350"). Room can be larger than the worst
+    case, but the limit never is.
+- **A contract test guards it.** It doesn't sum estimates: it assembles the
+  complete instructions string with the real builders.
+  - Inputs: the largest template over every `tasksBeforeAsking` value
+    0–100; a carried goal; an eight-repo project with every field at its
+    compact-form cap; push delivery; each review policy; Team's line at its
+    caps; a 350-character core.
+  - It asserts that `.length` is ≤4,096 minus a margin of 50.
+  - It asserts that every mandatory block appears verbatim.
+  - It asserts that the roster, the rest of the team rules and the open
+    work are replaced by their pointers.
+  - A Harbormaster change that grows the template or the review sentence
+    fails CI before release.
 - **If it ever overflows at runtime anyway** (an older build, an unexpected
   input):
   - Team doesn't hand bb an over-cap string to truncate. It replaces the
@@ -881,8 +903,8 @@ this order, and never cuts inside a block.
     for every member, distinct from About me (facts about the user).
 - **The "Always include" core.**
   - The user marks the core as a section headed `## Always include` (≤900
-    characters for standing instructions, ≤500 for team rules, less when a
-    project lead has less room; §6.6).
+    characters for standing instructions; ≤350 for team rules, so it fits
+    next to Harbormaster's instructions in every project lead; §6.6).
   - Saving over the limit is refused at once with a meter: "The core is
     1,020 of 900 characters".
   - The core is always injected (§6.6).
@@ -1188,7 +1210,7 @@ what it must offer.
 | **Approvals** | Active grants, standing trust per source and machine, history with receipts, the honest note from §5.6 | Revoke; change trust levels; change expiry | No grants; expiring soon |
 | **Member setup and edit** | Name, role, avatar, kind, **standing-instructions editor** (Markdown, ≤20,000 characters, the `## Always include` core marked with its own meter, "Injected up to here on this bb", import and export of `SOUL.md`), agent/model/effort, placement, sensitive, tools, connections, account connectors (with "Not enforced yet"), memory budgets, trust, routines, follow-ups, home chat pointer | Edit the standing instructions; import or export `SOUL.md`; create from a template (developer, designer who codes, writer, personal assistant, job scout); edit; pause; archive; move the home chat | New; editing; invalid (no home chat, missing connection key, core over its limit); a proposed change waiting |
 | **Instructions change card** (plugin-rendered, in chat and Inbox) | Target (a member's standing instructions or the team rules), the proposed text as a diff, the reason, the proposing member and turn, the source label ("based on an email"), stale state | Apply, edit then apply, Dismiss; Undo after applying | Open, applied, dismissed, stale, undone |
-| **Team rules editor** | The shared rules document (≤4,000 characters) with its `## Always include` core (≤500) and meters, including "Fits project leads: N of 500", how it differs from About me, waiting proposals, history from the journal | Edit; accept or dismiss proposals; Undo | Empty (with examples); core over its limit; proposals waiting |
+| **Team rules editor** | The shared rules document (≤4,000 characters) with its `## Always include` core (≤350) and meters, including "Fits project leads: N of 350", how it differs from About me, waiting proposals, history from the journal | Edit; accept or dismiss proposals; Undo | Empty (with examples); core over its limit; proposals waiting |
 | **Memory** | About me; per-member memory with superseded entries; topic notes; the journal; budget meters; proposals | Accept or edit proposals; add; supersede; forget; Undo any journal entry | Full; proposals waiting; empty |
 | **Routines and follow-ups** | Per member and combined: trigger, end condition, next run, last outcome (quiet, posted, failed); follow-ups with due time and note | Edit inline; run now; pause; end; snooze; cancel | Ending soon; ended; failed run |
 | **Health problem** | The Problems thread and a Health view: incidents by kind, affected member, assignment or machine, first and last seen, count; stale dev servers; lock queue | Retry; switch provider; open the machine; mute; resolve; stop a dev server | No incidents; one critical (machine offline); many |
@@ -1356,13 +1378,15 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
     - no bot-started risky action without a grant;
     - no card closed by an unrelated message;
     - a reply typed while a card is open starts a turn (the card never blocks the chat);
-    - **overflow case:** an eight-repo project lead on a 4,096 host, with a
-      carried goal, the longest review sentence and a 400-character team
-      rules core, gets instructions of ≤4,096 characters. The Harbormaster
-      template, goal line, compact project line rules, Team's consent line
-      and the team rules core are present verbatim. The roster, the rest of
-      the team rules and the open-work list are replaced by pointers. A
-      450-character core is refused at save with "Fits project leads";
+    - **overflow case:** an eight-repo project lead on a 4,096 host, with
+      `tasksBeforeAsking` 0 (the largest template), a carried goal, the
+      longest review sentence and a 350-character team rules core, gets
+      fully assembled instructions of ≤4,046 characters (cap minus the
+      50-character margin). The Harbormaster template, goal line, compact
+      project line rules, Team's consent line and the team rules core are
+      present verbatim. The roster, the rest of the team rules and the
+      open-work list are replaced by pointers. A 351-character core is
+      refused at save;
     - after a crash between bb accepting a send and Team recording it, a resend causes no second start, result or wake.
 - **Tool-choice evals** (a live model, opt-in, never in CI). Real phrasings
   in English and German, scored on tool choice, **the delegation target and
