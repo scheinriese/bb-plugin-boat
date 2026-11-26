@@ -989,8 +989,14 @@ never written from memory alone:
 - the open plan: one short member turn on the old chat asks for it (≤1,500
   characters), the way the relay asks an outgoing orchestrator for its
   handoff note;
-- the last 5 user requests, verbatim, with links (`threads.conversationOutline`,
-  role user);
+- the last 5 user requests, verbatim, with links. `threads.conversationOutline`
+  (role `user`) returns only previews, so it's used to find their
+  `messageSeq`. Each full message then comes from `threads.message({threadId,
+  seq})`, whose result carries the full `text`, `initiator` and
+  `senderThreadId` (`ThreadsArea.message`, 0.6.104 `:18890`, 0.6.202
+  `:20641`; message `text` at 0.6.202 `:16582`). Only messages with
+  initiator `user` and no sender thread count, so a member's or Team's
+  relay is never quoted as the user's request;
 - pending cards and active grants that concern this member, by id;
 - pointers to `team_board`, the assignment ids, and the old chat.
 
@@ -1002,22 +1008,47 @@ rollover card): "Starting a fresh chat at the next quiet moment".
 - The note is stored in the ledger with the rollover, so it can be read
   again later.
 
-**How the new chat is created.** Team uses bb's native handoff, the same
-path as the app's "Hand off to new thread". `threads.spawn` takes:
+**How the new chat is created.**
 
-- the old chat's project, environment, section, provider, model and effort;
-- the first prompt "Continue from @thread:<old id> — [team · rollover]
-  <note>" (`bb guide threads`, "Handoff").
+- **Members (lead and specialists):** Team uses bb's native handoff, the
+  same path as the app's "Hand off to new thread". `threads.spawn` takes:
+  - the old chat's project, environment, section, provider, model and
+    effort;
+  - the first prompt "Continue from @thread:<old id> — [team · rollover]
+    <note>" (`bb guide threads`, "Handoff").
 
-That first turn runs the member's normal start-up with its standing
-instructions. The member re-posts the open cards' markers, then waits.
+  That first turn runs the member's normal start-up with its standing
+  instructions. The member re-posts the open cards' markers, then waits.
+- **Project leads** are Harbormaster orchestrators, so a plain spawn would
+  leave the new chat with no orchestrator configuration while tasks and
+  decisions still reported to the old one. Their rollover reuses
+  Harbormaster's existing take-over, the same path as **Take over from**
+  and the Claude ↔ Codex relay (`startOrchestrator` with `takeOver`,
+  `src/runtime.ts:315-389`). The note goes in as the take-over's handoff
+  notes. That path:
+  1. spawns the successor with the orchestrator's project, environment,
+     provider, model and effort, and a kickoff that includes the take-over
+     section (`takeOverSection`, `src/orchestrator.ts:209`);
+  2. registers it as the project's orchestrator (`store.addOrchestrator`)
+     and retires the old chat (`store.removeOrchestrator`, metadata `role:
+     former-orchestrator` with `successor`);
+  3. moves the open tasks (`store.reassignOpenTasks`,
+     `src/store.ts:829-846`) and open decisions
+     (`store.reassignOpenDecisions`, `src/store.ts:1049-1051`);
+  4. clears the old chat's relay state;
+  5. re-parents worker chats and other open children, then wakes the held
+     notices so they reach the successor.
+
+  Team then moves its own records in the same step: `homeThreadId`, the
+  cards and the outbox, as below.
 
 **Pointer and sidebar.**
 
-- In one transaction, `homeThreadId` moves to the new chat, the old id goes
-  first in `previousHomeThreadIds`, and the journal records the move with
-  **Undo**. Undo moves the pointer back and makes the new chat an earlier
-  conversation.
+- In one transaction, `homeThreadId` moves to the new chat and the old id
+  goes first in `previousHomeThreadIds`. The journal records the move as a
+  **rollover record** listing everything that moved: the card links, the
+  background threads re-parented, the outbox entries redirected and, for
+  project leads, the tasks and decisions reassigned.
 - The member keeps **one row** in the sidebar ("Designer"). The row points
   to the new chat, and the `team` block lists the old chat in
   `hideFromSections`.
@@ -1045,12 +1076,31 @@ instructions. The member re-posts the open cards' markers, then waits.
   messages, and bb's retries of a failed turn. That is the same filter as
   Harbormaster's relay handover (`forwardable` in `src/runtime.ts:486-494`).
 - **Messages that arrive at the old chat later:**
-  - Team's `message.dispatch` hook on a previous home chat **rejects** a
-    Team relay addressed to it. Team re-sends the relay through the outbox
-    to the current home chat, using the assignment id and keeping its nonce
-    (§4.8).
-  - An agent message arriving there gets the same treatment, with its
-    original label.
+  - Dispatch hooks decide for a whole group of queued messages: `proceed`,
+    `wait` or `reject` (`MessageDispatchHookDecision`, §4.8). Team
+    therefore **never rejects a group that contains user input**.
+  - **Only Team relays and agent messages in the group:** Team's hook on the
+    previous home chat rejects it. Team re-sends each message through the
+    outbox to the current home chat, routed by its assignment id, keeping
+    its nonce (Team relays) or its original label (other agents' messages).
+  - **The group also contains a user message** (a reply typed in the old
+    chat, grouped with a relay that arrived meanwhile): the hook
+    **proceeds**, so the user's reply is never lost. Team also re-sends the
+    agent part, separately, through the outbox to the current home chat,
+    with the same nonce. The recipient-side dedupe (§4.8) then makes sure
+    only one copy causes work:
+    - the copy in the current home chat is the one that counts;
+    - Team tools called from the old chat for that assignment answer
+      "handled in the current home chat", and the earlier-conversation
+      banner says so too.
+  - **Receipts for a redirected message:**
+    - the old copy is recorded as `redirected`, with a link to the new
+      outbox entry;
+    - the new copy goes through the usual states (`accepted`, `dispatched`,
+      `seen`);
+    - the assignment's receipt follows the new copy;
+    - a `redirected` entry whose new copy isn't `seen` within 10 minutes
+      raises the same incident as a stuck message.
   - The user may still type in an earlier conversation. That proceeds, with
     a banner: "This is an earlier conversation with Designer. Continue in
     the current one →".
@@ -1059,6 +1109,33 @@ instructions. The member re-posts the open cards' markers, then waits.
     chat.
 - **A failure keeps the old state.** If spawning fails, the pointer doesn't
   move, the rollover stays pending, and an incident is raised (§7.5).
+
+**Undo reverses the whole rollover, not just the pointer.** It works from
+the rollover record:
+
+- the pointer moves back; the new chat becomes an earlier conversation and
+  is hidden from its section;
+- card `threadId` links are restored;
+- background threads, worker chats and children go back under the old chat;
+- outbox entries for this member resolve to the old chat again, because
+  `replyTo: home` follows the pointer;
+- for project leads, Harbormaster's take-over runs in reverse: the old chat
+  is re-registered as the orchestrator and the new one retired, and open
+  tasks and decisions move back.
+
+**The activity guard.** Undo checks whether the new home chat has had
+activity since the rollover: a user message, a new card, a new assignment
+or a result.
+
+- **No activity:** Undo runs as above.
+- **Activity:** Undo is refused with a reason ("Since the fresh start, you
+  wrote 2 messages there and 1 card was opened. Undo would hide them in an
+  earlier conversation"). The user can choose **Undo and bring the new
+  items along** instead. That runs Undo and also re-links the new items to
+  the old chat: the new cards, the new assignments' `replyTo`, and any new
+  background threads. The new chat's messages themselves stay in it, as an
+  earlier conversation, listed in the journal entry.
+- Either way, nothing becomes unreachable. Undo is itself journaled.
 
 ## 7. Proactivity
 
@@ -1510,7 +1587,19 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
       - a result for an in-flight assignment, and a Team relay addressed to
         the old chat id, both land in the new home chat exactly once;
       - the sidebar still shows one row for the chief;
-      - Undo moves the pointer back;
+      - a user reply typed in the old chat, grouped with a relay that
+        arrived meanwhile, is accepted (never rejected), and the relay is
+        acted on once, in the new chat;
+      - the note quotes the full text from `threads.message`, not
+        outline previews;
+      - Undo with no new activity restores the pointer, card links, child
+        parents and reply routing; Undo after a new user message is refused
+        unless the user picks "bring the new items along";
+    - **project-lead rollover case:** a project lead with 4 open tasks and 1
+      open decision rolls over through Harbormaster's take-over. The
+      successor is the project's orchestrator, the tasks and the decision
+      report to it, the worker chats nest under it, and a task report
+      arrives there, not in the old chat;
     - **overflow case:** an eight-repo project lead on a 4,096 host, with
       `tasksBeforeAsking` 0 (the largest template), a carried goal, the
       longest review sentence and a 350-character team rules core, gets
