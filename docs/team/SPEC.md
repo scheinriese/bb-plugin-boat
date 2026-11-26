@@ -567,7 +567,7 @@ optional second step is the same `surface` field on
 | Layer | Who reads | Who writes | Injected (4,096 / 32,768 hosts) | Stored cap |
 | --- | --- | --- | --- | --- |
 | **About me** (shared) | Every member, except fields marked private to some members | The user; members only by proposal | 800 / 3,000 characters | 60 entries |
-| **Member memory** | That member | That member and the user | 1,100 / 4,000 characters | 80 entries |
+| **Member memory** | That member | That member and the user | 800 / 4,000 characters | 80 entries |
 | **Topic notes** | Their member; shared topics for everyone not sensitive | Members and the user | Titles only: 300 / 1,500 characters | 20 notes per member, 4,000 characters each |
 | **Journal** | The user (UI) | Team only | Never | 90 days |
 
@@ -632,10 +632,10 @@ use the dynamic budget.
 | 1 | Identity: name, role, kind, home chat, lead, placement, the consent rule pointer | 250 | 400 |
 | 2 | Persona excerpt (fixed budget; memory never squeezes it) | 900 | 4,000 |
 | 3 | About me | 800 | 3,000 |
-| 4 | Member memory | 1,100 | 4,000 |
+| 4 | Member memory (800), then its own topic titles (300) | 1,100 | 5,500 |
 | 5 | Roster: one line per member (name, role, "knows about"), ≤12 / ≤40 members | 550 | 3,000 |
 | 6 | Open work: my open assignments, waiting notes, active grants for me | 400 | 2,000 |
-| | **Total** | **4,000** (96 to spare) | 16,400 |
+| | **Total** | **4,000** (96 to spare) | 17,900 |
 
 A block over its budget ends with "[more: team_memory_read]". Everything
 else is loaded by tools: the full persona, topic notes, the journal, the
