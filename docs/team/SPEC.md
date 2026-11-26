@@ -172,7 +172,7 @@ mutable record has `revision` (compare-and-swap) and `createdAt`/`updatedAt`.
 | grantIds | Grants used |
 | deadline | Optional |
 
-**Assignment event**: append-only (`created`, `delivered`, `dispatched`,
+**Assignment event**: append-only (`created`, `budget-set`, `delivered`, `dispatched`,
 `started`, `progress`, `waiting`, `needs-user`, `stopped-early`, `continued`,
 `result`, `woke-requester`, `escalated`, `cancelled`, `refused`), with actor,
 time, text and data. The board and the receipts read from it.
@@ -361,7 +361,7 @@ already wakes on task events). A progress line never counts as waiting.
 | Depth of a delegation tree | 4 | `refused: hop-limit` |
 | Assigning to an ancestor in the same tree | not allowed | `refused: cycle` |
 | Turns per assignment | work 20, consult 4 | `expired: budget`, requester woken |
-| Wall time per assignment | 12 h (overnight chains fit) | `expired: deadline` |
+| Wall time per assignment | 12 h by default (overnight chains fit). The requester may set up to 72 h when creating a multi-day assignment; it's recorded as a `budget-set` event | `expired: deadline` |
 | Turns per root tree | 120 | The tree **pauses** with one Inbox card, "Keep going? (summary, turns used)"; one tap adds the same again |
 | Automatic continues | 1 | Paused, stopped early (§4.6) |
 | Open assignments per requester / queued per assignee | 16 / 8 | `refused: policy` / stays `queued` with a position |
@@ -775,7 +775,7 @@ same record.
 | --- | --- | --- | --- |
 | **Do** | The action, named ("Enter key…", "Reconnect…") | **Not now** | Team has **verified the effect** (a probe passes, a machine reconnects). In between: `verifying`, shown as "key saved · checking". If the check fails, it's open again: "The key didn't work: <reason>" |
 | **Decide** | The options | **Not now** | An option is chosen |
-| **Approve** | **Approve** (with a lock when Confirm) | **Deny** | Approved and applied, or denied |
+| **Approve** | **Approve**, or **Approve…** with the lock when it needs the confirm step | **Deny** | Approved and applied, or denied |
 | **Review** | **Merge…** for pull requests, **Accept** for other work | **Send back** | Merged or accepted, or sent back. Finished work waiting for a review **is an ask**: it's in Your move and counts |
 
 **Not now** keeps the ask open and moves it below the other open asks for
@@ -824,7 +824,7 @@ in the UI; only a small **lock** marks actions that need the confirm step
      your Mac" instead of a button.
 6. **The Board's detail panel.** It gets buttons because it's where the
    full context is (brief, evidence, diff). It shows the ask's options
-   first. **Confirm** and **Cancel** appear only after an option is chosen,
+   first. The confirm step's buttons appear only after an option is chosen,
    never before.
 
 **Everything else only links:** Board cards (they open the detail panel),
@@ -863,8 +863,10 @@ open ──choose a Confirm option (any path)──▶ confirming ──confirmA
    account and book Thu 3 Dec, 08:30? It can't be unsent").
    - `team_answer_card` gives the member only "waiting for the user's
      confirm" and never the token. A member can't finish a Confirm ask.
-2. **The confirm step** shows that restated scope with **Confirm** and
-   **Cancel**. Confirm and Cancel are the only buttons there.
+2. **The confirm step** shows that restated scope with two buttons. The
+   first restates the action ("Merge PR #128 into main", "Send and book Thu
+   3 Dec, 08:30", "Send the application"); the second is **Cancel**. They're
+   the only buttons there.
    - Opening it issues a single-use `confirmToken`, valid for 2 minutes and
      bound to the ask's revision.
 3. **Only `confirmAsk({askId, revision, confirmToken})` applies a Confirm
@@ -882,13 +884,24 @@ open ──choose a Confirm option (any path)──▶ confirming ──confirmA
    accident, and that no agent tool can finish it. Receipts, the push
    notification and Pause and revoke remain the safety net.
 
+**Button labels: one rule.**
+
+- **On every answer surface:** a Confirm action keeps its verb label with
+  "…" and the **lock**: **Approve…** or **Merge…**, as in the per-verb
+  defaults.
+- **In the confirm step:** the button restates the action (step 2 above),
+  never a generic "Confirm".
+- **On the phone only:** the compact Team page and a push can't run the
+  confirm step, so they offer **Review and confirm**, which opens it in the
+  bb phone app. That's the only place this wording is used.
+
 **Where the confirm step runs.** One rule applies, the same in Nora's tray
-and everywhere else, and the button is always **Review and confirm**:
+and everywhere else:
 
 - **Merges and ships** always use Harbormaster's Merge or Ship confirmation
-  in the task's chat (checks, exact HEAD, "can't be undone"). On the phone
-  too: **Review and confirm** opens the task's chat in the bb phone app.
-  There's one story for merges on every device.
+  in the task's chat (checks, exact HEAD, "can't be undone"). **Merge…**
+  opens it, and on the phone **Review and confirm** opens the same chat in
+  the bb phone app. There's one story for merges on every device.
 - **Scopes that need reading space** open the **confirm view**: documents,
   a CV or cover letter, a message longer than three lines, or more than one
   recipient. Example: the job application in [EXAMPLE-DAY.md](EXAMPLE-DAY.md).
@@ -913,7 +926,7 @@ whole tree.
   shows the confirm step.
 - **States:**
   - **Open:** the options, plus Deny or Not now.
-  - **Confirming:** the restated scope, Confirm and Cancel.
+  - **Confirming:** the restated scope, the button that restates the action, and Cancel.
   - **Token expired:** "This confirmation timed out. Review it again", which
     goes back to open.
   - **This ask changed:** the ask's revision changed while confirming
@@ -1773,6 +1786,12 @@ redesigned.
    the Board.
 7. **Ask Nora** (default **⌘⇧J**, rebindable) is the app-wide quick ask plus the full list of waiting asks. The user's decision said ⌘J; bb already binds mod+J to `panel.toggle`, so ⌘⇧J is the default (§13 row 25).
 
+**Avatars (the user's choice after design round 4):** both systems are
+built.
+- **H3 "Orbit"** is the default.
+- **H2 "Shapes with a face"** is a setting, **Appearance › Calm faces**.
+- The Nora tile's orbit works with both.
+
 The canonical example day that every design uses is
 [EXAMPLE-DAY.md](EXAMPLE-DAY.md). Nora (chief of staff), Iris (designer who
 codes), Olive (personal assistant) and Scout (job scout) are the fictional
@@ -1788,11 +1807,11 @@ what it must offer.
 | --- | --- | --- | --- |
 | **Sidebar, top to bottom** | One large **Nora tile** (the chief) carrying the one needs-you count; compact member rows; then project sections, each with a small project icon, its lead (the orchestrator) and its task threads nested as today. Members' work for a project sits in that project's section, and the member row says "in <project>". One amber marker per ask, on the blocked thread's row (§5.9) | Open each; drag member rows to reorder; collapse the Team block; every native row behaviour (§11.3) | Team off (no block); no members (first run); Workbench absent (native fallback, §11.2); many members (>8: scroll or collapse) |
 | **Team page (full screen)** | Replaces Harbormaster's Cloud agents page. Tabs: **Today** ("Your move": open asks in the §5.9 order, then Answered today with receipts, then problems), **Board** (by flow: Queued, Running, Waiting, Needs you, Done today; or by project). Finished work waiting for your review sits in **Needs you** and moves to **Done today** only after it's merged or accepted. A paused (stopped-early) assignment sits in Needs you while its ask is open. Also **Sandboxes**, **Usage** and **Projects**. Answered today is ordered newest first | Answer asks in Today; switch the Board grouping; open the detail panel (with ask buttons); Pause and revoke from a receipt; Cancel a held send | Nothing waiting ("You're clear"); **overdue asks** (first, marked overdue); a Confirm ask mid-confirmation; a held send counting down; **≥20 asks** (grouped by due day, with the first 20 shown and "Show all") |
-| **Nora's ask tray** (in Nora's chat, above the composer) | Every open ask: member, title, unblocks, due; the options with the recommended one first, if the member recommends one; a lock on actions that need the confirm step | Answer; Review and confirm (inline or the confirm view, by the §5.9 rule); Next ask; open the blocked thread; Cancel a held send | Empty (hidden); one; many (the first 3, then "Show all"); **overdue** (first); **≥20 asks** (the first 3, then "Show all" to Today); a held send's pill |
+| **Nora's ask tray** (in Nora's chat, above the composer) | Every open ask: member, title, unblocks, due; the options with the recommended one first, if the member recommends one; a lock on actions that need the confirm step | Answer; Approve… or Merge… (with the lock), then the confirm step inline or in the confirm view, by the §5.9 rule; Next ask; open the blocked thread; Cancel a held send | Empty (hidden); one; many (the first 3, then "Show all"); **overdue** (first); **≥20 asks** (the first 3, then "Show all" to Today); a held send's pill |
 | **Composer strip** (the blocked thread) | The asks that block this thread | Answer; confirm step for short Confirm scopes; receipt with Undo or Pause and revoke; Cancel a held send | Open; overdue; confirming; held send ("Sending in 18 s · Cancel"); answered (receipt); stale ("Already answered…") |
-| **Ask Nora** (default ⌘⇧J, rebindable) | A one-line ask to Nora from anywhere, and the full list of waiting asks in the §5.9 order. mod+J stays bb's `panel.toggle` (`bb settings keyboard list`) | Send to Nora; answer any ask; jump to its thread | No asks; overdue first; ≥20 asks (searchable list); a Confirm ask (Review and confirm, by the §5.9 rule) |
+| **Ask Nora** (default ⌘⇧J, rebindable) | A one-line ask to Nora from anywhere, and the full list of waiting asks in the §5.9 order. mod+J stays bb's `panel.toggle` (`bb settings keyboard list`) | Send to Nora; answer any ask; jump to its thread | No asks; overdue first; ≥20 asks (searchable list); a Confirm ask (Approve… or Merge…, then the confirm step by the §5.9 rule) |
 | **Board detail panel** | The assignment or ask: brief, done-when, "<member>'s plan" (self-reported), measured activity (quiet, or stalled in slate), budget with projection (amber when projected over), evidence, files; the one copyable id handle (§10.4) | Answer its ask: the options first, and Confirm and Cancel only after a Confirm option is chosen; continue, reassign or cancel | Each status (§4.1); needs attention (amber); stalled · nudged (slate); paused (stopped early) |
-| **Confirm view** (Team page, `ask/<id>`) | The ask with full context, the real date and time, the options with the secondary action (Deny or Not now), then the restated scope | Approve or another option, Deny or Not now; then Confirm or Cancel | Open; confirming; token expired ("This confirmation timed out"); this ask changed; answered (receipt); phone full-screen |
+| **Confirm view** (Team page, `ask/<id>`) | The ask with full context, the real date and time, the options with the secondary action (Deny or Not now), then the restated scope | Approve… or another option, Deny or Not now; then the restating button or Cancel | Open; confirming; token expired ("This confirmation timed out"); this ask changed; answered (receipt); phone full-screen |
 | **Nora tile** (the chief) | Avatar, name (renamable; the tile stays large), status, preview line, **the one needs-you count** (open asks of every member), unread | Open Nora's chat (home); start a new request | Idle, working, needs you (the count), unread, problem, offline machine (amber, needs attention), draft in composer, selected; just rolled over (a notice, not counted) |
 | **Member row** | Avatar, name, preview line by priority: needs you > activity > counts ("2 working · 1 waiting") > last message; unread = new messages + unanswered cards | Open the home chat; expand its background threads; hover actions (pin, mute, edit member) | The §10.4 status words: idle, working, quiet, stalled · nudged, waiting for…, needs you, needs attention, paused · stopped early, failed, in <project>; plus unread, sensitive, draft, selected, keyboard focus |
 | **Project lead row** | The same row anatomy as a member, with the project name | Open the orchestrator chat; tasks nest as today | As today's orchestrator rows |
@@ -2172,3 +2191,4 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
 | 26 | The ask contract details from design round 4 | **Decided by the orchestrator:** "Next ask" shows one title, with at most "then 1 more"; slate for stalled, amber for needs you or needs attention, red only for failed; check-ins name asks; the bb phone app counts as bb open for Confirm, with the full restated scope; Do asks close when the effect is verified; a recommended option is optional; review of finished work is an ask; stopped early is paused, not closed; receipts show both times; one amber marker per ask (§4.10, §5.9, §10.4) |
 | 27 | Is a rollover an ask? | **Decided:** no. It's a notice that never counts; quiet means no running turn and no draft being typed; open asks carry over (§6.8) |
 | 28 | Copy defaults: no ids in copy, no tier labels (only a lock), member project work under the project's section | Pending the user's confirmation (§10.4). Recommendation: keep all three |
+| 29 | Which avatar system? | **Resolved by the user:** both. H3 "Orbit" is the default, and H2 "Shapes with a face" is the setting Appearance › Calm faces. The Nora tile's orbit works in both (§10.1) |

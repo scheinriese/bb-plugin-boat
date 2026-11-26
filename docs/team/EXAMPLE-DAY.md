@@ -72,16 +72,26 @@ Settings that matter today:
 
 ## Assignments
 
-| Handle | Member | Title (UI) | Project | Mode | Done when | Budget (§4.7) | Used by the end |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| a1 | Web app lead (task t1) | Fix the checkout total rounding | Web app | Work | PR against main, tests passing, checked on staging | 20 turns, 12 h | 9 turns, 08:05–10:30 |
-| a2 | Iris | Pricing page | Web app | Work (from yesterday) | PR with screenshots at 3 widths and a preview link | 20 turns, 12 h | 19 turns. Amber "needs attention · projected over budget" from 12:50 (23 projected) until 15:40 |
-| a3 | Olive | Car service next week | — | Work | Slot booked within "weekday mornings, before 11:00", confirmation in mail | 20 turns, 12 h | 4 turns |
-| a4 | Writer | Docs 2.4 release notes | Docs site | Work (from yesterday) | Draft shared as a file, every change since 2.3 listed | 20 turns, 12 h | 6 turns |
-| a5 | Docs lead (task t5) | Fix the docs search index | Docs site | Work (from yesterday) | PR with the search test passing | 20 turns, 12 h | 13 turns |
-| a7 | Developer | Is checkout.spec flaky? | Web app | Consult (from the Web app lead) | An answer | 4 turns | 1 turn |
+| Handle | Member | Title (UI) | Project | Mode | Started | Done when | Budget (§4.7) | Used by the end |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| a1 | Web app lead (task t1) | Fix the checkout total rounding | Web app | Work | Today 08:05 | PR against main, tests passing, checked on staging | 20 turns, 12 h | 9 turns, 08:05–10:30 |
+| a2 | Iris | Pricing page | Web app | Work | Yesterday 14:00 | PR with screenshots at 3 widths and a preview link | 20 turns, **48 h** (set at creation for multi-day work: `budget-set` event, yesterday 14:00) | 19 turns. Amber "needs attention · projected over budget" from 12:50 (23 projected) until 15:40 |
+| a3 | Olive | Car service next week | — | Work | Today 09:45 | Slot booked within "weekday mornings, before 11:00", confirmation in mail | 20 turns, 12 h | 4 turns |
+| a4 | Writer | Docs 2.4 release notes | Docs site | Work | Yesterday 16:00 | Draft shared as a file, every change since 2.3 listed | 20 turns, **48 h** (`budget-set` event, yesterday 16:00) | 6 turns |
+| a5 | Docs lead (task t5) | Fix the docs search index | Docs site | Work | Yesterday 17:00 | PR with the search test passing | 20 turns, **48 h** (`budget-set` event, yesterday 17:00) | 13 turns |
+| a7 | Developer | Is checkout.spec flaky? | Web app | Consult (from the Web app lead) | Today 09:20 | An answer | 4 turns | 1 turn |
 
 No delegation tree comes near its 120-turn budget.
+
+**Wall time.** Each assignment finishes inside its budget, so none expires:
+- a2 runs 25 h 40 min of 48 h;
+- a4 runs 19 h 40 min of 48 h;
+- a5 runs 22 h 30 min of 48 h;
+- a1, a3 and a7 finish well inside the 12 h default.
+
+The three carried-over assignments got the longer budget when they were
+created, as §4.7 allows, and the ledger records it. No extension is needed
+today.
 
 ## Ask records
 
@@ -91,20 +101,23 @@ These are canonical. Every screen uses exactly this wording.
 
 | Verb | Primary | Secondary |
 | --- | --- | --- |
-| Approve | Approve (with a lock when it needs the confirm step) | Deny |
+| Approve | Approve, or Approve… with the lock when it needs the confirm step | Deny |
 | Decide | The options | Not now |
 | Review | Merge… for pull requests, Accept for other work | Send back |
 | Do | The action, named ("Enter key…") | Not now |
 
-A ★ marks an option the member actually recommends; most asks have none.
-"Tier" is for the design only and is never shown. Confirm actions carry a
-small lock.
+- A ★ marks an option the member actually recommends; most asks have none.
+- "Tier" is for the design only and is never shown.
+- **Button labels (§5.9):** a Confirm action keeps its verb with "…" and
+  the lock (Approve…, Merge…). The confirm step's own button restates the
+  action. "Review and confirm" appears only on the phone, as the redirect
+  into the bb phone app.
 
 | Ask | Title (UI) | Verb | Tier | Unblocks | Options | Secondary | Asked by · marker on | Due |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | K1 | Restart the staging API | Approve | Contained | Checking the checkout fix on staging | Approve | Deny | Web app lead · task row "Fix the checkout total rounding" (Web app) | 09:30 |
 | K2 | Pick a pricing page layout | Decide | Contained | Building the pricing page | A · Comparison table; **B · Three cards ★** (Iris); C · One plan with a toggle | Not now | Iris · task row "Pricing page" (Web app) | 12:00 |
-| K3 | Book the car service for Thu 3 Dec, 08:30 | Approve | Confirm | Booking the service and telling the garage | Approve 🔒 | Deny | Olive · Olive's row | 17:00 (the garage holds the slot until then) |
+| K3 | Book the car service for Thu 3 Dec, 08:30 | Approve | Confirm | Booking the service and telling the garage | Approve… 🔒 | Deny | Olive · Olive's row | 17:00 (the garage holds the slot until then) |
 | K4 | Review and merge the checkout fix | Review | Confirm | Shipping the checkout fix | Merge… 🔒 | Send back | Web app lead · task row "Fix the checkout total rounding" (Web app) | 16:00 |
 | K5 | Review the Docs 2.4 release notes | Review | Contained | Publishing the notes with Docs 2.4 | Accept | Send back | Writer · row "Docs 2.4 release notes" (Docs site) | 17:00 |
 | K6 | Continue the pricing page build? | Decide | Contained | Finishing the pricing page | **Continue ★** (Nora: CI was still running); Reassign; Cancel | Not now | Nora, for Iris · task row "Pricing page" (Web app) | 14:00 |
@@ -112,7 +125,7 @@ small lock.
 | K8 | The build Mac is offline: where should the Safari check run? | Decide | Contained | Finishing the pricing page screenshots | **Run it with WebKit in Iris's sandbox ★** (Nora); Wait for the build Mac | Not now | Nora · task row "Pricing page" (Web app) | 16:00 |
 | K9 | Review and merge the docs search fix | Review | Confirm | Shipping the docs search fix | Merge… 🔒 | Send back | Docs lead · task row "Fix the docs search index" (Docs site) | Fri 27 Nov, 12:00 |
 | K10 | Review and merge the pricing page | Review | Confirm | Shipping the pricing page | Merge… 🔒 | Send back | Iris · task row "Pricing page" (Web app) | Fri 27 Nov, 12:00 |
-| K11 | Apply to the Frontend engineer role at Example Corp | Approve | Confirm | Sending your application | Approve 🔒 | Deny | Scout · Scout's row | Fri 27 Nov, 12:00 |
+| K11 | Apply to the Frontend engineer role at Example Corp | Approve | Confirm | Sending your application | Approve… 🔒 | Deny | Scout · Scout's row | Fri 27 Nov, 12:00 |
 
 **Answers on the day.** All are taps, so every provenance is "unverified
 tap" (§5.9); no ask is answered by a typed reply today.
@@ -120,14 +133,14 @@ tap" (§5.9); no ask is answered by a typed reply today.
 | Ask | Answered | Surface and device | Confirm step | Receipt (both times) |
 | --- | --- | --- | --- | --- |
 | K1 | 09:05 | Phone: the push opens the task's chat, and the strip answers (two taps) | — | "Approved 09:05 · ran 09:06 · can't be undone, limited to staging · Wasn't me? Pause and revoke" |
-| K2 | 11:15 | Nora's tray, Mac | — | "Chose B 11:15 · Undo until 11:25" |
+| K2 | 11:15 | Nora's tray, Mac | — | "Chose B 11:15 · building from 11:16 · Undo until 11:25" |
 | K6 | 13:00 | The strip in the pricing page thread, Mac | — | "Continued 13:00 · resumed 13:05" |
-| K3 | 13:10 | Nora's tray, Mac | **Inline** (a short scope): "Send this message to the garage from your account and book Thu 3 Dec, 08:30? It can't be unsent." The message is two lines, shown in full | "Approved 13:10 · sent 13:11 · can't be unsent". The send was held 30 s with "Sending in … · Cancel" |
+| K3 | 13:10 | Nora's tray, Mac: Approve… | **Inline** (a short scope): "Send this message to the garage from your account and book Thu 3 Dec, 08:30? It can't be unsent." The message is two lines, shown in full. Buttons: **Send and book Thu 3 Dec, 08:30** and Cancel | "Approved 13:10 · sent 13:11 · can't be unsent". The send was held 30 s with "Sending in … · Cancel" |
 | K8 | 15:05 | Today list, Mac | — | "Chose WebKit in Iris's sandbox 15:05 · started 15:06" (no Undo once started) |
-| K5 | 15:50 | Today list, Mac | — | "Accepted 15:50 · Undo until 16:00" |
-| K4 | 15:52 | Nora's tray → Review and confirm → the task's chat, Mac | Harbormaster's Merge confirmation (checks, exact HEAD, "can't be undone") | "Approved 15:52 · merged 15:53 · can't be undone" |
+| K5 | 15:50 | Today list, Mac | — | "Accepted 15:50 · handed to the Docs lead 15:51 · Undo until 16:00" |
+| K4 | 15:52 | Nora's tray: Merge… → the task's chat, Mac | Harbormaster's Merge confirmation (checks, exact HEAD, "can't be undone"). Buttons: **Merge PR #128 into main** and Cancel | "Approved 15:52 · merged 15:53 · can't be undone" |
 | K7 | 17:05 | The secure key form, Mac. At 16:30 the phone's compact Team page showed "Enter the key on your Mac" | — | "Key saved 17:05 · checking", then "Key works · checked 17:06" (the ask closes when the probe passes) |
-| K9, K10, K11 | open at 18:00 | — | K9 and K10: the task's chat (Merge confirmation). K11: the **confirm view**, because the CV and cover note need reading space | — |
+| K9, K10, K11 | open at 18:00 | — | K9 and K10: Merge… opens the task's chat (Merge confirmation). K11: Approve… opens the **confirm view**, because the CV and cover note need reading space; its button reads **Send the application** | — |
 
 K11's restated scope in the confirm view: "Send your CV (cv.pdf) and this
 cover note to Example Corp's careers form from your account? It can't be
@@ -167,7 +180,7 @@ unsent." It shows "Due Fri 27 Nov, 12:00".
 | 26 | 15:30 | Docs lead | The docs search fix is finished: PR #77, the search test passing. It goes to Needs you | K9 asked | 4 |
 | 27 | 15:40 | Iris | The pricing page is finished: PR #131, layout B, WebKit screenshots at 3 widths and a preview link. It goes to Needs you | K10 asked | 5 |
 | 28 | 15:50 | You | K5 → Accept, in the Today list | K5 answered | 4 |
-| 29 | 15:52 | You | K4 → Review and confirm → Harbormaster's Merge confirmation in the task's chat. Merged at 15:53 | K4 answered | 3 |
+| 29 | 15:52 | You | K4 → Merge… → Harbormaster's Merge confirmation in the task's chat: **Merge PR #128 into main**. Merged at 15:53 | K4 answered | 3 |
 | 30 | 16:30 | You (phone) | The compact Team page shows K7 as "Enter the key on your Mac" (the secure key form isn't available on the phone) | — | 3 |
 | 31 | 17:05 | You | K7: the new key in the secure form on the Mac → "key saved · checking". The probe passes at 17:06, the ask closes, and the connector incident resolves. Scout's check re-runs at 17:10 and finds 2 new roles; one is on-site only and is left out | K7 answered at 17:06 | 2 |
 | 32 | 17:20 | Scout | Shortlists one role | K11 asked | 3 |
@@ -238,7 +251,7 @@ From the Team page's Usage tab.
   scope.
   - K3 is confirmed inline in Nora's tray, because its scope is short.
   - K4 uses Harbormaster's Merge confirmation in the task's chat, as all
-    merges do, on any device.
+    merges do, on any device; its button reads "Merge PR #128 into main".
   - K11 will use the confirm view, because it needs reading space.
   - No Confirm ask is answered from a push or the compact Team page.
 - **"Next ask"** shows one title and "then 1 more" at most, in the stated
