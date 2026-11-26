@@ -989,14 +989,37 @@ never written from memory alone:
 - the open plan: one short member turn on the old chat asks for it (≤1,500
   characters), the way the relay asks an outgoing orchestrator for its
   handoff note;
-- the last 5 user requests, verbatim, with links. `threads.conversationOutline`
-  (role `user`) returns only previews, so it's used to find their
-  `messageSeq`. Each full message then comes from `threads.message({threadId,
-  seq})`, whose result carries the full `text`, `initiator` and
-  `senderThreadId` (`ThreadsArea.message`, 0.6.104 `:18890`, 0.6.202
-  `:20641`; message `text` at 0.6.202 `:16582`). Only messages with
+- the last 5 user requests, verbatim, with links. Only messages with
   initiator `user` and no sender thread count, so a member's or Team's
-  relay is never quoted as the user's request;
+  relay is never quoted as the user's request. `threads.conversationOutline`
+  returns only previews, so the full text comes from `threads.message`
+  (`ThreadsArea.message`, 0.6.104 `:18890`, 0.6.202 `:20641`; `ThreadMessageArgs
+  {threadId, seq, before?, after?}`, 0.6.104 `:18729`, 0.6.202 `:20465`).
+  Its result carries `message`, `before[]` and `after[]`, each with the full
+  `text`, `role`, `initiator`, `senderThreadId` and `messageSeq` (0.6.104
+  `:15066-15133`, 0.6.202 `:16514-16582`). It's the call behind `bb thread
+  log --message <seq> --context <count>` (`bb guide thread-inspection`;
+  context at most 20). The lookup depends on the host:
+  1. **Newer hosts:** outline items carry `messageSeq` (0.6.202 `:18265`).
+     Team takes the last 5 user items and fetches each one with
+     `threads.message({threadId, seq: item.messageSeq})`.
+  2. **Older hosts (0.6.104):** outline items have only `{id, preview, role,
+     attachmentSummary}` and the response has `maxSeq`, with no
+     `messageSeq` (0.6.104 `:16630-16643`). Team pages backwards instead:
+     - it calls `threads.message({threadId, seq: maxSeq, before: 20})`;
+     - it keeps the qualifying user messages from `before[]` and `message`;
+     - it repeats with `seq` set to the oldest returned `messageSeq` minus
+       one, until it has 5 or has read 5 pages (≤105 messages).
+
+     It checks the result against the outline: the last 5 user previews
+     must each be a prefix of one fetched `text`, in the same order, after
+     trimming the preview's ellipsis. That confirms the quotes are the same
+     requests the user sees.
+  3. **No full text reachable:** the call fails, the pages run out, or a
+     preview has no match. That request is quoted from its outline preview
+     with a visible marker, "(shortened; full text in the earlier
+     conversation)", and a link to the old chat. A shortened quote is never
+     presented as verbatim;
 - pending cards and active grants that concern this member, by id;
 - pointers to `team_board`, the assignment ids, and the old chat.
 
@@ -1022,22 +1045,44 @@ rollover card): "Starting a fresh chat at the next quiet moment".
 - **Project leads** are Harbormaster orchestrators, so a plain spawn would
   leave the new chat with no orchestrator configuration while tasks and
   decisions still reported to the old one. Their rollover reuses
-  Harbormaster's existing take-over, the same path as **Take over from**
-  and the Claude ↔ Codex relay (`startOrchestrator` with `takeOver`,
-  `src/runtime.ts:315-389`). The note goes in as the take-over's handoff
-  notes. That path:
-  1. spawns the successor with the orchestrator's project, environment,
-     provider, model and effort, and a kickoff that includes the take-over
-     section (`takeOverSection`, `src/orchestrator.ts:209`);
-  2. registers it as the project's orchestrator (`store.addOrchestrator`)
-     and retires the old chat (`store.removeOrchestrator`, metadata `role:
-     former-orchestrator` with `successor`);
-  3. moves the open tasks (`store.reassignOpenTasks`,
-     `src/store.ts:829-846`) and open decisions
-     (`store.reassignOpenDecisions`, `src/store.ts:1049-1051`);
-  4. clears the old chat's relay state;
-  5. re-parents worker chats and other open children, then wakes the held
-     notices so they reach the successor.
+  Harbormaster's take-over, but through the path that keeps the workspace.
+  - **Not the public `startOrchestrator`** (`src/runtime.ts:949-993`). It
+    has no environment input: it calls the internal `launch()` without
+    `environmentId`, so a take-over through it starts in a new sandbox or
+    the default workspace.
+  - **Instead, the relay's path.** `relayHandover` (`src/runtime.ts:509`)
+    calls the same internal `launch()` (`src/runtime.ts:294`) with
+    `environmentId: old.environmentId ?? null` ("Same machine and workspace
+    (a cloud orchestrator keeps its sandbox)", `:572-573`).
+  - **A new runtime method, `rolloverOrchestrator(oldThreadId, note)`**,
+    calls `launch()` the way `relayHandover` does (`src/runtime.ts:550-575`):
+    - the old chat's `projectId`, `hostId: null`, `cloud: false`, and
+      `environmentId: old.environmentId`;
+    - its section and pinned state;
+    - `fullAccess` from `inBoatSandbox`;
+    - the **same** provider, model and effort (from the old thread and its
+      orchestrator picks) instead of the other agent's;
+    - the prompt "Continue coordinating <project> as its orchestrator after
+      a fresh start";
+    - `takeOver: {threadId, continuationGoal, text: <note>, fileName:
+      "rollover note", userMessages: forwardable(rows)}`.
+
+    Unlike the relay, it doesn't archive the old chat (it stays an earlier
+    conversation) and sets no relay cooldown. It does clear the old chat's
+    queue after forwarding, as the relay does.
+  - Inside `launch()` the existing take-over then:
+    1. spawns the successor in that environment, with a kickoff that
+       includes the take-over section (`takeOverSection`,
+       `src/orchestrator.ts:209`);
+    2. registers it as the project's orchestrator (`store.addOrchestrator`)
+       and retires the old chat (`store.removeOrchestrator`, metadata `role:
+       former-orchestrator` with `successor`);
+    3. moves the open tasks (`store.reassignOpenTasks`,
+       `src/store.ts:829-846`) and open decisions
+       (`store.reassignOpenDecisions`, `src/store.ts:1049-1051`);
+    4. clears the old chat's relay state;
+    5. re-parents worker chats and other open children, then wakes the held
+       notices so they reach the successor.
 
   Team then moves its own records in the same step: `homeThreadId`, the
   cards and the outbox, as below.
@@ -1119,9 +1164,15 @@ the rollover record:
 - background threads, worker chats and children go back under the old chat;
 - outbox entries for this member resolve to the old chat again, because
   `replyTo: home` follows the pointer;
-- for project leads, Harbormaster's take-over runs in reverse: the old chat
-  is re-registered as the orchestrator and the new one retired, and open
-  tasks and decisions move back.
+- for project leads, Harbormaster's take-over runs in reverse without a new
+  spawn:
+  - `store.addOrchestrator(old)`, and `store.removeOrchestrator(new)` with
+    its metadata set to `former-orchestrator`;
+  - `reassignOpenTasks(new, old)` and `reassignOpenDecisions(new, old)`;
+  - worker chats re-parented back to the old chat;
+  - the old chat's metadata restored to `role: orchestrator`.
+
+  The workspace is the same one, so nothing moves on disk.
 
 **The activity guard.** Undo checks whether the new home chat has had
 activity since the rollover: a user message, a new card, a new assignment
@@ -1136,6 +1187,31 @@ or a result.
   background threads. The new chat's messages themselves stay in it, as an
   earlier conversation, listed in the journal entry.
 - Either way, nothing becomes unreachable. Undo is itself journaled.
+
+**Implementation notes to verify** (for the code review):
+
+1. **Full user messages on every supported host.**
+   - With `messageSeq` in the outline (0.6.202 shape), each quote comes from
+     `threads.message({threadId, seq: item.messageSeq})`.
+   - Without it (0.6.104 shape), Team pages back from `maxSeq` with
+     `threads.message({threadId, seq, before: 20})`. Confirm on 0.6.104
+     that core resolves `maxSeq` (an event sequence, not necessarily a
+     message's) to the nearest message. If it rejects it, step down with
+     `threads.events.list({threadId, order: "desc", limit: "50"})` to the
+     newest `seq` that `threads.message` accepts, and keep that in the
+     test fixture.
+   - Previews are used only with the "shortened" marker. Both shapes are
+     covered by the evals.
+2. **The workspace is preserved for project leads.**
+   - `rolloverOrchestrator` calls the internal `launch()` with
+     `environmentId: old.environmentId`, like `relayHandover`
+     (`src/runtime.ts:572-573`), and never the public `startOrchestrator`.
+   - `spawnThread` (called by `launch()`) reuses a given environment
+     (`{type: "reuse", environmentId}`, `src/orchestrator.ts:154`). The
+     test confirms that no sandbox or workspace is created.
+   - Confirm that the reverse path on Undo uses the store functions named
+     above, not a new launch.
+   - The eval asserts that the environment id is equal before and after.
 
 ## 7. Proactivity
 
@@ -1596,10 +1672,27 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
         parents and reply routing; Undo after a new user message is refused
         unless the user picks "bring the new items along";
     - **project-lead rollover case:** a project lead with 4 open tasks and 1
-      open decision rolls over through Harbormaster's take-over. The
-      successor is the project's orchestrator, the tasks and the decision
-      report to it, the worker chats nest under it, and a task report
-      arrives there, not in the old chat;
+      open decision rolls over through `rolloverOrchestrator`:
+      - the successor's `environmentId` equals the old chat's: the same
+        workspace, or the same boat sandbox for a cloud orchestrator, with
+        no new sandbox and no default workspace;
+      - its provider, model and effort are unchanged;
+      - it is the project's orchestrator, and the tasks and the decision
+        report to it;
+      - the worker chats nest under it, and a task report arrives there,
+        not in the old chat;
+      - the old chat isn't archived;
+    - **older-host note case (0.6.104 shapes):**
+      - The outline returns items `{id, preview, role, attachmentSummary}`
+        and `maxSeq`, with no `messageSeq`. `threads.message` returns
+        `{message, before[]}` with full texts, one of them longer than its
+        preview.
+      - Assert: the note quotes the full texts by paging back from
+        `maxSeq`, skips relays (sender thread set) and agent messages, and
+        matches the outline previews in order.
+      - In a second run, `threads.message` fails. Assert: the note uses the
+        previews with the "(shortened; …)" marker and never calls them
+        verbatim;
     - **overflow case:** an eight-repo project lead on a 4,096 host, with
       `tasksBeforeAsking` 0 (the largest template), a carried goal, the
       longest review sentence and a 350-character team rules core, gets
