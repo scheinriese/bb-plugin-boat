@@ -114,7 +114,7 @@ failures go unnoticed.
 | Store | Holds | Why |
 | --- | --- | --- |
 | Harbormaster's plugin SQLite database (`<dataDir>/plugins/boat/data.db`), new `team_*` tables | Members, home pointers, assignments and their events, grants, cards, routines, follow-ups, memory entries and journal, incidents, connections (non-secret), trust policies, host locks, file records | The one authority. It supports transactions with Harbormaster's tasks and decisions (see §11). |
-| bb threads | Home chats, background threads, the Problems thread, routine threads; messages; queued messages; pending interactions (approval and decision forms) | Conversations stay native. Team never treats thread content as the state of work. |
+| bb threads | Home chats, background threads, the Problems thread, routine threads; messages; queued messages; the messages that carry card markers (the cards themselves are ledger records, §5.3) | Conversations stay native. Team never treats thread content as the state of work. |
 | Thread `pluginMetadata` | At most a hint (`teamMemberId`) for fast UI lookups | Untrusted: "Any API client, another plugin, or the thread's own agent can write it" (0.6.104 `bb-plugin-sdk.d.ts:20323`, 0.6.202 `:22332`). Team always resolves membership from its own table. |
 | Harbormaster task store (same database) | Tasks, reviews, decisions (Needs you), previews, events, sandboxes | Unchanged. Assignments link to task and decision ids. |
 | Plugin secret settings and Team-owned dotenv files | Connection keys | Never in the database, page, logs or chat (§9.3). |
@@ -171,18 +171,22 @@ mutable record has `revision` (compare-and-swap) and `createdAt`/`updatedAt`.
 `result`, `woke-requester`, `escalated`, `cancelled`, `refused`), with actor,
 time, text and data. The board and the receipts read from it.
 
-**Delivery** (receipt): `{messageKind, threadId, state: accepted | dispatched
-| seen, bbDelivery: sent | queued, messageSequence | queuedMessageId,
-idempotencyKey}`. `bb thread tell --json` already reports `delivery`,
-`messageSequence` and `queuedMessage` (`bb guide thread-messaging`).
+**Outbox entry** (delivery and receipt): `{messageKind, threadId, nonce,
+state: pending | sending | uncertain | accepted | dispatched | seen | failed,
+bbDelivery: sent | queued, messageSequence | queuedMessageId, attempts}`. It is
+written before every send. `bb thread tell --json` already reports
+`delivery`, `messageSequence` and `queuedMessage` (`bb guide
+thread-messaging`). bb's send API takes no idempotency key (§4.8).
 
 **Grant** `g_…`: `{actionClass, targets, members, expiresAt, usesLeft,
 cardId, evidence, status: active | used | expired | revoked, uses[]}`.
 
 **Card** `c_…`: reuses Harbormaster's `Decision` record (question,
 recommendation, options, context, status) with new fields `kind: decision |
-approval`, `memberId`, `assignmentId`, `answeredVia: tap | explicit-reply`,
-`interactionId`, `expiresAt`.
+approval`, `memberId`, `assignmentId`, `threadId` (where it's shown),
+`answeredVia: tap | explicit-reply`, `answeredBy: unknown | {threadId,
+initiator}` (§5.3), `expiresAt`. Cards are plugin-rendered, not native
+pending interactions (§5.3).
 
 **Routine** `r_…`: `{memberId, name, trigger: cron | interval | once | event,
 check, prompt, endsAt | stopWhen, maxRuns, quietToken, status: active |
@@ -211,8 +215,10 @@ standingActionClasses[], expiresAt}`.
 **Host lock**: `{hostId, resource: browser | build | heavy-disk, holder
 (assignment id), since, ttl, queue[]}`.
 
-**File record** `x_…`: `{assignmentId, url, name, size, sha256, caption,
-createdBy, expiresAt}`.
+**File record** `x_…`: `{assignmentId, store: evidence-bucket |
+thread-storage, objectKey, name, size, sha256, caption, createdBy,
+retainUntil}`. It stores the object key, never only a link: links are
+issued on demand (§8.3).
 
 ## 4. Assignment ledger
 
@@ -354,11 +360,39 @@ budget. Trusted sources (§5.4) can raise the defaults.
   the open assignment as a watcher, and the watcher gets the result too.
   Exact-text matching alone is too weak, so callers pass keys for external
   items (mail, issues, job ids).
-- **Receipts:** every message Team sends records bb's answer (`sent` or
-  `queued`, plus a message sequence or queued-message id), then `dispatched`
-  from the `message.dispatch` hook and `seen` when a turn starts with it. A
-  retry reuses the idempotency key, so a message is never delivered twice
-  and a missing one shows up as stuck at `accepted`.
+- **Transport is at least once.** bb's send API takes no idempotency key
+  (`sendMessageRequestSchema`, 0.6.104 `:12959`, 0.6.202 `:13753`). If bb
+  accepts a send and Team crashes or loses the answer before recording it, a
+  retry sends a second copy. Team can't prevent that on the sending side,
+  so it limits the damage in three layers:
+  1. **Outbox.** Every message is first written to the outbox (`pending`),
+     with a nonce in its label (`[team · … · a_123 · n:7f3c]`), then marked
+     `sending`, sent, and marked `accepted` with bb's answer (`sent` or
+     `queued`, plus a message sequence or queued-message id).
+  2. **Reconciliation after a restart.** Entries left in `sending` become
+     `uncertain`. Team looks for the nonce in the target's queued messages
+     (`threads.queuedMessages.list`) and its recent timeline. Found → it
+     records `accepted`. Not found → it sends again with the same nonce. A
+     message that isn't visible yet can still be sent twice.
+  3. **Dedupe at the recipient.** Team's `message.dispatch` hook rejects a
+     dispatch whose messages are all Team relays with a nonce already
+     dispatched to that thread (the hook's decision can be `proceed`, `wait`
+     or `reject`; `MessageDispatchHookDecision`, 0.6.104 `:19777`, 0.6.202
+     `:21727`). A mixed dispatch that also carries a user message proceeds.
+     Every relay also tells the recipient: "Check a_123 in team_board before
+     acting; if it's already running or closed, don't start it again". Team's
+     tools refuse a second start, result or wake for the same assignment, so
+     a duplicate costs one short turn and no duplicate work.
+- **Receipt states.** `accepted` (bb answered), `dispatched` (the
+  `message.dispatched` event fired for the queued row, or the send answered
+  `sent`; 0.6.104 `:19597`, 0.6.202 `:21525`), and `seen` (a turn of the
+  recipient started with it). `message.dispatch` itself is an admission hook
+  before the provider, not proof of delivery. A message stuck at `accepted`
+  or `uncertain` for 10 minutes becomes an incident.
+- **What Team promises:** no message is lost silently, duplicates are
+  detected and don't cause duplicate work, and every message has a visible
+  receipt. It doesn't promise exactly-once delivery until bb accepts an
+  idempotency key on send (§5.7).
 
 ### 4.9 Team tools
 
@@ -373,7 +407,8 @@ Every member gets the core set. Groups are chosen per member through
 | `team_wait` | Declare a legitimate wait |
 | `team_board` | Read the ledger: mine, my tree, everyone's (titles only for sensitive members) |
 | `team_cancel` | Cancel an assignment one requested |
-| `team_ask_user` | Open a decision card |
+| `team_ask_user` | Open a decision card (returns the card's marker) |
+| `team_answer_card` | Record the user's typed answer to an open card (§5.3) |
 | `team_request_approval`, `team_check_approval` | Ask for and check grants |
 | `team_memory_*` | Read, add, supersede, forget, search (§6) |
 | `team_follow_up_*` | Create, list, edit, cancel |
@@ -421,9 +456,9 @@ recognizes its own relays. This is attribution, not authentication (§5.5).
 
 | Bot-started turns | |
 | --- | --- |
-| **May, with no approval** | Use all their tools; work in their workspace or sandbox; start Harbormaster tasks within budgets; assign, consult and notify other members within hop and budget limits; set and edit their own follow-ups; open decision and approval cards; add member memory and topic notes; share files; acquire locks |
+| **May, with no approval** | Use all their tools; work in their workspace or sandbox; start Harbormaster tasks within budgets; assign, consult and notify other members within hop and budget limits; set and edit their own follow-ups; open decision and approval cards; propose a new member (the chief only, §5.8); add member memory and topic notes; share files; acquire locks |
 | **Need a grant** (risky action classes) | `external-send` (email or messages to people, public posts); `spend` (paid extra usage, a sandbox more than one size up, paid APIs above a cap); `ship` (merge or push to protected branches; Harbormaster's existing Ship and Merge confirmations still apply on top); `destroy` (deleting user data outside a sandbox); `submit-personal` (applying for jobs, forms with personal data); `local-full-access` (unattended full access on the user's Mac) |
-| **Never, even with a grant** | Create or widen grants; change trust levels, members, connections or secrets; edit About me directly (they propose instead); answer the user's cards |
+| **Never, even with a grant** | Create or widen grants; change trust levels, connections or secrets; change or delete members (creating one follows §5.8); edit About me directly (they propose instead); answer the user's cards |
 
 User-started turns in a member's home chat may do the risky classes in the
 same turn when the user's message names the action. That counts as an
@@ -431,20 +466,68 @@ implicit single-use grant for that turn, recorded with the quote.
 
 ### 5.3 Approval cards and grants
 
+**Cards are plugin-rendered and never block the chat.** A native pending
+form (`bb.ui.requestInput`) doesn't work here. It is shown in the thread's
+composer and blocks until it's answered ("Block until the user submits or
+cancels this plugin's form in the thread composer", `PluginUi.requestInput`,
+0.6.104 `:20942`, 0.6.202 `:22971`). While it's pending, the thread takes no
+new prompt: "A target that is awaiting user interaction (an open question or
+approval) cannot take a prompt; tell then adds the message to the thread's
+queue" (`bb guide thread-messaging`). An open card could then stop the
+user's own reply that answers it, and it would hold every relay to that
+member for up to seven days.
+
+Two options were weighed:
+
+- **Free text inside the native form:** the reply then works, but the chat
+  stays blocked for as long as the card is open.
+- **A plugin card with buttons through plugin RPC:** chosen. Harbormaster
+  already ships this pattern: `::boat-decision{id}` live cards with **Go
+  with …**, Undo and composer follow-ups (`web/cards.tsx:575`, `docs/chat-cards.md`).
+
+How it works:
+
 - **Asking.** `team_request_approval({actionClass, targets, why, risk,
-  members, expiry, uses})` opens a pending interaction (`bb.ui.requestInput`,
-  timeout up to seven days; `PluginInteractionRequest`, 0.6.104 `:20156`,
-  0.6.202 `:22161`) in the asking member's home chat, plus an Inbox row.
+  members, expiry, uses})` and `team_ask_user` create a card in the ledger
+  and return a marker, `::team-card{id="c_…"}`, which the member puts in its
+  reply. Team registers that directive with `app.slots.messageDirective`
+  (app 0.6.104 `:22143`, 0.6.202 `:24438`). The card reads everything from
+  the ledger by id, because directive attributes are "Parsed, untrusted"
+  (app 0.6.104 `:19423`, 0.6.202 `:21252`). The same card is shown in the
+  Inbox and in the home chat's context row, so it's still reachable when the
+  marker scrolled away or the asking turn was a background one.
 - **The card shows** who asks, the exact action and targets, why, the risk,
   and an editable scope: which members (just this one, a list, or any),
   expiry (default 24 h, up to 7 days) and uses (once by default, or N). It
-  offers **Approve**, **Approve once** and **Deny**.
-- **Closing.** A card closes only when the user taps it or explicitly
-  replies to it. An explicit reply is a user-started turn in the card's chat
-  in which the member calls `team_answer_card(cardId, answer, quote)`, and
-  Team verifies that the quote is in the latest user message
-  (`threads.conversationOutline`, as Harbormaster's `chatApproval` does in
-  `src/runtime.ts:771-805`). Any other next message leaves the card open.
+  offers **Approve**, **Approve once** and **Deny**. A decision card offers
+  its options, **Answer in your own words** (fills the composer, sends
+  nothing) and the Undo window.
+- **Closing by tap.** A button calls Team's RPC `answerCard({cardId,
+  revision, choice, scope})`. The revision makes a stale or repeated tap
+  fail, and the card closes.
+- **Closing by explicit reply.** The chat isn't blocked, so the user can
+  just type. That starts a normal user-started turn, in which the member
+  calls `team_answer_card(cardId, answer, quote)`. Team checks that:
+  - the card is open and shown in this thread;
+  - the turn's dispatch had initiator `user` and no sender thread;
+  - the quote is in the latest user message (`threads.conversationOutline`,
+    as Harbormaster's `chatApproval` does in `src/runtime.ts:771-805`).
+
+  When several cards are open, the member must name the one the user
+  answered. If that's ambiguous, it asks instead of guessing.
+- **Nothing else closes a card.** Any other next message leaves it open: a
+  new topic, another member's message, or a reply the member can't tie to
+  the card.
+- **Who answered.**
+  - A tap reaches Team as a `client` RPC call, which can't be told apart
+    from an agent's call (check A). Its receipt says **answered by:
+    unknown**.
+  - A typed reply records the thread and dispatch initiator it came from,
+    labelled "unverified" (§5.6, item 4).
+  - Team doesn't use native forms for cards. Any native form would report
+    no responder at all (`PluginInteractionResult`, §5.6), so its
+    responder would always be "unknown".
+  - Real attribution waits for the core changes in §5.7.
 - **Travelling.** The grant lives in the ledger, not in the chat. Any member
   in its scope calls `team_check_approval({actionClass, target})` and gets
   `{granted, grantId, expiresAt, usesLeft}`. Team's and Harbormaster's own
@@ -529,18 +612,16 @@ Evidence:
    including an agent that already has bb access" (`SECURITY.md:122-126`).
    It also notes "a note is not an approval token" (`SECURITY.md:167-169`).
 
-**The smallest bb-core change.** Owner-confirmed plugin forms:
+**The smallest bb-core change.** An attested app surface on RPC calls:
+`ExperimentalPluginRpcCaller` gains `{kind: "client", surface: "app" | "cli"
+| "sdk"}`. `surface: "app"` is set only for calls from an app session
+(desktop, web or mobile). Team's cards use RPC (§5.3), so this one field is
+enough to verify a tap.
 
-- `bb.ui.requestInput({…, experimental_requireOwner: true})`. Core accepts the
-  answer only from an app session (desktop, web or mobile) and refuses it
-  from the CLI, the SDK and `bb thread interactions respond`.
-- `PluginInteractionResult` gains `respondedVia: "app" | "cli" | "sdk"`.
-
-This needs app sessions to hold a credential that agent environments never
+It needs app sessions to hold a credential that agent environments never
 get, for example a per-device session token kept in memory or the OS
-keychain, never in `BB_*` variables. That is the only new mechanism. An
-optional second step is the same `surface` field on
-`ExperimentalPluginRpcCaller`.
+keychain, never in `BB_*` variables. That's the only new mechanism. The
+same attestation then also serves native forms (§5.7, item 2).
 
 **Degraded design that works today:**
 
@@ -548,9 +629,9 @@ optional second step is the same `surface` field on
    and an expiry, are single-use by default, and are consumed atomically.
    Typed "I approve" counts only through the explicit-reply rule (§5.3).
 2. Team never offers an "approve" tool or CLI command, and every member's
-   instructions forbid answering cards. A card answered from a thread that
-   has an assignment open in the same tree is flagged in the receipt as
-   "answered from an agent thread (unverified)".
+   instructions forbid answering cards. Team can't tell who answered: a tap
+   is recorded as "answered by: unknown", and a typed reply only with its
+   unverified thread and initiator (§5.3).
 3. Every approval posts a receipt and a push notification, and grants for
    reversible actions keep a short Undo window. A forged approval is seen in
    seconds, not discovered days later.
@@ -559,6 +640,39 @@ optional second step is the same `surface` field on
    bound to one request.
 5. The UI calls these approvals what they are. Settings → Team → Approvals
    says "Approvals show intent; bb can't yet prove a tap came from you".
+
+### 5.7 Proposed bb-core changes
+
+All are additive. Team works without them, in the degraded way described
+in each section.
+
+| # | Change | Unblocks |
+| --- | --- | --- |
+| 1 | An attested surface on RPC calls: `ExperimentalPluginRpcCaller` gains `surface: "app" \| "cli" \| "sdk"`, with `app` only from app sessions | Verifying that a card tap came from the human (§5.3, §5.6) |
+| 2 | Responder attribution on native forms: `PluginInteractionResult` gains `respondedVia` (the same surface) and, for answers from an agent thread, `responderThreadId`; plus an optional `experimental_requireOwner` on `requestInput` that refuses CLI, SDK and `bb thread interactions respond` answers | Knowing who answered a native form; owner-only forms. Until then every form responder is "unknown" |
+| 3 | An idempotency key on `threads.send` and `threads.spawn`: core returns the first message for a repeated key | Exactly-once delivery of Team relays (§4.8); until then delivery is at least once |
+| 4 | Per-thread MCP selection: `PluginAgentConfiguration.experimental_mcp {servers, strict}` | Connectors per member and the account-connector opt-out (§9.2) |
+
+### 5.8 New members
+
+- **Now (decided):**
+  - The chief only proposes a new member. It posts an in-chat card
+    (§5.3) with the template, name, role, placement and the reason, for
+    example "the same competence was needed 4 times in 3 weeks", with links
+    to those assignments. The user taps **Create**, can edit the fields
+    first, or taps **Not now**.
+  - A dismissed proposal for the same competence isn't repeated for 30
+    days.
+- **Later (opt-in):**
+  - A setting, **Let the chief add members**, off by default. When it's on,
+    and the same competence has come up at least N times (default 3 in 30
+    days), the chief may create the member itself from a template.
+  - It then tells the user in its home chat and in the Inbox: who it
+    created, why (with the assignment links), and **Undo**. Undo archives
+    the member and its home chat.
+  - The creation is journaled, and created members start with `routine`
+    trust and no connections or grants. The user adds those.
+- Changing or deleting members stays the user's action either way.
 
 ## 6. Memory
 
@@ -752,8 +866,19 @@ assignment with a result, not a hand-made tool.
 ### 8.3 Handover by file link
 
 - `team_share_file(path, caption)` uploads with Harbormaster's evidence
-  uploader (or bb thread storage) and returns a file record: link, size,
-  sha256 and caption. Cloud and Mac members can both reach it.
+  uploader (or bb thread storage) and returns a file record: object key,
+  size, sha256 and caption. Cloud and Mac members can both reach it.
+- **Links last 7 days and are renewed.** The uploader's presigned links last
+  at most 7 days ("SigV4 links last at most 7 days",
+  `assets/evidence-upload.mjs:56-57`). It can print "a fresh link for a file
+  already uploaded" from its key (`--link <key>`, `:24-33`).
+  - Team stores the object key, not a link, and issues a 7-day link whenever
+    a file is opened or relayed.
+  - A relayed message carries a Team file id (`x_…`) beside the link, so a
+    member with an expired link asks `team_files` for a fresh one.
+  - How long the object itself is kept (`retainUntil`, default 30 days,
+    subject to the bucket's lifecycle rules) is separate from how long a
+    link lasts.
 - Briefs over 12,000 characters and relayed messages over 4,000 characters
   are refused with "share a file instead".
 - **Screenshots are searchable.** A caption is required, and `team_files`
@@ -897,8 +1022,9 @@ what it must offer.
 | **Member home chat** | Header: member, role, placement, connections. Timeline: messages; **collapsed bot-to-bot exchange rows** (one per assignment: direction, member, mode, id, status, receipt), expandable to brief, result and files; decision cards; approval cards; result cards; stopped-early notices; follow-up notices; provenance labels. Context row: open assignments, check-in card, grants in effect | Reply; answer a card; open an assignment; continue, reassign or cancel; open background threads | Empty (first message); busy; waiting on others; card open; home chat moved ("Moved to …, Undo") |
 | **Team board (ledger)** | Every open assignment: title, requester → assignee, mode, status, age, budget used, last progress, receipts; paused trees; "Who knows…" search | Filter (open, needs you, stopped early, done today, by member); open; cancel; continue; reassign; raise the budget | Empty; many (≥50); a tree paused at its budget |
 | **Assignment detail** | Brief, done-when, origin chain, event timeline, deliveries, result block, files, linked tasks and decisions, grants used | Same actions as the board; copy a link | Each status and outcome (§4.1) |
-| **Decision card** | Question, options, recommendation, the asking member, related assignment, "closes when you tap or reply to it" | Pick an option (Undo window); answer in own words; dismiss as withdrawn | Open, answered (by tap or reply), withdrawn, expired |
-| **Approval card** | Who asks, the exact action and targets, why, risk, scope (members, expiry, uses) | Approve, Approve once, Deny; edit the scope | Open, approved, denied, expired, used, revoked; "answered from an agent thread (unverified)" |
+| **Decision card** (plugin-rendered, never blocks the chat) | Question, options, recommendation, the asking member, related assignment, "closes when you tap or reply to it" | Pick an option (Undo window); answer in own words; dismiss as withdrawn | Open, answered (by tap or reply), withdrawn, expired |
+| **Approval card** (plugin-rendered, never blocks the chat) | Who asks, the exact action and targets, why, risk, scope (members, expiry, uses); who answered ("unknown" for taps until bb core can tell) | Approve, Approve once, Deny; edit the scope; reply in the composer | Open (chat still usable), approved, denied, expired, used, revoked; answered by tap or by reply |
+| **Member proposal card** | Template, name, role, placement, the reason ("needed N times") with assignment links | Create, edit then create, Not now; with the later opt-in setting: Undo after the chief created a member | Proposed, created, dismissed, undone |
 | **Approvals** | Active grants, standing trust per source and machine, history with receipts, the honest note from §5.6 | Revoke; change trust levels; change expiry | No grants; expiring soon |
 | **Member setup and edit** | Name, role, avatar, persona, kind, agent/model/effort, placement, sensitive, tools, connections, account connectors (with "Not enforced yet"), memory budgets, trust, routines, follow-ups, home chat pointer | Create from a template (developer, designer who codes, writer, personal assistant, job scout); edit; pause; archive; move the home chat | New; editing; invalid (no home chat, missing connection key) |
 | **Memory** | About me; per-member memory with superseded entries; topic notes; the journal; budget meters; proposals | Accept or edit proposals; add; supersede; forget; Undo any journal entry | Full; proposals waiting; empty |
@@ -1040,7 +1166,7 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
 
 | Phase | Scope |
 | --- | --- |
-| **0. In parallel** | Divergent concepts in Paper on the axes in §10.3. File the two bb-core asks (owner-confirmed forms, per-thread MCP) |
+| **0. In parallel** | Divergent concepts in Paper on the axes in §10.3. File the bb-core asks in §5.7 (attested RPC surface, form responder attribution, idempotent send, per-thread MCP) |
 | **1. MVP: the chief plus project leads** | The Team switch. The chief member and home chat; existing orchestrators as project leads. The ledger with work, consult and notify; resume, receipts, stopped early, budgets, hop limits and dedupe. Labels and the consent rule. Decision and approval cards with grants (the degraded design). The Inbox extended. The `team` block in `sidebarState` and the Workbench block (Inbox row, chief tile, member rows); the native fallback section. Problems thread incidents for stopped-early and offline machines. About me and member memory with the journal |
 | **2. Specialists** | Templates for developer, designer who codes, writer, personal assistant and job scout. Member-scoped tools and connections (the jobs database, secrets via `bb secret request`). Sandbox placement and isolation. File handover. Topic notes and "who knows". Per-source trust levels |
 | **3. Routines and health** | Routines with end conditions and code checks; editable follow-ups; check-ins with a silent pass. Mac locks, guards and quiet windows. All health checks in §7.5, including the leak guard, usage-limit switching and stale dev servers |
@@ -1061,7 +1187,9 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
     - no `done` without a result;
     - every failure has an incident;
     - no bot-started risky action without a grant;
-    - no card closed by an unrelated message.
+    - no card closed by an unrelated message;
+    - a reply typed while a card is open starts a turn (the card never blocks the chat);
+    - after a crash between bb accepting a send and Team recording it, a resend causes no second start, result or wake.
 - **Tool-choice evals** (a live model, opt-in, never in CI). Real phrasings
   in English and German, scored on tool choice, **the delegation target and
   mode** (an improvement on OpenMausBot, whose scorer doesn't check the
@@ -1074,7 +1202,9 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
 | "Sag dem Entwickler, er soll den Login-Bug fixen." | `team_assign` work → the project lead of that repo (or the developer), with a doneWhen |
 | "Läuft das noch?" / "Is that still running?" | `team_board`; never a new assignment |
 | "Mach weiter." (after a stopped-early card) | Continue that assignment; never a new one |
-| "Ich gebe frei." with one open approval card | `team_answer_card` on that card only |
+| "Ich gebe frei." with one open approval card | The reply starts a turn while the card stays open; `team_answer_card` on that card only |
+| "Ja, mach." with two open cards | Ask which card; close neither |
+| A member says it needs the same skill again (3rd time) | Member proposal card; no member created (unless the opt-in setting is on) |
 | "Erinner mich morgen um 9 an die Bewerbung." | `team_follow_up_create` for the personal assistant; not a routine |
 | "Check every morning for new remote frontend jobs until 31 December." | A routine for the job scout with `endsAt`, a `jobs_search` code check and a quiet pass |
 | "Wer weiß was über unser Pricing?" | `team_memory_search`; never a message to every member |
@@ -1094,13 +1224,13 @@ off by default behind a **Team** switch, in its own module (`src/team/`,
 | --- | --- | --- |
 | 1 | Should Team ship inside Harbormaster (1) or as a separate plugin (2)? | (1), behind a Team switch with a clean module seam (§11.4) |
 | 2 | Is the degraded approval design acceptable until bb core can verify the owner, or should risky classes wait for it? | Accept it for MVP: receipts, push notifications, single-use grants, and Harbormaster's guarded paths for irreversible actions. File the core ask now |
-| 3 | May the chief create members on its own? | No. It proposes a member on a card (template, name, placement), and the user taps Create |
+| 3 | May the chief create members on its own? | **Resolved by the user:** for now the chief proposes on an in-chat card with the reason, and the user taps Create. Later, an opt-in setting lets it create members itself when a competence keeps coming up, telling the user afterwards with Undo (§5.8) |
 | 4 | What's the default trust for cloud → Mac handoffs? | `routine`: handoffs run; `local-full-access` and the other risky classes need a grant; unknown machines start at `ask` |
 | 5 | Should Team require SDK ≥0.6.125 (32,768-character instructions)? | No. Design for 4,096, raise budgets when the host allows it, and keep Harbormaster's `>=0.6.104` |
 | 6 | Where do member home chats live? | The Personal project, in a Team section (the fallback's section too); project leads stay in their projects |
 | 7 | How are check-ins delivered? | A context card in the chief's home chat plus one Inbox entry when action is needed; no turn when quiet |
 | 8 | What's the default end for routines? | 30 days, with a reminder 3 days before; "no end" only as an explicit choice |
-| 9 | Where are handover files stored? | The evidence bucket, links valid 30 days, plus bb thread storage for Mac-only files |
+| 9 | Where are handover files stored? | The evidence bucket: Team stores the object key and issues 7-day links on demand (the uploader's maximum); objects are kept 30 days. bb thread storage for Mac-only files |
 | 10 | Are the memory budgets in §6.1 right? | Start there; show meters and revisit after two weeks of use |
 | 11 | What are the Mac quiet window and guard defaults? | 22:00–07:00; RAM 2 GB, disk 10%, battery 30% |
 | 12 | Should the account-connector opt-out ship before it's enforceable? | Yes, labelled "Not enforced yet", so the setting is ready when core adds strict MCP selection |
