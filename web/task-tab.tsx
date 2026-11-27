@@ -3,7 +3,7 @@ import { TaskProviderFailure } from "./provider-failure";
 // Task-owned side panel; source chats keep the separate Cloud agents list.
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
-  Markdown, ThreadChat, UrlLink, experimental_useFixedTabTarget, experimental_useRpcMutation, experimental_useRpcQuery, useSdk,
+  Markdown, ThreadChat, UrlLink, experimental_useFixedTabTarget, experimental_useRpcMutation, experimental_useRpcQuery, useSdk, useBbNavigate,
   type ExperimentalThreadTabProps, type PluginAppBuilder,
 } from "@get-bb/plugin-sdk/app";
 import { mergeRpcContract, type PullRequestFacts } from "../contract-merge";
@@ -101,8 +101,9 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 const BOX = "boat-task-box";
 function MergeAction({ task }: { task: TaskDto }) {
+  const navigate=useBbNavigate();
   const action = experimental_useRpcMutation({ contract: mergeRpcContract, method: "requestMerge" });
-  return <Button size="sm" disabled={action.isPending} onClick={() => void action.mutate({ id: task.id, from: "chat" }).catch(showError)}>Merge PR #{task.prUrl?.match(/\/pull\/(\d+)/)?.[1]}</Button>;
+  return <Button size="sm" disabled={action.isPending} onClick={() => void action.mutate({ id: task.id, from: "chat" }).then(result=>{if(result.teamAskId)navigate.toThread(result.threadId);}).catch(showError)}>Merge PR #{task.prUrl?.match(/\/pull\/(\d+)/)?.[1]}</Button>;
 }
 function Overview({ task, facts, history, reviewPolicy }: { task: TaskDetailDto; facts: PullRequestFacts | null; history: HistoryEventDto[]; reviewPolicy: NativeReviewState | null }) {
   const state = cardStatus(task);

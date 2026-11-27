@@ -1,3 +1,4 @@
+import { createTeamRuntime, describeTeamSetupError } from "./src/team/runtime.ts";
 import { createOwnMacProvider } from "./src/providers/ownmac/provider.ts";
 import { MONTHLY_MACS_TAG } from "./contract-monthly-macs.ts";
 import { monthlyMacPrices } from "./src/monthly-macs.ts";
@@ -257,7 +258,7 @@ export default async function plugin(bb: BbPluginApi) {
   let attentionNotifications: AttentionNotifications | null = null;
 
   function changed(): void {
-    bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings, PROVIDERS_TAG, MONTHLY_MACS_TAG]);
+    bb.rpc.experimental_invalidate(["boat:team", TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings, PROVIDERS_TAG, MONTHLY_MACS_TAG]);
     bb.realtime.publish(REALTIME_CHANNEL, null);
     void attentionNotifications?.flush();
   }
@@ -661,6 +662,8 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("turn.failed", (payload: unknown) => {
     void resets.failed(payload as LimitFailure).catch((error: unknown) => bb.log.warn(`reset resume: ${error instanceof Error ? error.message : String(error)}`));
   });
+  runtime.team = createTeamRuntime(runtime);
+  await runtime.team.prepare().catch((error:unknown)=>bb.log.warn(`Team setup needs attention: ${describeTeamSetupError(error)}`));
   registerTools(runtime);
   registerRpc(runtime);
   registerMergeRpc(runtime);
@@ -684,6 +687,8 @@ export default async function plugin(bb: BbPluginApi) {
   // Orchestrator threads get the Harbormaster tools, the playbook skill, and standing
   // instructions; every thread can use the general `boat` skill and CLI.
   bb.agents.configure((context) => {
+    const team = runtime.team?.configure(context.thread.id, context.pluginMetadata, tasksBeforeAsking);
+    if (team) return { tools: [...team.tools, ...(isOrchestratorMetadata(context.pluginMetadata) ? TOOL_NAMES : [])], skills: ["boat", "boat-team", ...(isOrchestratorMetadata(context.pluginMetadata) ? ["boat-orchestrator"] : [])], instructions: team.instructions };
     if (isOrchestratorMetadata(context.pluginMetadata)) {
       return {
         tools: [...TOOL_NAMES],
@@ -922,6 +927,8 @@ export default async function plugin(bb: BbPluginApi) {
     }
   };
   bb.experimental_hooks.on("message.dispatch", async (context) => {
+    const teamDecision=runtime.team?.dispatch(context);
+    if(teamDecision && teamDecision.action!=="proceed")return teamDecision;
     // A steer retry or chat recovery the plugin withdrew but bb's queue may still hold: never let it run.
     const queuedIds = context.queuedMessages.map((row) => row.id);
     const guard = service.store.queuedGuard(queuedIds);
@@ -998,6 +1005,7 @@ export default async function plugin(bb: BbPluginApi) {
           await service.sweepProjectSourcesIfDue();
           await nativeReviews.tick();
           await runtime.startQueue.tick();
+          await runtime.team?.settle();
           await attentionNotifications?.flush();
         } catch (error) {
           bb.log.warn(`monitor sweep failed: ${error instanceof Error ? error.message : String(error)}`);

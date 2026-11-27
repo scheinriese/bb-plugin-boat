@@ -1,3 +1,4 @@
+import { useTeam, openAsks } from "./team";
 // Data hooks over the plugin's RPC contract plus a few small UI hooks.
 //
 // Live reads refresh when the server invalidates their tags (TAGS in
@@ -135,10 +136,12 @@ export function useThreadTask(threadId: string): TaskDto | null {
 
 /** Required setup failures take priority; healthy setup retains the attention count. */
 export function useAttentionBadge(): ExperimentalBadge | null {
+  const team=useTeam().data;
   const { data } = useBoard(null);
   const setup=useSetup().data;
   const failed=setup?.ok===false?setup.checks.find(check=>check.required && (check.state==="missing" || check.state==="unknown")):undefined;
   if(failed)return {text:"!",tone:"critical",label:`Cloud agents need attention: ${failed.label}. ${failed.detail}`};
+  if(team?.enabled){const count=openAsks(team.asks).length;return team.workbench||!count?null:{count,tone:"warning",label:`Team: ${count} need you`};}
   const count = data ? attentionCount([...data.ready, ...data.running], data.needsYou) : 0;
   return count === 0 ? null : {count, tone:"warning", label:`Cloud agents: ${count} need you`};
 }

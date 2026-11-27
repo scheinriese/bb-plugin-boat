@@ -10,7 +10,7 @@ import type { QueuedStartDto } from "../contract-start-queue.ts";
 import { StartQueueStore } from "./start-queue-store.ts";
 
 /** Additive handlers; no sandbox lifecycle, billing, or shipping mutations. */
-export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pick<Runtime, "bb" | "startQueue">>) {
+export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pick<Runtime, "bb" | "startQueue" | "team">>) {
   const { service } = runtime;
   let pausedCache: { at: number; value: Promise<Map<string, PausedReset>> } | null = null;
   const cache = new Map<string, { at: number; value: Promise<FidelityUsageDto> }>();
@@ -126,8 +126,9 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
       if (runtime.bb && (!pausedCache || Date.now() - pausedCache.at > 15_000)) pausedCache = { at: Date.now(), value: readPausedResets(runtime.bb) };
       const base = sidebarState(service, runtime.bb ? await pausedCache!.value : new Map(), zone);
       const queued = await readQueuedStarts(zone);
-      return { ...base, queuedStarts: queued.rows, truncated: base.truncated || queued.truncated,
-        revision: createHash("sha256").update(JSON.stringify([base.revision, queued.rows])).digest("hex").slice(0, 24) };
+      const team = runtime.team?.engine.sidebar();
+      return { ...base, ...(team ? { team } : {}), queuedStarts: queued.rows, truncated: base.truncated || queued.truncated,
+        revision: createHash("sha256").update(JSON.stringify([base.revision, queued.rows, team])).digest("hex").slice(0, 24) };
     },
   };
 }

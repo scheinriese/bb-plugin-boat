@@ -1,3 +1,5 @@
+import { TeamPage, useTeam } from "./team";
+import { UsageLimitsSection } from "./usage-limits";
 import "./boat-ui.css";
 // The Cloud agents nav panel: router over `subPath`, header actions (New
 // task, and a ⋯ menu with the rest) and the page title.
@@ -43,7 +45,13 @@ import { ProjectsSettings } from "./projects-settings";
 import { TaskDetail } from "./task-detail";
 import { EmptyBox, IconButton, showError } from "./ui";
 
-export function CloudAgentsPage({ subPath }: PluginNavPanelProps) {
+export function CloudAgentsPage(props: PluginNavPanelProps) {
+  const {data}=useTeam();
+  const section=props.subPath.replace(/^\/+|\/+$/g, "");
+  if(data?.enabled && (["", "today", "board", "sandboxes", "usage", "projects"].includes(section)||section.startsWith("ask/"))) return <TeamPage state={data} section={section}>{["", "today"].includes(section)?<details className="mx-10 mb-8"><summary className="text-sm text-muted-foreground cursor-pointer">Cloud work and activity</summary><CloudPageTabs section="today" embedded/></details>:section==="usage"?<div className="mx-auto max-w-5xl p-6"><UsageLimitsSection/></div>:<CloudPageTabs section={section} embedded/>}</TeamPage>;
+  return <LegacyCloudAgentsPage {...props}/>;
+}
+function LegacyCloudAgentsPage({ subPath }: PluginNavPanelProps) {
   const route = parseSubPath(subPath);
   const section = subPath.replace(/^\/+|\/+$/g, "");
   if (["", "today", "sandboxes", "projects"].includes(section))
@@ -64,7 +72,7 @@ export function CloudAgentsPage({ subPath }: PluginNavPanelProps) {
   );
 }
 
-function CloudPageTabs({ section }: { section: string }) {
+function CloudPageTabs({ section, embedded=false }: { section: string; embedded?: boolean }) {
   const navigate = useBbNavigate();
   const [editing, setEditingState] = useState<ProjectEditing>(() => section === "projects" ? readProjectEditorSession().editing : null);
   const setEditing = (value: ProjectEditing) => { setProjectEditorSession(value); setEditingState(value); };
@@ -95,7 +103,7 @@ function CloudPageTabs({ section }: { section: string }) {
       ref={root}
       className="boat-ui flex h-full min-h-0 flex-1 flex-col overflow-hidden"
     >
-      <div className="mx-auto w-full max-w-[1140px] shrink-0 px-4 pt-4 md:pl-[30px] md:pr-[50px]">
+      {!embedded && <div className="mx-auto w-full max-w-[1140px] shrink-0 px-4 pt-4 md:pl-[30px] md:pr-[50px]">
         <nav
           aria-label="Cloud agents pages"
           className="flex gap-[22px] border-b border-border sm:gap-7"
@@ -121,7 +129,7 @@ function CloudPageTabs({ section }: { section: string }) {
             </button>
           ))}
         </nav>
-      </div>
+      </div>}
       <div className="flex min-h-0 flex-1">
         <div ref={content} className="min-w-0 flex-1 overflow-y-auto">
           <div
@@ -243,6 +251,7 @@ export function useCloudAgentsPageTitle({
   subPath,
 }: PluginNavPanelProps): ExperimentalPageTitle | null {
   const pluginId = experimental_usePluginId();
+  const team = useTeam().data;
   const route = parseSubPath(subPath);
   const id = route.kind === "task" ? route.id : null;
   const orchestratorId = route.kind === "orchestrator" ? route.threadId : null;
@@ -252,7 +261,7 @@ export function useCloudAgentsPageTitle({
     const title = orchestratorTitle ?? "Orchestrator";
     return { title, windowTitle: `${title} · Harbormaster` };
   }
-  if (id === null) return { title: "Cloud agents", windowTitle: "Harbormaster · Cloud agents" };
+  if (id === null) return { title: team?.enabled ? "Team" : "Cloud agents", windowTitle: team?.enabled ? "Harbormaster · Team" : "Harbormaster · Cloud agents" };
   const title = data?.task?.title ?? id;
   // The host already shows "Harbormaster" before the page title.
   void pluginId;

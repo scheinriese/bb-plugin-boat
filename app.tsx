@@ -1,4 +1,3 @@
-import { OwnMacChatNotices } from "./web/own-mac-live";
 // bb-plugin-boat — frontend entry ("Cloud agents", via boat.dev).
 //
 // Compiled by `bb plugin build` into dist/app.js + dist/app.css. React and
@@ -9,6 +8,9 @@ import {
   definePluginApp,
   experimental_THREAD_INFO_SECTION_GROUPS as SECTION_GROUPS,
 } from "@get-bb/plugin-sdk/app";
+import { TeamChatAsks, useTeamAsksVisible, TeamSettings } from "./web/team";
+import { OwnMacChatNotices } from "./web/own-mac-live";
+
 import { PANEL_PATH } from "./web/format";
 import { useAttentionBadge } from "./web/hooks";
 import {
@@ -58,6 +60,10 @@ export default definePluginApp((app) => {
     experimental_useBadge: useAttentionBadge,
     experimental_usePageTitle: useCloudAgentsPageTitle,
   });
+
+  app.slots.experimental_threadContextSegment({id:"team-asks",title:"Your move",group:"2_team",summary:TeamChatAsks,useVisible:useTeamAsksVisible});
+  app.slots.experimental_threadContextCardSection({id:"team-asks",title:"Your move",group:SECTION_GROUPS.related,order:1,component:TeamChatAsks});
+  app.slots.settingsSection({id:"team",component:TeamSettings});
 
   // Threads that dispatched tasks: the row above the composer (banner mode),
   // the context card (card mode), the Info tab, and a side-panel tab.

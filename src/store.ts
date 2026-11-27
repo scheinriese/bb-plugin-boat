@@ -1,3 +1,4 @@
+import { TeamStore, TEAM_MIGRATIONS } from "./team/store.ts";
 import { MonthlyMacAdvisor, MONTHLY_MAC_MIGRATIONS } from "./monthly-mac-advisor.ts";
 import { MacLeaseLedger, MAC_LEASE_MIGRATIONS, MAC_CREDENTIAL_NOTICES_MIGRATION, MAC_CREDENTIAL_EXPIRIES_MIGRATION, MAC_LEASE_END_EVIDENCE_MIGRATION, MAC_LEASE_ADOPTIONS_MIGRATION, MAC_RELEASE_INTENTS_MIGRATION, MAC_LEASE_OBSERVATIONS_MIGRATION } from "./mac-leases.ts";
 // Plugin-owned task registry (SQLite, <dataDir>/plugins/boat/data.db).
@@ -565,6 +566,7 @@ export function newTaskId(): string {
 }
 
 export interface TaskFilter {
+  updatedSince?: string;
   orchestratorThreadId?: string;
   statuses?: readonly TaskStatus[];
   parentTaskId?: string;
@@ -572,12 +574,14 @@ export interface TaskFilter {
 }
 
 export class TaskStore {
+  readonly team: TeamStore;
   readonly macLeases: MacLeaseLedger;
   readonly monthlyMacs: MonthlyMacAdvisor;
   private readonly db: () => Database.Database;
 
   constructor(db: () => Database.Database) {
     this.db = db;
+    this.team = new TeamStore(db);
     this.macLeases = new MacLeaseLedger(db);
     this.monthlyMacs = new MonthlyMacAdvisor(db, this.macLeases);
   }
@@ -594,7 +598,7 @@ export class TaskStore {
       ...SCOPED_START_QUEUE_MIGRATIONS,
       `ALTER TABLE tasks ADD COLUMN purpose TEXT`,
       `ALTER TABLE tasks ADD COLUMN design_claude_preference INTEGER NOT NULL DEFAULT 0`,
-      `ALTER TABLE tasks ADD COLUMN claude_normal_routing INTEGER NOT NULL DEFAULT 0`, MAC_LEASE_END_EVIDENCE_MIGRATION, MAC_LEASE_ADOPTIONS_MIGRATION, MAC_RELEASE_INTENTS_MIGRATION, MAC_LEASE_OBSERVATIONS_MIGRATION];
+      `ALTER TABLE tasks ADD COLUMN claude_normal_routing INTEGER NOT NULL DEFAULT 0`, MAC_LEASE_END_EVIDENCE_MIGRATION, MAC_LEASE_ADOPTIONS_MIGRATION, MAC_RELEASE_INTENTS_MIGRATION, MAC_LEASE_OBSERVATIONS_MIGRATION, ...TEAM_MIGRATIONS];
   }
 
   insert(task: Task): Task {
@@ -712,6 +716,10 @@ export class TaskStore {
     if (filter.statuses !== undefined && filter.statuses.length > 0) {
       where.push(`status IN (${filter.statuses.map(() => "?").join(", ")})`);
       params.push(...filter.statuses);
+    }
+    if (filter.updatedSince !== undefined) {
+      where.push("julianday(updated_at) >= julianday(?)");
+      params.push(filter.updatedSince);
     }
     const limit = Math.max(1, Math.min(filter.limit ?? 200, 1000));
     const sql = `SELECT * FROM tasks ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT ${limit}`;
@@ -1035,12 +1043,13 @@ export class TaskStore {
   }
 
   /** Close an open decision; null when it was already closed. */
-  resolveDecision(id: string, status: "answered" | "withdrawn", answer: string | null): Decision | null {
+  resolveDecision(id: string, status: "answered" | "withdrawn", answer: string | null, fromTeam = false): Decision | null {
     const result = this.db()
       .prepare(`UPDATE decisions SET status = ?, answer = ?, resolved_at = ? WHERE id = ? AND status = 'open'`)
       .run(status, answer, new Date().toISOString(), id) as { changes: number | bigint };
     if (Number(result.changes) === 0) return null;
     const decision = this.decision(id)!;
+    if(!fromTeam && this.team.setting("enabled",false))this.team.supersedeDecision(id);
     this.addEvent(decision.askedByTaskId ?? decision.taskIds[0] ?? "", status === "answered" ? "decision-answered" : "decision-withdrawn", decision.question, { source: "user", decisionId: id, orchestratorThreadId: decision.orchestratorThreadId ?? undefined });
     return decision;
   }

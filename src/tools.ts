@@ -158,6 +158,7 @@ export function registerTools(runtime: Runtime): void {
     presentation: { label: { pending: "Dispatching a cloud agent", completed: "Dispatched a cloud agent" }, icon: { glyph: "ComputerCloud" } },
     parameters: z.object({
       title: z.string().min(1).max(200).describe("Short task title"),
+      assignmentId: z.string().optional().describe("Team assignment this task implements"),
       compact_title: compactTitleSchema.optional().describe("Authored short subject for mobile task chips, e.g. Cart drawer"),
       brief: z.string().min(1).describe("Self-contained task brief in Markdown"),
       role: z.enum(TASK_ROLES).optional().describe("implement (default), review, or custom"),
@@ -186,6 +187,9 @@ export function registerTools(runtime: Runtime): void {
     }),
     execute: (params, ctx) =>
       attempt(async () => {
+        const teamMember=runtime.team?.engine.memberForThread(ctx.threadId);
+        const assignment=params.assignmentId&&teamMember?runtime.team!.engine.owned(params.assignmentId,teamMember.id):null;
+        if(params.assignmentId&&!assignment)throw new Error("The Team assignment is not owned by this chat");
         const context = service.contextBlock(params.context_from ?? []);
         const project = params.project
           ? await runtime.resolveProject(parseProjectRef(params.project))
@@ -221,6 +225,7 @@ export function registerTools(runtime: Runtime): void {
           },
           runtime.launchWaitMs,
         );
+        if(assignment&&result.kind!=="queued")runtime.team!.engine.updateAssignment(assignment,{taskIds:[...new Set([...assignment.taskIds,result.task.id])]},"task-linked",assignment.assignee);
         runtime.wake();
         return result.kind === "queued"
           ? `Request ${result.request.id} is waiting for a usage reset. No sandbox has been created. It will retry automatically when an agent has confirmed subscription room. Do not start a replacement or name an agent to bypass this wait; paid extra usage needs the user's separate in-thread confirmation.\nShow this returned live receipt once:\n${queuedStartMarker(result.request.id)}`
