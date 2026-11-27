@@ -50,7 +50,7 @@ export function registerMergeRpc(runtime: Runtime): void {
       if(runtime.team?.engine.enabled()) {
         await runtime.team.prepare();const engine=runtime.team.engine;
         const ask=engine.store.list("ask").find(a=>a.taskId===input.id&&["open","confirming"].includes(a.state));
-        if(ask){if(ask.state==="open")engine.answer({askId:ask.id,revision:ask.revision,option:"merge",text:"",surface:input.from==="chat"?"strip":"today"});return {pending:true as const,requestId:ask.id,threadId:ask.threadId??engine.chief()!.homeThreadId!,duplicate:ask.state==="confirming"};}
+        if(ask){if(ask.state==="open")engine.answer({askId:ask.id,revision:ask.revision,option:"merge",text:"",surface:input.from==="chat"?"strip":"today"});return {pending:true as const,requestId:ask.id,threadId:ask.threadId??engine.chief()!.homeThreadId!,duplicate:ask.state==="confirming",teamAskId:ask.id,feedback:"Review the merge checks in the task chat."};}
       }
       return interactions.request(input);
     }),

@@ -1,5 +1,3 @@
-import { TeamChatAsks, TeamAskSummary, useTeamAsksVisible, TeamSettings } from "./web/team";
-import { OwnMacChatNotices } from "./web/own-mac-live";
 // bb-plugin-boat — frontend entry ("Cloud agents", via boat.dev).
 //
 // Compiled by `bb plugin build` into dist/app.js + dist/app.css. React and
@@ -10,6 +8,9 @@ import {
   definePluginApp,
   experimental_THREAD_INFO_SECTION_GROUPS as SECTION_GROUPS,
 } from "@get-bb/plugin-sdk/app";
+import { TeamChatAsks, useTeamAsksVisible, TeamSettings } from "./web/team";
+import { OwnMacChatNotices } from "./web/own-mac-live";
+
 import { PANEL_PATH } from "./web/format";
 import { useAttentionBadge } from "./web/hooks";
 import {

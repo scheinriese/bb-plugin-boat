@@ -1,3 +1,11 @@
+import {
+  teamTime,
+  teamDue,
+  answerSurface,
+  receiptKind,
+  receiptState,
+  closedAskCopy,
+} from "../lib/team-copy";
 import type { PullRequestFacts } from "../contract-merge";
 import { teamAvatars } from "./team-avatars";
 import { useEffect, useState, type ReactNode } from "react";
@@ -37,16 +45,8 @@ export const openAsks = (asks: Ask[]) =>
         Number(b.tier === "confirm") - Number(a.tier === "confirm") ||
         a.createdAt.localeCompare(b.createdAt),
     );
-const time = (at: string) =>
-  new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const due = (at: string) =>
-  new Date(at).toLocaleString([], {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+const time = teamTime;
+const due = teamDue;
 export function useTeamBadge(): ExperimentalBadge | null {
   const { data } = useTeam();
   const count =
@@ -103,6 +103,7 @@ export function AskView({
     revision: number;
   } | null>(null);
   const [facts, setFacts] = useState<PullRequestFacts | null>(null);
+  const [reply, setReply] = useState("");
   const [notice, setNotice] = useState("");
   const navigate = useBbNavigate();
   const member = state.members.find((m) => m.id === ask.memberId);
@@ -143,7 +144,7 @@ export function AskView({
         askId: ask.id,
         revision: ask.revision,
         option,
-        text: "",
+        text: reply,
         surface,
       });
       setNotice(result.message);
@@ -182,9 +183,6 @@ export function AskView({
             {` · unblocks ${ask.unblocks}`}
           </p>
         </div>
-        {ask.tier === "confirm" && !answered && (
-          <Icon name="Lock" className="size-3.5 text-muted-foreground" />
-        )}
       </div>
 
       {full && ask.context && ask.state !== "confirming" && (
@@ -283,7 +281,8 @@ export function AskView({
                 : "waiting to run"}
           </p>
           <p>
-            {ask.answer?.provenance} · {ask.answer?.surface}
+            {ask.answer?.provenance} · in{" "}
+            {answerSurface(ask.answer?.surface ?? "")}
           </p>
           {ask.after.revocable && (
             <button
@@ -295,38 +294,52 @@ export function AskView({
           )}
         </div>
       ) : ask.state === "open" ? (
-        <div className="team-actions">
-          {ask.options.map((option) => (
-            <Button
-              key={option.id}
-              size="sm"
-              variant={option.recommended ? "default" : "outline"}
-              disabled={answer.isPending}
-              onClick={() => void choose(option.id)}
-            >
-              {option.tier === "confirm" && (
-                <Icon name="Lock" className="size-3" />
-              )}
-              {option.label}
-              {option.tier === "confirm" && !option.label.endsWith("…")
-                ? "…"
-                : ""}
-              {option.recommended ? " ★" : ""}
-            </Button>
-          ))}
-          {!ask.options.some((o) => o.label === ask.secondary) && (
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={answer.isPending}
-              onClick={() => void choose("defer")}
-            >
-              Not now
-            </Button>
+        <>
+          {ask.options.some((o) => o.id === "free-text") && (
+            <label className="block mt-3 text-sm">
+              Your answer
+              <input
+                aria-label="Your answer"
+                value={reply}
+                maxLength={4000}
+                onChange={(e) => setReply(e.target.value)}
+                className="ml-2 border border-border rounded px-2 py-1 bg-transparent"
+              />
+            </label>
           )}
-        </div>
+          <div className="team-actions">
+            {ask.options.map((option) => (
+              <Button
+                key={option.id}
+                size="sm"
+                variant={option.recommended ? "default" : "outline"}
+                disabled={answer.isPending}
+                onClick={() => void choose(option.id)}
+              >
+                {option.label}
+                {option.tier === "confirm" && !option.label.endsWith("…")
+                  ? "…"
+                  : ""}
+                {option.tier === "confirm" && (
+                  <Icon name="Lock" className="size-3" />
+                )}
+                {option.recommended ? " ★" : ""}
+              </Button>
+            ))}
+            {!ask.options.some((o) => o.label === ask.secondary) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={answer.isPending}
+                onClick={() => void choose("defer")}
+              >
+                Not now
+              </Button>
+            )}
+          </div>
+        </>
       ) : (
-        <p className="team-receipt">This ask is {ask.state}.</p>
+        <p className="team-receipt">{closedAskCopy[ask.state]}</p>
       )}
       {notice && (
         <p role="status" className="team-notice">
@@ -526,7 +539,11 @@ export function TeamBoard({
             {flow(active, state.asks)}
           </p>
           {state.asks
-            .filter((a) => a.assignmentId === active.id && ["open","confirming","verifying"].includes(a.state))
+            .filter(
+              (a) =>
+                a.assignmentId === active.id &&
+                ["open", "confirming", "verifying"].includes(a.state),
+            )
             .map((a) => (
               <AskView key={a.id} ask={a} state={state} surface="board" full />
             ))}
@@ -556,7 +573,8 @@ export function TeamBoard({
             .filter((r) => r.assignmentId === active.id)
             .map((r) => (
               <p key={r.id}>
-                {r.kind} · {r.state} · {time(r.updatedAt)}
+                {receiptKind[r.kind]} · {receiptState[r.state]} ·{" "}
+                {time(r.updatedAt)}
               </p>
             ))}
         </aside>
@@ -654,6 +672,12 @@ export function TeamChatAsks({ threadId }: { threadId: string }) {
       (a.after.heldUntil && Date.parse(a.after.heldUntil) > Date.now()),
   );
   const asks = visible.filter((a) => tray || a.threadId === threadId);
+  const answered = asks
+    .filter((a) => a.state === "answered")
+    .sort((a, b) => (b.answer?.at ?? "").localeCompare(a.answer?.at ?? ""))[0];
+  const next = answered
+    ? openAsks(asks).find((a) => a.id !== answered.id)
+    : undefined;
   if (!asks.length) return null;
   return (
     <div
@@ -670,10 +694,10 @@ export function TeamChatAsks({ threadId }: { threadId: string }) {
           surface={tray ? "tray" : "strip"}
         />
       ))}
-      {asks[0] && (
+      {next && (
         <p className="team-next">
-          Next: {asks[0].title}
-          {asks.length > 1 ? " · then 1 more" : ""}
+          Next: {next.title}
+          {openAsks(asks).length > 1 ? " · then 1 more" : ""}
         </p>
       )}
     </div>
@@ -697,23 +721,6 @@ export function useTeamAsksVisible({ threadId }: { threadId: string }) {
             (m) => m.kind === "lead" && m.homeThreadId === threadId,
           ),
       )
-  );
-}
-export function TeamAskSummary({ threadId }: { threadId: string }) {
-  const { data } = useTeam();
-  if (!data?.enabled) return null;
-  const asks = openAsks(data.asks).filter(
-    (a) =>
-      a.threadId === threadId ||
-      data.members.some(
-        (m) => m.kind === "lead" && m.homeThreadId === threadId,
-      ),
-  );
-  return (
-    <span className="text-sm">
-      <span className="team-ask-dot inline-block mr-2" />
-      {asks[0]?.title ?? "Your move"}
-    </span>
   );
 }
 export function TeamSettings() {

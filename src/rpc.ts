@@ -1178,7 +1178,6 @@ export function registerRpc(runtime: Runtime): void {
 
     answerDecision: ({ id, accept, answer }) =>
       refuse(async () => {
-        if(runtime.team?.engine.enabled() && runtime.team.engine.store.list("ask").some(a=>a.legacyDecisionId===id))throw new Error("Answer this decision in Team so its confirmation is recorded");
         const decision = service.store.decision(id);
         if (decision === null) throw new TaskError(`No decision ${id}.`, "not_found");
         if (decision.status !== "open") throw new TaskError(`Decision ${id} is already ${decision.status}.`, "decision_closed");

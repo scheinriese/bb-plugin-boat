@@ -1039,12 +1039,12 @@ export class TaskStore {
 
   /** Close an open decision; null when it was already closed. */
   resolveDecision(id: string, status: "answered" | "withdrawn", answer: string | null, fromTeam = false): Decision | null {
-    if (!fromTeam && this.team.setting("enabled", false) && this.team.list("ask").some(a=>a.legacyDecisionId===id)) throw new Error("Answer this decision in Team so its confirmation is recorded");
     const result = this.db()
       .prepare(`UPDATE decisions SET status = ?, answer = ?, resolved_at = ? WHERE id = ? AND status = 'open'`)
       .run(status, answer, new Date().toISOString(), id) as { changes: number | bigint };
     if (Number(result.changes) === 0) return null;
     const decision = this.decision(id)!;
+    if(!fromTeam && this.team.setting("enabled",false))this.team.supersedeDecision(id);
     this.addEvent(decision.askedByTaskId ?? decision.taskIds[0] ?? "", status === "answered" ? "decision-answered" : "decision-withdrawn", decision.question, { source: "user", decisionId: id, orchestratorThreadId: decision.orchestratorThreadId ?? undefined });
     return decision;
   }

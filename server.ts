@@ -258,7 +258,7 @@ export default async function plugin(bb: BbPluginApi) {
   let attentionNotifications: AttentionNotifications | null = null;
 
   function changed(): void {
-    bb.rpc.experimental_invalidate([TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings, PROVIDERS_TAG, MONTHLY_MACS_TAG]);
+    bb.rpc.experimental_invalidate(["boat:team", TAGS.tasks, TAGS.sandboxes, TAGS.overview, TAGS.projects, TAGS.protocol, TAGS.relay, TAGS.setup, TAGS.settings, PROVIDERS_TAG, MONTHLY_MACS_TAG]);
     bb.realtime.publish(REALTIME_CHANNEL, null);
     void attentionNotifications?.flush();
   }

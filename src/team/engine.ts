@@ -1,5 +1,7 @@
+import { teamTime, answerSurface } from "../../lib/team-copy.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
+  TEAM_SIDEBAR_LIMITS,
   assignmentInputSchema,
   askInputSchema,
   resultSchema,
@@ -137,16 +139,17 @@ export class TeamEngine {
         : member.previousHomeThreadIds,
     });
   }
-  syncLead(input: {
-    threadId: string;
-    projectId: string | null;
-    projectName: string | null;
-  }) {
-    const found = this.store
-      .list("member")
-      .find(
-        (m) => m.kind === "project-lead" && m.homeThreadId === input.threadId,
-      );
+  syncLead(
+    input: {
+      threadId: string;
+      projectId: string | null;
+      projectName: string | null;
+    },
+    members = this.store.list("member"),
+  ) {
+    const found = members.find(
+      (m) => m.kind === "project-lead" && m.homeThreadId === input.threadId,
+    );
     if (found) return found;
     const at = this.at();
     return this.store.put("member", {
@@ -190,65 +193,110 @@ export class TeamEngine {
   }
   sidebar(): TeamSidebar | undefined {
     if (!this.enabled()) return undefined;
-    const state = this.state();
-    const open = waitingAsks(state.asks, this.at());
-    const members = state.members.filter(
-      (m) => m.homeThreadId && m.status !== "archived",
+    const allMembers = this.store
+      .list("member")
+      .filter((m) => m.homeThreadId && m.status !== "archived");
+    const members = allMembers.filter(
+      (m) =>
+        m.id.length <= 200 &&
+        m.homeThreadId!.length <= 200 &&
+        m.projectId.length <= 200,
     );
-    const rows = members.map((m, index) => {
-      const asks = open.filter((a) => a.memberId === m.id);
-      const assignment = state.assignments.find(
-        (a) => a.assignee === m.id && a.status !== "closed",
-      );
+    const open = waitingAsks(this.store.list("ask"), this.at());
+    const asksByMember = new Map<string, Ask[]>();
+    for (const ask of open) {
+      const group = asksByMember.get(ask.memberId) ?? [];
+      group.push(ask);
+      asksByMember.set(ask.memberId, group);
+    }
+    const workByMember = new Map<string, Assignment[]>();
+    for (const a of this.store.list("assignment"))
+      if (a.status !== "closed") {
+        const group = workByMember.get(a.assignee) ?? [];
+        group.push(a);
+        workByMember.set(a.assignee, group);
+      }
+    let truncated = members.length !== allMembers.length;
+    const chief = members.find((m) => m.kind === "lead");
+    const nonChief = members.filter((m) => m.kind !== "lead");
+    if (nonChief.length > TEAM_SIDEBAR_LIMITS.members) truncated = true;
+    const selected = [
+      ...(chief ? [chief] : []),
+      ...nonChief.slice(0, TEAM_SIDEBAR_LIMITS.members),
+    ];
+    const preview = this.store.setting("chiefPreview", "Ready to help");
+    const rows = selected.map((m, index) => {
+      const asks = asksByMember.get(m.id) ?? [],
+        work = workByMember.get(m.id) ?? [],
+        assignment = work[0];
+      const background = [
+        ...new Set(
+          work.flatMap((a) =>
+            a.threadId && a.threadId !== m.homeThreadId ? [a.threadId] : [],
+          ),
+        ),
+      ];
+      if (
+        background.length > TEAM_SIDEBAR_LIMITS.backgroundThreads ||
+        background.some((id) => id.length > 200)
+      )
+        truncated = true;
       return {
         memberId: m.id,
         threadId: m.homeThreadId!,
         name: m.name,
         kind: m.kind,
-        avatar: m.avatar,
+        avatar: {
+          initials: m.avatar.initials.slice(0, 8),
+          color: m.avatar.color.slice(0, 32),
+        },
         status: m.status,
         preview: {
           kind:
-            m.kind === "lead" && open.length
-              ? ("needs-you" as const)
+            m.kind === "lead"
+              ? ("last-message" as const)
               : asks.length
                 ? ("needs-you" as const)
                 : assignment
                   ? ("activity" as const)
                   : ("last-message" as const),
-          text:
-            m.kind === "lead"
-              ? this.store.setting("chiefPreview", "Ready to help")
-              : (asks[0]?.title ??
-                assignment?.lastProgress ??
-                assignment?.title ??
-                "Ready"),
+          text: (m.kind === "lead"
+            ? preview
+            : (asks[0]?.title ??
+              assignment?.lastProgress ??
+              assignment?.title ??
+              "Ready")
+          ).slice(0, 160),
           tone: asks.some((a) => !a.threadId)
             ? ("attention" as const)
             : ("neutral" as const),
         },
         unread: { messages: 0, cards: asks.length },
         order: index,
-        backgroundThreadIds: state.assignments
-          .filter(
-            (a) =>
-              a.assignee === m.id &&
-              a.threadId &&
-              a.threadId !== m.homeThreadId &&
-              a.status !== "closed",
-          )
-          .map((a) => a.threadId!),
+        backgroundThreadIds: background
+          .filter((id) => id.length <= 200)
+          .slice(0, TEAM_SIDEBAR_LIMITS.backgroundThreads),
       };
     });
+    const leads = members.filter((m) => m.kind === "project-lead");
+    const hidden = members
+      .filter((m) => m.kind !== "project-lead")
+      .map((m) => m.homeThreadId!);
+    if (
+      leads.length > TEAM_SIDEBAR_LIMITS.projects ||
+      hidden.length > TEAM_SIDEBAR_LIMITS.hidden
+    )
+      truncated = true;
     const body = {
+      version: 1 as const,
       enabled: true as const,
       yourMove: {
         count: open.length,
         overdue: open.filter((a) => a.due && a.due < this.at()).length,
         confirm: open.filter((a) => a.tier === "confirm").length,
       },
-      projects: members
-        .filter((m) => m.kind === "project-lead")
+      projects: leads
+        .slice(0, TEAM_SIDEBAR_LIMITS.projects)
         .map((m) => ({
           bbProjectId: m.projectId,
           icon: "Folder",
@@ -256,10 +304,8 @@ export class TeamEngine {
         })),
       lead: rows.find((m) => m.kind === "lead") ?? null,
       members: rows.filter((m) => m.kind !== "lead"),
-      hideFromSections: rows
-        .filter((m) => m.kind !== "project-lead")
-        .map((m) => m.threadId),
-      truncated: false,
+      hideFromSections: hidden.slice(0, TEAM_SIDEBAR_LIMITS.hidden),
+      truncated,
     };
     return { ...body, revision: hash(JSON.stringify(body)).slice(0, 24) };
   }
@@ -379,6 +425,32 @@ export class TeamEngine {
         `Mode: ${a.mode}. Title: ${safe(a.title)}\nBrief (data): ${safe(a.brief)}\nDone when: ${safe(a.doneWhen)}\nCheck ${a.id} in team_board before acting. Use team_start once, then team_report; notify needs no reply.`,
       );
       return a;
+    });
+  }
+  queueDecisionAnswer(ask: Ask, threadId: string) {
+    const receiptId = `r_decision_${ask.id}`;
+    const existing = this.store
+      .db()
+      .prepare("SELECT 1 FROM team_records WHERE kind='receipt' AND id=?")
+      .get(receiptId);
+    if (existing) return;
+    const nonce = id("n_"),
+      at = this.at();
+    const answer =
+      ask.answer?.text.trim() ||
+      ask.options.find((o) => o.id === ask.answer?.option)?.label ||
+      "Answered";
+    this.store.put("receipt", {
+      id: receiptId,
+      assignmentId: null,
+      threadId,
+      nonce,
+      kind: "answer",
+      text: `[team · decision answer · ${ask.id} · ${nonce}]\n${CONSENT}. This is a labelled answer relay, not an independent user request.\nQuestion: ${safe(ask.title)}\nAnswer: ${safe(answer)}\nProvenance: ${ask.answer?.provenance ?? "unverified tap"}.\n[/team]`,
+      state: "pending",
+      delivery: null,
+      createdAt: at,
+      updatedAt: at,
     });
   }
   enqueue(
@@ -693,7 +765,7 @@ export class TeamEngine {
   stale(a: Ask, revision: number) {
     if (a.revision !== revision || a.state !== "open")
       return a.answer && a.state === "answered"
-        ? `Already answered ${a.answer.at} on ${a.answer.surface}: ${a.options.find((o) => o.id === a.answer!.option)?.label ?? "Answered"}`
+        ? `Already answered ${teamTime(a.answer.at)} in ${answerSurface(a.answer.surface)}: ${a.options.find((o) => o.id === a.answer!.option)?.label ?? "Answered"}`
         : "This ask changed; check it again";
     return null;
   }
@@ -718,6 +790,8 @@ export class TeamEngine {
         };
       const option = a.options.find((o) => o.id === input.option);
       if (!option) throw new Error("Choose one of this ask's options");
+      if (option.id === "free-text" && !input.text.trim())
+        throw new Error("Write an answer first");
       if (option.action === "defer")
         return {
           ask: this.putAsk(a, {

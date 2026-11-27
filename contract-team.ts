@@ -166,7 +166,7 @@ export const incidentSchema = z.object({
 });
 export const receiptSchema = z.object({
   id: z.string(),
-  assignmentId: z.string(),
+  assignmentId: z.string().nullable(),
   threadId: z.string(),
   nonce: z.string(),
   kind: z.enum(["assignment", "result", "continue", "answer"]),
@@ -191,16 +191,23 @@ export const teamStateSchema = z.object({
   workbench: z.boolean(),
 });
 export type TeamState = z.infer<typeof teamStateSchema>;
+export const TEAM_SIDEBAR_LIMITS = {
+  members: 200,
+  projects: 200,
+  hidden: 201,
+  backgroundThreads: 100,
+} as const;
+const sidebarId = z.string().min(1).max(200);
 export const teamMemberDtoSchema = z.object({
-  memberId: z.string(),
-  threadId: z.string().min(1),
-  name: z.string(),
+  memberId: sidebarId,
+  threadId: sidebarId,
+  name: z.string().max(40),
   kind: memberSchema.shape.kind,
-  avatar: memberSchema.shape.avatar,
+  avatar: z.object({ initials: z.string().max(8), color: z.string().max(32) }),
   status: memberSchema.shape.status,
   preview: z.object({
     kind: z.enum(["needs-you", "activity", "counts", "last-message"]),
-    text: z.string(),
+    text: z.string().max(160),
     tone: z.enum(["neutral", "attention", "danger", "success"]),
   }),
   unread: z.object({
@@ -208,26 +215,31 @@ export const teamMemberDtoSchema = z.object({
     cards: z.number().int().nonnegative(),
   }),
   order: z.number().int(),
-  backgroundThreadIds: z.array(z.string()),
+  backgroundThreadIds: z
+    .array(sidebarId)
+    .max(TEAM_SIDEBAR_LIMITS.backgroundThreads),
 });
 export const teamSidebarSchema = z.object({
+  version: z.literal(1),
   enabled: z.literal(true),
   yourMove: z.object({
     count: z.number().int().nonnegative(),
     overdue: z.number().int().nonnegative(),
     confirm: z.number().int().nonnegative(),
   }),
-  projects: z.array(
-    z.object({
-      bbProjectId: z.string(),
-      icon: z.string(),
-      leadThreadId: z.string(),
-    }),
-  ),
+  projects: z
+    .array(
+      z.object({
+        bbProjectId: sidebarId,
+        icon: z.string().max(64),
+        leadThreadId: sidebarId,
+      }),
+    )
+    .max(TEAM_SIDEBAR_LIMITS.projects),
   lead: teamMemberDtoSchema.nullable(),
-  members: z.array(teamMemberDtoSchema),
-  hideFromSections: z.array(z.string()),
-  revision: z.string(),
+  members: z.array(teamMemberDtoSchema).max(TEAM_SIDEBAR_LIMITS.members),
+  hideFromSections: z.array(sidebarId).max(TEAM_SIDEBAR_LIMITS.hidden),
+  revision: z.string().max(64),
   truncated: z.boolean(),
 });
 export type TeamSidebar = z.infer<typeof teamSidebarSchema>;

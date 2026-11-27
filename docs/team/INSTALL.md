@@ -12,14 +12,23 @@ In a checkout of this branch, run:
 npm ci --ignore-scripts
 npm rebuild better-sqlite3
 npm run typecheck
-npm test
+REQUIRE_GITLEAKS=1 npm test
 npm run build
 bb plugin install "$PWD"
+bb plugin install "$PWD/harbor"
 ```
 
-If this sandbox's bb CLI cannot resolve `npm/package.json`, its build works
-with `NODE_PATH=/usr/lib/node_modules npm run build`. This is an environment
-workaround, not a package dependency or an SDK version change.
+The exact build command used in this sandbox (its CLI cannot otherwise resolve
+`npm/package.json`) is:
+
+```sh
+NODE_PATH=/usr/lib/node_modules npm run build
+```
+
+That command builds **both** the Harbormaster and harbor companion bundles.
+Use it in place of the plain build command above on this host. It does not
+change package dependencies or the SDK pin. Both install commands are necessary
+when installing the companion CLI alongside Harbormaster.
 
 **Live install was intentionally not run in the implementation sandbox:** the
 task's standing instructions prohibit plugin installation, reload and settings
@@ -48,8 +57,9 @@ host and fake cloud CLI.
    composer row. A locked choice replaces the row with its restated scope,
    action button and Cancel. Long scopes open `ask/<id>`. Merge choices open
    the task chat and replace its strip, with fresh checks and the exact HEAD.
-7. A typed answer names one ask and option through `team_answer_card`. It
-   cannot obtain a confirmation token. Unrelated replies leave asks open.
+7. A typed answer names one ask and option and quotes the latest user reply
+   through `team_answer_card`. Only a user-started turn with no sender thread
+   in the ask's chat or chief's home can record it. It cannot obtain a confirmation token. Unrelated replies leave asks open.
 8. “Wasn't me? Pause and revoke” revokes unused grant uses and pauses the
    member's work. Resume the member in Team settings after checking it.
 
@@ -64,8 +74,19 @@ Turn **Enable Team** off in Harbormaster settings. Team tools, ask surfaces,
 sidebar data and engine delivery stop; the original Cloud agents page and
 orchestration continue. Chats and Team records are preserved so enabling again
 adopts the same chief and home. The chief's existing native pinned chat remains
-available. If reverting code, install the previous Harbormaster checkout with
-`bb plugin install "$PWD"` from that checkout. Do not delete its database.
+available. If reverting code, use a checkout of the previous Harbormaster
+version. Build both bundles and reinstall both plugins from that checkout:
+
+```sh
+npm ci --ignore-scripts
+npm rebuild better-sqlite3
+NODE_PATH=/usr/lib/node_modules npm run build
+bb plugin install "$PWD"
+bb plugin install "$PWD/harbor"
+```
+
+On hosts without the CLI resolution issue, `npm run build` is sufficient.
+Do not delete the plugin database or attempt to undo its appended migrations.
 
 The migration only appends `team_records`, `team_events`, `team_settings` and
 `team_confirm_tokens` and their indexes. Existing task tables and settings are
@@ -74,15 +95,16 @@ not rewritten. Do not remove or reorder migrations after installation.
 ## Verification and preview
 
 ```sh
-node --test test/team.test.ts test/team-runtime.test.ts
+node --test test/team*.test.ts
 npm run typecheck
 npm test
 npm run build
 node scripts/team-preview-server.mjs
 ```
 
-The read-only preview listens on `0.0.0.0:4174` by default (`PORT` overrides
-it). Open `/?scene=today`, `board`, `tray`, `strip`, or `confirm`. It renders the
+The read-only preview listens on `127.0.0.1:4174` by default. Set `PORT`
+to change the port; explicitly use `HOST=0.0.0.0 PORT=4174 node
+scripts/team-preview-server.mjs` for a remote sandbox preview. Open `/?scene=today`, `board`, `tray`, `strip`, or `confirm`. It renders the
 actual plugin components with the fictional example-day replay and a fake SDK.
 It neither connects to the owner's bb nor executes effects; preview buttons
 are illustrative. It needs the built `dist/app.css`.
@@ -93,9 +115,11 @@ are illustrative. It needs the built `dist/app.css`.
   Nora tile, member rows, orbit motion and its Team navigation label. The old
   SDK has a static native nav registration title; its fallback entry remains
   **Harbormaster**, with the Team page title and needs-you badge when enabled.
-- Phase 1a keeps the 4,096 instruction floor on every host. Whole mandatory
-  blocks fit without truncation, including the full Team rules core and
-  compact project rules. Larger memory injection is an extension point.
+- Phase 1a keeps the 4,096 instruction floor on every host. Normal project
+  configurations include the shared core and compact project rules. An
+  unexpected overflow or invalid stored core falls back to the existing
+  orchestrator instructions plus the consent line; it never prevents a turn.
+  Larger memory injection is an extension point.
 - Specialist templates, quick ask shortcut, compact phone page, routines,
   health checks, memory/journal UI and automatic rollover are deferred.
   The Markdown editor is included; import/export and home-history Undo UI
@@ -122,3 +146,16 @@ are illustrative. It needs the built `dist/app.css`.
 - Existing native Merge entry points route mapped tasks through Team's single
   confirmation step. Native push-delivery Ship retains Harbormaster's existing
   guarded confirmation; Team's automatic review bridge currently covers PRs.
+
+
+## Runtime recovery
+
+The mirror runs from the monitor and Team actions, never in a sidebar poll.
+Each pass indexes members, assignments and asks once and updates only changed
+native tasks. A malformed record becomes a Problem without blocking other
+work. Optionless legacy decisions use their recommendation or a free-text
+answer. Existing `boat_needs_you`, `boat_resolve` and CLI resolution continue
+to operate: resolving or withdrawing supersedes the matching open ask and
+invalidates its confirmation tokens. Team answers write a labelled, provenance-
+bearing outbox relay before closing the native decision; uncertain delivery
+remains visible instead of being silently dropped.

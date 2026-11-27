@@ -104,6 +104,16 @@ test("fake runtime: enable, adopt once, assign, labelled delivery, typed Confirm
     secondary: "Deny",
     confirmLabel: "Send the message",
   });
+  harness.sdk.stub("threads.conversationOutline", async () => ({
+    items: [{ preview: "I approve" }],
+  }));
+  team.dispatch({
+    ...dispatchContext,
+    thread: { ...dispatchContext.thread, id: "home-chief" },
+    initiator: "user",
+    senderThreadId: null,
+    input: { ...dispatchContext.input, text: "I approve" },
+  });
   const typed = await harness.callAgentTool(
     "team_answer_card",
     {
@@ -111,6 +121,7 @@ test("fake runtime: enable, adopt once, assign, labelled delivery, typed Confirm
       revision: ask.revision,
       option: "send",
       text: "I approve",
+      quote: "I approve",
     },
     { threadId: "home-chief" },
   );
@@ -210,7 +221,13 @@ test("native merge uses the Team step in place, checks fresh HEAD, and records v
   await team.prepare();
   let ask = team.engine.store.list("ask").find((a) => a.taskId === task.id)!;
   assert.ok(ask);
-  await harness.behavior.callRpc("requestMerge", { id: task.id, from: "chat" });
+  const mergeFeedback = (await harness.behavior.callRpc("requestMerge", {
+    id: task.id,
+    from: "chat",
+  })) as { teamAskId?: string; feedback?: string; threadId: string };
+  assert.equal(mergeFeedback.teamAskId, ask.id);
+  assert.match(mergeFeedback.feedback!, /merge checks/);
+  assert.equal(mergeFeedback.threadId, "worker");
   assert.equal(harness.inspection.pendingInteractions.length, 0);
   ask = team.engine.store.get("ask", ask.id);
   assert.equal(ask.state, "confirming");

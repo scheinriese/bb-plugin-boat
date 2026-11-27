@@ -20,6 +20,6 @@ export const mergeFormSchema = z.object({ requestId: z.string(), taskId: z.strin
 export type MergeForm = z.infer<typeof mergeFormSchema>;
 export const mergeRpcContract = defineRpcContract({
   requestMerge: { input: z.object({ id: z.string().min(1), from: z.enum(["chat", "page"]).optional() }),
-    output: z.object({ pending: z.literal(true), requestId: z.string(), threadId: z.string(), duplicate: z.boolean() }) },
+    output: z.object({ pending: z.literal(true), requestId: z.string(), threadId: z.string(), duplicate: z.boolean(), teamAskId:z.string().optional(), feedback:z.string().optional() }) },
   pullRequestFacts: { input: z.object({ id: z.string().min(1) }), output: pullRequestFactsSchema.nullable() },
 });

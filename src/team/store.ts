@@ -51,12 +51,47 @@ export class TeamStore {
       this.depth--;
     }
   }
+  onInvalid?: (kind: string, id: string, error: unknown) => void;
   list<K extends keyof Records>(kind: K): Records[K][] {
-    return (
-      this.db()
-        .prepare("SELECT body FROM team_records WHERE kind=? ORDER BY rowid")
-        .all(kind) as { body: string }[]
-    ).map((row) => schemas[kind].parse(JSON.parse(row.body)) as Records[K]);
+    const rows = this.db()
+      .prepare("SELECT id,body FROM team_records WHERE kind=? ORDER BY rowid")
+      .all(kind) as { id: string; body: string }[];
+    const records: Records[K][] = [];
+    for (const row of rows) {
+      try {
+        records.push(schemas[kind].parse(JSON.parse(row.body)) as Records[K]);
+      } catch (error) {
+        this.onInvalid?.(kind, row.id, error);
+      }
+    }
+    return records;
+  }
+  supersedeDecision(id: string) {
+    const rows = this.db()
+      .prepare(
+        "SELECT id,body FROM team_records WHERE kind='ask' AND CASE WHEN json_valid(body) THEN json_extract(body,'$.legacyDecisionId') END=?",
+      )
+      .all(id) as { id: string; body: string }[];
+    for (const row of rows)
+      try {
+        const ask = askSchema.parse(JSON.parse(row.body));
+        if (!["open", "confirming", "verifying"].includes(ask.state)) continue;
+        this.put(
+          "ask",
+          {
+            ...ask,
+            state: "superseded",
+            revision: ask.revision + 1,
+            updatedAt: new Date().toISOString(),
+          },
+          ask.revision,
+        );
+        this.db()
+          .prepare("DELETE FROM team_confirm_tokens WHERE ask_id=?")
+          .run(ask.id);
+      } catch (error) {
+        this.onInvalid?.("ask", row.id, error);
+      }
   }
   get<K extends keyof Records>(kind: K, id: string): Records[K] {
     const row = this.db()

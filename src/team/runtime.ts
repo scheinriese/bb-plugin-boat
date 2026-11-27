@@ -1,3 +1,4 @@
+import { createTeamMirror } from "./mirror.ts";
 import type { MessageDispatchHookContext } from "@get-bb/plugin-sdk";
 import { parseTeamResult } from "./result.ts";
 import { getPullRequest, mergePullRequest } from "../github.ts";
@@ -24,6 +25,12 @@ import {
   TEAM_TOOL_RULES,
 } from "./instructions.ts";
 import { parseOrchestratorProject } from "../projects.ts";
+export function isWorkbenchProvider(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  // SDK provider selections use pluginId/providerId. Accept the earlier colon
+  // representation and bare plugin id as well, matching the plugin id exactly.
+  return value === "workbench" || value.split(/[/:]/)[0] === "workbench";
+}
 export const TEAM_TOOLS = [
   "team_directory",
   "team_board",
@@ -44,9 +51,14 @@ export function createTeamRuntime(runtime: Runtime) {
     bb.rpc.experimental_invalidate(["boat:team"]);
     runtime.changed();
   });
+  const turnOrigins = new Map<
+    string,
+    { initiator: string; senderThreadId: string | null; input: string }
+  >();
   let workbench = false,
     flushing: Promise<void> | null = null,
     preparing: Promise<void> | null = null;
+  const mirror = createTeamMirror(runtime, engine);
   async function prepare() {
     if (!engine.enabled()) return;
     if (preparing) return preparing;
@@ -54,8 +66,11 @@ export function createTeamRuntime(runtime: Runtime) {
       const preferences = await bb.sdk.system.uiPreferences
         .list()
         .catch(() => null);
-      workbench = JSON.stringify(preferences ?? {}).includes("workbench");
-      let chief = engine.chief() ?? engine.enable();
+      workbench = isWorkbenchProvider(
+        preferences?.preferences["sidebar.threadListProvider"]?.value,
+      );
+      const members = engine.store.list("member");
+      let chief = members.find((m) => m.kind === "lead") ?? engine.enable();
       if (!chief.homeThreadId) {
         const spawned = await bb.sdk.threads.spawn({
           projectId: "personal",
@@ -73,221 +88,10 @@ export function createTeamRuntime(runtime: Runtime) {
         if (!threadId) throw new Error("bb did not return the home chat");
         chief = engine.home(chief, threadId);
       }
-      for (const lead of service.store.orchestrators()) engine.syncLead(lead);
-      for (const decision of service.store.decisions({ statuses: ["open"] })) {
-        if (
-          engine.store
-            .list("ask")
-            .some((a) => a.legacyDecisionId === decision.id)
-        )
-          continue;
-        const member =
-          engine.store
-            .list("member")
-            .find((m) => m.homeThreadId === decision.orchestratorThreadId) ??
-          chief;
-        engine.createAsk({
-          memberId: member.id,
-          threadId: decision.orchestratorThreadId,
-          title: decision.question.slice(0, 80),
-          verb: "Decide",
-          unblocks: "Continuing the project work",
-          context: decision.context ?? decision.question,
-          options: decision.options.map((o, i) => ({
-            id: String(i),
-            label: o.slice(0, 100),
-            effect: decision.question + "\n" + o,
-            tier: "confirm",
-            recommended: false,
-          })),
-          secondary: "Not now",
-          confirmLabel: "Apply this project decision",
-          legacyDecisionId: decision.id,
-        });
-      }
-      // Reflect existing cloud work in the ledger without dispatching it again.
-      for (const task of service.store
-        .list({ limit: 1000 })
-        .filter((t) => t.role !== "review")) {
-        const linked = engine.store
-          .list("assignment")
-          .find((a) => a.taskIds.includes(task.id));
-        const member =
-          engine.store
-            .list("member")
-            .find((m) => m.homeThreadId === task.orchestratorThreadId) ?? chief;
-        const assignmentId = "a_native" + task.id.replace(/^t_/, "");
-        const merged = service.store.latestEvent(task.id, "merged");
-        const done = task.status === "done" || task.status === "cancelled";
-        if (!linked)
-          engine.store.put("assignment", {
-            id: assignmentId,
-            rootId: assignmentId,
-            parentId: null,
-            depth: 0,
-            origin: { kind: "user", id: "user", source: "Harbormaster task" },
-            requester: chief.id,
-            assignee: member.id,
-            watchers: [],
-            mode: "work",
-            title: task.title.slice(0, 120),
-            brief: task.brief.slice(0, 12000) || task.title,
-            doneWhen: "Task result with evidence and owner review",
-            dedupeKey: null,
-            wallHours: 72,
-            status: done
-              ? "closed"
-              : task.readyAt
-                ? "needs-user"
-                : task.status === "failed"
-                  ? "paused"
-                  : task.status === "running"
-                    ? "running"
-                    : "waiting",
-            outcome: done
-              ? task.status === "cancelled"
-                ? "cancelled"
-                : merged
-                  ? "done"
-                  : "partial"
-              : null,
-            result: merged
-              ? {
-                  status: "done",
-                  summary: "Pull request merged",
-                  delivered: task.prUrl ?? "Pull request",
-                  evidence: merged.text,
-                  files: [],
-                  openQuestions: "none",
-                }
-              : null,
-            lastProgress: task.readyNote,
-            taskIds: [task.id],
-            decisionIds: [],
-            threadId: member.homeThreadId,
-            continues: 0,
-            turns: task.turns,
-            maxTurns: 1000,
-            treeTurnLimit: 1000,
-            waitUntil: null,
-            deadline: new Date(
-              Date.parse(task.createdAt) + 72 * 3600000,
-            ).toISOString(),
-            revision: 0,
-            createdAt: task.createdAt,
-            updatedAt: task.updatedAt,
-          });
-        else if (
-          linked.id === assignmentId &&
-          engine.store.setting(`nativeSynced:${task.id}`, "") !== task.updatedAt
-        )
-          engine.updateAssignment(
-            linked,
-            {
-              status: done
-                ? "closed"
-                : task.readyAt
-                  ? "needs-user"
-                  : task.status === "failed"
-                    ? "paused"
-                    : task.status === "running"
-                      ? "running"
-                      : "waiting",
-              outcome: done
-                ? task.status === "cancelled"
-                  ? "cancelled"
-                  : merged
-                    ? "done"
-                    : "partial"
-                : null,
-              updatedAt: task.updatedAt,
-              result: merged
-                ? {
-                    status: "done",
-                    summary: "Pull request merged",
-                    delivered: task.prUrl ?? "Pull request",
-                    evidence: merged.text,
-                    files: [],
-                    openQuestions: "none",
-                  }
-                : linked.result,
-              lastProgress: task.readyNote,
-            },
-            "task-synced",
-            "team",
-          );
-        engine.store.saveSetting(`nativeSynced:${task.id}`, task.updatedAt);
-      }
-      for (const task of service.store
-        .list({ statuses: ["idle"], limit: 1000 })
-        .filter(
-          (t) =>
-            t.readyAt && t.role !== "review" && t.delivery === "pr" && t.prUrl,
-        )) {
-        if (
-          engine.store
-            .list("ask")
-            .some(
-              (a) =>
-                a.taskId === task.id &&
-                (["open", "confirming", "verifying"].includes(a.state) ||
-                  a.createdAt >= task.readyAt!),
-            )
-        )
-          continue;
-        const member =
-          engine.store
-            .list("member")
-            .find((m) => m.homeThreadId === task.orchestratorThreadId) ?? chief;
-        engine.createAsk({
-          memberId: member.id,
-          taskId: task.id,
-          assignmentId:
-            engine.store
-              .list("assignment")
-              .find((a) => a.taskIds.includes(task.id))?.id ?? null,
-          threadId: task.threadId,
-          title: ("Review and merge " + task.title).slice(0, 80),
-          verb: "Review",
-          unblocks: "Shipping the finished work",
-          context: task.readyNote ?? task.title,
-          options: [
-            {
-              id: "merge",
-              label: "Merge",
-              effect: `Merge the pull request into ${task.baseBranch ?? "its base branch"}. It can't be undone.`,
-              tier: "confirm",
-            },
-          ],
-          secondary: "Send back",
-          confirmLabel: "Merge the pull request",
-        });
-      }
-      for (const ask of engine.store
-        .list("ask")
-        .filter((a) => a.taskId && a.state !== "answered")) {
-        const task = service.store.get(ask.taskId!);
-        if (
-          task?.status === "done" ||
-          (task && !task.readyAt && task.status !== "idle")
-        )
-          engine.putAsk(ask, { state: "superseded" });
-      }
-      // Project decisions still close in their existing store, inside the same DB.
-      for (const ask of engine.store
-        .list("ask")
-        .filter((a) => a.legacyDecisionId && a.state === "answered")) {
-        const d = service.store.decision(ask.legacyDecisionId!);
-        if (d?.status === "open")
-          service.store.resolveDecision(
-            d.id,
-            "answered",
-            ask.options.find((o) => o.id === ask.answer?.option)?.label ??
-              ask.answer?.text ??
-              "Answered",
-            true,
-          );
-      }
+      const at = members.findIndex((m) => m.id === chief.id);
+      if (at < 0) members.push(chief);
+      else members[at] = chief;
+      mirror.sync(chief, members);
     })().finally(() => {
       preparing = null;
     });
@@ -302,8 +106,10 @@ export function createTeamRuntime(runtime: Runtime) {
         .filter((r) => r.state === "pending")) {
         const member = engine.memberForThread(receipt.threadId);
         if (member?.status === "paused") continue;
-        const a = engine.store.get("assignment", receipt.assignmentId);
-        if (receipt.kind === "assignment" && a.status === "closed") continue;
+        const a = receipt.assignmentId
+          ? engine.store.get("assignment", receipt.assignmentId)
+          : null;
+        if (receipt.kind === "assignment" && a?.status === "closed") continue;
         engine.store.put(
           "receipt",
           { ...receipt, state: "sending", updatedAt: engine.at() },
@@ -330,8 +136,8 @@ export function createTeamRuntime(runtime: Runtime) {
               `seen:${receipt.threadId}:${receipt.nonce}`,
               true,
             );
-          const current = engine.store.get("assignment", a.id);
-          if (receipt.kind === "assignment" && current.status === "queued")
+          const current = a ? engine.store.get("assignment", a.id) : null;
+          if (receipt.kind === "assignment" && current?.status === "queued")
             engine.updateAssignment(
               current,
               {
@@ -349,7 +155,10 @@ export function createTeamRuntime(runtime: Runtime) {
             { ...receipt, state: "uncertain", updatedAt: engine.at() },
             0,
           );
-          engine.incident("A team message needs delivery checked", a.id);
+          engine.incident(
+            "A team message needs delivery checked",
+            a?.id ?? null,
+          );
         }
       }
       engine.changed();
@@ -387,7 +196,10 @@ export function createTeamRuntime(runtime: Runtime) {
           engine.saveStanding(chief, input.standingInstructions);
         if (input.rules !== undefined) engine.saveRules(input.rules);
         await prepare();
-      } else engine.store.saveSetting("enabled", false);
+      } else {
+        turnOrigins.clear();
+        engine.store.saveSetting("enabled", false);
+      }
       engine.changed();
       return { ok: true as const };
     },
@@ -518,6 +330,7 @@ export function createTeamRuntime(runtime: Runtime) {
         try {
           actor(ctx.threadId);
           const result = await run(value, ctx.threadId);
+          await prepare();
           await flush();
           engine.changed();
           return {
@@ -612,8 +425,39 @@ export function createTeamRuntime(runtime: Runtime) {
       revision: z.number().int(),
       option: z.string(),
       text: z.string().max(4000),
+      quote: z.string().trim().min(1).max(4000),
     }),
-    (v) => engine.answer({ ...v, surface: "tool" }, "typed reply"),
+    async (v, threadId) => {
+      const origin = turnOrigins.get(threadId);
+      if (origin?.initiator !== "user" || origin.senderThreadId !== null)
+        throw new Error(
+          "Only an explicit reply in a user-started turn can answer this ask",
+        );
+      const ask = engine.store.get("ask", v.askId);
+      if (
+        ask.threadId !== threadId &&
+        engine.chief()?.homeThreadId !== threadId
+      )
+        throw new Error("This ask is not shown in this chat");
+      const outline = (await bb.sdk.threads.conversationOutline({
+        threadId,
+        role: "user",
+      } as never)) as {
+        items?: { preview?: string; senderThreadId?: string | null }[];
+      };
+      const latest = outline.items?.at(-1);
+      if (
+        turnOrigins.get(threadId) !== origin ||
+        !origin.input.includes(v.quote) ||
+        !latest?.preview?.includes(v.quote) ||
+        latest.senderThreadId ||
+        /^\[(team|boat|bb message)/.test(latest.preview)
+      )
+        throw new Error(
+          "Quote the answer from the latest user message in this chat",
+        );
+      return engine.answer({ ...v, surface: "tool" }, "typed reply");
+    },
   );
   tool(
     "team_grant_use",
@@ -639,11 +483,17 @@ export function createTeamRuntime(runtime: Runtime) {
     | { action: "reject"; message: string } {
     if (!engine.enabled()) return { action: "proceed" };
     const member = engine.memberForThread(context.thread.id);
-    if (context.attempt === "start-turn")
+    if (context.attempt === "start-turn") {
+      turnOrigins.set(context.thread.id, {
+        initiator: context.initiator,
+        senderThreadId: context.senderThreadId,
+        input: context.input.text,
+      });
       engine.store.saveSetting(
         `countTurn:${context.thread.id}`,
         context.initiator === "agent" || context.initiator === "system",
       );
+    }
     const nonces = context.input.text.match(/\bn_[a-f0-9]{16}\b/g) ?? [];
     const relaysOnly =
       nonces.length > 0 &&
@@ -682,31 +532,37 @@ export function createTeamRuntime(runtime: Runtime) {
     }
   });
   bb.events.on("thread.idle", (payload: unknown) => {
+    if (!engine.enabled()) return;
     const t = (payload as { thread?: { id?: string } }).thread?.id;
     if (t) {
-      const text = (payload as { lastAssistantText?: string })
-        .lastAssistantText;
-      if (text && engine.chief()?.homeThreadId === t) {
-        engine.store.saveSetting(
-          "chiefPreview",
-          text.replace(/\s+/g, " ").slice(0, 160),
-        );
-        engine.changed();
-      }
-      const result = parseTeamResult(text ?? "");
-      if (result) {
-        const work = engine.store
-          .list("assignment")
-          .find(
-            (a) =>
-              a.id === result.assignmentId &&
-              a.threadId === t &&
-              a.status === "running",
+      turnOrigins.delete(t);
+      try {
+        const text = (payload as { lastAssistantText?: string })
+          .lastAssistantText;
+        if (text && engine.chief()?.homeThreadId === t) {
+          engine.store.saveSetting(
+            "chiefPreview",
+            text.replace(/\s+/g, " ").slice(0, 160),
           );
-        if (work) engine.report(work.id, work.assignee, result.result);
+          engine.changed();
+        }
+        const result = parseTeamResult(text ?? "");
+        if (result) {
+          const work = engine.store
+            .list("assignment")
+            .find(
+              (a) =>
+                a.id === result.assignmentId &&
+                a.threadId === t &&
+                a.status === "running",
+            );
+          if (work) engine.report(work.id, work.assignee, result.result);
+        }
+        engine.idle(t);
+        void flush().catch((error) => mirror.problem("delivery", t, error));
+      } catch (error) {
+        mirror.problem("result", t, error);
       }
-      engine.idle(t);
-      void flush().catch(() => undefined);
     }
   });
   bb.events.on("thread.active", (payload: unknown) => {

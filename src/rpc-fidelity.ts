@@ -126,7 +126,6 @@ export function fidelityHandlers(runtime: Pick<Runtime, "service"> & Partial<Pic
       if (runtime.bb && (!pausedCache || Date.now() - pausedCache.at > 15_000)) pausedCache = { at: Date.now(), value: readPausedResets(runtime.bb) };
       const base = sidebarState(service, runtime.bb ? await pausedCache!.value : new Map(), zone);
       const queued = await readQueuedStarts(zone);
-      await runtime.team?.prepare();
       const team = runtime.team?.engine.sidebar();
       return { ...base, ...(team ? { team } : {}), queuedStarts: queued.rows, truncated: base.truncated || queued.truncated,
         revision: createHash("sha256").update(JSON.stringify([base.revision, queued.rows, team])).digest("hex").slice(0, 24) };

@@ -99,16 +99,28 @@ export function projectLeadInstructions(input: {
   const mandatory =
     orchestratorInstructions(input.tasksBeforeAsking) +
     (input.goal ? GOAL_LINE : "");
-  const ending = team + "\n- Team rules:\n" + core(rules, 350);
+  const fallback = () => {
+    const consent = `\n- ${CONSENT}. Read team_board, team_standing_read.`;
+    return (
+      (mandatory + projectInstructions(project)).slice(
+        0,
+        4046 - consent.length,
+      ) + consent
+    );
+  };
+  let rulesCore: string;
+  try {
+    rulesCore = core(rules, 350);
+  } catch {
+    return fallback();
+  }
+  const ending = team + "\n- Team rules:\n" + rulesCore;
   let projectBlock = projectInstructions(project);
   if ((mandatory + projectBlock + ending).length > 4046 && project) {
     const first = project.repos[0];
     projectBlock = `\n- Project: ${clean(project.name, 40)}. Default repo ${clean(first?.repo ?? "", 60)}, base ${clean(first?.baseBranch ?? "", 30)}${project.environment ? `, environment ${clean(project.environment, 30)}` : ""}. ${project.repos.length} repos (repo list shortened; full list and base branches: boat_protocol).${project.delivery === "push" ? " It ships after the user approves: tasks only commit, and you ship (boat_ship) only on the user's OK in this chat." : " Tasks open draft pull requests."} ${projectReviewInstructions(project)}`;
   }
   const assembled = mandatory + projectBlock + ending;
-  if (assembled.length > 4046)
-    throw new Error(
-      "Team instructions exceed this bb's capacity; shorten the project fields or team rules core",
-    );
+  if (assembled.length > 4046) return fallback();
   return assembled;
 }

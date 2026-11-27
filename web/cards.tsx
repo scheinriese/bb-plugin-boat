@@ -238,6 +238,7 @@ export function useFillComposer(threadId: string) {
 }
 /** A single suitable action for context cards and the host header. */
 export function TaskContextAction({ task,compact=false,className }: { task: TaskDto;compact?:boolean;className?:string }) {
+  const navigate=useBbNavigate();
   const merge=experimental_useRpcMutation({contract:mergeRpcContract,method:"requestMerge"});
   const state = cardStatus(task);
   const resume = experimental_useRpcMutation({
@@ -266,7 +267,7 @@ export function TaskContextAction({ task,compact=false,className }: { task: Task
   if (state.status === "ready" && task.canShip)
     return <ShipButton task={task} />;
   if (state.status === "ready" && task.prUrl)
-    return <Button size="sm" className={cn("h-[30px] bg-primary px-3 text-primary-foreground",className)} disabled={merge.isPending} onClick={()=>void merge.mutate({id:task.id,from:"chat"}).catch(showError)}>{compact?'Merge':`Merge PR ${prLabel(task.prUrl)}`}</Button>;
+    return <Button size="sm" className={cn("h-[30px] bg-primary px-3 text-primary-foreground",className)} disabled={merge.isPending} onClick={()=>void merge.mutate({id:task.id,from:"chat"}).then(result=>{if(result.teamAskId)navigate.toThread(result.threadId);}).catch(showError)}>{compact?'Merge':`Merge PR ${prLabel(task.prUrl)}`}</Button>;
   return null;
 }
 

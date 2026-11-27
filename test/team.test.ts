@@ -354,7 +354,7 @@ test("Do waits for effect verification; revocation pauses work and unused grants
   assert.equal(engine.store.get("member", lead.id).status, "paused");
   assert.equal(engine.store.list("incident").length, 1);
 });
-test("legacy decisions cannot resolve around a mapped ask", () => {
+test("legacy decisions still resolve and supersede a mapped ask", () => {
   const { engine, taskStore, lead } = setup();
   const d = taskStore.addDecision({
     orchestratorThreadId: "home-web",
@@ -363,13 +363,12 @@ test("legacy decisions cannot resolve around a mapped ask", () => {
     options: ["A", "B"],
     taskIds: [],
   });
-  ask(engine, lead, { legacyDecisionId: d.id });
-  assert.throws(() => taskStore.resolveDecision(d.id, "answered", "B"), /Team/);
-  engine.store.saveSetting("enabled", false);
+  const mapped=ask(engine, lead, { legacyDecisionId: d.id });
   assert.equal(
     taskStore.resolveDecision(d.id, "answered", "B")?.status,
     "answered",
   );
+  assert.equal(engine.store.get("ask",mapped.id).state,"superseded");
 });
 test("instruction cores, per-block budgets and actual worst-case project instructions fit the 4,096 floor", () => {
   const { engine, chief, lead } = setup();

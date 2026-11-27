@@ -32,6 +32,7 @@ const { renderScene } = await import(
   pathToFileURL(join(dir, "render.mjs")).href
 );
 const port = Number(process.env.PORT ?? 4174);
+const host = process.env.HOST ?? "127.0.0.1";
 createServer((req, res) => {
   const url = new URL(req.url, "http://preview.invalid");
   if (url.pathname === "/app.css") {
@@ -54,7 +55,7 @@ createServer((req, res) => {
     res.writeHead(500);
     res.end(String(error));
   }
-}).listen(port, "0.0.0.0", () =>
-  console.log(`Team fixture preview on 0.0.0.0:${port}`),
+}).listen(port, host, () =>
+  console.log(`Team fixture preview on ${host}:${port}`),
 );
 process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
