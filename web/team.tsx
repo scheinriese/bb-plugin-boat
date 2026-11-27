@@ -733,6 +733,7 @@ export function TeamSettings() {
     contract: teamRpcContract,
     method: "resumeTeamMember",
   });
+  const [enableError,setEnableError]=useState("");
   const [name, setName] = useState("");
   const [rules, setRules] = useState("");
   const [standing, setStanding] = useState("");
@@ -770,12 +771,16 @@ export function TeamSettings() {
           type="checkbox"
           checked={data.enabled}
           disabled={save.isPending}
-          onChange={(e) =>
-            void save.mutate({ enabled: e.target.checked }).catch(showError)
-          }
+          onChange={(e) => {
+            setEnableError("");
+            void save.mutate({enabled:e.target.checked}).catch(error=>{
+              setEnableError("Team could not be changed. Please try again.");showError(error);
+            });
+          }}
         />
-        Enable Team
+        {save.isPending&&!data.enabled?"Enabling Team…":"Enable Team"}
       </label>
+      {enableError&&<p role="alert" className="text-sm text-destructive">{enableError}</p>}
       <p className="text-sm text-muted-foreground">
         A chief of staff and your existing project leads, with tracked work and
         asks.

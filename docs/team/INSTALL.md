@@ -39,10 +39,12 @@ host and fake cloud CLI.
 ## Enable and use
 
 1. Open bb Settings → Plugins → Harbormaster → Team. Turn on **Enable Team**.
-2. Team creates Nora and an empty home chat in Personal. Without Workbench,
-   that chat is pinned. Open **Talk to Nora** on the Team page and send the
-   first request. Creating an empty thread ensures its fixed home pointer is
-   stored before its first agent turn.
+2. Team creates Nora's home in Personal with a short, plugin-originated
+   introduction prompt labelled `[team · setup]`. The SDK requires a nonempty
+   first input; it has no supported turn-free thread creation method. Without
+   Workbench, the chat is pinned. Team becomes enabled only after the home
+   pointer is saved. If creation fails, Team stays off and settings shows an
+   error; retry **Enable Team**. Open **Talk to Nora** to hand her work.
 3. Existing Harbormaster orchestrators appear as project leads. Nora can read
    the directory and board, assign work with a checkable “done when”, consult
    a lead, notify a lead, and create asks. No specialist is created automatically.

@@ -1,3 +1,4 @@
+import { strictTeamSpawn } from "./team-spawn.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
@@ -12,10 +13,10 @@ test("fake runtime: enable, adopt once, assign, labelled delivery, typed Confirm
   t.after(() => harness.lifecycle.dispose());
   const sent: { threadId: string; input: { text: string }[] }[] = [];
   let spawned = 0;
-  harness.sdk.stub("threads.spawn", async () => {
+  harness.sdk.stub("threads.spawn", strictTeamSpawn(async () => {
     spawned++;
     return { thread: { id: "home-chief" } };
-  });
+  }));
   harness.sdk.stub("threads.send", async (args) => {
     sent.push(args as never);
     return { delivery: "sent" };
@@ -183,9 +184,9 @@ test("native merge uses the Team step in place, checks fresh HEAD, and records v
   harness.sdk.stub("system.uiPreferences.list", async () => ({
     preferences: {},
   }));
-  harness.sdk.stub("threads.spawn", async () => ({
+  harness.sdk.stub("threads.spawn", strictTeamSpawn(async () => ({
     thread: { id: "home-chief" },
-  }));
+  })));
   harness.sdk.stub("threads.send", async () => ({ delivery: "sent" }));
   const runtime = {
     bb,

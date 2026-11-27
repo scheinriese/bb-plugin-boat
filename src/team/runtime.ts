@@ -59,8 +59,14 @@ export function createTeamRuntime(runtime: Runtime) {
     flushing: Promise<void> | null = null,
     preparing: Promise<void> | null = null;
   const mirror = createTeamMirror(runtime, engine);
-  async function prepare() {
-    if (!engine.enabled()) return;
+  let saving: Promise<unknown> = Promise.resolve();
+  function saveSerially<T>(run: () => Promise<T>): Promise<T> {
+    const next = saving.then(run, run);
+    saving = next.catch(() => undefined);
+    return next;
+  }
+  async function prepare(enabling = false) {
+    if (!engine.enabled() && !enabling) return;
     if (preparing) return preparing;
     preparing = (async () => {
       const preferences = await bb.sdk.system.uiPreferences
@@ -70,12 +76,21 @@ export function createTeamRuntime(runtime: Runtime) {
         preferences?.preferences["sidebar.threadListProvider"]?.value,
       );
       const members = engine.store.list("member");
-      let chief = members.find((m) => m.kind === "lead") ?? engine.enable();
+      let chief =
+        members.find((m) => m.kind === "lead") ?? engine.enable("Nora", false);
       if (!chief.homeThreadId) {
         const spawned = await bb.sdk.threads.spawn({
           projectId: "personal",
           title: chief.name,
-          input: [],
+          origin: "plugin",
+          originPluginId: bb.pluginId,
+          input: [
+            {
+              type: "text",
+              text: "[team · setup] Plugin bootstrap, not a user request. Introduce yourself as the chief of staff in two or three sentences and explain how to hand you work. Do not start any work yet. [/team]",
+              mentions: [],
+            },
+          ],
           environment: { type: "host", workspace: { type: "personal" } },
           pinned: !workbench,
         });
@@ -91,10 +106,21 @@ export function createTeamRuntime(runtime: Runtime) {
       const at = members.findIndex((m) => m.id === chief.id);
       if (at < 0) members.push(chief);
       else members[at] = chief;
+      if (enabling) engine.store.saveSetting("enabled", true);
       mirror.sync(chief, members);
-    })().finally(() => {
-      preparing = null;
-    });
+    })()
+      .catch((error) => {
+        if (!engine.chief()?.homeThreadId)
+          engine.store.saveSetting("enabled", false);
+        engine.changed();
+        throw new Error(
+          "Couldn't enable Team: the home chat could not be prepared. Please try again.",
+          { cause: error },
+        );
+      })
+      .finally(() => {
+        preparing = null;
+      });
     return preparing;
   }
   async function flush() {
@@ -177,32 +203,43 @@ export function createTeamRuntime(runtime: Runtime) {
       await prepare();
       return engine.state(workbench);
     },
-    teamSave: async (input) => {
-      if (input.rules !== undefined) core(input.rules, 350);
-      if (input.standingInstructions !== undefined)
-        core(input.standingInstructions, 900);
-      // Validate an adopted pointer before changing state.
-      if (input.homeThreadId)
-        await bb.sdk.threads.get({ threadId: input.homeThreadId });
-      if (input.enabled) {
-        let chief = engine.enable(input.name);
-        if (input.name)
-          chief = engine.saveMember(chief, {
-            name: input.name,
-            avatar: { ...chief.avatar, initials: input.name.slice(0, 1) },
-          });
-        if (input.homeThreadId) chief = engine.home(chief, input.homeThreadId);
+    teamSave: (input) =>
+      saveSerially(async () => {
+        if (input.rules !== undefined) core(input.rules, 350);
         if (input.standingInstructions !== undefined)
-          engine.saveStanding(chief, input.standingInstructions);
-        if (input.rules !== undefined) engine.saveRules(input.rules);
-        await prepare();
-      } else {
-        turnOrigins.clear();
-        engine.store.saveSetting("enabled", false);
-      }
-      engine.changed();
-      return { ok: true as const };
-    },
+          core(input.standingInstructions, 900);
+        // Validate an adopted pointer before changing state.
+        if (input.homeThreadId)
+          await bb.sdk.threads.get({ threadId: input.homeThreadId });
+        if (input.enabled) {
+          let chief = engine.chief() ?? engine.enable(input.name, false);
+          // Repair the half-enabled state left by an earlier failed bootstrap.
+          if (!chief.homeThreadId) engine.store.saveSetting("enabled", false);
+          if (input.name)
+            chief = engine.saveMember(chief, {
+              name: input.name,
+              avatar: { ...chief.avatar, initials: input.name.slice(0, 1) },
+            });
+          if (input.homeThreadId)
+            chief = engine.home(chief, input.homeThreadId);
+          if (input.standingInstructions !== undefined)
+            engine.saveStanding(chief, input.standingInstructions);
+          if (input.rules !== undefined) engine.saveRules(input.rules);
+          try {
+            await prepare(true);
+            engine.store.saveSetting("enabled", true);
+          } catch (error) {
+            engine.store.saveSetting("enabled", false);
+            engine.changed();
+            throw error;
+          }
+        } else {
+          turnOrigins.clear();
+          engine.store.saveSetting("enabled", false);
+        }
+        engine.changed();
+        return { ok: true as const };
+      }),
     answerAsk: async (input) => {
       const result = engine.answer(input);
       if (

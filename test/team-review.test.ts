@@ -1,3 +1,4 @@
+import { strictTeamSpawn } from "./team-spawn.ts";
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import { test } from "node:test";
@@ -35,9 +36,9 @@ function setup(t: { after(fn: () => unknown): void }) {
       "sidebar.threadListProvider": { value: "builtin", revision: 1 },
     },
   }));
-  harness.sdk.stub("threads.spawn", async () => ({
+  harness.sdk.stub("threads.spawn", strictTeamSpawn(async () => ({
     thread: { id: "home-chief" },
-  }));
+  })));
   harness.sdk.stub("threads.send", async (input) => {
     sent.push(input as never);
     return { delivery: "sent" };

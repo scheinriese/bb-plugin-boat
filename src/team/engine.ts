@@ -75,7 +75,7 @@ export class TeamEngine {
   chief() {
     return this.store.list("member").find((m) => m.kind === "lead");
   }
-  enable(name = "Nora") {
+  enable(name = "Nora", enabled = true) {
     return this.store.transaction(() => {
       let member = this.chief();
       const at = this.at();
@@ -98,7 +98,7 @@ export class TeamEngine {
           createdAt: at,
           updatedAt: at,
         });
-      this.store.saveSetting("enabled", true);
+      this.store.saveSetting("enabled", enabled);
       return member;
     });
   }
