@@ -30,3 +30,5 @@ build-shots/
 # Temporary component rendering bundles
 .provider-preview-*/
 .provider-polish-*/
+
+.team-preview-*/
