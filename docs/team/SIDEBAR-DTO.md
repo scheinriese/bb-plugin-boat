@@ -11,7 +11,8 @@ type TeamSidebar = {
   enabled: true;
   yourMove: { count: number; overdue: number; confirm: number };
   projects: Array<{ // max 200
-    bbProjectId: string;
+    bbProjectId: string; // native bb project of leadThreadId
+    orchestratorProjectId: string | null; // Harbormaster project id
     icon: string; // bb glyph name, currently Folder
     leadThreadId: string;
   }>;
@@ -24,6 +25,8 @@ type TeamSidebar = {
 type TeamMember = {
   memberId: string;
   threadId: string; // an existing home, never a synthetic assignment ID
+  bbProjectId: string; // native bb project of threadId
+  orchestratorProjectId: string | null; // Harbormaster project id for a lead
   name: string;
   kind: "lead" | "specialist" | "project-lead";
   avatar: { initials: string; color: string };
@@ -40,7 +43,7 @@ type TeamMember = {
 ```
 
 `yourMove` counts open, confirming and verifying asks, including adopted
-Harbormaster decisions and PR review asks. It belongs only on the chief tile.
+Harbormaster decisions and PR review asks for work becoming ready after Team enable. It belongs only on the chief tile.
 When Workbench is the selected thread-list provider, the native navigation
 badge is suppressed. No custom thread list is registered by Harbormaster.
 
@@ -69,3 +72,29 @@ Reading `sidebarState` only reads the bounded Team projection. It never
 mirrors native tasks or performs setup. Workbench detection uses the selected
 `sidebar.threadListProvider` plugin id (`workbench/<provider-id>`, with bare `workbench` and the earlier colon
 representation also accepted), not unrelated preference text.
+
+Project mapping uses the native bb thread as its authority. `projects[].bbProjectId`
+is read from `threads.get({ threadId: leadThreadId })`; it is never a
+Harbormaster project slug. The additional `orchestratorProjectId` preserves the
+Harbormaster project id separately. Each member row also carries `bbProjectId`
+and `orchestratorProjectId` (null for the chief and specialists). The chief's
+native project is `proj_personal`.
+
+Only the newest registered, unarchived, undeleted orchestrator per Harbormaster
+project appears as a project lead, matching Projects' current-orchestrator
+selection. Unscoped operator chats are excluded. Old Team lead records are
+archived in place; native chats and native registrations are unchanged. Active
+work and ask member references move to the current lead; existing scoped grants
+are never transferred.
+
+Only Review asks for work becoming ready after the first successful Team enable
+contribute to `yourMove`. All legacy open decisions still count. Existing installs
+recover the cutoff from the chief's earliest home-moved event (or chief creation
+if that event is unavailable); off/on and reloads preserve it. Historical ready
+work appears in Today’s collapsed **From before Team** group, outside the sidebar
+counts. `teamState` exposes `enabledAt: string | null` and
+`beforeTeam: { taskId: string; title: string; threadId: string | null; readyAt: string }[]`.
+The active task projection includes open work and activity updated in the last
+24 hours; older native projection records remain stored for audit but are hidden
+from Board, member previews and injected open work. Resumed or recently updated
+native work can rejoin the projection.

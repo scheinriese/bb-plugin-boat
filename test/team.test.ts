@@ -34,6 +34,7 @@ function setup() {
   const lead = engine.syncLead({
     threadId: "home-web",
     projectId: "web",
+    bbProjectId: "proj_web",
     projectName: "Web app",
   });
   return {
@@ -363,12 +364,12 @@ test("legacy decisions still resolve and supersede a mapped ask", () => {
     options: ["A", "B"],
     taskIds: [],
   });
-  const mapped=ask(engine, lead, { legacyDecisionId: d.id });
+  const mapped = ask(engine, lead, { legacyDecisionId: d.id });
   assert.equal(
     taskStore.resolveDecision(d.id, "answered", "B")?.status,
     "answered",
   );
-  assert.equal(engine.store.get("ask",mapped.id).state,"superseded");
+  assert.equal(engine.store.get("ask", mapped.id).state, "superseded");
 });
 test("instruction cores, per-block budgets and actual worst-case project instructions fit the 4,096 floor", () => {
   const { engine, chief, lead } = setup();

@@ -45,7 +45,7 @@ host and fake cloud CLI.
    Workbench, the chat is pinned. Team becomes enabled only after the home
    pointer is saved. If creation fails, Team stays off and settings shows an
    error; retry **Enable Team**. Open **Talk to Nora** to hand her work.
-3. Existing Harbormaster orchestrators appear as project leads. Nora can read
+3. Each Harbormaster project's current active orchestrator appears as its lead. Nora can read
    the directory and board, assign work with a checkable “done when”, consult
    a lead, notify a lead, and create asks. No specialist is created automatically.
 4. The former Cloud agents page shows Team's Today and Board while enabled.
@@ -64,6 +64,14 @@ host and fake cloud CLI.
    in the ask's chat or chief's home can record it. It cannot obtain a confirmation token. Unrelated replies leave asks open.
 8. “Wasn't me? Pause and revoke” revokes unused grant uses and pauses the
    member's work. Resume the member in Team settings after checking it.
+
+On first enable, ready work from before Team is grouped under **From before
+Team** on Today, collapsed and excluded from Nora's count. Its rows open the
+existing task chats. Existing open project decisions still count. Only work
+becoming ready after the original enable creates new counted Review asks; the
+cutoff survives reloads and disabling/re-enabling. Existing installs recover it
+from the chief's first saved home event. Board mirrors open work and the last
+24 hours of native task activity; older copies remain stored for audit.
 
 The pinned home is a fixed database pointer, never inferred from sidebar
 order or writable thread metadata. `teamSave.homeThreadId` can explicitly

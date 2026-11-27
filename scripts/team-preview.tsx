@@ -28,6 +28,27 @@ export function renderScene(scene: string) {
       surface: "confirm-view",
     });
   }
+  if (scene === "today")
+    engine.store.saveSetting("beforeTeam", [
+      {
+        taskId: "t_before_checkout",
+        title: "Improve checkout validation",
+        threadId: "before-checkout",
+        readyAt: "2026-11-25T16:00:00Z",
+      },
+      {
+        taskId: "t_before_docs",
+        title: "Update the getting started guide",
+        threadId: "before-docs",
+        readyAt: "2026-11-25T15:00:00Z",
+      },
+      {
+        taskId: "t_before_pricing",
+        title: "Refresh the pricing comparison",
+        threadId: "before-pricing",
+        readyAt: "2026-11-25T14:00:00Z",
+      },
+    ]);
   const state = engine.state();
   setTeamFixture(state);
   const chief = engine.chief()!;

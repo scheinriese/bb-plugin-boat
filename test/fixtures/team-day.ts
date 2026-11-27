@@ -29,7 +29,12 @@ export function replayDay(
         ? "docs"
         : name.includes("Web")
           ? "web"
-          : "personal",
+          : null,
+      bbProjectId: name.includes("Docs")
+        ? "proj_docs"
+        : name.includes("Web")
+          ? "proj_web"
+          : "proj_personal",
       projectName: name,
     });
     m = engine.saveMember(m, {

@@ -54,7 +54,11 @@ export class TeamStore {
   onInvalid?: (kind: string, id: string, error: unknown) => void;
   list<K extends keyof Records>(kind: K): Records[K][] {
     const rows = this.db()
-      .prepare("SELECT id,body FROM team_records WHERE kind=? ORDER BY rowid")
+      .prepare(
+        kind === "assignment"
+          ? "SELECT id,body FROM team_records WHERE kind=? AND CASE WHEN json_valid(body) THEN COALESCE(json_extract(body,'$.hiddenFromTeam'),0) ELSE 0 END=0 ORDER BY rowid"
+          : "SELECT id,body FROM team_records WHERE kind=? ORDER BY rowid",
+      )
       .all(kind) as { id: string; body: string }[];
     const records: Records[K][] = [];
     for (const row of rows) {

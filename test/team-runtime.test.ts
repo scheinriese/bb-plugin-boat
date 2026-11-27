@@ -13,10 +13,13 @@ test("fake runtime: enable, adopt once, assign, labelled delivery, typed Confirm
   t.after(() => harness.lifecycle.dispose());
   const sent: { threadId: string; input: { text: string }[] }[] = [];
   let spawned = 0;
-  harness.sdk.stub("threads.spawn", strictTeamSpawn(async () => {
-    spawned++;
-    return { thread: { id: "home-chief" } };
-  }));
+  harness.sdk.stub(
+    "threads.spawn",
+    strictTeamSpawn(async () => {
+      spawned++;
+      return { thread: { id: "home-chief" } };
+    }),
+  );
   harness.sdk.stub("threads.send", async (args) => {
     sent.push(args as never);
     return { delivery: "sent" };
@@ -45,9 +48,15 @@ test("fake runtime: enable, adopt once, assign, labelled delivery, typed Confirm
     team.configure("unrelated", { teamMemberId: team.engine.chief()!.id }, 1),
     null,
   );
+  env.store.addOrchestrator("home-project", { id: "web", name: "Web app" });
+  harness.sdk.stub("threads.get", async () => ({
+    id: "home-project",
+    projectId: "proj_web",
+  }));
   const lead = team.engine.syncLead({
     threadId: "home-project",
     projectId: "web",
+    bbProjectId: "proj_web",
     projectName: "Web app",
   });
   const assign = await harness.callAgentTool(
@@ -184,9 +193,12 @@ test("native merge uses the Team step in place, checks fresh HEAD, and records v
   harness.sdk.stub("system.uiPreferences.list", async () => ({
     preferences: {},
   }));
-  harness.sdk.stub("threads.spawn", strictTeamSpawn(async () => ({
-    thread: { id: "home-chief" },
-  })));
+  harness.sdk.stub(
+    "threads.spawn",
+    strictTeamSpawn(async () => ({
+      thread: { id: "home-chief" },
+    })),
+  );
   harness.sdk.stub("threads.send", async () => ({ delivery: "sent" }));
   const runtime = {
     bb,

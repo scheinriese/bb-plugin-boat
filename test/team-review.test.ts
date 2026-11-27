@@ -36,9 +36,12 @@ function setup(t: { after(fn: () => unknown): void }) {
       "sidebar.threadListProvider": { value: "builtin", revision: 1 },
     },
   }));
-  harness.sdk.stub("threads.spawn", strictTeamSpawn(async () => ({
-    thread: { id: "home-chief" },
-  })));
+  harness.sdk.stub(
+    "threads.spawn",
+    strictTeamSpawn(async () => ({
+      thread: { id: "home-chief" },
+    })),
+  );
   harness.sdk.stub("threads.send", async (input) => {
     sent.push(input as never);
     return { delivery: "sent" };
@@ -334,14 +337,22 @@ test("800-task steady-state mirroring stays below 100 ms, lists each kind once a
 test("typed answers require a current user initiator, no sender, the right thread and a quote in the latest message", async (t) => {
   const e = setup(t);
   await e.harness.behavior.callRpc("teamSave", { enabled: true });
+  e.store.addOrchestrator("lead-chat", { id: "web", name: "Web" });
+  e.store.addOrchestrator("other-chat", { id: "docs", name: "Docs" });
+  e.harness.sdk.stub("threads.get", async ({ threadId }) => ({
+    id: threadId,
+    projectId: `proj_${threadId}`,
+  }));
   e.team.engine.syncLead({
     threadId: "lead-chat",
     projectId: "web",
+    bbProjectId: "proj_web",
     projectName: "Web",
   });
   e.team.engine.syncLead({
     threadId: "other-chat",
     projectId: "docs",
+    bbProjectId: "proj_docs",
     projectName: "Docs",
   });
   const chief = e.team.engine.chief()!;
@@ -613,4 +624,295 @@ test("empty free-text decisions require a real answer and preserve it in the rel
   });
   assert.equal(e.store.decision(d.id)?.answer, "Take a break");
   assert.match(e.sent[0].input[0].text, /Take a break/);
+});
+
+test("live history migration keeps eight real decisions counted, groups 49 old reviews and exposes only current project leads in their bb projects", async (t) => {
+  const e = setup(t);
+  await e.harness.behavior.callRpc("teamSave", { enabled: true });
+  const chief = e.team.engine.chief()!;
+  // Upgrade an install without a cutoff. The first home event predates this deployment.
+  e.team.engine.saveMember(chief, {
+    projectId: "personal",
+    createdAt: "2026-11-20T00:00:00Z",
+  });
+  e.db
+    .prepare(
+      "UPDATE team_events SET at='2026-11-26T08:00:00Z' WHERE kind='home-moved'",
+    )
+    .run();
+  e.db.prepare("DELETE FROM team_settings WHERE id='enabledAt'").run();
+  const threadProjects = new Map<string, string>();
+  const oldMembers = new Map<string, string>();
+  for (const [projectId, name, count, bbProjectId] of [
+    ["portfolio", "Portfolio", 5, "proj_portfolio"],
+    ["boat-plugin", "Boat plugin", 2, "proj_boat"],
+  ] as const) {
+    for (let i = 0; i < count; i++) {
+      const threadId = `${projectId}-${i}`;
+      e.store.addOrchestrator(threadId, { id: projectId, name });
+      e.db
+        .prepare("UPDATE orchestrators SET created_at=? WHERE thread_id=?")
+        .run(`2026-11-25T0${i}:00:00Z`, threadId);
+      threadProjects.set(threadId, bbProjectId);
+      let lead = e.team.engine.syncLead({
+        threadId,
+        projectId,
+        projectName: name,
+        bbProjectId,
+      });
+      lead = e.team.engine.saveMember(lead, { projectId }); // the old slug/BB-id bug
+      oldMembers.set(threadId, lead.id);
+    }
+  }
+  e.store.addOrchestrator("release-operator");
+  const operator = e.team.engine.syncLead({
+    threadId: "release-operator",
+    projectId: null,
+    bbProjectId: "proj_personal",
+    projectName: "Release operator",
+  });
+  e.harness.sdk.stub("threads.get", async ({ threadId }) => ({
+    id: threadId,
+    projectId: threadProjects.get(threadId),
+    archivedAt: threadId === "portfolio-4" ? 1 : null,
+    deletedAt: threadId === "portfolio-1" ? 1 : null,
+  }));
+  const base = e.team.engine.assign(
+    {
+      assignee: oldMembers.get("portfolio-0")!,
+      mode: "consult",
+      title: "Open work",
+      brief: "Keep following up",
+      doneWhen: "",
+      parentId: null,
+      dedupeKey: null,
+      wallHours: 12,
+    },
+    "user",
+    "home-chief",
+  );
+  const taskInsert = e.db.prepare(
+    "INSERT INTO tasks(id,title,brief,role,status,provider,created_at,updated_at,ready_at,delivery,pr_url,thread_id,orchestrator_thread_id,boat_project) VALUES(?,?,?,'implement',?,'codex',?,?,?,?,?,?,?,?)",
+  );
+  for (let i = 0; i < 365; i++) {
+    const oldReady = i < 49;
+    const running = i === 364;
+    const id = `t_history${i}`;
+    taskInsert.run(
+      id,
+      `Historical work ${i}`,
+      "Brief",
+      oldReady ? "idle" : running ? "running" : "done",
+      "2026-11-24T00:00:00Z",
+      "2026-11-25T00:00:00Z",
+      oldReady ? "2026-11-25T12:00:00Z" : null,
+      "pr",
+      "https://github.com/acme/web/pull/1",
+      `task-chat-${i}`,
+      "portfolio-0",
+      "portfolio",
+    );
+    const nativeId = `a_nativehistory${i}`;
+    e.team.engine.store.put("assignment", {
+      ...base,
+      id: nativeId,
+      rootId: nativeId,
+      taskIds: [id],
+      status: oldReady ? "needs-user" : running ? "running" : "closed",
+      outcome: oldReady || running ? null : "partial",
+      updatedAt: "2026-11-25T00:00:00Z",
+    });
+    if (oldReady)
+      e.team.engine.createAsk({
+        memberId: base.assignee,
+        assignmentId: nativeId,
+        taskId: id,
+        threadId: `task-chat-${i}`,
+        title: "Review historical work",
+        verb: "Review",
+        unblocks: "Shipping",
+        secondary: "Send back",
+        options: [
+          {
+            id: "merge",
+            label: "Merge",
+            effect: "Merge the pull request",
+            tier: "confirm",
+          },
+        ],
+      });
+  }
+  for (let i = 0; i < 8; i++) {
+    const decision = e.store.addDecision({
+      question: `Real open question ${i}`,
+      recommendation: "Continue",
+      options: ["Continue"],
+      taskIds: [],
+      orchestratorThreadId: "portfolio-0",
+    });
+    e.team.engine.createAsk({
+      memberId: base.assignee,
+      legacyDecisionId: decision.id,
+      threadId: "portfolio-0",
+      title: decision.question,
+      verb: "Decide",
+      unblocks: "Continuing",
+      secondary: "Not now",
+      options: [
+        { id: "0", label: "Continue", effect: "Continue", tier: "confirm" },
+      ],
+    });
+  }
+  e.db.prepare("UPDATE decisions SET created_at='2026-11-25T00:00:00Z'").run();
+  assert.equal(e.team.engine.sidebar()?.yourMove.count, 57);
+  const staleReview = e.team.engine.store
+    .list("ask")
+    .find((a) => a.taskId === "t_history0")!;
+  const confirming = e.team.engine.answer({
+    askId: staleReview.id,
+    revision: staleReview.revision,
+    option: "merge",
+    text: "",
+    surface: "today",
+  }).ask;
+  const token = e.team.engine.openConfirm(
+    confirming.id,
+    confirming.revision,
+  ).confirmToken;
+  await e.team.prepare();
+  const state = e.team.engine.state();
+  const dto = e.team.engine.sidebar()!;
+  assert.equal(state.enabledAt, "2026-11-26T08:00:00.000Z");
+  assert.equal(state.beforeTeam.length, 49);
+  assert.equal(state.beforeTeam[0].threadId, "task-chat-0");
+  assert.equal(dto.yourMove.count, 8);
+  assert.throws(
+    () => e.team.engine.confirm(confirming.id, confirming.revision, token),
+    /changed/,
+  );
+  assert.equal(state.asks.filter((a) => a.state === "superseded").length, 49);
+  assert.equal(state.assignments.length, 2); // one real assignment plus one open native task
+  assert.ok(!state.assignments.some((a) => a.status === "needs-user"));
+  assert.equal(
+    state.members.filter((m) => m.kind === "project-lead").length,
+    2,
+  );
+  assert.equal(
+    state.members.find((m) => m.kind === "lead")?.projectId,
+    "proj_personal",
+  );
+  assert.deepEqual(
+    dto.projects
+      .map((p) => [p.orchestratorProjectId, p.bbProjectId, p.leadThreadId])
+      .sort(),
+    [
+      ["boat-plugin", "proj_boat", "boat-plugin-1"],
+      ["portfolio", "proj_portfolio", "portfolio-3"],
+    ],
+  );
+  assert.deepEqual(
+    dto.members
+      .map((m) => [m.threadId, m.bbProjectId, m.orchestratorProjectId])
+      .sort(),
+    [
+      ["boat-plugin-1", "proj_boat", "boat-plugin"],
+      ["portfolio-3", "proj_portfolio", "portfolio"],
+    ],
+  );
+  for (const thread of [
+    "portfolio-0",
+    "portfolio-4",
+    "boat-plugin-0",
+    "release-operator",
+  ]) {
+    assert.equal(e.team.engine.memberForThread(thread), undefined);
+    assert.equal(e.team.configure(thread, {}, 4096), null);
+  }
+  assert.equal(
+    e.team.engine.store.get("member", operator.id).status,
+    "archived",
+  );
+  assert.equal(
+    e.team.engine.store.get("assignment", base.id).assignee,
+    oldMembers.get("portfolio-3"),
+  );
+  assert.ok(
+    state.asks
+      .filter((a) => a.legacyDecisionId)
+      .every((a) => a.memberId === oldMembers.get("portfolio-3")),
+  );
+  assert.equal(e.store.orchestrators().length, 8); // native registrations are untouched
+  const directory = await e.harness.callAgentTool(
+    "team_directory",
+    {},
+    { threadId: "home-chief" },
+  );
+  assert.ok(!JSON.stringify(directory).includes('"status":"archived"'));
+  const eventCount = () =>
+    (
+      e.db.prepare("SELECT count(*) AS n FROM team_events").get() as {
+        n: number;
+      }
+    ).n;
+  const settled = eventCount();
+  await e.team.prepare();
+  assert.equal(eventCount(), settled);
+  // The original cutoff survives a reload and an explicit off/on.
+  const secondHost = createFakePluginHost({ pluginId: "boat" });
+  t.after(() => secondHost.harness.lifecycle.dispose());
+  secondHost.harness.sdk.stub("system.uiPreferences.list", async () => ({
+    preferences: {},
+  }));
+  secondHost.harness.sdk.stub("threads.get", async ({ threadId }) => ({
+    id: threadId,
+    projectId: threadProjects.get(threadId),
+    archivedAt: threadId === "portfolio-4" ? 1 : null,
+  }));
+  const reloaded = createTeamRuntime({ ...e.runtime, bb: secondHost.bb });
+  await reloaded.prepare();
+  assert.equal(reloaded.engine.state().enabledAt, state.enabledAt);
+  assert.equal(reloaded.engine.sidebar()?.yourMove.count, 8);
+  await secondHost.harness.behavior.callRpc("teamSave", { enabled: false });
+  await secondHost.harness.behavior.callRpc("teamSave", { enabled: true });
+  assert.equal(reloaded.engine.state().enabledAt, state.enabledAt);
+  // A newly ready task counts, even if the task itself predates Team.
+  e.store.update("t_history364", {
+    status: "idle",
+    readyAt: new Date().toISOString(),
+    prUrl: "https://github.com/acme/web/pull/2",
+  });
+  await reloaded.prepare();
+  assert.equal(reloaded.engine.sidebar()?.yourMove.count, 9);
+  // Resuming an old ready task removes it from the group and restores its projection.
+  e.store.update("t_history0", { readyAt: null, status: "running" });
+  await reloaded.prepare();
+  assert.equal(reloaded.engine.state().beforeTeam.length, 48);
+  assert.equal(
+    reloaded.engine.store.get("assignment", "a_nativehistory0").hiddenFromTeam,
+    false,
+  );
+  assert.equal(
+    reloaded.engine.store.get("assignment", "a_nativehistory0").status,
+    "running",
+  );
+  assert.equal(reloaded.engine.sidebar()?.yourMove.count, 9);
+  threadProjects.set("portfolio-3", "proj_portfolio_moved");
+  await reloaded.prepare();
+  assert.equal(
+    reloaded.engine
+      .sidebar()
+      ?.projects.find((p) => p.orchestratorProjectId === "portfolio")
+      ?.bbProjectId,
+    "proj_portfolio_moved",
+  );
+  e.store.update("t_history49", { updatedAt: new Date().toISOString() });
+  await reloaded.prepare();
+  assert.equal(
+    reloaded.engine.store.get("assignment", "a_nativehistory49").hiddenFromTeam,
+    false,
+  );
+  assert.equal(
+    reloaded.engine.store.get("assignment", "a_nativehistory49").status,
+    "closed",
+  );
 });

@@ -566,6 +566,7 @@ export function newTaskId(): string {
 }
 
 export interface TaskFilter {
+  updatedSince?: string;
   orchestratorThreadId?: string;
   statuses?: readonly TaskStatus[];
   parentTaskId?: string;
@@ -715,6 +716,10 @@ export class TaskStore {
     if (filter.statuses !== undefined && filter.statuses.length > 0) {
       where.push(`status IN (${filter.statuses.map(() => "?").join(", ")})`);
       params.push(...filter.statuses);
+    }
+    if (filter.updatedSince !== undefined) {
+      where.push("julianday(updated_at) >= julianday(?)");
+      params.push(filter.updatedSince);
     }
     const limit = Math.max(1, Math.min(filter.limit ?? 200, 1000));
     const sql = `SELECT * FROM tasks ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT ${limit}`;

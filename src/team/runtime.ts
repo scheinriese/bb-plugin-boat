@@ -107,6 +107,8 @@ export function createTeamRuntime(runtime: Runtime) {
       const members = engine.store.list("member");
       let chief =
         members.find((m) => m.kind === "lead") ?? engine.enable("Nora", false);
+      if (chief.projectId === "personal")
+        chief = engine.saveMember(chief, { projectId: PERSONAL_PROJECT_ID });
       if (!chief.homeThreadId) {
         const spawned = await bb.sdk.threads.spawn({
           projectId: PERSONAL_PROJECT_ID,
@@ -137,7 +139,8 @@ export function createTeamRuntime(runtime: Runtime) {
       else members[at] = chief;
       engine.store.saveSetting("homeSetupFailed", false);
       if (enabling) engine.store.saveSetting("enabled", true);
-      mirror.sync(chief, members);
+      engine.ensureEnabledAt(chief);
+      await mirror.sync(chief, members);
     })()
       .catch((error) => {
         if (!engine.chief()?.homeThreadId) {
@@ -424,7 +427,7 @@ export function createTeamRuntime(runtime: Runtime) {
     "team_directory",
     "Read the team directory: names, roles and home chats.",
     z.object({}),
-    () => engine.store.list("member"),
+    () => engine.store.list("member").filter((m) => m.status !== "archived"),
   );
   tool(
     "team_board",
@@ -694,7 +697,9 @@ export function createTeamRuntime(runtime: Runtime) {
           : memberInstructions(
               member,
               chief,
-              engine.store.list("member"),
+              engine.store
+                .list("member")
+                .filter((m) => m.status !== "archived"),
               engine.store.list("assignment"),
               engine.store.setting("rules", ""),
             );

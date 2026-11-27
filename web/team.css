@@ -624,5 +624,36 @@
   }
 }
 @layer components {
-  .team-board { align-content: flex-start; }
+  .team-board {
+    align-content: flex-start;
+  }
+}
+
+.team-before {
+  margin-bottom: 32px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.team-before summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+.team-before summary span {
+  color: var(--muted-foreground);
+  font-weight: 400;
+}
+.team-before .team-description {
+  margin-top: 10px;
+}
+.team-before > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 0;
+  text-align: left;
+}
+.team-before > button:hover {
+  text-decoration: underline;
 }

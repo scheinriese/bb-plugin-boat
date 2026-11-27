@@ -350,6 +350,7 @@ export function AskView({
   );
 }
 export function TeamToday({ state }: { state: TeamState }) {
+  const navigate = useBbNavigate();
   const asks = openAsks(state.asks);
   const today = new Date(state.now).toDateString();
   const answered = state.asks
@@ -374,6 +375,33 @@ export function TeamToday({ state }: { state: TeamState }) {
             <p className="team-empty">You're all caught up.</p>
           )}
         </section>
+        {state.beforeTeam.length > 0 && (
+          <details className="team-before">
+            <summary>
+              From before Team <span>({state.beforeTeam.length})</span>
+            </summary>
+            <p className="team-description">
+              Ready work from before Team was enabled. Open its chat to pick it
+              up.
+            </p>
+            {state.beforeTeam.map((task) => (
+              <button
+                key={task.taskId}
+                type="button"
+                onClick={() =>
+                  task.threadId
+                    ? navigate.toThread(task.threadId)
+                    : navigate.toPluginPanel(PANEL_PATH, {
+                        subPath: `task/${task.taskId}`,
+                      })
+                }
+              >
+                <span>{task.title}</span>
+                <Icon name="ArrowUpRight" className="size-3.5" />
+              </button>
+            ))}
+          </details>
+        )}
         <section>
           <h2>Answered today</h2>
           {answered.length ? (
@@ -733,7 +761,7 @@ export function TeamSettings() {
     contract: teamRpcContract,
     method: "resumeTeamMember",
   });
-  const [enableError,setEnableError]=useState("");
+  const [enableError, setEnableError] = useState("");
   const [name, setName] = useState("");
   const [rules, setRules] = useState("");
   const [standing, setStanding] = useState("");
@@ -773,14 +801,19 @@ export function TeamSettings() {
           disabled={save.isPending}
           onChange={(e) => {
             setEnableError("");
-            void save.mutate({enabled:e.target.checked}).catch(error=>{
-              setEnableError("Team could not be changed. Please try again.");showError(error);
+            void save.mutate({ enabled: e.target.checked }).catch((error) => {
+              setEnableError("Team could not be changed. Please try again.");
+              showError(error);
             });
           }}
         />
-        {save.isPending&&!data.enabled?"Enabling Team…":"Enable Team"}
+        {save.isPending && !data.enabled ? "Enabling Team…" : "Enable Team"}
       </label>
-      {enableError&&<p role="alert" className="text-sm text-destructive">{enableError}</p>}
+      {enableError && (
+        <p role="alert" className="text-sm text-destructive">
+          {enableError}
+        </p>
+      )}
       <p className="text-sm text-muted-foreground">
         A chief of staff and your existing project leads, with tracked work and
         asks.

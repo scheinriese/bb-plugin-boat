@@ -112,6 +112,7 @@ export const assignmentSchema = assignmentInputSchema.extend({
   revision: z.number(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  hiddenFromTeam: z.boolean().optional(),
 });
 export type Assignment = z.infer<typeof assignmentSchema>;
 export const answerSchema = z.object({
@@ -177,7 +178,15 @@ export const receiptSchema = z.object({
   updatedAt: z.string(),
 });
 export type Receipt = z.infer<typeof receiptSchema>;
+export const beforeTeamTaskSchema = z.object({
+  taskId: z.string(),
+  title: z.string().max(200),
+  threadId: z.string().nullable(),
+  readyAt: z.string(),
+});
 export const teamStateSchema = z.object({
+  enabledAt: z.string().nullable().default(null),
+  beforeTeam: z.array(beforeTeamTaskSchema).max(1000).default([]),
   enabled: z.boolean(),
   now: z.string(),
   rules: z.string(),
@@ -201,6 +210,8 @@ const sidebarId = z.string().min(1).max(200);
 export const teamMemberDtoSchema = z.object({
   memberId: sidebarId,
   threadId: sidebarId,
+  bbProjectId: sidebarId,
+  orchestratorProjectId: sidebarId.nullable(),
   name: z.string().max(40),
   kind: memberSchema.shape.kind,
   avatar: z.object({ initials: z.string().max(8), color: z.string().max(32) }),
@@ -231,6 +242,7 @@ export const teamSidebarSchema = z.object({
     .array(
       z.object({
         bbProjectId: sidebarId,
+        orchestratorProjectId: sidebarId.nullable(),
         icon: z.string().max(64),
         leadThreadId: sidebarId,
       }),

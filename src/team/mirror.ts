@@ -1,3 +1,4 @@
+import { syncProjectLeads } from "./leads.ts";
 import type { Assignment, Ask, Member } from "../../contract-team.ts";
 import type { Runtime } from "../runtime.ts";
 import type { TeamEngine } from "./engine.ts";
@@ -32,15 +33,129 @@ export function createTeamMirror(runtime: Runtime, engine: TeamEngine) {
       problem(kind, key, error);
     }
   }
-  function sync(chief: Member, members: Member[]) {
-    // One scan of each Team kind, indexed once. Newly created records join the indexes.
-    const memberByThread = new Map(
-      members.filter((m) => m.homeThreadId).map((m) => [m.homeThreadId!, m]),
+  async function sync(chief: Member, members: Member[]) {
+    const { current, registrations } = await syncProjectLeads(
+      runtime,
+      engine,
+      members,
+      problem,
     );
+    const memberByThread = new Map<string, Member>([
+      [chief.homeThreadId!, chief],
+    ]);
+    for (const member of members)
+      if (
+        member.kind === "specialist" &&
+        member.status !== "archived" &&
+        member.homeThreadId
+      )
+        memberByThread.set(member.homeThreadId, member);
+    for (const member of current.values())
+      memberByThread.set(member.homeThreadId!, member);
+    const projectByThread = new Map(
+      registrations.map((r) => [r.threadId, r.projectId]),
+    );
+    const memberFor = (threadId: string | null, projectId?: string | null) =>
+      memberByThread.get(threadId ?? "") ??
+      current.get(projectByThread.get(threadId ?? "") ?? projectId ?? "") ??
+      chief;
+    const enabledAt = engine.ensureEnabledAt(chief);
+    const recentSince = new Date(
+      engine.now().getTime() - 24 * 3600000,
+    ).toISOString();
+    const tasks = [
+      ...service.store.list({
+        statuses: ["starting", "running", "idle", "failed"],
+        limit: 1000,
+      }),
+      ...service.store.list({
+        statuses: ["done", "cancelled"],
+        updatedSince: recentSince,
+        limit: 1000,
+      }),
+    ];
+    const tasksById = new Map(tasks.map((t) => [t.id, t]));
+    const historical = new Set(
+      tasks
+        .filter(
+          (t) => t.readyAt && Date.parse(t.readyAt) <= Date.parse(enabledAt),
+        )
+        .map((t) => t.id),
+    );
+    const beforeTeam = tasks
+      .filter(
+        (t) =>
+          historical.has(t.id) &&
+          t.role !== "review" &&
+          !["done", "cancelled"].includes(t.status),
+      )
+      .map((t) => ({
+        taskId: t.id,
+        title: t.title.slice(0, 200),
+        threadId: t.threadId,
+        readyAt: t.readyAt!,
+      }));
+    if (
+      JSON.stringify(beforeTeam) !==
+      JSON.stringify(engine.store.setting("beforeTeam", []))
+    ) {
+      engine.store.saveSetting("beforeTeam", beforeTeam);
+      engine.changed();
+    }
+    // Read each Team kind once. Hidden projection copies stay available to audit/get,
+    // but are no longer parsed or rewritten on every monitor sweep.
     const assignments = engine.store.list("assignment");
     const byTask = new Map<string, Assignment>();
-    for (const a of assignments)
-      for (const taskId of a.taskIds) byTask.set(taskId, a);
+    const memberById = new Map(members.map((m) => [m.id, m]));
+    const replacement = (id: string) => {
+      const member = memberById.get(id);
+      return member?.kind === "project-lead"
+        ? current.get(member.orchestratorProjectId ?? "")
+        : undefined;
+    };
+    for (let a of assignments) {
+      if (
+        a.id.startsWith("a_native") &&
+        a.taskIds.every((id) => !tasksById.has(id) || historical.has(id))
+      ) {
+        guard("cloud task", a.id, () =>
+          engine.updateAssignment(
+            a,
+            { hiddenFromTeam: true },
+            "task-hidden",
+            "team",
+          ),
+        );
+        continue;
+      }
+      guard("assignment", a.id, () => {
+        const assignee = replacement(a.assignee);
+        const requester = replacement(a.requester);
+        const watchers = [
+          ...new Set(a.watchers.map((id) => replacement(id)?.id ?? id)),
+        ];
+        if (
+          (assignee && assignee.id !== a.assignee) ||
+          (requester && requester.id !== a.requester) ||
+          JSON.stringify(watchers) !== JSON.stringify(a.watchers)
+        )
+          a = engine.updateAssignment(
+            a,
+            {
+              assignee: assignee?.id ?? a.assignee,
+              requester: requester?.id ?? a.requester,
+              watchers,
+              threadId:
+                a.threadId === memberById.get(a.assignee)?.homeThreadId
+                  ? (assignee?.homeThreadId ?? a.threadId)
+                  : a.threadId,
+            },
+            "lead-synced",
+            "team",
+          );
+        for (const taskId of a.taskIds) byTask.set(taskId, a);
+      });
+    }
     const asks = engine.store.list("ask");
     const byDecision = new Map(
       asks
@@ -54,14 +169,6 @@ export function createTeamMirror(runtime: Runtime, engine: TeamEngine) {
         group.push(ask);
         asksByTask.set(ask.taskId, group);
       }
-    for (const lead of service.store.orchestrators())
-      guard("project lead", lead.threadId, () => {
-        if (!memberByThread.has(lead.threadId)) {
-          const member = engine.syncLead(lead, members);
-          members.push(member);
-          memberByThread.set(lead.threadId, member);
-        }
-      });
     const decisions = service.store.decisions({
       statuses: ["open"],
       limit: 1000,
@@ -70,8 +177,7 @@ export function createTeamMirror(runtime: Runtime, engine: TeamEngine) {
     for (const decision of decisions)
       guard("project decision", decision.id, () => {
         if (byDecision.has(decision.id)) return;
-        const member =
-          memberByThread.get(decision.orchestratorThreadId ?? "") ?? chief;
+        const member = memberFor(decision.orchestratorThreadId);
         const options = decision.options.length
           ? decision.options
           : [decision.recommendation.trim() || "Answer in your own words"];
@@ -84,18 +190,16 @@ export function createTeamMirror(runtime: Runtime, engine: TeamEngine) {
           verb: "Decide",
           unblocks: "Continuing the project work",
           context: decision.context ?? decision.question,
-          options: options
-            .slice(0, 8)
-            .map((o, i) => ({
-              id:
-                !decision.options.length && !decision.recommendation.trim()
-                  ? "free-text"
-                  : String(i),
-              label: o.trim().slice(0, 100) || "Answer in your own words",
-              effect: (decision.question + "\n" + o).slice(0, 4000),
-              tier: "confirm",
-              recommended: false,
-            })),
+          options: options.slice(0, 8).map((o, i) => ({
+            id:
+              !decision.options.length && !decision.recommendation.trim()
+                ? "free-text"
+                : String(i),
+            label: o.trim().slice(0, 100) || "Answer in your own words",
+            effect: (decision.question + "\n" + o).slice(0, 4000),
+            tier: "confirm",
+            recommended: false,
+          })),
           secondary: "Not now",
           confirmLabel: "Apply this project decision",
           legacyDecisionId: decision.id,
@@ -103,12 +207,10 @@ export function createTeamMirror(runtime: Runtime, engine: TeamEngine) {
         asks.push(ask);
         byDecision.set(decision.id, ask);
       });
-    const tasks = service.store.list({ limit: 1000 });
-    const tasksById = new Map(tasks.map((t) => [t.id, t]));
     for (const key of versions.keys())
       if (!tasksById.has(key)) versions.delete(key);
     for (const task of tasks) {
-      if (task.role === "review") continue;
+      if (task.role === "review" || historical.has(task.id)) continue;
       // Include the few mutable display fields in case native updates share a millisecond.
       const version = JSON.stringify([
         task.updatedAt,
@@ -116,13 +218,24 @@ export function createTeamMirror(runtime: Runtime, engine: TeamEngine) {
         task.status,
         task.prUrl,
         task.title,
+        memberFor(task.orchestratorThreadId, task.boatProject).id,
       ]);
       if (versions.get(task.id) === version) continue;
       guard("cloud task", task.id, () => {
-        const member =
-          memberByThread.get(task.orchestratorThreadId ?? "") ?? chief;
+        const member = memberFor(task.orchestratorThreadId, task.boatProject);
         let linked = byTask.get(task.id);
         const assignmentId = "a_native" + task.id.replace(/^t_/, "");
+        // A previously hidden projection may become current again when native work resumes.
+        if (
+          !linked &&
+          engine.store
+            .db()
+            .prepare(
+              "SELECT 1 FROM team_records WHERE kind='assignment' AND id=?",
+            )
+            .get(assignmentId)
+        )
+          linked = engine.store.get("assignment", assignmentId);
         const merged = service.store.latestEvent(task.id, "merged");
         const done = task.status === "done" || task.status === "cancelled";
         const status = done
@@ -193,6 +306,9 @@ export function createTeamMirror(runtime: Runtime, engine: TeamEngine) {
               status,
               outcome,
               result,
+              hiddenFromTeam: false,
+              assignee: member.id,
+              threadId: member.homeThreadId,
               turns: task.turns,
               lastProgress: task.readyNote,
             },
@@ -242,15 +358,26 @@ export function createTeamMirror(runtime: Runtime, engine: TeamEngine) {
         versions.set(task.id, version);
       });
     }
-    for (const ask of asks)
+    for (let ask of asks)
       guard("ask", ask.id, () => {
+        const member = replacement(ask.memberId);
+        if (
+          member &&
+          member.id !== ask.memberId &&
+          ["open", "confirming", "verifying"].includes(ask.state)
+        )
+          ask = engine.putAsk(ask, { memberId: member.id });
         if (
           ask.taskId &&
           !["answered", "superseded", "withdrawn"].includes(ask.state)
         ) {
-          const task = tasksById.get(ask.taskId);
+          const task =
+            tasksById.get(ask.taskId) ?? service.store.get(ask.taskId);
           if (
-            task?.status === "done" ||
+            !task ||
+            task.status === "cancelled" ||
+            (historical.has(ask.taskId) && ask.verb === "Review") ||
+            task.status === "done" ||
             (task && !task.readyAt && task.status !== "idle")
           )
             engine.putAsk(ask, { state: "superseded" });

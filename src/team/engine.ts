@@ -1,3 +1,4 @@
+import { PERSONAL_PROJECT_ID } from "../orchestrator.ts";
 import { teamTime, answerSurface } from "../../lib/team-copy.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -60,15 +61,16 @@ export class TeamEngine {
           .list("member")
           .find(
             (m) =>
-              m.homeThreadId === threadId ||
-              this.store
-                .list("assignment")
-                .some(
-                  (a) =>
-                    a.assignee === m.id &&
-                    a.threadId === threadId &&
-                    a.status !== "closed",
-                ),
+              m.status !== "archived" &&
+              (m.homeThreadId === threadId ||
+                this.store
+                  .list("assignment")
+                  .some(
+                    (a) =>
+                      a.assignee === m.id &&
+                      a.threadId === threadId &&
+                      a.status !== "closed",
+                  )),
           )
       : undefined;
   }
@@ -87,7 +89,7 @@ export class TeamEngine {
           kind: "lead",
           homeThreadId: null,
           previousHomeThreadIds: [],
-          projectId: "personal",
+          projectId: PERSONAL_PROJECT_ID,
           orchestratorProjectId: null,
           standingInstructions:
             "## Always include\nRoute work, follow up, and report evidence. Say assigned until a result arrives.",
@@ -98,9 +100,26 @@ export class TeamEngine {
           createdAt: at,
           updatedAt: at,
         });
+      if (member.projectId === "personal")
+        member = this.saveMember(member, { projectId: PERSONAL_PROJECT_ID });
+      if (enabled) this.ensureEnabledAt(member);
       this.store.saveSetting("enabled", enabled);
       return member;
     });
+  }
+  ensureEnabledAt(chief: Member): string {
+    const saved = this.store.setting<string | null>("enabledAt", null);
+    if (saved) return saved;
+    // Upgrade existing installs at their first successful home creation, not deployment time.
+    const home = this.store
+      .db()
+      .prepare(
+        "SELECT MIN(at) AS at FROM team_events WHERE assignment_id=? AND kind='home-moved'",
+      )
+      .get(chief.id) as { at: string | null };
+    const at = new Date(home.at ?? chief.createdAt).toISOString();
+    this.store.saveSetting("enabledAt", at);
+    return at;
   }
   saveMember(member: Member, patch: Partial<Member>) {
     return this.store.put(
@@ -144,6 +163,7 @@ export class TeamEngine {
       threadId: string;
       projectId: string | null;
       projectName: string | null;
+      bbProjectId: string;
     },
     members = this.store.list("member"),
   ) {
@@ -162,7 +182,7 @@ export class TeamEngine {
       kind: "project-lead",
       homeThreadId: input.threadId,
       previousHomeThreadIds: [],
-      projectId: input.projectId ?? "personal",
+      projectId: input.bbProjectId,
       orchestratorProjectId: input.projectId,
       standingInstructions: "",
       placement: "either",
@@ -176,10 +196,12 @@ export class TeamEngine {
   state(workbench = false): TeamState {
     this.expireConfirmations();
     return {
+      enabledAt: this.store.setting<string | null>("enabledAt", null),
+      beforeTeam: this.store.setting("beforeTeam", []),
       enabled: this.enabled(),
       now: this.at(),
       rules: this.store.setting("rules", ""),
-      members: this.store.list("member"),
+      members: this.store.list("member").filter((m) => m.status !== "archived"),
       assignments: this.store.list("assignment"),
       asks: this.store.list("ask"),
       incidents: this.store.list("incident"),
@@ -200,7 +222,9 @@ export class TeamEngine {
       (m) =>
         m.id.length <= 200 &&
         m.homeThreadId!.length <= 200 &&
-        m.projectId.length <= 200,
+        m.projectId.length <= 200 &&
+        (m.orchestratorProjectId === null ||
+          m.orchestratorProjectId.length <= 200),
     );
     const open = waitingAsks(this.store.list("ask"), this.at());
     const asksByMember = new Map<string, Ask[]>();
@@ -244,6 +268,8 @@ export class TeamEngine {
       return {
         memberId: m.id,
         threadId: m.homeThreadId!,
+        bbProjectId: m.projectId,
+        orchestratorProjectId: m.orchestratorProjectId,
         name: m.name,
         kind: m.kind,
         avatar: {
@@ -295,13 +321,12 @@ export class TeamEngine {
         overdue: open.filter((a) => a.due && a.due < this.at()).length,
         confirm: open.filter((a) => a.tier === "confirm").length,
       },
-      projects: leads
-        .slice(0, TEAM_SIDEBAR_LIMITS.projects)
-        .map((m) => ({
-          bbProjectId: m.projectId,
-          icon: "Folder",
-          leadThreadId: m.homeThreadId!,
-        })),
+      projects: leads.slice(0, TEAM_SIDEBAR_LIMITS.projects).map((m) => ({
+        bbProjectId: m.projectId,
+        orchestratorProjectId: m.orchestratorProjectId,
+        icon: "Folder",
+        leadThreadId: m.homeThreadId!,
+      })),
       lead: rows.find((m) => m.kind === "lead") ?? null,
       members: rows.filter((m) => m.kind !== "lead"),
       hideFromSections: hidden.slice(0, TEAM_SIDEBAR_LIMITS.hidden),
