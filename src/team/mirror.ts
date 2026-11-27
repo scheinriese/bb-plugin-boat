@@ -1,5 +1,5 @@
 import { syncProjectLeads } from "./leads.ts";
-import type { Assignment, Ask, Member } from "../../contract-team.ts";
+import type { Assignment, Ask, Member, Receipt } from "../../contract-team.ts";
 import type { Runtime } from "../runtime.ts";
 import type { TeamEngine } from "./engine.ts";
 
@@ -113,6 +113,16 @@ export function createTeamMirror(runtime: Runtime, engine: TeamEngine) {
         ? current.get(member.orchestratorProjectId ?? "")
         : undefined;
     };
+    const pendingByAssignment = new Map<string, Receipt[]>();
+    const memberByHome = new Map(
+      members.filter((m) => m.homeThreadId).map((m) => [m.homeThreadId!, m]),
+    );
+    for (const receipt of engine.store.list("receipt")) {
+      if (receipt.state !== "pending" || !receipt.assignmentId) continue;
+      const group = pendingByAssignment.get(receipt.assignmentId) ?? [];
+      group.push(receipt);
+      pendingByAssignment.set(receipt.assignmentId, group);
+    }
     for (let a of assignments) {
       if (
         a.id.startsWith("a_native") &&
@@ -153,6 +163,19 @@ export function createTeamMirror(runtime: Runtime, engine: TeamEngine) {
             "lead-synced",
             "team",
           );
+        // Assignment ownership and its unsent outbox move in this same savepoint.
+        // Also repair receipts left on an old home by earlier partial migrations.
+        for (const receipt of pendingByAssignment.get(a.id) ?? []) {
+          const old = memberByHome.get(receipt.threadId);
+          const next = old ? replacement(old.id) : undefined;
+          if (!next?.homeThreadId || next.homeThreadId === receipt.threadId)
+            continue;
+          engine.store.put(
+            "receipt",
+            { ...receipt, threadId: next.homeThreadId, updatedAt: engine.at() },
+            0,
+          );
+        }
         for (const taskId of a.taskIds) byTask.set(taskId, a);
       });
     }

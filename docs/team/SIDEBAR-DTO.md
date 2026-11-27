@@ -78,7 +78,9 @@ is read from `threads.get({ threadId: leadThreadId })`; it is never a
 Harbormaster project slug. The additional `orchestratorProjectId` preserves the
 Harbormaster project id separately. Each member row also carries `bbProjectId`
 and `orchestratorProjectId` (null for the chief and specialists). The chief's
-native project is `proj_personal`.
+native project is `proj_personal` for a generated Personal home; an adopted home
+uses its actual native bb project, refreshed from the fixed home thread on sync.
+Lookup failures retain the last verified mapping while delivery waits.
 
 Only the newest registered, unarchived, undeleted orchestrator per Harbormaster
 project appears as a project lead, matching Projects' current-orchestrator

@@ -1,3 +1,4 @@
+import { readTeamThread } from "./thread.ts";
 import type { Member } from "../../contract-team.ts";
 import type { Runtime } from "../runtime.ts";
 import type { TeamEngine } from "./engine.ts";
@@ -19,47 +20,49 @@ export async function syncProjectLeads(
     projects.set(row.projectId, group);
   }
   const selected = await Promise.all(
-    [...projects.values()].map(async (candidates) => {
+    [...projects.entries()].map(async ([projectId, candidates]) => {
       for (const row of candidates) {
         try {
-          const response = await runtime.bb.sdk.threads.get({
-            threadId: row.threadId,
-          });
-          const thread = (
-            "thread" in response ? response.thread : response
-          ) as {
-            projectId?: string;
-            archivedAt?: unknown;
-            deletedAt?: unknown;
+          const thread = await readTeamThread(runtime.bb, row.threadId);
+          if (!thread.available) continue;
+          return {
+            projectId,
+            lead: { ...row, bbProjectId: thread.projectId! },
+            unknown: false,
           };
-          if (thread.archivedAt || thread.deletedAt) continue;
-          if (!thread.projectId || thread.projectId === "personal")
-            throw new Error("The orchestrator has no canonical bb project");
-          return { ...row, bbProjectId: thread.projectId };
         } catch (error) {
           problem("project lead", row.threadId, error);
-          // A transient lookup failure must not promote a stale, older chat.
-          return null;
+          // Preserve pause and membership on unknown state; never promote an older chat.
+          return { projectId, lead: null, unknown: true };
         }
       }
-      return null;
+      return { projectId, lead: null, unknown: false };
     }),
   );
   const current = new Map<string, Member>();
-  for (const row of selected) {
+  const unknown = new Set(
+    selected.filter((p) => p.unknown).map((p) => p.projectId),
+  );
+  for (const { lead: row } of selected) {
     if (!row) continue;
     try {
       let member = engine.syncLead(row, members);
-      const status = member.status === "archived" ? "active" : member.status;
+      const status =
+        member.pauseRequested || member.status === "paused"
+          ? "paused"
+          : "active";
       if (
         member.projectId !== row.bbProjectId ||
         member.orchestratorProjectId !== row.projectId ||
-        member.status !== status
+        member.status !== status ||
+        member.availability !== "available" ||
+        (status === "paused" && !member.pauseRequested)
       )
         member = engine.saveMember(member, {
           projectId: row.bbProjectId,
           orchestratorProjectId: row.projectId,
           status,
+          availability: "available",
         });
       current.set(row.projectId!, member);
     } catch (error) {
@@ -69,11 +72,19 @@ export async function syncProjectLeads(
   // Keep audit records, but remove duplicates from directory, sidebar and agent configuration.
   const currentIds = new Set([...current.values()].map((m) => m.id));
   for (const member of members) {
-    if (member.kind !== "project-lead" || member.status === "archived")
+    if (member.kind !== "project-lead" || currentIds.has(member.id)) continue;
+    const availability = unknown.has(member.orchestratorProjectId ?? "")
+      ? "unknown"
+      : "unavailable";
+    const status = availability === "unknown" ? member.status : "archived";
+    if (
+      member.status === status &&
+      member.availability === availability &&
+      !(member.status === "paused" && !member.pauseRequested)
+    )
       continue;
-    if (currentIds.has(member.id)) continue;
     try {
-      engine.saveMember(member, { status: "archived" });
+      engine.saveMember(member, { status, availability });
     } catch (error) {
       problem("project lead", member.id, error);
     }

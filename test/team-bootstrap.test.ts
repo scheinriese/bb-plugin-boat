@@ -16,6 +16,10 @@ function setup(t: { after(fn: () => unknown): void }) {
   harness.sdk.stub("system.uiPreferences.list", async () => ({
     preferences: {},
   }));
+  harness.sdk.stub("threads.get", async ({ threadId }) => ({
+    id: threadId,
+    projectId: "proj_personal",
+  }));
   const runtime = {
     bb,
     service: env.service,

@@ -1,3 +1,4 @@
+import { readTeamThread } from "./thread.ts";
 import { PERSONAL_PROJECT_ID } from "../orchestrator.ts";
 import { createTeamMirror } from "./mirror.ts";
 import type { MessageDispatchHookContext } from "@get-bb/plugin-sdk";
@@ -132,7 +133,30 @@ export function createTeamRuntime(runtime: Runtime) {
         };
         const threadId = record.thread?.id ?? record.threadId ?? record.id;
         if (!threadId) throw new Error("bb did not return the home chat");
-        chief = engine.home(chief, threadId);
+        chief = engine.home(chief, threadId, PERSONAL_PROJECT_ID);
+      } else {
+        try {
+          const thread = await readTeamThread(bb, chief.homeThreadId);
+          const availability = thread.available ? "available" : "unavailable";
+          if (!thread.available)
+            mirror.problem(
+              "chief home",
+              chief.id,
+              new Error("The home chat is archived or deleted"),
+            );
+          if (
+            chief.availability !== availability ||
+            (thread.projectId && chief.projectId !== thread.projectId)
+          )
+            chief = engine.saveMember(chief, {
+              projectId: thread.projectId ?? chief.projectId,
+              availability,
+            });
+        } catch (error) {
+          if (chief.availability !== "unknown")
+            chief = engine.saveMember(chief, { availability: "unknown" });
+          mirror.problem("chief home", chief.id, error);
+        }
       }
       const at = members.findIndex((m) => m.id === chief.id);
       if (at < 0) members.push(chief);
@@ -159,15 +183,45 @@ export function createTeamRuntime(runtime: Runtime) {
       });
     return preparing;
   }
+  function recipientMember(threadId: string) {
+    return (
+      engine.store.list("member").find((m) => m.homeThreadId === threadId) ??
+      engine.memberForThread(threadId)
+    );
+  }
   async function flush() {
     if (!engine.enabled()) return;
     if (flushing) return flushing;
     flushing = (async () => {
+      // Reconcile recipients before taking a send claim, including after reload.
+      await prepare();
       for (const receipt of engine.store
         .list("receipt")
         .filter((r) => r.state === "pending")) {
-        const member = engine.memberForThread(receipt.threadId);
-        if (member?.status === "paused") continue;
+        if (!engine.enabled()) break;
+        try {
+          const thread = await readTeamThread(bb, receipt.threadId);
+          if (!thread.available) continue;
+        } catch (error) {
+          mirror.problem("delivery recipient", receipt.threadId, error);
+          continue;
+        }
+        // Native lookup yielded: re-read user intent and the outbox before claiming.
+        const fresh = engine.store.get("receipt", receipt.id);
+        if (
+          !engine.enabled() ||
+          fresh.state !== "pending" ||
+          fresh.threadId !== receipt.threadId
+        )
+          continue;
+        const member = recipientMember(receipt.threadId);
+        if (
+          member &&
+          (member.status !== "active" ||
+            member.pauseRequested ||
+            member.availability !== "available")
+        )
+          continue;
         const a = receipt.assignmentId
           ? engine.store.get("assignment", receipt.assignmentId)
           : null;
@@ -244,9 +298,14 @@ export function createTeamRuntime(runtime: Runtime) {
         if (input.rules !== undefined) core(input.rules, 350);
         if (input.standingInstructions !== undefined)
           core(input.standingInstructions, 900);
-        // Validate an adopted pointer before changing state.
-        if (input.homeThreadId)
-          await bb.sdk.threads.get({ threadId: input.homeThreadId });
+        // Validate both the pointer and native project before changing any settings.
+        const adopted = input.homeThreadId
+          ? await readTeamThread(bb, input.homeThreadId)
+          : null;
+        if (adopted && !adopted.available)
+          throw new Error(
+            "This home chat is archived or unavailable. Choose an available chat.",
+          );
         if (input.enabled) {
           let chief = engine.chief() ?? engine.enable(input.name, false);
           // Repair the half-enabled state left by an earlier failed bootstrap.
@@ -257,7 +316,7 @@ export function createTeamRuntime(runtime: Runtime) {
               avatar: { ...chief.avatar, initials: input.name.slice(0, 1) },
             });
           if (input.homeThreadId)
-            chief = engine.home(chief, input.homeThreadId);
+            chief = engine.home(chief, input.homeThreadId, adopted!.projectId!);
           if (input.standingInstructions !== undefined)
             engine.saveStanding(chief, input.standingInstructions);
           if (input.rules !== undefined) engine.saveRules(input.rules);
@@ -555,7 +614,7 @@ export function createTeamRuntime(runtime: Runtime) {
     | { action: "wait"; reason: string }
     | { action: "reject"; message: string } {
     if (!engine.enabled()) return { action: "proceed" };
-    const member = engine.memberForThread(context.thread.id);
+    const member = recipientMember(context.thread.id);
     if (context.attempt === "start-turn") {
       turnOrigins.set(context.thread.id, {
         initiator: context.initiator,
@@ -577,10 +636,18 @@ export function createTeamRuntime(runtime: Runtime) {
       context.initiator === "mixed"
     )
       return { action: "proceed" };
-    if (member?.status === "paused")
+    if (member && (member.pauseRequested || member.status === "paused"))
       return {
         action: "wait",
         reason: "This member is paused. Resume in Team settings to continue.",
+      };
+    if (
+      member &&
+      (member.status === "archived" || member.availability !== "available")
+    )
+      return {
+        action: "wait",
+        reason: "This team member's chat is unavailable. Delivery is waiting.",
       };
     if (
       nonces.every((n) =>

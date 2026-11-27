@@ -46,6 +46,12 @@ function setup(t: { after(fn: () => unknown): void }) {
     sent.push(input as never);
     return { delivery: "sent" };
   });
+  harness.sdk.stub("threads.get", async ({ threadId }) =>
+    makeThreadResponse({
+      id: threadId,
+      projectId: threadId === "home-chief" ? "proj_personal" : "proj_web",
+    }),
+  );
   const runtime = {
     bb,
     service: env.service,

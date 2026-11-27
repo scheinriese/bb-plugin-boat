@@ -181,3 +181,25 @@ request; there is no need to remove plugin provenance or use a separate send.
 Setup warnings include nested cause messages, codes and HTTP status. Failed
 home setup is latched off persistently: monitor sweeps and state reads do not
 retry it, including after reload. Retry explicitly with **Enable Team**.
+
+## Delivery recovery
+
+An explicit member pause is stored independently of native chat availability.
+A temporary lookup failure holds pending delivery; it does not archive the member
+or resume paused work. Confirmed archival/deletion can hide a project lead, but
+unarchiving or recovering the lookup preserves the pause until **Resume**.
+Resume while the chat is unavailable still holds delivery until bb verifies it.
+
+Changing a project's current lead moves assignment references and **pending**
+outbox receipts together in one transaction. Receipt ids, nonces and labelled
+text stay unchanged. Accepted, sending, uncertain and failed receipts are retained
+as history and never automatically resent to the replacement. An interrupted
+migration rolls back and is safe to retry; older stranded pending receipts are
+also reconciled. Sending rechecks native availability, pause and the current
+receipt immediately before claiming it.
+
+Adopting the chief's home validates the native thread and persists its actual
+bb project. Archived/deleted chats and invalid project mappings are rejected
+before settings change. Later project moves refresh the mapping; a lookup outage
+keeps the last verified project while delivery waits. New generated homes still
+start in `proj_personal`.

@@ -95,6 +95,8 @@ export class TeamEngine {
             "## Always include\nRoute work, follow up, and report evidence. Say assigned until a result arrives.",
           placement: "mac",
           status: "active",
+          pauseRequested: false,
+          availability: "available",
           avatar: { initials: name.slice(0, 1), color: "violet" },
           revision: 0,
           createdAt: at,
@@ -127,6 +129,12 @@ export class TeamEngine {
       {
         ...member,
         ...patch,
+        pauseRequested:
+          patch.status === "paused"
+            ? true
+            : patch.status === "active"
+              ? false
+              : member.pauseRequested || member.status === "paused",
         id: member.id,
         revision: member.revision + 1,
         updatedAt: this.at(),
@@ -145,14 +153,19 @@ export class TeamEngine {
     core(document, 900);
     return this.saveMember(member, { standingInstructions: document });
   }
-  home(member: Member, threadId: string) {
-    if (member.homeThreadId === threadId) return member;
+  home(member: Member, threadId: string, projectId = member.projectId) {
+    if (member.homeThreadId === threadId)
+      return member.projectId === projectId
+        ? member
+        : this.saveMember(member, { projectId, availability: "available" });
     this.store.event(member.id, "home-moved", "user", this.at(), {
       from: member.homeThreadId,
       to: threadId,
     });
     return this.saveMember(member, {
       homeThreadId: threadId,
+      projectId,
+      availability: "available",
       previousHomeThreadIds: member.homeThreadId
         ? [...member.previousHomeThreadIds, member.homeThreadId]
         : member.previousHomeThreadIds,
@@ -187,6 +200,8 @@ export class TeamEngine {
       standingInstructions: "",
       placement: "either",
       status: "active",
+      pauseRequested: false,
+      availability: "available",
       avatar: { initials: "P", color: "blue" },
       revision: 0,
       createdAt: at,
@@ -353,7 +368,11 @@ export class TeamEngine {
     input = assignmentInputSchema.parse(input);
     return this.store.transaction(() => {
       const member = this.store.get("member", input.assignee);
-      if (member.status !== "active" || !member.homeThreadId)
+      if (
+        member.status !== "active" ||
+        member.availability !== "available" ||
+        !member.homeThreadId
+      )
         throw new Error("The member is not available");
       if (input.mode === "work" && !input.doneWhen.trim())
         throw new Error("no-done-when: work needs a checkable done when");

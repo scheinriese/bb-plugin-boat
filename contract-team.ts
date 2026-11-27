@@ -50,6 +50,11 @@ export const memberSchema = z.object({
   standingInstructions: z.string(),
   placement: z.enum(["sandbox", "mac", "either"]),
   status: z.enum(["active", "paused", "archived"]),
+  // User intent survives native archival and lookup outages independently.
+  pauseRequested: z.boolean().default(false),
+  availability: z
+    .enum(["available", "unknown", "unavailable"])
+    .default("available"),
   avatar: z.object({ initials: z.string(), color: z.string() }),
   revision: z.number(),
   createdAt: z.string(),

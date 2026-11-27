@@ -49,9 +49,9 @@ test("fake runtime: enable, adopt once, assign, labelled delivery, typed Confirm
     null,
   );
   env.store.addOrchestrator("home-project", { id: "web", name: "Web app" });
-  harness.sdk.stub("threads.get", async () => ({
-    id: "home-project",
-    projectId: "proj_web",
+  harness.sdk.stub("threads.get", async ({ threadId }) => ({
+    id: threadId,
+    projectId: threadId === "home-chief" ? "proj_personal" : "proj_web",
   }));
   const lead = team.engine.syncLead({
     threadId: "home-project",
