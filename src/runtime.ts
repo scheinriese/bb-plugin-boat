@@ -1,3 +1,4 @@
+import type { TeamRuntime } from "./team/runtime.ts";
 import { validateLocalProjectLink } from "./project-catalog.ts";
 // Shared plumbing for the CLI, agent tools and RPC handlers.
 import { posix } from "node:path";
@@ -85,6 +86,7 @@ export interface StartOrchestratorInput {
 }
 
 export interface Runtime {
+  team?: TeamRuntime;
   bb: BbPluginApi;
   service: BoatService;
   projects: ProjectStore;
