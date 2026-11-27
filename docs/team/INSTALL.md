@@ -161,3 +161,15 @@ to operate: resolving or withdrawing supersedes the matching open ask and
 invalidates its confirmation tokens. Team answers write a labelled, provenance-
 bearing outbox relay before closing the native decision; uncertain delivery
 remains visible instead of being silently dropped.
+
+
+The chief uses bb's canonical Personal project id (`proj_personal`), shared with
+Harbormaster's other spawn paths. A real bb 0.50.1 sandbox probe confirmed that
+`personal` fails with `project_not_found`, while `proj_personal` accepts the
+same pinned, plugin-originated text input (including empty mentions) and reached
+active on the sandbox host. The probe
+was stopped and archived. The client maps input directly to the thread creation
+request; there is no need to remove plugin provenance or use a separate send.
+Setup warnings include nested cause messages, codes and HTTP status. Failed
+home setup is latched off persistently: monitor sweeps and state reads do not
+retry it, including after reload. Retry explicitly with **Enable Team**.

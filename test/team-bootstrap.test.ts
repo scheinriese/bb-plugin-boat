@@ -3,7 +3,10 @@ import { test } from "node:test";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { makeService } from "./fakes.ts";
 import { strictTeamSpawn } from "./team-spawn.ts";
-import { createTeamRuntime } from "../src/team/runtime.ts";
+import {
+  createTeamRuntime,
+  describeTeamSetupError,
+} from "../src/team/runtime.ts";
 import type { Runtime } from "../src/runtime.ts";
 import type { TeamState } from "../contract-team.ts";
 function setup(t: { after(fn: () => unknown): void }) {
@@ -53,6 +56,7 @@ test("enable remains off during bootstrap, uses a labelled plugin input and adop
     "threads.spawn",
     strictTeamSpawn(async (args) => {
       calls++;
+      assert.equal(args.projectId, "proj_personal");
       assert.equal(args.origin, "plugin");
       assert.equal(args.originPluginId, "boat");
       assert.equal(args.input?.length, 1);
@@ -105,6 +109,16 @@ test("bootstrap failure rolls back enable, exposes a clear error and retries wit
   assert.equal(failed.enabled, false);
   assert.equal(failed.members[0].homeThreadId, null);
   assert.equal(team.engine.sidebar(), undefined);
+  for (let i = 0; i < 3; i++) {
+    await team.settle();
+    await harness.behavior.callRpc("teamState", null);
+  }
+  assert.equal(attempts, 1);
+  // Even a stale enabled flag after reload must not restart a failed bootstrap.
+  team.engine.store.saveSetting("enabled", true);
+  await team.prepare();
+  assert.equal(team.engine.enabled(), false);
+  assert.equal(attempts, 1);
   await harness.behavior.callRpc("teamSave", { enabled: true });
   assert.equal(team.engine.enabled(), true);
   assert.equal(team.engine.chief()?.homeThreadId, "home-retry");
@@ -151,4 +165,17 @@ test("simultaneous enables serialize and create only one home", async (t) => {
   ]);
   assert.equal(calls, 1);
   assert.equal(team.engine.enabled(), true);
+});
+
+test("setup diagnostics retain wrapped cause messages and codes", () => {
+  const root = Object.assign(new Error("HTTP 404: Project not found"), {
+    code: "project_not_found",
+    status: 404,
+  });
+  const error = new Error("Couldn't enable Team", { cause: root });
+  const log = describeTeamSetupError(error);
+  assert.match(log, /Couldn't enable Team/);
+  assert.match(log, /HTTP 404: Project not found/);
+  assert.match(log, /code=project_not_found/);
+  assert.match(log, /status=404/);
 });

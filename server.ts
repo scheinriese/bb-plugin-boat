@@ -1,4 +1,4 @@
-import { createTeamRuntime } from "./src/team/runtime.ts";
+import { createTeamRuntime, describeTeamSetupError } from "./src/team/runtime.ts";
 import { createOwnMacProvider } from "./src/providers/ownmac/provider.ts";
 import { MONTHLY_MACS_TAG } from "./contract-monthly-macs.ts";
 import { monthlyMacPrices } from "./src/monthly-macs.ts";
@@ -663,7 +663,7 @@ export default async function plugin(bb: BbPluginApi) {
     void resets.failed(payload as LimitFailure).catch((error: unknown) => bb.log.warn(`reset resume: ${error instanceof Error ? error.message : String(error)}`));
   });
   runtime.team = createTeamRuntime(runtime);
-  await runtime.team.prepare().catch((error:unknown)=>bb.log.warn(`Team setup needs attention: ${error instanceof Error ? error.message : String(error)}`));
+  await runtime.team.prepare().catch((error:unknown)=>bb.log.warn(`Team setup needs attention: ${describeTeamSetupError(error)}`));
   registerTools(runtime);
   registerRpc(runtime);
   registerMergeRpc(runtime);

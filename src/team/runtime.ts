@@ -1,3 +1,4 @@
+import { PERSONAL_PROJECT_ID } from "../orchestrator.ts";
 import { createTeamMirror } from "./mirror.ts";
 import type { MessageDispatchHookContext } from "@get-bb/plugin-sdk";
 import { parseTeamResult } from "./result.ts";
@@ -25,6 +26,28 @@ import {
   TEAM_TOOL_RULES,
 } from "./instructions.ts";
 import { parseOrchestratorProject } from "../projects.ts";
+/** Bound the cause chain without losing the HTTP/SDK error that explains setup failure. */
+export function describeTeamSetupError(error: unknown): string {
+  const messages: string[] = [],
+    seen = new Set<unknown>();
+  while (error != null && !seen.has(error) && messages.length < 4) {
+    seen.add(error);
+    const item = error as {
+      message?: unknown;
+      code?: unknown;
+      status?: unknown;
+      cause?: unknown;
+    };
+    const message =
+      typeof item.message === "string" ? item.message : String(error);
+    const code = typeof item.code === "string" ? ` [code=${item.code}]` : "";
+    const status =
+      typeof item.status === "number" ? ` [status=${item.status}]` : "";
+    messages.push(message.slice(0, 500) + code + status);
+    error = item.cause;
+  }
+  return messages.join(" <- caused by: ");
+}
 export function isWorkbenchProvider(value: unknown): boolean {
   if (typeof value !== "string") return false;
   // SDK provider selections use pluginId/providerId. Accept the earlier colon
@@ -67,6 +90,12 @@ export function createTeamRuntime(runtime: Runtime) {
   }
   async function prepare(enabling = false) {
     if (!engine.enabled() && !enabling) return;
+    // A failed bootstrap requires an explicit retry, including after plugin reload.
+    if (!enabling && engine.store.setting("homeSetupFailed", false)) {
+      engine.store.saveSetting("enabled", false);
+      engine.changed();
+      return;
+    }
     if (preparing) return preparing;
     preparing = (async () => {
       const preferences = await bb.sdk.system.uiPreferences
@@ -80,7 +109,7 @@ export function createTeamRuntime(runtime: Runtime) {
         members.find((m) => m.kind === "lead") ?? engine.enable("Nora", false);
       if (!chief.homeThreadId) {
         const spawned = await bb.sdk.threads.spawn({
-          projectId: "personal",
+          projectId: PERSONAL_PROJECT_ID,
           title: chief.name,
           origin: "plugin",
           originPluginId: bb.pluginId,
@@ -106,12 +135,16 @@ export function createTeamRuntime(runtime: Runtime) {
       const at = members.findIndex((m) => m.id === chief.id);
       if (at < 0) members.push(chief);
       else members[at] = chief;
+      engine.store.saveSetting("homeSetupFailed", false);
       if (enabling) engine.store.saveSetting("enabled", true);
       mirror.sync(chief, members);
     })()
       .catch((error) => {
-        if (!engine.chief()?.homeThreadId)
+        if (!engine.chief()?.homeThreadId) {
           engine.store.saveSetting("enabled", false);
+          engine.store.saveSetting("homeSetupFailed", true);
+        }
+        bb.log.warn(`Couldn't enable Team: ${describeTeamSetupError(error)}`);
         engine.changed();
         throw new Error(
           "Couldn't enable Team: the home chat could not be prepared. Please try again.",
